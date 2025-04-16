@@ -14,15 +14,6 @@
   # boot.kernelPackages = pkgs.linuxPackages_latest;
   boot.extraModulePackages = [ pkgs.linuxKernel.packages.linux_6_6.gasket ];
 
-  boot.binfmt.registrations.appimage = {
-    wrapInterpreterInShell = false;
-    interpreter = "${pkgs.appimage-run}/bin/appimage-run";
-    recognitionType = "magic";
-    offset = 0;
-    mask = ''\xff\xff\xff\xff\x00\x00\x00\x00\xff\xff\xff'';
-    magicOrExtension = ''\x7fELF....AI\x02'';
-  };
-
   # Set your time zone.
   time.timeZone = "Europe/London";
 
@@ -41,9 +32,6 @@
     LC_TIME = "en_GB.UTF-8";
   };
 
-  # Enable the X11 windowing system.
-  # services.xserver.enable = true;
-
   # Configure keymap in X11
   services.xserver.xkb = {
     layout = "gb";
@@ -52,16 +40,6 @@
 
   # Configure console keymap
   console.keyMap = "uk";
-
-  # Enable sound with pipewire.
-  hardware.pulseaudio.enable = false;
-  security.rtkit.enable = true;
-  services.pipewire = {
-    enable = true;
-    alsa.enable = true;
-    alsa.support32Bit = true;
-    pulse.enable = true;
-  };
 
   # Define a user account. Don't forget to set a password with ‘passwd’.
   users.users.cjdell = {
@@ -99,15 +77,11 @@
 
   security.sudo.wheelNeedsPassword = false;
 
-  # Install firefox.
-  programs.firefox.enable = true;
-
   programs.nix-ld.enable = true;
 
   # List packages installed in system profile. To search, run:
   # $ nix search wget
   environment.systemPackages = with pkgs; [
-    appimage-run
     tmux
     git
     wget
@@ -136,8 +110,6 @@
 
   # Enable the OpenSSH daemon.
   services.openssh.enable = true;
-
-  # services.vscode-server.enable = true;
 
   services.cockpit = {
     enable = true;

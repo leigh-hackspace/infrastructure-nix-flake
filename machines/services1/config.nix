@@ -1,8 +1,11 @@
 {
   # May need to change if the repo is cloned to a different home folder
-  ENV_FILE              = "/home/cjdell/nixos-config/machines/services1/secrets/.env";
-  HTTP_BASIC_AUTH_FILE  = "/home/cjdell/nixos-config/machines/services1/secrets/http_basic_auth";
-  WIREGUARD_KEY_FILE    = "/home/cjdell/nixos-config/machines/services1/secrets/wg.key";
+  ENV_FILE              = "/var/lib/secrets/.env";
+  HTTP_BASIC_AUTH_FILE  = "/var/lib/secrets/http_basic_auth";
+  WIREGUARD_KEY_FILE    = "/var/lib/secrets/wg.key";
+
+  # Creating the `http_basic_auth` file
+  # nix-shell --packages apacheHttpd --run 'htpasswd -B -c /var/lib/secrets/http_basic_auth leighhack'
 
   # NGINX Firewall for "*.int.leighhack.org"
   # Allow only LAN access for internal services
