@@ -4,8 +4,6 @@ let
   CONFIG = import ./config.nix;
 in
 {
-  networking.hostName = "services1"; # Define your hostname.
-
   # Enable networking
   networking.networkmanager.enable = true;
 
