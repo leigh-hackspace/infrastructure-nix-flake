@@ -27,7 +27,9 @@ in
         group = config.services.nginx.group; # Ensure nginx can access the certificates
         extraDomainNames = [
           "*.leighhack.org"
+          "*.ai.leighhack.org"
           "*.int.leighhack.org"
+          "*.ai.int.leighhack.org"
         ];
       };
     };
@@ -251,6 +253,18 @@ in
             # For domain level, use the below error_page to redirect to your authentik server with the full redirect path
             # return 302 https://authentik.company/outpost.goauthentik.io/start?rd=$scheme://$http_host$request_uri;
           '';
+        };
+      };
+
+      "frigate.int.leighhack.org" = {
+        # serverAliases = [ "frigate.leighhack.org" ];
+        useACMEHost = "leighhack.org";
+        forceSSL = true;
+
+        locations."/" = {
+          proxyPass = "http://10.3.1.20:5000";
+          recommendedProxySettings = true;
+          extraConfig = CONFIG.LOCAL_NETWORK;
         };
       };
     };
