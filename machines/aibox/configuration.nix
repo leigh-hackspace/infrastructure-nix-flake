@@ -46,9 +46,6 @@
   # Configure console keymap
   console.keyMap = "uk";
 
-  # Enable CUPS to print documents.
-  services.printing.enable = true;
-
   # Enable sound with pipewire.
   hardware.pulseaudio.enable = false;
   security.rtkit.enable = true;
@@ -65,9 +62,6 @@
     #media-session.enable = true;
   };
 
-  # Enable touchpad support (enabled default in most desktopManager).
-  # services.xserver.libinput.enable = true;
-
   # Define a user account. Don't forget to set a password with ‘passwd’.
   users.users.cjdell = {
     isNormalUser = true;
@@ -81,6 +75,7 @@
     ];
   };
 
+  # Use sudo without password
   security.sudo.wheelNeedsPassword = false;
 
   # Enable automatic login for the user.
@@ -91,9 +86,6 @@
   programs.firefox.enable = true;
 
   programs.nix-ld.enable = true;
-
-  # Allow unfree packages
-  # nixpkgs.config.allowUnfree = true;
 
   # List packages installed in system profile. To search, run:
   # $ nix search wget
@@ -120,15 +112,9 @@
     vim
     direnv
     deno
+    iotop
+    clinfo
   ];
-
-  # Some programs need SUID wrappers, can be configured further or are
-  # started in user sessions.
-  # programs.mtr.enable = true;
-  # programs.gnupg.agent = {
-  #   enable = true;
-  #   enableSSHSupport = true;
-  # };
 
   # List services that you want to enable:
 

@@ -6,7 +6,9 @@
   imports = [
     ./ai.nix
     ./configuration.nix
+    ./containers.nix
     ./hardware-configuration.nix
     ./networking.nix
+    ./sunshine.nix
   ];
 }

@@ -2,48 +2,96 @@
 
 {
   environment.systemPackages = with pkgs; [
-    llama-cpp-local-cpu
+    llama-cpp-leigh-rocm
     rocmPackages.rocminfo
   ];
 
+  # I think stable-diffusion-webui needs this
   systemd.tmpfiles.rules = [
-    "L+    /opt/rocm/hip   -    -    -     -    ${pkgs.rocmPackages.clr}"
+    "L+    /opt/rocm   -    -    -     -    ${pkgs.rocmPackages.clr}"
   ];
 
   # Run a 32B DeepSeek model on the GPU (thanks to UMA of the Ryzen 6600H)
-  # View logs with: sudo journalctl -u llama-server-deepseek -f
-  systemd.services.llama-server-deepseek = {
-    description = "LLaMa Server Deepseek";
-    after = [ "network.target" ];
-
-    # Ensure the service is started at boot
-    wantedBy = [ "multi-user.target" ];
-
-    # -t 1      = Use a single CPU core
-    # -ngl 1000 = Use the GPU for the rest
-    serviceConfig = {
-      ExecStart = "${pkgs.llama-cpp-leigh-rocm}/bin/llama-server -m /home/cjdell/Models/DeepSeek-R1-Distill-Qwen-32B-Q6_K_L.gguf -t 1 --host 0.0.0.0 --port 8080 -ngl 1000";
-      Restart = "always";
-      EnvironmentFile = pkgs.writeText "llama-server-deepseek-env" ''
-        HSA_OVERRIDE_GFX_VERSION=10.3.0
-      '';
+  # View logs with: journalctl -u podman-llama-server-deepseek -f
+  virtualisation.oci-containers.containers = {
+    llama-server-32b = {
+      hostname = "llama-server-32b";
+      image = "llama-cpp-vulkan";
+      cmd = [
+        "-m"
+        "/llama.cpp/models/DeepSeek-R1-Distill-Qwen-32B-Q6_K_L.gguf"
+        "-ngl"
+        "65"
+        "--port"
+        "8080"
+        "--slots"
+        "--metrics"
+      ];
+      autoStart = true;
+      ports = [
+        "8080:8080"
+      ];
+      volumes = [
+        "/home/cjdell/Projects/llama.cpp:/llama.cpp:Z"
+      ];
+      environment = {
+        TZ = "Europe/London";
+      };
+      extraOptions = [
+        "--device=/dev/dri/renderD128"
+        "--device=/dev/dri/card1"
+      ];
     };
   };
 
-  # Run a 7B Mistral model on the CPU
-  # Source: https://huggingface.co/TheBloke/Mistral-7B-Instruct-v0.2-GGUF
-  # View logs with: sudo journalctl -u llama-server-7b -f
-  systemd.services.llama-server-7b = {
-    description = "LLaMa Server Deepseek";
+  # View logs with: journalctl -u podman-llama-server-8b -f
+  virtualisation.oci-containers.containers = {
+    llama-server-8b = {
+      hostname = "llama-server-8b";
+      image = "llama-cpp-vulkan";
+      cmd = [
+        "-m"
+        "/llama.cpp/models/nvidia_Llama-3.1-8B-UltraLong-4M-Instruct-Q6_K_L.gguf"
+        "-ngl"
+        "65"
+        "--port"
+        "8080"
+        "--parallel"
+        "2"
+        "--slots"
+        "--metrics"
+      ];
+      autoStart = true;
+      ports = [
+        "8081:8080"
+      ];
+      volumes = [
+        "/home/cjdell/Projects/llama.cpp:/llama.cpp:Z"
+      ];
+      environment = {
+        TZ = "Europe/London";
+      };
+      extraOptions = [
+        "--device=/dev/dri/renderD128"
+        "--device=/dev/dri/card1"
+      ];
+    };
+  };
+
+  # View logs with: journalctl -u stable-diffusion -f
+  systemd.services.stable-diffusion = {
+    description = "Stable Diffusion";
     after = [ "network.target" ];
 
     # Ensure the service is started at boot
     wantedBy = [ "multi-user.target" ];
 
-    # -t 11 = Use the other 11 CPU cores
     serviceConfig = {
-      ExecStart = "${pkgs.llama-cpp-leigh-rocm}/bin/llama-server -m /home/cjdell/Models/mistral-7b-instruct-v0.2.Q6_K.gguf -t 11 --host 0.0.0.0 --port 8081";
+      ExecStart = "${pkgs.nix}/bin/nix develop .#rocm --command \"./webui.sh\"";
+      WorkingDirectory = "/home/cjdell/Projects/stable-diffusion-webui";
       Restart = "always";
+      User = "cjdell";
+      Group = "users";
     };
   };
 }

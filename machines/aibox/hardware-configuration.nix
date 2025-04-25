@@ -13,7 +13,10 @@
   boot.kernelPackages = pkgs.linuxPackages_latest;
   boot.kernelParams = [
     "mitigations=off"
+    "amd_iommu=on"
     "amdgpu.gttsize=57344"
+    "ttm.pages_limit=13668850"
+    "ttm.page_pool_size=13668850"
   ];
 
   fileSystems."/" =
@@ -26,6 +29,12 @@
       fsType = "vfat";
       options = [ "fmask=0077" "dmask=0077" ];
     };
+
+  fileSystems."/mnt/filestore" = {
+    device = "10.3.1.6:/mnt/sas-10k/filestore";
+    fsType = "nfs";
+    options = [ "nfsvers=4.2" ];
+  };
 
   swapDevices =
     [ { device = "/dev/disk/by-uuid/b44042ef-cd03-49b9-aa18-b923c243cba8"; }
