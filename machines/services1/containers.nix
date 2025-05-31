@@ -42,9 +42,11 @@ in
   virtualisation.oci-containers.backend = "podman";
 
   virtualisation.oci-containers.containers = {
+    # sudo smem -r | sort -k 4 -nr | head
+    # sudo smem -rs swap | head
     frigate = {
       hostname = "frigate";
-      image = "ghcr.io/blakeblackshear/frigate:stable";
+      image = "ghcr.io/blakeblackshear/frigate:0.16.0-beta3";
       autoStart = true;
       volumes = [
         # "/srv/frigate/storage:/media/frigate"

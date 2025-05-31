@@ -104,6 +104,8 @@
     deno
     iotop
     lsof
+    smem
+    memray
   ];
 
   # List services that you want to enable:

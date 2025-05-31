@@ -43,6 +43,29 @@ in
     '';
 
     virtualHosts = {
+      "firewall.int.leighhack.org" = {
+        useACMEHost = "leighhack.org";
+        forceSSL = true;
+
+        locations."/" = {
+          proxyPass = "https://10.3.1.1:443";
+          recommendedProxySettings = true;
+          extraConfig = CONFIG.LOCAL_NETWORK;
+        };
+      };
+
+      "truenas.int.leighhack.org" = {
+        useACMEHost = "leighhack.org";
+        forceSSL = true;
+
+        locations."/" = {
+          proxyPass = "https://10.3.1.6:443";
+          recommendedProxySettings = true;
+          proxyWebsockets = true;
+          extraConfig = CONFIG.LOCAL_NETWORK;
+        };
+      };
+
       "discourse.leighhack.org" = {
         useACMEHost = "leighhack.org";
         forceSSL = true;
@@ -264,7 +287,28 @@ in
         locations."/" = {
           proxyPass = "http://10.3.1.20:5000";
           recommendedProxySettings = true;
+          proxyWebsockets = true;
           extraConfig = CONFIG.LOCAL_NETWORK;
+        };
+      };
+
+      "unifi-admin.int.leighhack.org" = {
+        useACMEHost = "leighhack.org";
+        forceSSL = true;
+
+        locations."/" = {
+          proxyPass = "https://10.3.1.40:8443";
+          recommendedProxySettings = true;
+          extraConfig = CONFIG.LOCAL_NETWORK;
+        };
+      };
+
+      "robot.ai.leighhack.org" = {
+        useACMEHost = "leighhack.org";
+        forceSSL = true;
+
+        locations."/" = {
+          root = "/srv/ai-resources/resources/robot";
         };
       };
     };
