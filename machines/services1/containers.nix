@@ -91,7 +91,6 @@ in
       };
       extraOptions = [
         "--device=/dev/ttyUSB0"
-        "--pull=always"
       ];
     };
 

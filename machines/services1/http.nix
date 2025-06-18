@@ -48,7 +48,7 @@ in
         forceSSL = true;
 
         locations."/" = {
-          proxyPass = "https://10.3.1.1:443";
+          proxyPass = "https://10.3.1.1:60443";
           recommendedProxySettings = true;
           extraConfig = CONFIG.LOCAL_NETWORK;
         };
@@ -103,6 +103,17 @@ in
         locations."/" = {
           proxyPass = "https://10.3.1.39:443";
           recommendedProxySettings = true;
+        };
+      };
+
+      "monster.int.leighhack.org" = {
+        useACMEHost = "leighhack.org";
+        forceSSL = true;
+
+        locations."/" = {
+          proxyPass = "https://10.3.1.11:8006";
+          recommendedProxySettings = true;
+          proxyWebsockets = true;
         };
       };
 

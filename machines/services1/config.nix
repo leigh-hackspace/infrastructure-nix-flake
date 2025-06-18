@@ -12,6 +12,7 @@
   LOCAL_NETWORK = ''
     allow 10.3.0.0/16;
     allow 10.47.0.0/16;
+    allow 51.148.168.145/32;    # Chris Zen
     allow 2001:8b0:1d14::0/48;  # AAISP range
     allow 2a02:8010:6680::0/48; # Chris Zen
     allow 2a00:23c8:b0ac::0/48; # Chris 2
