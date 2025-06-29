@@ -1,3 +1,8 @@
+## NOTES: Get the container image...
+# podman build -t llama-cpp-vulkan --target server -f .devops/vulkan.Dockerfile .
+# podman save llama-cpp-vulkan -o llama-cpp-vulkan.tar
+# sudo podman load -i llama-cpp-vulkan.tar
+
 { config, pkgs, ... }:
 
 {
@@ -22,6 +27,8 @@
         "/llama.cpp/models/DeepSeek-R1-Distill-Qwen-32B-Q6_K_L.gguf"
         "-ngl"
         "65"
+        "--ctx-size"
+        "8192"
         "--port"
         "8080"
         "--slots"
@@ -54,6 +61,8 @@
         "/llama.cpp/models/nvidia_Llama-3.1-8B-UltraLong-4M-Instruct-Q6_K_L.gguf"
         "-ngl"
         "65"
+        # "--ctx-size"
+        # "0"
         "--port"
         "8080"
         "--parallel"
