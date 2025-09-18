@@ -43,29 +43,6 @@ in
     '';
 
     virtualHosts = {
-      "firewall.int.leighhack.org" = {
-        useACMEHost = "leighhack.org";
-        forceSSL = true;
-
-        locations."/" = {
-          proxyPass = "https://10.3.1.1:60443";
-          recommendedProxySettings = true;
-          extraConfig = CONFIG.LOCAL_NETWORK;
-        };
-      };
-
-      "truenas.int.leighhack.org" = {
-        useACMEHost = "leighhack.org";
-        forceSSL = true;
-
-        locations."/" = {
-          proxyPass = "https://10.3.1.6:443";
-          recommendedProxySettings = true;
-          proxyWebsockets = true;
-          extraConfig = CONFIG.LOCAL_NETWORK;
-        };
-      };
-
       "discourse.leighhack.org" = {
         useACMEHost = "leighhack.org";
         forceSSL = true;
@@ -103,6 +80,29 @@ in
         locations."/" = {
           proxyPass = "https://10.3.1.39:443";
           recommendedProxySettings = true;
+        };
+      };
+
+      "firewall.int.leighhack.org" = {
+        useACMEHost = "leighhack.org";
+        forceSSL = true;
+
+        locations."/" = {
+          proxyPass = "https://10.3.1.1:60443";
+          recommendedProxySettings = true;
+          extraConfig = CONFIG.LOCAL_NETWORK;
+        };
+      };
+
+      "truenas.int.leighhack.org" = {
+        useACMEHost = "leighhack.org";
+        forceSSL = true;
+
+        locations."/" = {
+          proxyPass = "https://10.3.1.6:443";
+          recommendedProxySettings = true;
+          proxyWebsockets = true;
+          extraConfig = CONFIG.LOCAL_NETWORK;
         };
       };
 

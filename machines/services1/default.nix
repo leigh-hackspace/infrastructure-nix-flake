@@ -14,4 +14,6 @@
     ./networking.nix
     ./postgres.nix
   ];
+
+  nix.settings.sandbox = "relaxed";
 }

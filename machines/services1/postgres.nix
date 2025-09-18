@@ -28,6 +28,7 @@ in
     authentication = pkgs.lib.mkOverride 10 CONFIG.PG_AUTH;
   };
 
+  # journalctl -u postgres-set-password
   systemd.services.postgres-set-password =
     let
       generateSql = db: password: ''

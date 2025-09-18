@@ -50,6 +50,12 @@
     options = [ "nfsvers=4.2" ];
   };
 
+  fileSystems."/mnt/filestore" = {
+    device = "10.3.1.6:/mnt/sas-10k/filestore";
+    fsType = "nfs";
+    options = [ "nfsvers=4.2" ];
+  };
+
   swapDevices = [ ];
 
   nixpkgs.hostPlatform = lib.mkDefault "x86_64-linux";

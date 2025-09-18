@@ -46,7 +46,7 @@ in
     # sudo smem -rs swap | head
     frigate = {
       hostname = "frigate";
-      image = "ghcr.io/blakeblackshear/frigate:0.16.0-beta3";
+      image = "ghcr.io/blakeblackshear/frigate:0.16.0";
       autoStart = true;
       volumes = [
         # "/srv/frigate/storage:/media/frigate"
