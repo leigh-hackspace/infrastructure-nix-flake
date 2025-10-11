@@ -13,7 +13,7 @@ in
     wantedBy = [ "multi-user.target" ];
 
     environment = {
-      DE_DEVICE_IP = "10.3.2.30";
+      DE_MODE = "production";
       DE_BACKEND_PORT = "8472";
       DE_FRONTEND_PORT = "8473";
       DE_AUTHENTIK_HOST = "id.leighhack.org";

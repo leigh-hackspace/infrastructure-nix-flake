@@ -200,6 +200,7 @@ in
         locations."/" = {
           proxyPass = "http://10.3.1.30:3001";
           recommendedProxySettings = true;
+          proxyWebsockets = true;
           extraConfig = CONFIG.LOCAL_NETWORK;
         };
       };
@@ -320,6 +321,18 @@ in
 
         locations."/" = {
           root = "/srv/ai-resources/resources/robot";
+        };
+      };
+
+      "retro.int.leighhack.org" = {
+        forceSSL = false;
+        addSSL = false;
+
+        locations."/" = {
+          root = "/sas-16tb/ds-downloads/Retro";
+          extraConfig = ''
+            autoindex on;
+          '';
         };
       };
     };

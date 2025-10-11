@@ -12,6 +12,7 @@
     ./hardware-configuration.nix
     ./http.nix
     ./networking.nix
+    ./nfs-client.nix
     ./postgres.nix
   ];
 
