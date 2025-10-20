@@ -1,4 +1,10 @@
-{ config, lib, pkgs, modulesPath, ... }:
+{
+  config,
+  lib,
+  pkgs,
+  modulesPath,
+  ...
+}:
 
 # Outside IPv4 (NATed by pfSense)   81.187.195.17
 # Outside/Inside IPv6               2001:8b0:1d14:225:d::1020
@@ -37,6 +43,11 @@ in
 
   services.nginx = {
     enable = true;
+
+    # recommendedProxySettings = true;  # Breaks Home Assistant
+    recommendedTlsSettings = true;
+    recommendedOptimisation = true;
+    recommendedGzipSettings = true;
 
     appendHttpConfig = ''
       server_names_hash_bucket_size 128;
@@ -161,15 +172,12 @@ in
       };
 
       "id.int.leighhack.org" = {
-        serverAliases = [ "id.leighhack.org" "authentik.int.leighhack.org" ];
+        serverAliases = [
+          "id.leighhack.org"
+          "authentik.int.leighhack.org"
+        ];
         useACMEHost = "leighhack.org";
         forceSSL = true;
-
-        extraConfig = ''
-          ssl_session_cache shared:SSL:1m;
-          ssl_session_timeout 10m;
-          ssl_prefer_server_ciphers on;
-        '';
 
         locations."/" = {
           proxyPass = "http://10.3.1.36:9000";
@@ -231,6 +239,7 @@ in
 
         locations."/" = {
           proxyPass = "http://10.3.1.30:8123";
+          proxyWebsockets = true;
 
           extraConfig = ''
             # authentik-specific config
@@ -238,14 +247,6 @@ in
             error_page          401 = @goauthentik_proxy_signin;
             auth_request_set $auth_cookie $upstream_http_set_cookie;
             add_header Set-Cookie $auth_cookie;
-
-            proxy_set_header X-Forwarded-Proto $scheme;
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-            proxy_set_header Host $host;
-            proxy_set_header Upgrade $http_upgrade;
-            proxy_set_header Connection $connection_upgrade;
-            proxy_http_version 1.1;
-            proxy_buffering off;
 
             # translate headers from the outposts back to the actual upstream
             auth_request_set $authentik_username $upstream_http_x_authentik_username;

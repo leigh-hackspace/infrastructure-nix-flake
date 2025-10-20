@@ -38,7 +38,7 @@ in
           IF EXISTS (
             SELECT FROM pg_catalog.pg_roles WHERE rolname = '${db}'
           ) THEN
-            ALTER USER ${db} WITH PASSWORD '${password}';
+            ALTER USER "${db}" WITH PASSWORD '${password}';
             RAISE NOTICE 'Set password for user "${db}".';
           END IF;
         END
