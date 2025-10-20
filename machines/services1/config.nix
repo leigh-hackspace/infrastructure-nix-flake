@@ -28,6 +28,7 @@
     host    sameuser  all     ::1/128                 scram-sha-256
     host    sameuser  all     10.3.0.0/16             scram-sha-256
     host    sameuser  all     10.47.0.0/16            scram-sha-256
+    host    sameuser  all     192.168.49.0/24         scram-sha-256
     host    sameuser  all     2001:8b0:1d14::0/48     scram-sha-256
     host    sameuser  all     2a02:8010:6680::0/48    scram-sha-256
     host    sameuser  all     2a00:23c8:b0ac::0/48    scram-sha-256
