@@ -1,3 +1,4 @@
+pxe-server:
 { config, pkgs, ... }:
 
 {
@@ -9,6 +10,7 @@
     ./containers.nix
     ./hardware-configuration.nix
     ./networking.nix
+    (import ./pxe-server.nix pxe-server)
     ./sunshine.nix
   ];
 }

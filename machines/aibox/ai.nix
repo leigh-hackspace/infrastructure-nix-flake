@@ -46,7 +46,7 @@
       };
       extraOptions = [
         "--device=/dev/dri/renderD128"
-        "--device=/dev/dri/card1"
+        "--device=/dev/dri/card0"
       ];
     };
   };
@@ -82,7 +82,7 @@
       };
       extraOptions = [
         "--device=/dev/dri/renderD128"
-        "--device=/dev/dri/card1"
+        "--device=/dev/dri/card0"
       ];
     };
   };

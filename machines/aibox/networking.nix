@@ -31,6 +31,15 @@
         };
         vlanConfig.Id = 225;
       };
+
+      "12-vlan227" = {
+        netdevConfig = {
+          Kind = "vlan";
+          Name = "vlan227";
+          MACAddress = "84:47:09:40:d2:27";
+        };
+        vlanConfig.Id = 227;
+      };
     };
 
     networks = {
@@ -42,11 +51,20 @@
         };
         vlan = [
           "vlan225"
+          "vlan227"
         ];
       };
 
       "11-vlan225" = {
         matchConfig.Name = "vlan225";
+        networkConfig = {
+          DHCP = true;
+          IPv6AcceptRA = true;
+        };
+      };
+
+      "12-vlan227" = {
+        matchConfig.Name = "vlan227";
         networkConfig = {
           DHCP = true;
           IPv6AcceptRA = true;

@@ -47,7 +47,7 @@
   console.keyMap = "uk";
 
   # Enable sound with pipewire.
-  hardware.pulseaudio.enable = false;
+  services.pulseaudio.enable = false;
   security.rtkit.enable = true;
   services.pipewire = {
     enable = true;
@@ -127,6 +127,7 @@
     deno
     iotop
     clinfo
+    deno
   ];
 
   # List services that you want to enable:
