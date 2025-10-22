@@ -40,7 +40,7 @@
             };
             modules = [
               fix-nix-shell
-
+              ./common/users.nix
               # Add packages for the door system to the system pkgs
               (
                 {
@@ -78,7 +78,7 @@
               };
               modules = [
                 fix-nix-shell
-
+                ./common/users.nix
                 (
                   {
                     config,
