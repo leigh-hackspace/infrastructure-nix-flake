@@ -3,7 +3,8 @@
 {
   imports = [
     ./door-entry-management-system.nix
-    ./mattermost.nix
+    ./gocardless-authentik-sync.nix
     ./matrix.nix
+    ./mattermost.nix
   ];
 }

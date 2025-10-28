@@ -114,6 +114,29 @@
         "type": "github"
       }
     },
+    "gocardless-tools": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ],
+        "pyproject-build-systems": "pyproject-build-systems",
+        "pyproject-nix": "pyproject-nix",
+        "uv2nix": "uv2nix"
+      },
+      "locked": {
+        "lastModified": 1761610191,
+        "narHash": "sha256-1ZQhe0nYk01UegjHNqu2UJipfmO17xfk0mcOWXto/FI=",
+        "ref": "refs/heads/main",
+        "rev": "59e9e36ad16c4e2267866ebd54f20094e8c4c7b4",
+        "revCount": 156,
+        "type": "git",
+        "url": "file:///home/leigh-admin/Projects/gocardless-tools"
+      },
+      "original": {
+        "type": "git",
+        "url": "file:///home/leigh-admin/Projects/gocardless-tools"
+      }
+    },
     "llama-cpp-leigh": {
       "inputs": {
         "flake-parts": "flake-parts",
@@ -247,10 +270,61 @@
         "url": "file:///home/cjdell/Projects/pxe-server"
       }
     },
+    "pyproject-build-systems": {
+      "inputs": {
+        "nixpkgs": [
+          "gocardless-tools",
+          "nixpkgs"
+        ],
+        "pyproject-nix": [
+          "gocardless-tools",
+          "pyproject-nix"
+        ],
+        "uv2nix": [
+          "gocardless-tools",
+          "uv2nix"
+        ]
+      },
+      "locked": {
+        "lastModified": 1759113590,
+        "narHash": "sha256-fgxP2RCN4cg0jYiMYoETYc7TZ2JjgyvJa2y9l8oSUFE=",
+        "owner": "pyproject-nix",
+        "repo": "build-system-pkgs",
+        "rev": "dbfc0483b5952c6b86e36f8b3afeb9dde30ea4b5",
+        "type": "github"
+      },
+      "original": {
+        "owner": "pyproject-nix",
+        "repo": "build-system-pkgs",
+        "type": "github"
+      }
+    },
+    "pyproject-nix": {
+      "inputs": {
+        "nixpkgs": [
+          "gocardless-tools",
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1760402624,
+        "narHash": "sha256-jF6UKLs2uGc2rtved8Vrt58oTWjTQoAssuYs/0578Z4=",
+        "owner": "pyproject-nix",
+        "repo": "pyproject.nix",
+        "rev": "84c4ea102127c77058ea1ed7be7300261fafc7d2",
+        "type": "github"
+      },
+      "original": {
+        "owner": "pyproject-nix",
+        "repo": "pyproject.nix",
+        "type": "github"
+      }
+    },
     "root": {
       "inputs": {
         "door-entry-bluetooth-web-app": "door-entry-bluetooth-web-app",
         "door-entry-management-system": "door-entry-management-system",
+        "gocardless-tools": "gocardless-tools",
         "llama-cpp-leigh": "llama-cpp-leigh",
         "nixos-hardware": "nixos-hardware",
         "nixpkgs": "nixpkgs_4",
@@ -299,6 +373,31 @@
       "original": {
         "owner": "nix-systems",
         "repo": "default",
+        "type": "github"
+      }
+    },
+    "uv2nix": {
+      "inputs": {
+        "nixpkgs": [
+          "gocardless-tools",
+          "nixpkgs"
+        ],
+        "pyproject-nix": [
+          "gocardless-tools",
+          "pyproject-nix"
+        ]
+      },
+      "locked": {
+        "lastModified": 1761527626,
+        "narHash": "sha256-neDfvbpFlzUQfH9C+hVRUX0/RXUbJBidw4pFcdMYhZA=",
+        "owner": "pyproject-nix",
+        "repo": "uv2nix",
+        "rev": "46a8e8bbb2d9e34b686329ac16e4a8861394f03a",
+        "type": "github"
+      },
+      "original": {
+        "owner": "pyproject-nix",
+        "repo": "uv2nix",
         "type": "github"
       }
     }

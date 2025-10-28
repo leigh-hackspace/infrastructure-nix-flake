@@ -5,6 +5,10 @@
     door-entry-management-system.url = "github:leigh-hackspace/door-entry-system?dir=management-system";
     door-entry-bluetooth-web-app.url = "github:leigh-hackspace/door-entry-system?dir=bluetooth-web-app";
     llama-cpp-leigh.url = "github:leigh-hackspace/llama.cpp/master";
+    gocardless-tools = {
+      url = "git+file:///home/leigh-admin/Projects/gocardless-tools";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
     pxe-server = {
       url = "git+file:///home/cjdell/Projects/pxe-server";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -19,6 +23,7 @@
       door-entry-management-system,
       door-entry-bluetooth-web-app,
       llama-cpp-leigh,
+      gocardless-tools,
       pxe-server,
     }@attrs:
     {
@@ -54,6 +59,7 @@
                     (final: prev: {
                       door-entry-management-system = door-entry-management-system.packages.${pkgs.system}.default;
                       door-entry-bluetooth-web-app = door-entry-bluetooth-web-app.packages.${pkgs.system}.default;
+                      gocardless-tools = gocardless-tools.packages.${pkgs.system}.default;
                     })
                   ];
                 }
