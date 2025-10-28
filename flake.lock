@@ -28,11 +28,11 @@
       },
       "locked": {
         "dir": "management-system",
-        "lastModified": 1759093656,
-        "narHash": "sha256-Q8nPaGwpu3TomC4tRgZz1wrQkj/Vipjr8/eta4Tf9FA=",
+        "lastModified": 1761613521,
+        "narHash": "sha256-KK9nU7p7otk8AGzSw5HV5jZMzoeKCRamzRX9a3QpxZg=",
         "owner": "leigh-hackspace",
         "repo": "door-entry-system",
-        "rev": "9fa9f08ec84206c1b7ec4a05b99cc6437c689d9c",
+        "rev": "0346c5260e1cbfb7ba000f74db91fd22de7c7496",
         "type": "github"
       },
       "original": {
