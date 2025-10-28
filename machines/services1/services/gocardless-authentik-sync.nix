@@ -18,7 +18,7 @@
   systemd.timers.gocardless-authentik-sync = {
     timerConfig = {
       Unit = "gocardless-authentik-sync.service";
-      OnCalendar = "Mon 01:00";
+      OnCalendar = "*-*-* 01:00:00";
     };
     wantedBy = [ "timers.target" ];
   };
