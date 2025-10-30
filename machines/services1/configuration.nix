@@ -40,30 +40,6 @@
 
   # Configure console keymap
   console.keyMap = "uk";
-  
-  # Define a user account. Don't forget to set a password with ‘passwd’.
-  users.users.cjdell = {
-    uid = 1001;
-    isNormalUser = true;
-    description = "Chris Dell";
-    extraGroups = [ "networkmanager" "wheel" ];
-    packages = with pkgs; [ ];
-    openssh.authorizedKeys.keys = [
-      "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQCbDJ7tQwODw2kx2f1bstOUElKnaR3hP2RbwCsf6zebZ5n/1CFUoM2Ye78D/IG/6kgDc22wD9EkzyvIwF/96fp3IgxK5ja/Q0pEhbd8xAPGIpFC7BUyePqozRusSvJXl7RamBb8lgsjySQxJxYX9MQzbQkfasWOwWE+WWqiC9nwk6WiER7EraOdEVNNF9cuNS/LVFrQZG5xdzI5gSgaxth2kQSgE3z7jIIvmlYkChEjTMXSQt9MrluhWB1nzGDHVrcqW8uu/jAqeMhRCXP39wtmL21v3WFn1jwDQlOgbR1CxnBzy+jE62TqvOJg8x6/J2WC/VXcdndHq1vKYP0s5mQn cjdell@gmail.com"
-      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAID8l40zlEkMtfTXjDq6L7JGaLDIFGYSqNr9gVoa4I7jS cjdell@rocketlakelatitude-nixos"
-    ];
-  };
-
-  users.users.engineershamrock = {
-    uid = 1002;
-    isNormalUser = true;
-    description = "Andrew Kennedy";
-    extraGroups = [ "networkmanager" "wheel" ];
-    packages = with pkgs; [ ];
-    openssh.authorizedKeys.keys = [
-      "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDSzyo1EObOb/oWFB2Ms/0yMvSmLjSwtv0cr6J6wwL7ZuNG/aiaErj19JNGUlbB2yVrAFz39+iXhf5+tXKasGFZBKmt9iwjz4RxbrsgcudrY/8UKIZSP4kN/ojH3605xc9cvxOChIm+em3IstnyYQwB3uY0v2b9zJ1Un3fEdel5eZ2bcXSm7C4TWvfCBT0Nbz0HpFEIaXGTGkO+6SWC3CRwANnbbcX4c2+RWqCmBf9A3xDkGli1NTdATKWnBJtmgsFhGwWhyKL4fKg4ml1rL6nj0OyCsH0x/cSpoTxBVFAuonvIjMbPQY4Jx9aanfWWsSzV3lgD1bxN7LTqD2jsd36X andrew@andrew"
-    ];
-  };
 
   security.sudo.wheelNeedsPassword = false;
 
