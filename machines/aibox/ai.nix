@@ -39,7 +39,7 @@
         "8080:8080"
       ];
       volumes = [
-        "/home/cjdell/Projects/llama.cpp:/llama.cpp:Z"
+        "/home/leigh-admin/Projects/llama.cpp:/llama.cpp:Z"
       ];
       environment = {
         TZ = "Europe/London";
@@ -75,7 +75,7 @@
         "8081:8080"
       ];
       volumes = [
-        "/home/cjdell/Projects/llama.cpp:/llama.cpp:Z"
+        "/home/leigh-admin/Projects/llama.cpp:/llama.cpp:Z"
       ];
       environment = {
         TZ = "Europe/London";
@@ -97,9 +97,9 @@
 
     serviceConfig = {
       ExecStart = "${pkgs.nix}/bin/nix develop .#rocm --command \"./webui.sh\"";
-      WorkingDirectory = "/home/cjdell/Projects/stable-diffusion-webui";
+      WorkingDirectory = "/home/leigh-admin/Projects/stable-diffusion-webui";
       Restart = "always";
-      User = "cjdell";
+      User = "leigh-admin";
       Group = "users";
     };
   };

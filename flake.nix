@@ -10,7 +10,7 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     pxe-server = {
-      url = "git+file:///home/cjdell/Projects/pxe-server";
+      url = "git+file:///home/leigh-admin/Projects/pxe-server";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
@@ -72,7 +72,7 @@
           aibox =
             let
               # Local repo just for experiments...
-              llama-cpp-local = builtins.getFlake (toString /home/cjdell/Projects/llama.cpp);
+              llama-cpp-local = builtins.getFlake (toString /home/leigh-admin/Projects/llama.cpp);
             in
             nixpkgs.lib.nixosSystem {
               inherit system;

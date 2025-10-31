@@ -257,17 +257,17 @@
         ]
       },
       "locked": {
-        "lastModified": 1760800146,
-        "narHash": "sha256-GhORjkrIl4RB+TflY0XwtIWwcH/N8SaMihlooKD1BgI=",
+        "lastModified": 1761163349,
+        "narHash": "sha256-4VUWVIm/iWcHZ/joZG8PugGQV6QiFDZ/oVN8fxg3KFA=",
         "ref": "refs/heads/main",
-        "rev": "fa33477102347664d18505e53e86997d17535eff",
+        "rev": "cd7a54869c6e6f9e92105fe9a358a63e61449ad6",
         "revCount": 1,
         "type": "git",
-        "url": "file:///home/cjdell/Projects/pxe-server"
+        "url": "file:///home/leigh-admin/Projects/pxe-server"
       },
       "original": {
         "type": "git",
-        "url": "file:///home/cjdell/Projects/pxe-server"
+        "url": "file:///home/leigh-admin/Projects/pxe-server"
       }
     },
     "pyproject-build-systems": {
