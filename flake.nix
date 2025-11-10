@@ -1,6 +1,6 @@
 {
   inputs = {
-    nixpkgs.url = "github:nixos/nixpkgs/nixos-25.05";
+    nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
     nixos-hardware.url = "github:NixOS/nixos-hardware/master";
     door-entry-management-system.url = "github:leigh-hackspace/door-entry-system?dir=management-system";
     door-entry-bluetooth-web-app.url = "github:leigh-hackspace/door-entry-system?dir=bluetooth-web-app";
@@ -11,6 +11,10 @@
     };
     pxe-server = {
       url = "git+file:///home/leigh-admin/Projects/pxe-server";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    headplane = {
+      url = "github:tale/headplane/next";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
@@ -25,6 +29,7 @@
       llama-cpp-leigh,
       gocardless-tools,
       pxe-server,
+      headplane,
     }@attrs:
     {
       nixosConfigurations =
@@ -45,7 +50,17 @@
             };
             modules = [
               fix-nix-shell
+
               ./common/users.nix
+
+              # provides `services.headplane.*` NixOS options.
+              headplane.nixosModules.headplane
+
+              {
+                # provides `pkgs.headplane`
+                nixpkgs.overlays = [ headplane.overlays.default ];
+              }
+
               # Add packages for the door system to the system pkgs
               (
                 {

@@ -1,8 +1,11 @@
 {
   # May need to change if the repo is cloned to a different home folder
-  ENV_FILE              = "/var/lib/secrets/.env";
-  HTTP_BASIC_AUTH_FILE  = "/var/lib/secrets/http_basic_auth";
-  WIREGUARD_KEY_FILE    = "/var/lib/secrets/wg.key";
+  ENV_FILE                      = "/var/lib/secrets/.env";
+  HTTP_BASIC_AUTH_FILE          = "/var/lib/secrets/http_basic_auth";
+  WIREGUARD_KEY_FILE            = "/var/lib/secrets/wg.key";
+  HEADPLANE_PRE_AUTHKEY_FILE    = "/var/lib/secrets/headplane_pre_authkey.key";
+  HEADPLANE_API_KEY_FILE        = "/var/lib/secrets/headplane_api_key.key";
+  HEADPLANE_CLIENT_SECRET_FILE  = "/var/lib/secrets/headplane_client_secret.key";
 
   # Creating the `http_basic_auth` file
   # nix-shell --packages apacheHttpd --run 'htpasswd -B -c /var/lib/secrets/http_basic_auth leighhack'

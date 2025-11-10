@@ -51,25 +51,25 @@ in
     };
   };
 
-  # sudo journalctl -u door-entry-bluetooth-web-app -f
-  systemd.services.door-entry-bluetooth-web-app = {
-    description = "Door Entry Management System Frontend";
-    requires = [ "network.target" ];
+  # # sudo journalctl -u door-entry-bluetooth-web-app -f
+  # systemd.services.door-entry-bluetooth-web-app = {
+  #   description = "Door Entry Management System Frontend";
+  #   requires = [ "network.target" ];
 
-    # Ensure the service is started at boot
-    wantedBy = [ "multi-user.target" ];
+  #   # Ensure the service is started at boot
+  #   wantedBy = [ "multi-user.target" ];
 
-    # Executable from your flake, running with systemd
-    serviceConfig = {
-      ExecStart = "${pkgs.door-entry-bluetooth-web-app}/bin/door-entry-bluetooth-web-app";
-      Restart = "always";
-      RestartSec = 5;
-      WorkingDirectory = "${pkgs.door-entry-bluetooth-web-app}/lib/frontend";
-      EnvironmentFile = pkgs.writeText "door-entry-bluetooth-web-app-env" ''
-        BLE_FRONTEND_PORT=8474
-      '';
-    };
-  };
+  #   # Executable from your flake, running with systemd
+  #   serviceConfig = {
+  #     ExecStart = "${pkgs.door-entry-bluetooth-web-app}/bin/door-entry-bluetooth-web-app";
+  #     Restart = "always";
+  #     RestartSec = 5;
+  #     WorkingDirectory = "${pkgs.door-entry-bluetooth-web-app}/lib/frontend";
+  #     EnvironmentFile = pkgs.writeText "door-entry-bluetooth-web-app-env" ''
+  #       BLE_FRONTEND_PORT=8474
+  #     '';
+  #   };
+  # };
 
   services.nginx.virtualHosts = {
     "api-doors.int.leighhack.org" = {
@@ -94,15 +94,15 @@ in
       };
     };
 
-    "app.int.leighhack.org" = {
-      serverAliases = [ "app.leighhack.org" ];
-      useACMEHost = "leighhack.org";
-      forceSSL = true;
-      locations."/" = {
-        proxyPass = "http://127.0.0.1:8474";
-        recommendedProxySettings = true;
-        # extraConfig = CONFIG.LOCAL_NETWORK;
-      };
-    };
+    # "app.int.leighhack.org" = {
+    #   serverAliases = [ "app.leighhack.org" ];
+    #   useACMEHost = "leighhack.org";
+    #   forceSSL = true;
+    #   locations."/" = {
+    #     proxyPass = "http://127.0.0.1:8474";
+    #     recommendedProxySettings = true;
+    #     # extraConfig = CONFIG.LOCAL_NETWORK;
+    #   };
+    # };
   };
 }

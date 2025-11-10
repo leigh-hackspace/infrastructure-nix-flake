@@ -9,12 +9,13 @@ let
   CONFIG = import ../config.nix;
 in
 {
+  # sudo systemctl start gocardless-authentik-sync
   # journalctl -u gocardless-authentik-sync -f
   systemd.services.gocardless-authentik-sync = {
     description = "Gocardless Authentik Sync";
     serviceConfig = {
       Type = "oneshot";
-      ExecStart = "${pkgs.gocardless-tools}/bin/main --gocardless-token $GOCARDLESS_TOKEN --authentik-token $AUTHENTIK_TOKEN";
+      ExecStart = "${pkgs.gocardless-tools}/bin/gocardless-tools --gocardless-token $GOCARDLESS_TOKEN --authentik-token $AUTHENTIK_TOKEN";
       EnvironmentFile = CONFIG.ENV_FILE;
     };
   };
