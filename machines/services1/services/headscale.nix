@@ -97,6 +97,10 @@ in
         proxyPass = "http://127.0.0.1:8085";
         recommendedProxySettings = true;
         proxyWebsockets = true;
+        # Redirect to the admin (the root URL is just 404 normally)
+        extraConfig = ''
+          rewrite ^/$ https://tailscale.leighhack.org/admin permanent;
+        '';
       };
       locations."/admin" = {
         proxyPass = "http://127.0.0.1:8086";
