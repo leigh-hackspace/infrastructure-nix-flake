@@ -13,12 +13,15 @@
   # NGINX Firewall for "*.int.leighhack.org"
   # Allow only LAN access for internal services
   LOCAL_NETWORK = ''
-    allow 10.3.0.0/16;
-    allow 10.47.0.0/16;
+    allow 10.3.0.0/16;              # Hackspace Internal
+    allow 100.64.0.0/16;            # Tailscale Tailnet
+    allow 10.47.0.0/16;             # Chris VPN
+    allow 2001:8b0:1d14::0/48;      # Hackspace AAISP range
+
+    # Chris stuff...
     allow 192.168.49.0/24;          # Chris Home Internal
-    allow 51.148.168.145/32;        # Chris Zen
-    allow 2001:8b0:1d14::0/48;      # AAISP range
-    allow 2a02:8010:6680::0/48;     # Chris Zen
+    allow 51.148.168.145/32;        # Chris Zen (IPv4)   
+    allow 2a02:8010:6680::0/48;     # Chris Zen (IPv6)
     allow 2a00:23c8:b0ac::0/48;     # Chris 2
     allow 2001:4860:7::0/48;        # Society1
     
