@@ -8,11 +8,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1741473158,
-        "narHash": "sha256-kWNaq6wQUbUMlPgw8Y+9/9wP0F8SHkjy24/mN3UAppg=",
+        "lastModified": 1762521437,
+        "narHash": "sha256-RXN+lcx4DEn3ZS+LqEJSUu/HH+dwGvy0syN7hTo/Chg=",
         "owner": "numtide",
         "repo": "devshell",
-        "rev": "7c9e793ebe66bcba8292989a68c0419b737a22a0",
+        "rev": "07bacc9531f5f4df6657c0a02a806443685f384a",
         "type": "github"
       },
       "original": {
@@ -204,16 +204,16 @@
         ]
       },
       "locked": {
-        "lastModified": 1761882755,
-        "narHash": "sha256-bfzueHxPkWBD75t1JmKqMwOjhCw/YfyRGt/oEADdSb0=",
+        "lastModified": 1762840717,
+        "narHash": "sha256-3MpGbdiuQbMZm2nlVjptRHOvVXRMxGNHbGR3dBUW6To=",
         "owner": "tale",
         "repo": "headplane",
-        "rev": "28ad1d439fdf6a5f3ad188f172069cab3e3c3921",
+        "rev": "d331a22951167b9db3ad66c20211bad43c5a33e0",
         "type": "github"
       },
       "original": {
         "owner": "tale",
-        "ref": "next",
+        "ref": "main",
         "repo": "headplane",
         "type": "github"
       }
@@ -316,11 +316,11 @@
     },
     "nixpkgs_4": {
       "locked": {
-        "lastModified": 1761907660,
-        "narHash": "sha256-kJ8lIZsiPOmbkJypG+B5sReDXSD1KGu2VEPNqhRa/ew=",
+        "lastModified": 1762844143,
+        "narHash": "sha256-SlybxLZ1/e4T2lb1czEtWVzDCVSTvk9WLwGhmxFmBxI=",
         "owner": "nixos",
         "repo": "nixpkgs",
-        "rev": "2fb006b87f04c4d3bdf08cfdbc7fab9c13d94a15",
+        "rev": "9da7f1cf7f8a6e2a7cb3001b048546c92a8258b4",
         "type": "github"
       },
       "original": {

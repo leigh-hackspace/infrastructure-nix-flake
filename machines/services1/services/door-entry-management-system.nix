@@ -16,7 +16,7 @@ in
       DE_MODE = "production";
       DE_BACKEND_PORT = "8472";
       DE_FRONTEND_PORT = "8473";
-      DE_AUTHENTIK_HOST = "id.leighhack.org";
+      DE_AUTHENTIK_HOST = "${CONFIG.AUTHENTIK_DOMAIN}";
       DE_AUTHENTIK_CLIENT_ID = "clzfOASFMcArxJ2t4zl9fLRAHypykiHQNcHLHcYK";
       DE_HOME_ASSISTANT_WS_URL = "wss://ha.int.leighhack.org/api/websocket";
       DE_SLACK_CHANNEL = "doors";

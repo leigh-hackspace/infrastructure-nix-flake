@@ -1,3 +1,6 @@
+# Make sure hackspace LAN is advertised
+# sudo tailscale set --advertise-routes=2001:8b0:1d14::0/48,10.3.0.0/16
+
 {
   pkgs,
   lib,
@@ -9,13 +12,16 @@ let
   CONFIG = import ../config.nix;
 in
 {
+  # Necessary for secret access
+  users.groups.secrets.members = [ "headscale" ];
+
   services.headscale = {
     enable = true;
     address = "0.0.0.0";
     port = 8085;
 
     settings = {
-      server_url = "https://tailscale.leighhack.org";
+      server_url = "https://${CONFIG.HEADSCALE_DOMAIN}";
 
       dns = {
         override_local_dns = true;
@@ -30,12 +36,12 @@ in
 
       ip_prefixes = [
         "100.64.0.0/10"
-        # "fd7a:115c:a1e0::/48"
+        "fd7a:115c:a1e0::/48"
       ];
 
       oidc = {
         enable = true;
-        issuer = "https://id.leighhack.org/application/o/headplane/";
+        issuer = "https://${CONFIG.AUTHENTIK_DOMAIN}/application/o/headplane/";
         client_id = "uvJnUrNJuaUXw3K8cJhT9fX7IMQ9amcBY5vTYJTQ";
         client_secret_path = CONFIG.HEADPLANE_CLIENT_SECRET_FILE;
         allowed_groups = [ "Members" ];
@@ -65,7 +71,7 @@ in
           cookie_secret_path = pkgs.writeText "cookie_secret_path" "12345678123456781234567812345678";
         };
         headscale = {
-          url = "https://tailscale.leighhack.org";
+          url = "https://${CONFIG.HEADSCALE_DOMAIN}";
           config_path = "${headscaleConfig}";
         };
         integration.agent = {
@@ -73,7 +79,7 @@ in
           pre_authkey_path = CONFIG.HEADPLANE_PRE_AUTHKEY_FILE;
         };
         oidc = {
-          issuer = "https://id.leighhack.org/application/o/headplane/";
+          issuer = "https://${CONFIG.AUTHENTIK_DOMAIN}/application/o/headplane/";
           client_id = "uvJnUrNJuaUXw3K8cJhT9fX7IMQ9amcBY5vTYJTQ";
           client_secret_path = CONFIG.HEADPLANE_CLIENT_SECRET_FILE;
           # Only support login through Authentik (go straight to login)
@@ -84,13 +90,13 @@ in
           token_endpoint_auth_method = "client_secret_post";
 
           headscale_api_key_path = CONFIG.HEADPLANE_API_KEY_FILE;
-          redirect_uri = "https://tailscale.leighhack.org/admin/oidc/callback";
+          redirect_uri = "https://${CONFIG.HEADSCALE_DOMAIN}/admin/oidc/callback";
         };
       };
     };
 
   services.nginx.virtualHosts = {
-    "tailscale.leighhack.org" = {
+    "${CONFIG.HEADSCALE_DOMAIN}" = {
       useACMEHost = "leighhack.org";
       forceSSL = true;
       locations."/" = {
@@ -99,7 +105,7 @@ in
         proxyWebsockets = true;
         # Redirect to the admin (the root URL is just 404 normally)
         extraConfig = ''
-          rewrite ^/$ https://tailscale.leighhack.org/admin permanent;
+          rewrite ^/$ https://${CONFIG.HEADSCALE_DOMAIN}/admin permanent;
         '';
       };
       locations."/admin" = {
@@ -109,6 +115,7 @@ in
       };
     };
 
+    # Not needed anymore. Admin rolled into Tailscale endpoint above
     "headplane.leighhack.org" = {
       useACMEHost = "leighhack.org";
       forceSSL = true;

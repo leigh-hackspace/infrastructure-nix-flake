@@ -14,7 +14,7 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     headplane = {
-      url = "github:tale/headplane/next";
+      url = "github:tale/headplane/main";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
@@ -46,6 +46,9 @@
               inherit system;
               config = {
                 allowUnfree = true;
+                permittedInsecurePackages = [
+                  "jitsi-meet-1.0.8792"
+                ];
               };
             };
             modules = [

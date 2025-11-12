@@ -1,11 +1,17 @@
 {
   # May need to change if the repo is cloned to a different home folder
-  ENV_FILE                      = "/var/lib/secrets/.env";
-  HTTP_BASIC_AUTH_FILE          = "/var/lib/secrets/http_basic_auth";
-  WIREGUARD_KEY_FILE            = "/var/lib/secrets/wg.key";
-  HEADPLANE_PRE_AUTHKEY_FILE    = "/var/lib/secrets/headplane_pre_authkey.key";
-  HEADPLANE_API_KEY_FILE        = "/var/lib/secrets/headplane_api_key.key";
-  HEADPLANE_CLIENT_SECRET_FILE  = "/var/lib/secrets/headplane_client_secret.key";
+  ENV_FILE                          = "/var/lib/secrets/.env";
+  HTTP_BASIC_AUTH_FILE              = "/var/lib/secrets/http_basic_auth";
+  WIREGUARD_KEY_FILE                = "/var/lib/secrets/wg.key";
+
+  AUTHENTIK_DOMAIN                  = "id.leighhack.org";
+
+  MATTERMOST_AUTHENTIK_SECRET_FILE  = "/var/lib/secrets/mattermost_authentik_secret.key";
+
+  HEADSCALE_DOMAIN                  = "tailscale.leighhack.org";
+  HEADPLANE_PRE_AUTHKEY_FILE        = "/var/lib/secrets/headplane_pre_authkey.key";
+  HEADPLANE_API_KEY_FILE            = "/var/lib/secrets/headplane_api_key.key";
+  HEADPLANE_CLIENT_SECRET_FILE      = "/var/lib/secrets/headplane_client_secret.key";
 
   # Creating the `http_basic_auth` file
   # nix-shell --packages apacheHttpd --run 'htpasswd -B -c /var/lib/secrets/http_basic_auth leighhack'
@@ -14,7 +20,8 @@
   # Allow only LAN access for internal services
   LOCAL_NETWORK = ''
     allow 10.3.0.0/16;              # Hackspace Internal
-    allow 100.64.0.0/16;            # Tailscale Tailnet
+    allow 100.64.0.0/16;            # Tailscale Tailnet (IPv4)
+    allow fd7a:115c:a1e0::0/48;     # Tailscale Tailnet (IPv6)
     allow 10.47.0.0/16;             # Chris VPN
     allow 2001:8b0:1d14::0/48;      # Hackspace AAISP range
 
@@ -34,6 +41,8 @@
     host    sameuser  all     127.0.0.1/32            scram-sha-256
     host    sameuser  all     ::1/128                 scram-sha-256
     host    sameuser  all     10.3.0.0/16             scram-sha-256
+    host    sameuser  all     100.64.0.0/16           scram-sha-256
+    host    sameuser  all     fd7a:115c:a1e0::0/48    scram-sha-256
     host    sameuser  all     10.47.0.0/16            scram-sha-256
     host    sameuser  all     192.168.49.0/24         scram-sha-256
     host    sameuser  all     2001:8b0:1d14::0/48     scram-sha-256

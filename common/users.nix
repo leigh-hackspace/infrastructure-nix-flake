@@ -34,4 +34,8 @@
       "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAID8l40zlEkMtfTXjDq6L7JGaLDIFGYSqNr9gVoa4I7jS cjdell@rocketlakelatitude-nixos"
     ];
   };
+
+  users.groups.secrets = {
+    gid = 9999;
+  };
 }

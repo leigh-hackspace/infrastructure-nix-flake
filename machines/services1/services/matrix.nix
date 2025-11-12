@@ -5,6 +5,7 @@
   ...
 }:
 let
+  CONFIG = import ../config.nix;
   fqdn = "matrix.leighhack.org";
   baseUrl = "https://matrix.leighhack.org";
   clientConfig."m.homeserver".base_url = baseUrl;
@@ -65,7 +66,7 @@ in
             };
 
             "oidc_static_clients" = {
-              "https://id.leighhack.org/" = {
+              "https://${CONFIG.AUTHENTIK_DOMAIN}/" = {
                 "client_id" = "MPrS3RN7iTktF9bjWTtZkKDJFZsAyz5yTFv8NpvG";
               };
             };

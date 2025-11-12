@@ -15,6 +15,9 @@ let
   CONFIG = import ./config.nix;
 in
 {
+  # Necessary for secret access
+  users.groups.secrets.members = [ "nginx" ];
+
   # Use DNS based challenge to acquire SSL certificates. Works even if NGINX is down.
   security.acme = {
     acceptTerms = true;
@@ -64,17 +67,23 @@ in
         };
       };
 
-      "web-test.leighhack.org" = {
+      "webhooks.leighhack.org" = {
         useACMEHost = "leighhack.org";
         forceSSL = true;
 
         locations."/" = {
           proxyPass = "https://10.3.1.39:443";
           recommendedProxySettings = true;
+          extraConfig = ''
+            proxy_connect_timeout       300;
+            proxy_send_timeout          300;
+            proxy_read_timeout          300;
+            send_timeout                300;
+          '';
         };
       };
 
-      "webhooks.leighhack.org" = {
+      "web-test.leighhack.org" = {
         useACMEHost = "leighhack.org";
         forceSSL = true;
 

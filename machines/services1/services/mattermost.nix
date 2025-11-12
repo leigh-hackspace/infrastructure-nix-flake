@@ -5,7 +5,13 @@
   ...
 }:
 
+let
+  CONFIG = import ../config.nix;
+in
 {
+  # Necessary for secret access
+  users.groups.secrets.members = [ "mattermost" ];
+
   environment.systemPackages = with pkgs; [
     mattermost
   ];
@@ -17,14 +23,14 @@
     settings = {
       "GitLabSettings" = {
         "Enable" = true;
-        "Secret" = builtins.readFile ((builtins.getEnv "PWD") + "/secrets/mattermost-authentik-secret.txt");
+        "Secret" = builtins.readFile CONFIG.MATTERMOST_AUTHENTIK_SECRET_FILE;
         "Id" = "CEqUaJOX3VDU2j4HJhnBWY0SHYkvbx7AIoIVSdZJ";
         "Scope" = "";
-        "AuthEndpoint" = "https://id.leighhack.org/application/o/authorize/";
-        "TokenEndpoint" = "https://id.leighhack.org/application/o/token/";
-        "UserAPIEndpoint" = "https://id.leighhack.org/application/o/userinfo/";
+        "AuthEndpoint" = "https://${CONFIG.AUTHENTIK_DOMAIN}/application/o/authorize/";
+        "TokenEndpoint" = "https://${CONFIG.AUTHENTIK_DOMAIN}/application/o/token/";
+        "UserAPIEndpoint" = "https://${CONFIG.AUTHENTIK_DOMAIN}/application/o/userinfo/";
         "DiscoveryEndpoint" =
-          "https://id.leighhack.org/application/o/mattermost/.well-known/openid-configuration";
+          "https://${CONFIG.AUTHENTIK_DOMAIN}/application/o/mattermost/.well-known/openid-configuration";
         "ButtonText" = "Log in with Leigh Hackspace <- CLICK HERE";
         "ButtonColor" = "#000000";
       };
