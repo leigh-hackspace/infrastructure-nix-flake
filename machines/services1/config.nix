@@ -13,6 +13,8 @@
   HEADPLANE_API_KEY_FILE            = "/var/lib/secrets/headplane_api_key.key";
   HEADPLANE_CLIENT_SECRET_FILE      = "/var/lib/secrets/headplane_client_secret.key";
 
+  OUTLINE_CLIENT_SECRET_FILE        = "/var/lib/secrets/outline_client_secret.key";
+
   # Creating the `http_basic_auth` file
   # nix-shell --packages apacheHttpd --run 'htpasswd -B -c /var/lib/secrets/http_basic_auth leighhack'
 
@@ -41,6 +43,7 @@
     host    sameuser  all     127.0.0.1/32            scram-sha-256
     host    sameuser  all     ::1/128                 scram-sha-256
     host    sameuser  all     10.3.0.0/16             scram-sha-256
+    host    sameuser  all     10.88.0.0/16            scram-sha-256
     host    sameuser  all     100.64.0.0/16           scram-sha-256
     host    sameuser  all     fd7a:115c:a1e0::0/48    scram-sha-256
     host    sameuser  all     10.47.0.0/16            scram-sha-256

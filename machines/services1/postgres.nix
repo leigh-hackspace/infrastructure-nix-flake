@@ -6,6 +6,8 @@ let
   dbs = {
     door_system = CONFIG.PG_PASS;
     door_system_dev = CONFIG.PG_PASS;
+    affine = CONFIG.PG_PASS;
+    outline = CONFIG.PG_PASS;
   };
 in
 {

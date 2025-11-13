@@ -17,6 +17,9 @@ let
   '';
 in
 {
+  # Necessary for secret access
+  users.groups.secrets.members = [ "synapse" "matrix-synapse" ];
+
   services.nginx = {
     virtualHosts = {
       "matrix.leighhack.org" = {

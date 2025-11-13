@@ -74,17 +74,13 @@
     lsof
     smem
     memray
+    redis
   ];
 
   # List services that you want to enable:
 
   # Enable the OpenSSH daemon.
   services.openssh.enable = true;
-
-  services.cockpit = {
-    enable = true;
-    openFirewall = true;
-  };
 
   # This value determines the NixOS release from which the default
   # settings for stateful data, like file locations and database versions
