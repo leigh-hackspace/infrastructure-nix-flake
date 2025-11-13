@@ -1,7 +1,7 @@
 { config, lib, pkgs, modulesPath, ... }:
 
 let
-  CONFIG = import ./config.nix;
+  CONFIG = import ../config.nix;
   # Define a single data structure for DB names and passwords.
   dbs = {
     door_system = CONFIG.PG_PASS;

@@ -246,19 +246,6 @@ in
         };
       };
 
-      "frigate.int.leighhack.org" = {
-        # serverAliases = [ "frigate.leighhack.org" ];
-        useACMEHost = "leighhack.org";
-        forceSSL = true;
-
-        locations."/" = {
-          proxyPass = "http://10.3.1.20:5000";
-          recommendedProxySettings = true;
-          proxyWebsockets = true;
-          extraConfig = CONFIG.LOCAL_NETWORK;
-        };
-      };
-
       "unifi-admin.int.leighhack.org" = {
         useACMEHost = "leighhack.org";
         forceSSL = true;
