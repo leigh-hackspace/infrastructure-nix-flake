@@ -13,6 +13,7 @@
 
 let
   CONFIG = import ./config.nix;
+  nginxSso = import ./lib/nginx-sso.nix;
 in
 {
   # Necessary for secret access
@@ -44,6 +45,24 @@ in
     };
   };
 
+  # journalctl -u nginx-sso -f
+  systemd.services.nginx-sso = {
+    description = "NGINX SSO";
+
+    # Ensure the service is started at boot
+    wantedBy = [ "multi-user.target" ];
+
+    serviceConfig = {
+      ExecStart = "${pkgs.nginx-sso}/bin/nginx-sso --frontend-dir=${pkgs.nginx-sso}/share/frontend -c ${
+        pkgs.writeText "nginx-sso-config" (nginxSso {
+          inherit lib;
+        })
+      }";
+      Restart = "always";
+      RestartSec = 5;
+    };
+  };
+
   services.nginx = {
     enable = true;
 
@@ -57,12 +76,13 @@ in
     '';
 
     virtualHosts = {
-      "discourse.leighhack.org" = {
+      "login.int.leighhack.org" = {
+        serverAliases = [ "login.leighhack.org" ];
         useACMEHost = "leighhack.org";
         forceSSL = true;
 
         locations."/" = {
-          proxyPass = "http://10.3.1.38:80";
+          proxyPass = "http://127.0.0.1:8082";
           recommendedProxySettings = true;
         };
       };

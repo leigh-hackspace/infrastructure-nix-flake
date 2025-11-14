@@ -75,6 +75,7 @@
     smem
     memray
     redis
+    nginx-sso
   ];
 
   # List services that you want to enable:
