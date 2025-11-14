@@ -10,6 +10,7 @@
     ./headscale.nix
     ./matrix.nix
     ./mattermost.nix
+    ./mqtt.nix
     ./outline.nix
     ./postgres.nix
     ./redis.nix
