@@ -13,7 +13,7 @@
 
 let
   CONFIG = import ./config.nix;
-  nginxSso = import ./lib/nginx-sso.nix;
+  nginxSso = import ./lib/nginx-sso-config.nix;
 in
 {
   # Necessary for secret access

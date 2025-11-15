@@ -1,0 +1,61 @@
+# Helper function to create SSO-protected virtual hosts
+let
+  mkSSOVirtualHost =
+    { proxyPass }:
+    {
+      useACMEHost = "leighhack.org";
+      forceSSL = true;
+
+      extraConfig = ''
+        # Redirect the user to the login page when they are not logged in
+        error_page 401 = @error401;
+      '';
+
+      locations."/" = {
+        inherit proxyPass;
+        recommendedProxySettings = true;
+        proxyWebsockets = true;
+
+        extraConfig = ''
+          auth_request /sso-auth;
+
+          # Automatically renew SSO cookie on request
+          auth_request_set $cookie $upstream_http_set_cookie;
+          add_header Set-Cookie $cookie;
+
+          # Provide "X-WEBAUTH-USER" header to the backend so we know who has logged in
+          auth_request_set $username $upstream_http_x_username;
+          proxy_set_header X-WEBAUTH-USER $username; 
+        '';
+      };
+
+      locations."/sso-auth" = {
+        # Access /auth endpoint to query login state
+        proxyPass = "http://127.0.0.1:8082/auth";
+
+        extraConfig = ''
+          # Do not allow requests from outside
+          internal;
+          # Do not forward the request body (nginx-sso does not care about it)
+          proxy_pass_request_body off;
+          proxy_set_header Content-Length "";
+          # Set custom information for ACL matching: Each one is available as
+          # a field for matching: X-Host = x-host, ...
+          proxy_set_header X-Origin-URI $request_uri;
+          proxy_set_header X-Host $http_host;
+          proxy_set_header X-Real-IP $remote_addr;
+          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+          proxy_set_header X-Forwarded-Proto $scheme;
+        '';
+      };
+
+      # Define where to send the user to login and specify how to get back
+      locations."@error401" = {
+        extraConfig = ''
+          # Another server{} directive also proxying to http://127.0.0.1:8082
+          return 302 https://login.leighhack.org/login?go=$scheme://$http_host$request_uri;
+        '';
+      };
+    };
+in
+mkSSOVirtualHost

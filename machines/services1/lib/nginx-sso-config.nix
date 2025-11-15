@@ -36,7 +36,23 @@ in
     - rules:
       - field: "x-host"
         regexp: ".*"
-      allow: ["@_authenticated"]
+      allow: ["@_authenticated"]      # Grant Authenticated Access
+    - rules:
+      - field: "x-real-ip"
+        regexp: "^100.64."            # Grant Tailscale (IPv4)
+      allow: ["@_anonymous"]
+    - rules:
+      - field: "x-real-ip"
+        regexp: "^fd7a:115c:a1e0"     # Grant Tailscale (IPv6)
+      allow: ["@_anonymous"]
+    - rules:
+      - field: "x-real-ip"
+        regexp: "^10.3."              # Grant Hackspace LAN (IPv4)
+      allow: ["@_anonymous"]
+    - rules:
+      - field: "x-real-ip"
+        regexp: "^2001:8b0:1d14"      # Grant Hackspace LAN (IPv6)
+      allow: ["@_anonymous"]
 
   providers:
     oidc:
