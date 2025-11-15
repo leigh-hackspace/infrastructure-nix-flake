@@ -8,6 +8,7 @@
 
 let
   CONFIG = import ../config.nix;
+  mkSSOVirtualHost = import ../lib/nginx-sso-helper.nix;
 in
 {
   # sudo smem -r | sort -k 4 -nr | head
@@ -43,16 +44,21 @@ in
     ];
   };
 
-  services.nginx.virtualHosts."frigate.int.leighhack.org" = {
-    # serverAliases = [ "frigate.leighhack.org" ];
-    useACMEHost = "leighhack.org";
-    forceSSL = true;
-
-    locations."/" = {
+  services.nginx.virtualHosts = {
+    "frigate.leighhack.org" = mkSSOVirtualHost {
       proxyPass = "http://10.3.1.20:5000";
-      recommendedProxySettings = true;
-      proxyWebsockets = true;
-      extraConfig = CONFIG.LOCAL_NETWORK;
+    };
+
+    "frigate.int.leighhack.org" = {
+      useACMEHost = "leighhack.org";
+      forceSSL = true;
+
+      locations."/" = {
+        proxyPass = "http://10.3.1.20:5000";
+        recommendedProxySettings = true;
+        proxyWebsockets = true;
+        extraConfig = CONFIG.LOCAL_NETWORK;
+      };
     };
   };
 }
