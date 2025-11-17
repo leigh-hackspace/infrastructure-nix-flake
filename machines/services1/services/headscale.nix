@@ -39,6 +39,15 @@ in
         "fd7a:115c:a1e0::/48"
       ];
 
+      derp = {
+        server = {
+          enabled = true;
+          stun_listen_addr = "0.0.0.0:3478";
+          ipv4 = "81.187.195.17";
+          ipv6 = "2001:8b0:1d14:225:d::1020";
+        };
+      };
+
       oidc = {
         enable = true;
         issuer = "https://${CONFIG.AUTHENTIK_DOMAIN}/application/o/headplane/";
