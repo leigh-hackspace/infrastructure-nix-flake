@@ -35,7 +35,17 @@
     ];
   };
 
+  users.users.backups = {
+    uid = 3000;
+    isNormalUser = true;
+    description = "Backup User";
+  };
+
   users.groups.secrets = {
     gid = 9999;
+  };
+
+  users.groups.backups = {
+    gid = 3000;
   };
 }

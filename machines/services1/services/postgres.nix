@@ -1,4 +1,10 @@
-{ config, lib, pkgs, modulesPath, ... }:
+{
+  config,
+  lib,
+  pkgs,
+  modulesPath,
+  ...
+}:
 
 let
   CONFIG = import ../config.nix;
@@ -37,9 +43,7 @@ in
         DO
         $do$
         BEGIN
-          IF EXISTS (
-            SELECT FROM pg_catalog.pg_roles WHERE rolname = '${db}'
-          ) THEN
+          IF EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = '${db}') THEN
             ALTER USER "${db}" WITH PASSWORD '${password}';
             RAISE NOTICE 'Set password for user "${db}".';
           END IF;
@@ -60,6 +64,25 @@ in
         Type = "oneshot";
       };
     };
+
+  users.groups.backups.members = [ "postgres" ];
+
+  services.postgresqlBackup = {
+    enable = true;
+    startAt = "*-*-* 01:30:00";
+    pgdumpOptions = "--no-owner";
+    location = "/mnt/backups/services1.int.leighhack.org/postgres";
+    databases = [
+      "door_system"
+      "outline"
+    ];
+  };
+
+  system.activationScripts.postgresqlBackup = ''
+    mkdir -p /mnt/backups/services1.int.leighhack.org/postgres
+    chown -R backups:backups /mnt/backups/services1.int.leighhack.org
+    chmod -R u+rw,g+rw /mnt/backups/services1.int.leighhack.org
+  '';
 }
 
 ## Open a PSQL shell to the database

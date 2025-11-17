@@ -1,11 +1,24 @@
-{ config, lib, pkgs, modulesPath, ... }:
+{
+  config,
+  lib,
+  pkgs,
+  modulesPath,
+  ...
+}:
 
 {
-  imports =
-    [ (modulesPath + "/installer/scan/not-detected.nix")
-    ];
+  imports = [
+    (modulesPath + "/installer/scan/not-detected.nix")
+  ];
 
-  boot.initrd.availableKernelModules = [ "xhci_pci" "ahci" "usbhid" "usb_storage" "sd_mod" "sr_mod" ];
+  boot.initrd.availableKernelModules = [
+    "xhci_pci"
+    "ahci"
+    "usbhid"
+    "usb_storage"
+    "sd_mod"
+    "sr_mod"
+  ];
   boot.initrd.kernelModules = [ "i915" ];
   boot.kernelModules = [ "kvm-intel" ];
   boot.extraModulePackages = [ ];
@@ -33,16 +46,19 @@
     LIBVA_DRIVER_NAME = "iHD";
   };
 
-  fileSystems."/" =
-    { device = "/dev/disk/by-uuid/b1bf35fa-af75-4e31-a88c-d3edda4c39a4";
-      fsType = "ext4";
-    };
+  fileSystems."/" = {
+    device = "/dev/disk/by-uuid/b1bf35fa-af75-4e31-a88c-d3edda4c39a4";
+    fsType = "ext4";
+  };
 
-  fileSystems."/boot" =
-    { device = "/dev/disk/by-uuid/E026-09AD";
-      fsType = "vfat";
-      options = [ "fmask=0022" "dmask=0022" ];
-    };
+  fileSystems."/boot" = {
+    device = "/dev/disk/by-uuid/E026-09AD";
+    fsType = "vfat";
+    options = [
+      "fmask=0022"
+      "dmask=0022"
+    ];
+  };
 
   fileSystems."/mnt/cameras" = {
     device = "10.3.1.6:/mnt/sas-10k/cameras";
@@ -52,6 +68,12 @@
 
   fileSystems."/mnt/filestore" = {
     device = "10.3.1.6:/mnt/sas-10k/filestore";
+    fsType = "nfs";
+    options = [ "nfsvers=4.2" ];
+  };
+
+  fileSystems."/mnt/backups" = {
+    device = "10.3.1.6:/mnt/sas-10k/backups";
     fsType = "nfs";
     options = [ "nfsvers=4.2" ];
   };
