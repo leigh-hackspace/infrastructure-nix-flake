@@ -2,13 +2,13 @@
 
 {
   imports = [
-    ./affine.nix
+    # ./affine.nix
     ./cockpit.nix
     ./door-entry-management-system.nix
     ./frigate.nix
     ./gocardless-authentik-sync.nix
     ./headscale.nix
-    ./matrix.nix
+    # ./matrix.nix
     ./mattermost.nix
     ./mqtt.nix
     ./outline.nix
