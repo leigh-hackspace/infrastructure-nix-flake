@@ -11,6 +11,7 @@ pxe-server:
     ./hardware-configuration.nix
     ./networking.nix
     (import ./pxe-server.nix pxe-server)
+    ./sso.nix
     ./sunshine.nix
   ];
 }
