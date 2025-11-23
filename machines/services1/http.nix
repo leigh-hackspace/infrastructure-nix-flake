@@ -264,6 +264,20 @@ in
           proxyWebsockets = true;
           extraConfig = CONFIG.LOCAL_NETWORK;
         };
+
+        # Authentik support
+        locations."/auth/authorize" = {
+          proxyPass = "http://10.3.1.30:8123";
+          recommendedProxySettings = true;
+          proxyWebsockets = true;
+          extraConfig = ''
+            ${CONFIG.LOCAL_NETWORK}
+            sub_filter_once off;
+            sub_filter_types text/html;
+            sub_filter '<head>' '<head><script>setTimeout(function(){window.location.href="/auth/oidc/redirect";},1000);</script>';
+            proxy_set_header Accept-Encoding "";
+          '';
+        };
       };
 
       "unifi-admin.int.leighhack.org" = {
@@ -295,6 +309,18 @@ in
           extraConfig = ''
             autoindex on;
           '';
+        };
+      };
+
+      "voron-proxy.int.leighhack.org" = {
+        useACMEHost = "leighhack.org";
+        forceSSL = true;
+
+        locations."/" = {
+          proxyPass = "http://10.3.14.51";
+          recommendedProxySettings = true;
+          proxyWebsockets = true;
+          extraConfig = CONFIG.LOCAL_NETWORK;
         };
       };
     };

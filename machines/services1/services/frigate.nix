@@ -38,7 +38,7 @@ in
       "--mount=type=tmpfs,destination=/tmp/cache,tmpfs-size=1000000000"
       "--device=/dev/dri/renderD128"
       "--device=/dev/apex_0:/dev/apex_0"
-      "--shm-size=1024m"
+      "--shm-size=1152m"
       "--cap-add=CAP_PERFMON"
       "--privileged"
     ];

@@ -76,6 +76,8 @@
     memray
     redis
     nginx-sso
+    arp-scan
+    tcpdump
   ];
 
   # List services that you want to enable:

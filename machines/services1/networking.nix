@@ -1,4 +1,10 @@
-{ config, lib, pkgs, modulesPath, ... }:
+{
+  config,
+  lib,
+  pkgs,
+  modulesPath,
+  ...
+}:
 
 let
   CONFIG = import ./config.nix;
@@ -13,6 +19,12 @@ in
 
   # Or disable the firewall altogether.
   networking.firewall.enable = false;
+
+  # This server handles HTTP traffic so we need to re-route to itself
+  networking.extraHosts = ''
+    10.3.1.20                 id.leighhack.org id.int.leighhack.org tailscale.leighhack.org
+    2001:8b0:1d14:225:d::1020 id.leighhack.org id.int.leighhack.org tailscale.leighhack.org
+  '';
 
   # Enable NAT
   networking.nat.enable = true;
@@ -54,10 +66,14 @@ in
           # Forward all the traffic via VPN.
           # allowedIPs = [ "0.0.0.0/0" ];
           # Or forward only particular subnets
-          allowedIPs = [ "10.47.0.0/16" "192.168.49.0/24" ];
+          allowedIPs = [
+            "10.47.0.0/16"
+            "192.168.49.0/24"
+          ];
 
           # Set this to the server IP and port.
-          endpoint = "ovh-nix.chrisdell.info:51820"; # ToDo: route to endpoint not automatically configured https://wiki.archlinux.org/index.php/WireGuard#Loop_routing https://discourse.nixos.org/t/solved-minimal-firewall-setup-for-wireguard-client/7577
+          # endpoint = "ovh-nix.chrisdell.info:51820"; # ToDo: route to endpoint not automatically configured https://wiki.archlinux.org/index.php/WireGuard#Loop_routing https://discourse.nixos.org/t/solved-minimal-firewall-setup-for-wireguard-client/7577
+          endpoint = "51.38.68.81:51820";
 
           # Send keepalives every 25 seconds. Important to keep NAT tables alive.
           persistentKeepalive = 25;

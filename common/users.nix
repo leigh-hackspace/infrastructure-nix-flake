@@ -41,6 +41,12 @@
     description = "Backup User";
   };
 
+  users.users.hackspacer = {
+    uid = 3002;
+    isNormalUser = true;
+    description = "Hackspace Generic User";
+  };
+
   users.groups.secrets = {
     gid = 9999;
   };
