@@ -84,40 +84,6 @@
 
   programs.nix-ld.enable = true;
 
-  # List packages installed in system profile. To search, run:
-  # $ nix search wget
-  environment.systemPackages = with pkgs; [
-    appimage-run
-    tmux
-    git
-    wget
-    inetutils
-    dmidecode
-    pciutils
-    pcimem
-    nfs-utils
-    openssl
-    usbutils
-    unzip
-    fwupd
-    lm_sensors
-    libva-utils
-    intel-gpu-tools
-    amdgpu_top
-    nixfmt-rfc-style
-    nil
-    nixd
-    nmap
-    vim
-    direnv
-    deno
-    iotop
-    clinfo
-    openldap
-    arp-scan
-    tcpdump
-  ];
-
   # List services that you want to enable:
 
   # Enable the OpenSSH daemon.

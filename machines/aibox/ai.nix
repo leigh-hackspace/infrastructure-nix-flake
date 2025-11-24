@@ -45,6 +45,8 @@
         TZ = "Europe/London";
       };
       extraOptions = [
+        # "--device=\"/dev/dri/by-path/pci-0000:75:00.0-render\""
+        # "--device=\"/dev/dri/by-path/pci-0000:75:00.0-card\""
         "--device=/dev/dri/renderD128"
         "--device=/dev/dri/card0"
       ];
@@ -81,6 +83,8 @@
         TZ = "Europe/London";
       };
       extraOptions = [
+        # "--device=/dev/dri/by-path/pci-0000\:75\:00.0-render"
+        # "--device=/dev/dri/by-path/pci-0000\:75\:00.0-card"
         "--device=/dev/dri/renderD128"
         "--device=/dev/dri/card0"
       ];

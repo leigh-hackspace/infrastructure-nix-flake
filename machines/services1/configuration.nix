@@ -5,7 +5,10 @@
 { config, pkgs, ... }:
 
 {
-  nix.settings.experimental-features = [ "nix-command" "flakes" ];
+  nix.settings.experimental-features = [
+    "nix-command"
+    "flakes"
+  ];
 
   # Bootloader.
   boot.loader.systemd-boot.enable = true;
@@ -44,41 +47,6 @@
   security.sudo.wheelNeedsPassword = false;
 
   programs.nix-ld.enable = true;
-
-  # List packages installed in system profile. To search, run:
-  # $ nix search wget
-  environment.systemPackages = with pkgs; [
-    tmux
-    git
-    wget
-    inetutils
-    dmidecode
-    pciutils
-    pcimem
-    nfs-utils
-    openssl
-    usbutils
-    unzip
-    fwupd
-    lm_sensors
-    libva-utils
-    intel-gpu-tools
-    nixfmt-rfc-style
-    nil
-    nixd
-    nmap
-    vim
-    direnv
-    deno
-    iotop
-    lsof
-    smem
-    memray
-    redis
-    nginx-sso
-    arp-scan
-    tcpdump
-  ];
 
   # List services that you want to enable:
 

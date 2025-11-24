@@ -54,6 +54,7 @@
             modules = [
               fix-nix-shell
 
+              ./common/tools.nix
               ./common/users.nix
 
               # provides `services.headplane.*` NixOS options.
@@ -102,7 +103,10 @@
               };
               modules = [
                 fix-nix-shell
+
+                ./common/tools.nix
                 ./common/users.nix
+
                 (
                   {
                     config,
