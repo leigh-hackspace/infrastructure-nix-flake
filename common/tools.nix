@@ -25,6 +25,7 @@
     redis
     nginx-sso
     amdgpu_top
+    nushell
     # Networking Tools
     openldap
     arp-scan
