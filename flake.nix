@@ -54,6 +54,7 @@
             modules = [
               fix-nix-shell
 
+              ./common/rollback.nix
               ./common/tools.nix
               ./common/users.nix
 
@@ -104,6 +105,7 @@
               modules = [
                 fix-nix-shell
 
+                ./common/rollback.nix
                 ./common/tools.nix
                 ./common/users.nix
 

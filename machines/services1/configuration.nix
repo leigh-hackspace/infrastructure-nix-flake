@@ -5,6 +5,16 @@
 { config, pkgs, ... }:
 
 {
+  nix.settings.sandbox = "relaxed";
+
+  system.activationScripts.protectSecrets = ''
+    mkdir -p                    /var/lib/secrets
+    chown -R root:secrets       /var/lib/secrets
+    chmod -R +X,-w,u+r,g+r,o-rx /var/lib/secrets
+  '';
+
+  system.autoRollback.enable = true;
+
   nix.settings.experimental-features = [
     "nix-command"
     "flakes"
