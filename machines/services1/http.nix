@@ -280,17 +280,6 @@ in
         };
       };
 
-      "unifi-admin.int.leighhack.org" = {
-        useACMEHost = "leighhack.org";
-        forceSSL = true;
-
-        locations."/" = {
-          proxyPass = "https://10.3.1.40:8443";
-          recommendedProxySettings = true;
-          extraConfig = CONFIG.LOCAL_NETWORK;
-        };
-      };
-
       "robot.ai.leighhack.org" = {
         useACMEHost = "leighhack.org";
         forceSSL = true;

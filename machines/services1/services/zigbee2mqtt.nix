@@ -16,7 +16,7 @@ in
     image = "koenkk/zigbee2mqtt:latest-dev";
     autoStart = true;
     ports = [
-      "8080:8080"
+      "8282:8080"
     ];
     volumes = [
       "/srv/zigbee2mqtt:/app/data"
@@ -32,7 +32,7 @@ in
 
   services.nginx.virtualHosts = {
     "zigbee2mqtt.leighhack.org" = mkSSOVirtualHost {
-      proxyPass = "http://127.0.0.1:8080";
+      proxyPass = "http://127.0.0.1:8282";
     };
 
     "zigbee2mqtt.int.leighhack.org" = {
@@ -40,7 +40,7 @@ in
       useACMEHost = "leighhack.org";
 
       locations."/" = {
-        proxyPass = "http://127.0.0.1:8080";
+        proxyPass = "http://127.0.0.1:8282";
         recommendedProxySettings = true;
         proxyWebsockets = true;
         extraConfig = CONFIG.LOCAL_NETWORK;
