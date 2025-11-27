@@ -3,6 +3,7 @@
 {
   imports = [
     # ./affine.nix
+    ./backup.nix
     ./cockpit.nix
     ./door-entry-management-system.nix
     ./frigate.nix

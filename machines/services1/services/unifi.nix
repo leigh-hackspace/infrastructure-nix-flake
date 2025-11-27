@@ -21,13 +21,6 @@ in
     gid = UNIFI_UID;
   };
 
-  system.activationScripts.initUnifi = ''
-    mkdir -p                                                                /srv/unifi
-    mkdir -p                                                                /srv/unifi-db
-    chown -R ${builtins.toString UNIFI_UID}:${builtins.toString UNIFI_UID}  /srv/unifi
-    chmod -R u+rw,g+rw,o-rw                                                 /srv/unifi
-  '';
-
   virtualisation.oci-containers.containers.unifi = {
     hostname = "unifi";
     image = "lscr.io/linuxserver/unifi-network-application:latest";
@@ -36,8 +29,8 @@ in
       "/srv/unifi:/config"
     ];
     environment = {
-      PUID = (builtins.toString UNIFI_UID);
-      PGID = (builtins.toString UNIFI_UID);
+      PUID = (toString UNIFI_UID);
+      PGID = (toString UNIFI_UID);
       TZ = "Etc/UTC";
       MONGO_USER = "unifi";
       MONGO_PASS = lib.strings.trim (builtins.readFile CONFIG.UNIFI_DB_PASSWORD_FILE);
@@ -81,4 +74,11 @@ in
       };
     };
   };
+
+  system.activationScripts.initUnifi = ''
+    mkdir -p                                              /srv/unifi
+    mkdir -p                                              /srv/unifi-db
+    chown -R ${toString UNIFI_UID}:${toString UNIFI_UID}  /srv/unifi
+    chmod -R u+rw,g+rw,o-rw                               /srv/unifi
+  '';
 }
