@@ -5,6 +5,8 @@
 { config, pkgs, ... }:
 
 {
+  system.autoRollback.enable = true;
+
   nix.settings.experimental-features = [
     "nix-command"
     "flakes"
