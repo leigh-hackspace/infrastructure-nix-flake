@@ -307,7 +307,7 @@ in
         forceSSL = true;
 
         locations."/" = {
-          proxyPass = "http://voron.int.leighhack.org";
+          proxyPass = "http://10.3.2.50";
           recommendedProxySettings = true;
           proxyWebsockets = true;
           extraConfig = CONFIG.LOCAL_NETWORK;
