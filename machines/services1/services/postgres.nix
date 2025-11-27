@@ -8,6 +8,7 @@
 
 let
   CONFIG = import ../config.nix;
+  slackWebhookUrl = lib.strings.trim (builtins.readFile CONFIG.SLACK_URL_FILE);
   # Define a single data structure for DB names and passwords.
   dbs = {
     door_system = CONFIG.PG_PASS;
@@ -82,18 +83,24 @@ in
   systemd.services.postgresqlBackup-door_system = {
     after = [ "mnt-backups.mount" ];
     requires = [ "mnt-backups.mount" ];
+    serviceConfig = {
+      ExecStartPost = "${pkgs.curl}/bin/curl -X POST -H 'Content-type: application/json' --data $data '{\"text\":\"Postgres door_system backup complete\"}' ${slackWebhookUrl}";
+    };
   };
 
   # Wait for the mount to become available
   systemd.services.postgresqlBackup-outline = {
     after = [ "mnt-backups.mount" ];
     requires = [ "mnt-backups.mount" ];
+    serviceConfig = {
+      ExecStartPost = "${pkgs.curl}/bin/curl -X POST -H 'Content-type: application/json' --data $data '{\"text\":\"Postgres outline backup complete\"}' ${slackWebhookUrl}";
+    };
   };
 
   system.activationScripts.postgresqlBackup = ''
     mkdir -p /mnt/backups/services1.int.leighhack.org/postgres
     chown -R backups:backups /mnt/backups/services1.int.leighhack.org
-    chmod -R u+rw,g+rw /mnt/backups/services1.int.leighhack.org
+    chmod -R u+rwX,g+rwX /mnt/backups/services1.int.leighhack.org
   '';
 }
 
