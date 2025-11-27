@@ -59,7 +59,9 @@ in
         if test $(readlink "$current") != "$(readlink "$good")"; then
           ${pkgs.util-linux}/bin/wall "Rolling back to $(readlink "$good") in 30s"
           sleep 30
-          "$good/bin/switch-to-configuration" test
+          "$good/bin/switch-to-configuration" boot
+          sync
+          echo b > /proc/sysrq-trigger
         fi
       '';
     };
