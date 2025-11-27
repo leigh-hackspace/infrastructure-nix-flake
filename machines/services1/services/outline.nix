@@ -17,7 +17,12 @@ in
     port = 8400;
     publicUrl = "https://outline.leighhack.org";
     forceHttps = true;
-    storage.storageType = "local";
+    secretKeyFile = "/srv/outline/secret_key";
+    utilsSecretFile = "/srv/outline/utils_secret";
+    storage = {
+      storageType = "local";
+      localRootDir = "/srv/outline/data";
+    };
     databaseUrl = "postgresql://outline:${CONFIG.PG_PASS}@127.0.0.1:5432/outline";
     redisUrl = "redis://127.0.0.1:8401";
     oidcAuthentication = {
