@@ -26,6 +26,8 @@ let
 
     ln -snfv "$(readlink "$gen")" "${profiles}/system-good"
   '';
+
+  list-generations = (pkgs.writers.writeNuBin "list-generations" ../nu/list-generations.nu);
 in
 {
   options.system.autoRollback = {
@@ -43,7 +45,10 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    environment.systemPackages = [ nixos-confirm ];
+    environment.systemPackages = [
+      nixos-confirm
+      list-generations
+    ];
 
     systemd.services.auto-rollback = {
       unitConfig.X-RestartIfChanged = false;
