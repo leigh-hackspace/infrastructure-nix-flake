@@ -78,6 +78,18 @@ in
     ];
   };
 
+  # Wait for the mount to become available
+  systemd.services.postgresqlBackup-door_system = {
+    after = [ "mnt-backups.mount" ];
+    requires = [ "mnt-backups.mount" ];
+  };
+
+  # Wait for the mount to become available
+  systemd.services.postgresqlBackup-outline = {
+    after = [ "mnt-backups.mount" ];
+    requires = [ "mnt-backups.mount" ];
+  };
+
   system.activationScripts.postgresqlBackup = ''
     mkdir -p /mnt/backups/services1.int.leighhack.org/postgres
     chown -R backups:backups /mnt/backups/services1.int.leighhack.org

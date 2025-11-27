@@ -44,6 +44,12 @@ in
     ];
   };
 
+  # Wait for the mount to become available
+  systemd.services.podman-frigate = {
+    after = [ "mnt-cameras.mount" ];
+    requires = [ "mnt-cameras.mount" ];
+  };
+
   services.nginx.virtualHosts = {
     "frigate.leighhack.org" = mkSSOVirtualHost {
       proxyPass = "http://10.3.1.20:5000";
