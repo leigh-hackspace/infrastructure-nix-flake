@@ -28,3 +28,26 @@ Various hackspace services for members. See [README.md](machines/services1/READM
 Path: `machines/aibox`
 
 Experimental machine with LLMs and Stable Diffusion
+
+## Tools
+
+Run the `list-generations` script directly from this flake without cloning:
+
+```bash
+nix run github:leigh-hackspace/infrastructure-nix-flake#listGenerations
+```
+
+Show accurate information about generations.
+
+Example output:
+
+```
+[cjdell@NixOS-Router:~]$ nix run github:leigh-hackspace/infrastructure-nix-flake#listGenerations
+╭───┬────────────┬───────────┬──────┬─────────┬────────╮
+│ # │ Generation │   Date    │ Good │ Current │ Booted │
+├───┼────────────┼───────────┼──────┼─────────┼────────┤
+│ 0 │ 313        │ a day ago │ ❌   │ ❌      │ ✅     │
+│ 1 │ 314        │ a day ago │ ✅   │ ❌      │ ❌     │
+│ 2 │ 315        │ a day ago │ ❌   │ ✅      │ ❌     │
+╰───┴────────────┴───────────┴──────┴─────────┴────────╯
+```
