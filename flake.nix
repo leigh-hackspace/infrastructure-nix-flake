@@ -31,10 +31,18 @@
       pxe-server,
       headplane,
     }@attrs:
+    let
+      system = "x86_64-linux";
+    in
     {
+      listGenerations =
+        let
+          pkgs = import nixpkgs { inherit system; };
+        in
+        (pkgs.writers.writeNuBin "list-generations" ./nu/list-generations.nu);
+
       nixosConfigurations =
         let
-          system = "x86_64-linux";
           fix-nix-shell = {
             nix.registry.nixpkgs.flake = nixpkgs;
           }; # Make "nix-shell" use the flake version
