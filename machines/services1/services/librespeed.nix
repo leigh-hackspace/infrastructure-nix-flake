@@ -31,13 +31,18 @@ in
     };
   };
 
+  services.anubis.instances.default.settings.TARGET = "http://127.0.0.1:${toString LIBRESPEED_UID}";
+
+  # required due to unix socket permissions
+  users.users.nginx.extraGroups = [ config.users.groups.anubis.name ];
+
   services.nginx.virtualHosts = {
     "speed.leighhack.org" = {
       useACMEHost = "leighhack.org";
       forceSSL = true;
 
       locations."/" = {
-        proxyPass = "http://127.0.0.1:${toString LIBRESPEED_UID}";
+        proxyPass = "http://unix:${config.services.anubis.instances.default.settings.BIND}";
         recommendedProxySettings = true;
         proxyWebsockets = true;
 
@@ -47,4 +52,21 @@ in
       };
     };
   };
+
+  # services.nginx.virtualHosts = {
+  #   "speed.leighhack.org" = {
+  #     useACMEHost = "leighhack.org";
+  #     forceSSL = true;
+
+  #     locations."/" = {
+  #       proxyPass = "http://127.0.0.1:${toString LIBRESPEED_UID}";
+  #       recommendedProxySettings = true;
+  #       proxyWebsockets = true;
+
+  #       extraConfig = ''
+  #         client_max_body_size 100M;
+  #       '';
+  #     };
+  #   };
+  # };
 }
