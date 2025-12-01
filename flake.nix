@@ -2,9 +2,22 @@
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-25.11";
     nixos-hardware.url = "github:NixOS/nixos-hardware/master";
+
+    nixos-utils = {
+      url = "github:cjdell/nixos-utils";
+      # url = "git+file:///home/leigh-admin/Projects/nixos-utils";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+
     door-entry-management-system.url = "github:leigh-hackspace/door-entry-system?dir=management-system";
     door-entry-bluetooth-web-app.url = "github:leigh-hackspace/door-entry-system?dir=bluetooth-web-app";
-    llama-cpp-leigh.url = "github:leigh-hackspace/llama.cpp/master";
+
+    llama-cpp = {
+      url = "github:leigh-hackspace/llama.cpp/rocm-uma";
+      # url = "git+file:///home/leigh-admin/Projects/llama.cpp";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+
     gocardless-tools = {
       url = "git+file:///home/leigh-admin/Projects/gocardless-tools";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -24,9 +37,10 @@
       self,
       nixpkgs,
       nixos-hardware,
+      nixos-utils,
       door-entry-management-system,
       door-entry-bluetooth-web-app,
-      llama-cpp-leigh,
+      llama-cpp,
       gocardless-tools,
       pxe-server,
       headplane,
@@ -62,7 +76,8 @@
             modules = [
               fix-nix-shell
 
-              ./common/rollback.nix
+              nixos-utils.modules.rollback
+
               ./common/tools.nix
               ./common/users.nix
 
@@ -113,7 +128,8 @@
               modules = [
                 fix-nix-shell
 
-                ./common/rollback.nix
+                nixos-utils.modules.rollback
+
                 ./common/tools.nix
                 ./common/users.nix
 
@@ -127,8 +143,8 @@
                   {
                     nixpkgs.overlays = [
                       (final: prev: {
-                        llama-cpp-leigh-rocm = llama-cpp-leigh.packages.${pkgs.system}.rocm;
-                        llama-cpp-local-cpu = llama-cpp-local.packages.${pkgs.system}.default;
+                        llama-cpp-rocm = llama-cpp.packages.${pkgs.system}.rocm;
+                        # llama-cpp-cpu = llama-cpp.packages.${pkgs.system}.default;
                       })
                     ];
                   }

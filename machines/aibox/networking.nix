@@ -117,9 +117,10 @@
         udp dport 69    accept comment "pixiecore TFTP from anywhere"
 
         ## These are Podman so there don't apply here (use forward instead)
-        # tcp dport 8080  log prefix "8080 accepted: " accept comment "httpx from anywhere"
-        # tcp dport 8081  log prefix "8081 accepted: " accept comment "httpx from anywhere"
-        # tcp dport 7860  log prefix "7860 accepted: " accept comment "httpx from anywhere"
+        tcp dport 8080  log prefix "8080 accepted: " accept comment "httpx from anywhere"
+        tcp dport 8081  log prefix "8081 accepted: " accept comment "httpx from anywhere"
+        tcp dport 8082  log prefix "8082 accepted: " accept comment "httpx from anywhere"
+        tcp dport 7860  log prefix "7860 accepted: " accept comment "httpx from anywhere"
 
         # Allow various discovery protocols
         udp dport 137   accept comment "NetBIOS Name Service"
@@ -158,11 +159,11 @@
         # Log and allow traffic to podman containers
         ip daddr 10.88.0.0/16 tcp dport 8080 log prefix "podman 8080 NEW: " accept
         ip daddr 10.88.0.0/16 tcp dport 8081 log prefix "podman 8081 NEW: " accept
-        
+
         # Allow all other podman network traffic
         ip saddr 10.88.0.0/16 accept comment "allow from podman network"
         ip daddr 10.88.0.0/16 accept comment "allow to   podman network"
-        
+
         # Log rejected NEW forwarded connections
         log prefix "rejected forward NEW: " drop
       }

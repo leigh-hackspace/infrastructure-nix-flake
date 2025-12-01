@@ -171,6 +171,24 @@
         "type": "github"
       }
     },
+    "flake-utils_6": {
+      "inputs": {
+        "systems": "systems_6"
+      },
+      "locked": {
+        "lastModified": 1731533236,
+        "narHash": "sha256-l0KFg5HjrsfsO/JpG+r7fRrqm12kzFHyUHqHCVpMMbI=",
+        "owner": "numtide",
+        "repo": "flake-utils",
+        "rev": "11707dc2f618dd54ca8739b309ec4fc024de578b",
+        "type": "github"
+      },
+      "original": {
+        "owner": "numtide",
+        "repo": "flake-utils",
+        "type": "github"
+      }
+    },
     "gocardless-tools": {
       "inputs": {
         "flake-utils": "flake-utils_3",
@@ -218,22 +236,24 @@
         "type": "github"
       }
     },
-    "llama-cpp-leigh": {
+    "llama-cpp": {
       "inputs": {
         "flake-parts": "flake-parts",
-        "nixpkgs": "nixpkgs_3"
+        "nixpkgs": [
+          "nixpkgs"
+        ]
       },
       "locked": {
-        "lastModified": 1745426490,
-        "narHash": "sha256-a1ypVJrKF3/nvnb+DqPI6X/KTovmpXJAekyAprXbrp4=",
+        "lastModified": 1764540006,
+        "narHash": "sha256-l2M7HtVk6MMXJrld/2AaSMdjU+m+D1U6eLTEdDAnq9o=",
         "owner": "leigh-hackspace",
         "repo": "llama.cpp",
-        "rev": "6663356ca72250e769abf5094565f870a34b9103",
+        "rev": "d08f444b3805d97ae8bde86ecc4a8f9953d8a77c",
         "type": "github"
       },
       "original": {
         "owner": "leigh-hackspace",
-        "ref": "master",
+        "ref": "rocm-uma",
         "repo": "llama.cpp",
         "type": "github"
       }
@@ -251,6 +271,27 @@
         "owner": "NixOS",
         "ref": "master",
         "repo": "nixos-hardware",
+        "type": "github"
+      }
+    },
+    "nixos-utils": {
+      "inputs": {
+        "flake-utils": "flake-utils_5",
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1764589644,
+        "narHash": "sha256-x0PB9rnd2wdZ2qmbohOIHC+xIXHv5YbUwP6z5xlI3Zc=",
+        "owner": "cjdell",
+        "repo": "nixos-utils",
+        "rev": "2a07e803548e67b571d4f921209004e766bb3c38",
+        "type": "github"
+      },
+      "original": {
+        "owner": "cjdell",
+        "repo": "nixos-utils",
         "type": "github"
       }
     },
@@ -300,22 +341,6 @@
     },
     "nixpkgs_3": {
       "locked": {
-        "lastModified": 1732014248,
-        "narHash": "sha256-y/MEyuJ5oBWrWAic/14LaIr/u5E0wRVzyYsouYY3W6w=",
-        "owner": "NixOS",
-        "repo": "nixpkgs",
-        "rev": "23e89b7da85c3640bbc2173fe04f4bd114342367",
-        "type": "github"
-      },
-      "original": {
-        "owner": "NixOS",
-        "ref": "nixos-unstable",
-        "repo": "nixpkgs",
-        "type": "github"
-      }
-    },
-    "nixpkgs_4": {
-      "locked": {
         "lastModified": 1764020296,
         "narHash": "sha256-6zddwDs2n+n01l+1TG6PlyokDdXzu/oBmEejcH5L5+A=",
         "owner": "nixos",
@@ -332,7 +357,7 @@
     },
     "pxe-server": {
       "inputs": {
-        "flake-utils": "flake-utils_5",
+        "flake-utils": "flake-utils_6",
         "nixpkgs": [
           "nixpkgs"
         ]
@@ -407,9 +432,10 @@
         "door-entry-management-system": "door-entry-management-system",
         "gocardless-tools": "gocardless-tools",
         "headplane": "headplane",
-        "llama-cpp-leigh": "llama-cpp-leigh",
+        "llama-cpp": "llama-cpp",
         "nixos-hardware": "nixos-hardware",
-        "nixpkgs": "nixpkgs_4",
+        "nixos-utils": "nixos-utils",
+        "nixpkgs": "nixpkgs_3",
         "pxe-server": "pxe-server"
       }
     },
@@ -474,6 +500,21 @@
       }
     },
     "systems_5": {
+      "locked": {
+        "lastModified": 1681028828,
+        "narHash": "sha256-Vy1rq5AaRuLzOxct8nz4T6wlgyUR7zLU309k9mBC768=",
+        "owner": "nix-systems",
+        "repo": "default",
+        "rev": "da67096a3b9bf56a91d16901293e51ba5b49a27e",
+        "type": "github"
+      },
+      "original": {
+        "owner": "nix-systems",
+        "repo": "default",
+        "type": "github"
+      }
+    },
+    "systems_6": {
       "locked": {
         "lastModified": 1681028828,
         "narHash": "sha256-Vy1rq5AaRuLzOxct8nz4T6wlgyUR7zLU309k9mBC768=",

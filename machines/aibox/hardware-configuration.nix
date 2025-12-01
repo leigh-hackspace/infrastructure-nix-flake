@@ -25,22 +25,14 @@
 
   boot.kernelPackages = pkgs.linuxPackages_latest;
 
-  # boot.kernelPackages = pkgs.linuxPackagesFor (
-  #   pkgs.linux_6_14.override {
-  #     argsOverride = rec {
-  #       src = pkgs.fetchurl {
-  #         url = "mirror://kernel/linux/kernel/v6.x/linux-${version}.tar.xz";
-  #         sha256 = "sha256-xcaCo1TqMZATk1elfTSnnlw3IhrOgjqTjhARa1d6Lhs=";
-  #       };
-  #       version = "6.14.2";
-  #       modDirVersion = "6.14.2";
-  #     };
-  #   }
-  # );
-
   boot.kernelParams = [
+    # More speed
     "mitigations=off"
-    "amd_iommu=on"
+    # IOMMU off (less overhead)
+    "amd_iommu=off"
+    # Power management off
+    "amdgpu.runpm=0"
+    # 56G of VRAM
     "amdgpu.gttsize=57344"
     "ttm.pages_limit=13668850"
     "ttm.page_pool_size=13668850"
