@@ -77,6 +77,7 @@
               fix-nix-shell
 
               nixos-utils.modules.rollback
+              nixos-utils.modules.containers
 
               ./common/tools.nix
               ./common/users.nix
