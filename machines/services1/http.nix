@@ -14,6 +14,7 @@
 let
   CONFIG = import ./config.nix;
   nginxSso = import ./lib/nginx-sso-config.nix;
+  mkSSOVirtualHost = import ./lib/nginx-sso-helper.nix;
 in
 {
   # Necessary for secret access
@@ -301,17 +302,8 @@ in
         };
       };
 
-      # Not on `int` so external IPv4 can work
-      "voron.leighhack.org" = {
-        useACMEHost = "leighhack.org";
-        forceSSL = true;
-
-        locations."/" = {
-          proxyPass = "http://10.3.2.50";
-          recommendedProxySettings = true;
-          proxyWebsockets = true;
-          extraConfig = CONFIG.LOCAL_NETWORK;
-        };
+      "voron.leighhack.org" = mkSSOVirtualHost {
+        proxyPass = "http://10.3.2.50";
       };
     };
   };

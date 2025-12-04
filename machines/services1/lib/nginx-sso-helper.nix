@@ -32,7 +32,21 @@ let
 
           # Provide "X-WEBAUTH-USER" header to the backend so we know who has logged in
           auth_request_set $username $upstream_http_x_username;
-          proxy_set_header X-WEBAUTH-USER $username; 
+          proxy_set_header X-WEBAUTH-USER $username;
+
+          # No cache
+          add_header Cache-Control "no-cache, no-store, must-revalidate";
+          add_header Pragma "no-cache";
+          add_header Expires "0";
+        '';
+      };
+
+      # Fake service worker (override the one provided by the app)
+      locations."/sw.js" = {
+        extraConfig = ''
+          return 200 'self.addEventListener("install", function(e) { e.waitUntil(self.skipWaiting()); }); self.addEventListener("activate", function(e) { e.waitUntil(self.clients.claim()); });';
+          add_header Content-Type application/javascript;
+          add_header Cache-Control no-cache;
         '';
       };
 
@@ -59,8 +73,12 @@ let
       # Define where to send the user to login and specify how to get back
       locations."@error401" = {
         extraConfig = ''
-          # Another server{} directive also proxying to http://127.0.0.1:8082
-          return 302 https://login.leighhack.org/login?go=$scheme://$http_host$request_uri;
+          # If the requested URI is an asset, redirect to root instead
+          set $redirect_uri $scheme://$http_host$request_uri;
+          if ($request_uri ~* "\.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$") {
+            set $redirect_uri $scheme://$http_host/;
+          }
+          return 302 https://login.leighhack.org/login?go=$redirect_uri;
         '';
       };
     };
