@@ -60,42 +60,30 @@
     ];
   };
 
-  systemd.services.wait-for-nfs-server = {
-    description = "Wait for NFS server to be reachable";
-    after = [ "network-online.target" ];
-    wants = [ "network-online.target" ];
-    serviceConfig = {
-      Type = "oneshot";
-      RemainAfterExit = true;
-      ExecStart = "${pkgs.bash}/bin/bash -c 'until ${pkgs.iputils}/bin/ping -c1 -W2 10.3.1.6 >/dev/null 2>&1; do sleep 2; done'";
-      TimeoutStartSec = 30;
-    };
-  };
-
   systemd.mounts = [
     {
       where = "/mnt/cameras";
       what = "10.3.1.6:/mnt/sas-10k/cameras";
       type = "nfs";
       options = "nfsvers=4.2,_netdev,x-systemd.automount,retry=5,timeo=5,x-systemd.mount-timeout=30";
-      after = [ "wait-for-nfs-server.service" ];
-      requires = [ "wait-for-nfs-server.service" ];
+      after = [ "wait-for-network.service" ];
+      requires = [ "wait-for-network.service" ];
     }
     {
       where = "/mnt/filestore";
       what = "10.3.1.6:/mnt/sas-10k/filestore";
       type = "nfs";
       options = "nfsvers=4.2,_netdev,x-systemd.automount,retry=5,timeo=5,x-systemd.mount-timeout=30";
-      after = [ "wait-for-nfs-server.service" ];
-      requires = [ "wait-for-nfs-server.service" ];
+      after = [ "wait-for-network.service" ];
+      requires = [ "wait-for-network.service" ];
     }
     {
       where = "/mnt/backups";
       what = "10.3.1.6:/mnt/sas-10k/backups";
       type = "nfs";
       options = "nfsvers=4.2,_netdev,x-systemd.automount,retry=5,timeo=5,x-systemd.mount-timeout=30";
-      after = [ "wait-for-nfs-server.service" ];
-      requires = [ "wait-for-nfs-server.service" ];
+      after = [ "wait-for-network.service" ];
+      requires = [ "wait-for-network.service" ];
     }
   ];
 

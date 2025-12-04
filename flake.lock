@@ -244,11 +244,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1764540006,
-        "narHash": "sha256-l2M7HtVk6MMXJrld/2AaSMdjU+m+D1U6eLTEdDAnq9o=",
+        "lastModified": 1764691699,
+        "narHash": "sha256-Wr55PNEFvyUuK58l1AdbGWLi0AdQdKfNwzMDTuFicu8=",
         "owner": "leigh-hackspace",
         "repo": "llama.cpp",
-        "rev": "d08f444b3805d97ae8bde86ecc4a8f9953d8a77c",
+        "rev": "c1b98aa79986e169c8cfe750288424dff7f39d0b",
         "type": "github"
       },
       "original": {

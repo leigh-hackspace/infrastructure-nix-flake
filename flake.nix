@@ -144,7 +144,8 @@
                   {
                     nixpkgs.overlays = [
                       (final: prev: {
-                        llama-cpp-rocm = llama-cpp.packages.${pkgs.system}.rocm;
+                        llama-cpp-leigh-rocm = llama-cpp.packages.${pkgs.system}.rocm;
+                        # llama-cpp-leigh-vulkan = llama-cpp.packages.${pkgs.system}.vulkan;
                         # llama-cpp-cpu = llama-cpp.packages.${pkgs.system}.default;
                       })
                     ];
