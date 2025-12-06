@@ -28,10 +28,16 @@ in
         base_domain = "ts.leighhack.org";
         magic_dns = true;
         search_domains = [ "int.leighhack.org" ];
-        nameservers.global = [
-          "10.3.1.1"
-          "9.9.9.9"
-        ];
+        nameservers = {
+          global = [
+            "9.9.9.9"
+            "8.8.8.8"
+            "1.1.1.1"
+          ];
+          split = {
+            "int.leighhack.org" = [ "10.3.1.1" ];
+          };
+        };
       };
 
       ip_prefixes = [
@@ -42,7 +48,7 @@ in
       derp = {
         server = {
           enabled = true;
-          stun_listen_addr = "0.0.0.0:3478";
+          stun_listen_addr = "0.0.0.0:3479"; # Unify uses default STUN port of 3478
           ipv4 = "81.187.195.17";
           ipv6 = "2001:8b0:1d14:225:d::1020";
         };
