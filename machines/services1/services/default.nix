@@ -7,6 +7,7 @@
     ./cockpit.nix
     ./door-entry-management-system.nix
     ./frigate.nix
+    ./gatus.nix
     ./gocardless-authentik-sync.nix
     ./headscale.nix
     ./librespeed.nix
