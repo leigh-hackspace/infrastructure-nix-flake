@@ -8,6 +8,7 @@
     ./door-entry-management-system.nix
     ./frigate.nix
     ./gatus.nix
+    ./gitlab.nix
     ./gocardless-authentik-sync.nix
     ./headscale.nix
     ./librespeed.nix

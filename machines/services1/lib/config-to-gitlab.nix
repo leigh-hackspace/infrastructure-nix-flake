@@ -11,25 +11,49 @@
       in
       if builtins.length rest == 0 then key else "${key}['${builtins.concatStringsSep "']['" rest}']";
 
-    # Convert a value to GitLab config format
-    convertValue =
-      path: value:
+    convertSingleValue =
+      value:
       if builtins.isBool value then
-        "${pathToKey path} = ${if value then "true" else "false"};"
+        "${if value then "true" else "false"}"
       else if builtins.isString value then
-        "${pathToKey path} = '${value}';"
+        "'${value}'"
+      else if builtins.isList value then
+        "[${builtins.concatStringsSep ", " (builtins.map (item: (convertSingleValue item)) value)}]"
+      else if builtins.isAttrs value then
+        "{ ${convertAttrs2 [ ] value} }"
       else
-        "${pathToKey path} = ${toString value};";
+        "${toString value}";
+
+    # Convert a value to GitLab config format
+    convertValue2 = path: value: "${pathToKey path}: ${convertSingleValue value}";
+
+    convertValue = path: value: "${pathToKey path} = ${convertSingleValue value}";
+
+    convertAttrs2 =
+      path: value:
+      (
+        let
+          attrNames = builtins.attrNames value;
+          pairs = builtins.map (name: (convertValue2 (path ++ [ name ]) value.${name})) attrNames;
+        in
+        builtins.concatStringsSep ", " pairs
+      );
+
+    convertAttrs =
+      path: value:
+      (
+        let
+          attrNames = builtins.attrNames value;
+          pairs = builtins.map (name: ("${convertValue (path ++ [ name ]) value.${name}};")) attrNames;
+        in
+        builtins.concatStringsSep " " pairs
+      );
 
     convertValueTop =
       path: value:
       if builtins.isAttrs value then
         # Recursively process nested attributes
-        let
-          attrNames = builtins.attrNames value;
-          pairs = builtins.map (name: convertValue (path ++ [ name ]) value.${name}) attrNames;
-        in
-        builtins.concatStringsSep " " pairs
+        convertAttrs path value
       else if builtins.isBool value then
         "${pathToKey path} ${if value then "true" else "false"};"
       else if builtins.isString value then
