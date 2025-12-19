@@ -19,6 +19,8 @@
 
   NGINX_SSO_CLIENT_SECRET_FILE      = "/var/lib/secrets/nginx_sso_client_secret.key";
   NGINX_SSO_AUTH_KEY_FILE           = "/var/lib/secrets/nginx_sso_auth.key";
+  
+  BACKUP_KEY_FILE                   = "/var/lib/secrets/id_ed25519_backups";
 
   # Creating the `http_basic_auth` file
   # nix-shell --packages apacheHttpd --run 'htpasswd -B -c /var/lib/secrets/http_basic_auth leighhack'
