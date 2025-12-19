@@ -1,13 +1,10 @@
 {
   config,
   lib,
-  pkgs,
-  modulesPath,
   ...
 }:
 
 let
-  constants = import ../config.nix;
   LIBRESPEED_UID = 8004;
 in
 {
@@ -31,7 +28,22 @@ in
     };
   };
 
-  services.anubis.instances.default.settings.TARGET = "http://127.0.0.1:${toString LIBRESPEED_UID}";
+  # journalctl -u anubis-default -f
+  services.anubis = {
+    defaultOptions.settings = {
+      SLOG_LEVEL = "debug";
+      OG_PASSTHROUGH = true;
+      OG_EXPIRY_TIME = "1h";
+    };
+
+    instances.default = {
+      settings = {
+        TARGET = "http://127.0.0.1:${toString LIBRESPEED_UID}";
+        BIND = "/run/anubis/anubis-default/anubis.sock";
+        METRICS_BIND = "/run/anubis/anubis-default/anubis-metrics.sock";
+      };
+    };
+  };
 
   # required due to unix socket permissions
   users.users.nginx.extraGroups = [ config.users.groups.anubis.name ];
