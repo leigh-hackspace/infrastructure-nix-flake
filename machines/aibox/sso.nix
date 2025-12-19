@@ -1,4 +1,4 @@
-{ config, pkgs, ... }:
+{ lib, ... }:
 
 {
   security.pki.certificates = [
@@ -48,78 +48,82 @@
 
   services.sssd = {
     enable = true;
-    config = ''
-      [sssd]
-      config_file_version = 2
-      services = nss, pam
-      domains = authentik
-      debug_level = 8
+    config = lib.generators.toINI { } {
+      sssd = {
+        config_file_version = "2";
+        services = "nss, pam";
+        domains = "authentik";
+        debug_level = "8";
+      };
 
-      [nss]
-      filter_users = root,nixbld
-      filter_groups = root,wheel,nixbld
-      debug_level = 8
+      nss = {
+        filter_users = "root,nixbld";
+        filter_groups = "root,wheel,nixbld";
+        debug_level = "8";
+      };
 
-      [pam]
-      debug_level = 8
+      pam = {
+        debug_level = "8";
+      };
 
-      [domain/authentik]
-      id_provider = ldap
-      auth_provider = ldap
-      access_provider = permit
+      "domain/authentik" = {
+        id_provider = "ldap";
+        auth_provider = "ldap";
+        access_provider = "permit";
 
-      # Connection
-      ldap_uri = ldaps://authentik.int.leighhack.org
-      ldap_search_base = dc=ldap,dc=goauthentik,dc=io
+        # Connection
+        ldap_uri = "ldaps://authentik.int.leighhack.org";
+        ldap_search_base = "dc=ldap,dc=goauthentik,dc=io";
 
-      # Bind credentials
-      ldap_default_bind_dn = cn=pgina,ou=users,dc=ldap,dc=goauthentik,dc=io
-      ldap_default_authtok = pgina
+        # Bind credentials
+        ldap_default_bind_dn = "cn=pgina,ou=users,dc=ldap,dc=goauthentik,dc=io";
+        ldap_default_authtok = "pgina";
 
-      # Search bases
-      ldap_user_search_base = ou=users,dc=ldap,dc=goauthentik,dc=io
-      ldap_group_search_base = ou=groups,dc=ldap,dc=goauthentik,dc=io
+        # Search bases
+        ldap_user_search_base = "ou=users,dc=ldap,dc=goauthentik,dc=io";
+        # ldap_user_search_filter = "(&(objectClass=person)(memberOf=cn=Infra,ou=groups,dc=ldap,dc=goauthentik,dc=io))";
+        ldap_group_search_base = "ou=groups,dc=ldap,dc=goauthentik,dc=io";
 
-      # User attributes - matched to Authentik's schema
-      ldap_user_object_class = user
-      ldap_user_name = cn
-      ldap_user_uid_number = uidNumber
-      ldap_user_gid_number = gidNumber
-      ldap_user_home_directory = homeDirectory
-      ldap_user_shell = loginShell
-      ldap_user_gecos = displayName
+        # User attributes
+        ldap_user_object_class = "user";
+        ldap_user_name = "cn";
+        ldap_user_uid_number = "uidNumber";
+        ldap_user_gid_number = "gidNumber";
+        ldap_user_home_directory = "homeDirectory";
+        ldap_user_shell = "loginShell";
+        ldap_user_gecos = "displayName";
 
-      # CRITICAL: Provide default shell since Authentik doesn't set loginShell
-      default_shell = /run/current-system/sw/bin/bash
-      fallback_homedir = /home/%u
+        # CRITICAL: Provide default shell since Authentik doesn't set loginShell
+        default_shell = "/run/current-system/sw/bin/bash";
+        fallback_homedir = "/home/%u";
 
-      # Group attributes
-      ldap_group_object_class = group
-      ldap_group_name = cn
-      ldap_group_gid_number = gidNumber   # Members = 16534, Infra = 21159, Public = 28164
-      ldap_group_member = member
+        # Group attributes
+        ldap_group_object_class = "group";
+        ldap_group_name = "cn";
+        ldap_group_gid_number = "gidNumber"; # Members = 16534, Infra = 21159, Public = 28164
+        ldap_group_member = "member";
 
-      # Schema
-      ldap_schema = rfc2307bis
-      ldap_id_mapping = false
+        # Schema
+        ldap_schema = "rfc2307bis";
+        ldap_id_mapping = "false";
 
-      # Don't query rootDSE anonymously
-      ldap_disable_rootdse = true
+        # Don't query rootDSE anonymously
+        ldap_disable_rootdse = "true";
 
-      # TLS settings
-      ldap_id_use_start_tls = true
-      ldap_tls_reqcert = demand
-      ldap_tls_cacert = /etc/static/pki/tls/certs/ca-bundle.crt
+        # TLS settings
+        ldap_id_use_start_tls = "true";
+        ldap_tls_reqcert = "demand";
+        ldap_tls_cacert = "/etc/static/pki/tls/certs/ca-bundle.crt";
 
-      # Timeouts
-      ldap_network_timeout = 5
-      ldap_opt_timeout = 5
+        # Timeouts
+        ldap_network_timeout = "5";
+        ldap_opt_timeout = "5";
 
-      # Caching
-      # cache_credentials = true
-      cache_credentials = false
-      enumerate = false
-    '';
+        # Caching
+        cache_credentials = "false";
+        enumerate = "false";
+      };
+    };
   };
 
   security.pam.services = {
