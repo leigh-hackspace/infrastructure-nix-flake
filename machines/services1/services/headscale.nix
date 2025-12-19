@@ -24,7 +24,7 @@ in
       server_url = "https://${CONFIG.HEADSCALE_DOMAIN}";
 
       dns = {
-        override_local_dns = true;
+        override_local_dns = false;   # Doesn't interfere with local DNS resolution
         base_domain = "ts.leighhack.org";
         magic_dns = true;
         search_domains = [ "int.leighhack.org" ];
