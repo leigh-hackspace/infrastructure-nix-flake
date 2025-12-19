@@ -1,8 +1,5 @@
 {
   config,
-  lib,
-  pkgs,
-  modulesPath,
   ...
 }:
 
@@ -21,7 +18,7 @@ in
 
   virtualisation.oci-containers.containers.zigbee2mqtt = {
     hostname = "zigbee2mqtt";
-    image = "koenkk/zigbee2mqtt:latest-dev";
+    image = "koenkk/zigbee2mqtt:latest";
     autoStart = true;
     ports = [
       "8282:8080"
