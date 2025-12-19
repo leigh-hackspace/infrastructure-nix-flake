@@ -5,7 +5,6 @@
 # sudo podman load -i llama-cpp-vulkan.tar
 
 {
-  config,
   pkgs,
   lib,
   ...
@@ -31,39 +30,36 @@
 
     serviceConfig =
       let
-        llamaCmdRocm = "${pkgs.llama-cpp-leigh-rocm}/bin/llama-server --host 127.0.0.1 --port \${PORT} -t 12";
-        # llamaCmdVulkan = "${pkgs.llama-cpp-leigh-vulkan}/bin/llama-server --host 127.0.0.1 --port \${PORT} -t 12";
-        llamaCmdPodman = "${lib.getExe pkgs.podman} run --rm -v /home/leigh-admin/Projects/llama.cpp.new/models:/models:Z -p \${PORT}:8080 --device=/dev/dri/renderD128 --device=/dev/dri/card0 localhost/llama-cpp-vulkan -t 12";
+        # llamaCmdRocm = "${pkgs.llama-cpp-leigh-rocm}/bin/llama-server --host 127.0.0.1 --port \${PORT} -t 12";
+        llamaCmdVulkan = "${pkgs.llama-cpp-leigh-vulkan}/bin/llama-server --host 127.0.0.1 --port \${PORT} -t 12";
+        # llamaCmdPodman = "${lib.getExe pkgs.podman} run --rm -v /home/leigh-admin/Projects/llama.cpp.new/models:/models:Z -p \${PORT}:8080 --device=/dev/dri/renderD128 --device=/dev/dri/card0 localhost/llama-cpp-vulkan -t 12";
         modelsPath = "/home/leigh-admin/Projects/llama.cpp.new/models";
-        modelsPathPodman = "/models";
+        # modelsPathPodman = "/models";
 
         # Native Nix structure representing the YAML config
         llamaConfig = {
           models = {
             "nvidia_Llama-3.1-8B-UltraLong-4M-Instruct-Q6_K_L" = {
-              cmd = "${llamaCmdRocm} -m ${modelsPath}/nvidia_Llama-3.1-8B-UltraLong-4M-Instruct-Q6_K_L.gguf -ngl 100 --ctx-size 0 --metrics";
+              cmd = "${llamaCmdVulkan} -m ${modelsPath}/nvidia_Llama-3.1-8B-UltraLong-4M-Instruct-Q6_K_L.gguf -ngl 100 --ctx-size 0 --metrics";
             };
             "Qwen2.5-VL-7B-Instruct-Q8_0" = {
-              cmd = "${llamaCmdRocm} -m ${modelsPath}/Qwen2.5-VL-7B-Instruct-Q8_0.gguf --mmproj ${modelsPath}/mmproj-Qwen2.5-VL-7B-Instruct-Q8_0.gguf -ngl 100 --ctx-size 0 --metrics";
+              cmd = "${llamaCmdVulkan} -m ${modelsPath}/Qwen2.5-VL-7B-Instruct-Q8_0.gguf --mmproj ${modelsPath}/mmproj-Qwen2.5-VL-7B-Instruct-Q8_0.gguf -ngl 100 --ctx-size 0 --metrics";
             };
             "Qwen3VL-8B-Instruct-Q8_0" = {
-              cmd = "${llamaCmdRocm} -m ${modelsPath}/Qwen3VL-8B-Instruct-Q8_0.gguf --mmproj ${modelsPath}/mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf -ngl 100 --ctx-size 0 --metrics";
+              cmd = "${llamaCmdVulkan} -m ${modelsPath}/Qwen3VL-8B-Instruct-Q8_0.gguf --mmproj ${modelsPath}/mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf -ngl 100 --ctx-size 0 --metrics";
             };
             "DeepSeek-R1-Distill-Qwen-32B-Q6_K_L" = {
-              cmd = "${llamaCmdRocm} -m ${modelsPath}/DeepSeek-R1-Distill-Qwen-32B-Q6_K_L.gguf -ngl 100 --ctx-size 0 --metrics";
+              cmd = "${llamaCmdVulkan} -m ${modelsPath}/DeepSeek-R1-Distill-Qwen-32B-Q6_K_L.gguf -ngl 100 --ctx-size 0 --metrics";
             };
             "gemma-3-27b-it-Q8_0" = {
-              cmd = "${llamaCmdRocm} -m ${modelsPath}/gemma-3-27b-it-Q8_0.gguf --mmproj ${modelsPath}/mmproj-model-f16.gguf -ngl 100 --ctx-size 0 --metrics";
+              cmd = "${llamaCmdVulkan} -m ${modelsPath}/gemma-3-27b-it-Q8_0.gguf --mmproj ${modelsPath}/mmproj-model-f16.gguf -ngl 100 --ctx-size 0 --metrics";
             };
             "Qwen3-Next-80B-A3B-Instruct-Q4_K_M" = {
-              # Crashes in ROCm
-              # No GPU in Vulkan
-              # Podman works for some reason...
-              cmd = "${llamaCmdPodman} -m ${modelsPathPodman}/Qwen3-Next-80B-A3B-Instruct-Q4_K_M.gguf -ngl 100 --ctx-size 16384 --metrics";
-              # cmd = "${llamaCmdVulkan} -m ${modelsPath}/Qwen3-Next-80B-A3B-Instruct-Q4_K_M.gguf -ngl 100 --ctx-size 16384 --metrics";
+              # cmd = "${llamaCmdPodman} -m ${modelsPathPodman}/Qwen3-Next-80B-A3B-Instruct-Q4_K_M.gguf -ngl 100 --ctx-size 16384 --metrics";
+              cmd = "${llamaCmdVulkan} -m ${modelsPath}/Qwen3-Next-80B-A3B-Instruct-Q4_K_M.gguf -ngl 100 --ctx-size 16384 --metrics";
             };
             "Qwen3-Coder-30B-A3B-Instruct-Q4_K_M" = {
-              cmd = "${llamaCmdRocm} -m ${modelsPath}/Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf -ngl 100 --ctx-size 0 --metrics";
+              cmd = "${llamaCmdVulkan} -m ${modelsPath}/Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf -ngl 100 --ctx-size 0 --metrics";
             };
           };
         };

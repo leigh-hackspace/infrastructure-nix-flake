@@ -244,11 +244,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1764691699,
-        "narHash": "sha256-Wr55PNEFvyUuK58l1AdbGWLi0AdQdKfNwzMDTuFicu8=",
+        "lastModified": 1766053692,
+        "narHash": "sha256-GYUtiDQazZrPntFYdpcgleS2QjhFGptJUiEvt0DNIa8=",
         "owner": "leigh-hackspace",
         "repo": "llama.cpp",
-        "rev": "c1b98aa79986e169c8cfe750288424dff7f39d0b",
+        "rev": "93a109f3fcb1c04d7243a1b72216c4dffed7c633",
         "type": "github"
       },
       "original": {
@@ -341,11 +341,11 @@
     },
     "nixpkgs_3": {
       "locked": {
-        "lastModified": 1765608474,
-        "narHash": "sha256-9Wx53UK0z8Di5iesJID0tS1dRKwGxI4i7tsSanOHhF0=",
+        "lastModified": 1765838191,
+        "narHash": "sha256-m5KWt1nOm76ILk/JSCxBM4MfK3rYY7Wq9/TZIIeGnT8=",
         "owner": "nixos",
         "repo": "nixpkgs",
-        "rev": "28bb483c11a1214a73f9fd2d9928a6e2ea86ec71",
+        "rev": "c6f52ebd45e5925c188d1a20119978aa4ffd5ef6",
         "type": "github"
       },
       "original": {
