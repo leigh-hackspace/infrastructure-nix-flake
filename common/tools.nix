@@ -18,8 +18,6 @@
     lm_sensors
     libva-utils
     intel-gpu-tools
-    nil
-    nixd
     vim
     clinfo
     redis
@@ -37,6 +35,8 @@
     direnv
     deno
     nixfmt-rfc-style
+    nil
+    nixd
     # System Monitoring Tools
     iotop
     lsof
