@@ -1,8 +1,6 @@
 {
-  config,
   lib,
   pkgs,
-  modulesPath,
   ...
 }:
 
@@ -11,46 +9,34 @@ let
   slackWebhookUrl = lib.strings.trim (builtins.readFile CONFIG.SLACK_URL_FILE);
 in
 {
-  systemd.services.backup-srv = {
-    description = "Backup /srv directory";
-    serviceConfig = {
-      Type = "oneshot";
-      ExecStartPost = "${pkgs.curl}/bin/curl -X POST -H 'Content-type: application/json' --data $data '{\"text\":\"Container volumes backup complete\"}' ${slackWebhookUrl}";
-    };
-    path = with pkgs; [
-      gnutar
-      gzip
-      coreutils
-    ];
-    script = ''
-      BACKUP_DIR="/mnt/backups/services1.int.leighhack.org/srv"
-      TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-      BACKUP_FILE="$BACKUP_DIR/srv-backup-$TIMESTAMP.tar.gz"
+  # # List all backups
+  # sudo list-backups-srv
+  #
+  # # Restore a backup to the current dir
+  # sudo restore-backup-srv services1-backup-srv-2025-12-11T10:09:54
+  environment.systemPackages = [
+    (pkgs.writeShellScriptBin "list-backups-srv" ''
+      export BORG_RSH="ssh -i ${CONFIG.BACKUP_KEY_FILE}"
+      borg list ssh://backups@nas2.int.leighhack.org:3022/backups/services1.int.leighhack.org/borg/srv
+    '')
 
-      # Create backup directory if it doesn't exist
-      mkdir -p "$BACKUP_DIR"
+    (pkgs.writeShellScriptBin "restore-backup-srv" ''
+      export BORG_RSH="ssh -i ${CONFIG.BACKUP_KEY_FILE}"
+      borg extract --list ssh://backups@nas2.int.leighhack.org:3022/backups/services1.int.leighhack.org/borg/srv::$1 /srv
+    '')
+  ];
 
-      # Create the backup
-      tar -czf "$BACKUP_FILE" --ignore-failed-read -C / srv
-
-      # Ensure correct permissions
-      chown backups:backups $BACKUP_FILE
-
-      # Keep only the last 7 backups
-      cd "$BACKUP_DIR"
-      ls -t srv-backup-*.tar.gz | tail -n +8 | xargs -r rm
-
-      echo "Backup completed: $BACKUP_FILE"
+  services.borgbackup.jobs.backup-srv = {
+    paths = "/srv";
+    encryption.mode = "none";
+    environment.BORG_RSH = "ssh -i ${CONFIG.BACKUP_KEY_FILE}";
+    repo = "ssh://backups@nas2.int.leighhack.org:3022/backups/services1.int.leighhack.org/borg/srv";
+    compression = "auto,zstd";
+    startAt = "daily";
+    postHook = ''
+      if [ $exitStatus -eq 0 ]; then
+        ${pkgs.curl}/bin/curl -X POST -H 'Content-type: application/json' --data '{"text":"Container volumes backup complete"}' ${slackWebhookUrl}
+      fi
     '';
-  };
-
-  systemd.timers.backup-srv = {
-    description = "Daily backup of /srv directory";
-    wantedBy = [ "timers.target" ];
-    timerConfig = {
-      OnCalendar = "daily";
-      Persistent = true;
-      RandomizedDelaySec = "1h";
-    };
   };
 }
