@@ -38,6 +38,8 @@
     "ttm.page_pool_size=13668850"
   ];
 
+  hardware.graphics.enable = true;
+
   fileSystems."/" = {
     device = "/dev/disk/by-uuid/6b17b4bc-1523-481e-b6ce-87f3ea324e27";
     fsType = "ext4";
