@@ -11,6 +11,7 @@
     mkdir -p                    /var/lib/secrets
     chown -R root:secrets       /var/lib/secrets
     chmod -R +X,-w,u+r,g+r,o-rx /var/lib/secrets
+    chmod -R 400                /var/lib/secrets/id_ed25519_*
   '';
 
   system.autoRollback.enable = true;
