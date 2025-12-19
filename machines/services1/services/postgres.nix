@@ -100,7 +100,7 @@ in
   system.activationScripts.postgresqlBackup = ''
     mkdir -p /mnt/backups/services1.int.leighhack.org/postgres
     chown -R backups:backups /mnt/backups/services1.int.leighhack.org
-    chmod -R u+rwX,g+rwX /mnt/backups/services1.int.leighhack.org
+    chmod -R u+rwX,g+rwX,o-rwx /mnt/backups/services1.int.leighhack.org
   '';
 }
 
