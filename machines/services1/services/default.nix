@@ -1,15 +1,15 @@
-{ config, pkgs, ... }:
+{ flakeInputs }:
 
 {
   imports = [
     # ./affine.nix
     ./backup.nix
     ./cockpit.nix
-    ./door-entry-management-system.nix
+    ((import ./door-entry-management-system.nix) { inherit flakeInputs; })
     ./frigate.nix
     ./gatus.nix
     ./gitlab.nix
-    ./gocardless-authentik-sync.nix
+    ((import ./gocardless-authentik-sync.nix) { inherit flakeInputs; })
     ./headscale.nix
     ./librespeed.nix
     # ./matrix.nix

@@ -1,6 +1,6 @@
+{ flakeInputs }:
+
 {
-  config,
-  lib,
   pkgs,
   ...
 }:
@@ -9,6 +9,12 @@ let
   CONFIG = import ../config.nix;
 in
 {
+  nixpkgs.overlays = [
+    (final: prev: {
+      gocardless-tools = flakeInputs.gocardless-tools.packages.${pkgs.system}.default;
+    })
+  ];
+
   # sudo systemctl start gocardless-authentik-sync
   # journalctl -u gocardless-authentik-sync -f
   systemd.services.gocardless-authentik-sync = {

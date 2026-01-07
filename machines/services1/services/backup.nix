@@ -26,6 +26,7 @@ in
     '')
   ];
 
+  # journalctl -u borgbackup-job-backup-srv -b
   services.borgbackup.jobs.backup-srv = {
     paths = "/srv";
     encryption.mode = "none";

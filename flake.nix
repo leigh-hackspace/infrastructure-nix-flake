@@ -34,17 +34,13 @@
 
   outputs =
     {
-      self,
       nixpkgs,
-      nixos-hardware,
       nixos-utils,
-      door-entry-management-system,
-      door-entry-bluetooth-web-app,
       llama-cpp,
-      gocardless-tools,
       pxe-server,
       headplane,
-    }@attrs:
+      ...
+    }@flakeInputs:
     let
       system = "x86_64-linux";
     in
@@ -90,26 +86,7 @@
                 nixpkgs.overlays = [ headplane.overlays.default ];
               }
 
-              # Add packages for the door system to the system pkgs
-              (
-                {
-                  config,
-                  pkgs,
-                  options,
-                  ...
-                }:
-                {
-                  nixpkgs.overlays = [
-                    (final: prev: {
-                      door-entry-management-system = door-entry-management-system.packages.${pkgs.system}.default;
-                      door-entry-bluetooth-web-app = door-entry-bluetooth-web-app.packages.${pkgs.system}.default;
-                      gocardless-tools = gocardless-tools.packages.${pkgs.system}.default;
-                    })
-                  ];
-                }
-              )
-
-              (import ./machines/services1)
+              ((import ./machines/services1) { inherit flakeInputs; })
             ];
           };
 

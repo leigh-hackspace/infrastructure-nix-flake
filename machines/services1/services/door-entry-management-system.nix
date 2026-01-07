@@ -1,13 +1,30 @@
-{ config, lib, pkgs, ... }:
+{ flakeInputs }:
+
+{
+  pkgs,
+  ...
+}:
 
 let
   CONFIG = import ../config.nix;
 in
 {
+  nixpkgs.overlays = [
+    (final: prev: {
+      door-entry-management-system =
+        flakeInputs.door-entry-management-system.packages.${pkgs.system}.default;
+      door-entry-bluetooth-web-app =
+        flakeInputs.door-entry-bluetooth-web-app.packages.${pkgs.system}.default;
+    })
+  ];
+
   # sudo journalctl -u door-entry-management-system-backend -f
   systemd.services.door-entry-management-system-backend = {
     description = "Door Entry Management System Backend";
-    requires = [ "network.target" "postgresql.service" ];
+    requires = [
+      "network.target"
+      "postgresql.service"
+    ];
 
     # Ensure the service is started at boot
     wantedBy = [ "multi-user.target" ];
