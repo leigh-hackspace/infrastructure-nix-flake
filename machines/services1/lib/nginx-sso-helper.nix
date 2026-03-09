@@ -11,11 +11,11 @@ let
         error_page 401 = @error401;
 
         # TODO: Make this configurable (Llama needs it)
-        client_max_body_size        100M;
-        proxy_connect_timeout       300;
-        proxy_send_timeout          300;
-        proxy_read_timeout          300;
-        send_timeout                300;
+        client_max_body_size        1024M;
+        proxy_connect_timeout       3600;
+        proxy_send_timeout          3600;
+        proxy_read_timeout          3600;
+        send_timeout                3600;
       '';
 
       locations."/" = {

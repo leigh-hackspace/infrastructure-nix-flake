@@ -8,7 +8,7 @@
     ((import ./door-entry-management-system.nix) { inherit flakeInputs; })
     ./frigate.nix
     ./gatus.nix
-    ./gitlab.nix
+    # ./gitlab.nix
     ((import ./gocardless-authentik-sync.nix) { inherit flakeInputs; })
     ./headscale.nix
     ./librespeed.nix
