@@ -39,27 +39,35 @@
         # Native Nix structure representing the YAML config
         llamaConfig = {
           models = {
-            "nvidia_Llama-3.1-8B-UltraLong-4M-Instruct-Q6_K_L" = {
-              cmd = "${llamaCmdVulkan} -m ${modelsPath}/nvidia_Llama-3.1-8B-UltraLong-4M-Instruct-Q6_K_L.gguf -ngl 100 --ctx-size 0 --metrics";
-            };
-            "Qwen2.5-VL-7B-Instruct-Q8_0" = {
+            # "nvidia_Llama-3.1-8B-UltraLong-4M-Instruct-Q6_K_L" = {
+            #   cmd = "${llamaCmdVulkan} -m ${modelsPath}/nvidia_Llama-3.1-8B-UltraLong-4M-Instruct-Q6_K_L.gguf -ngl 100 --ctx-size 0 --metrics";
+            # };
+            "[Vision] Qwen2.5-VL-7B-Instruct-Q8_0" = {
               cmd = "${llamaCmdVulkan} -m ${modelsPath}/Qwen2.5-VL-7B-Instruct-Q8_0.gguf --mmproj ${modelsPath}/mmproj-Qwen2.5-VL-7B-Instruct-Q8_0.gguf -ngl 100 --ctx-size 0 --metrics";
             };
-            "Qwen3VL-8B-Instruct-Q8_0" = {
+            "[Vision] Qwen3VL-8B-Instruct-Q8_0" = {
               cmd = "${llamaCmdVulkan} -m ${modelsPath}/Qwen3VL-8B-Instruct-Q8_0.gguf --mmproj ${modelsPath}/mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf -ngl 100 --ctx-size 0 --metrics";
             };
-            "DeepSeek-R1-Distill-Qwen-32B-Q6_K_L" = {
-              cmd = "${llamaCmdVulkan} -m ${modelsPath}/DeepSeek-R1-Distill-Qwen-32B-Q6_K_L.gguf -ngl 100 --ctx-size 0 --metrics";
-            };
-            "gemma-3-27b-it-Q8_0" = {
-              cmd = "${llamaCmdVulkan} -m ${modelsPath}/gemma-3-27b-it-Q8_0.gguf --mmproj ${modelsPath}/mmproj-model-f16.gguf -ngl 100 --ctx-size 0 --metrics";
-            };
-            "Qwen3-Next-80B-A3B-Instruct-Q4_K_M" = {
-              # cmd = "${llamaCmdPodman} -m ${modelsPathPodman}/Qwen3-Next-80B-A3B-Instruct-Q4_K_M.gguf -ngl 100 --ctx-size 16384 --metrics";
-              cmd = "${llamaCmdVulkan} -m ${modelsPath}/Qwen3-Next-80B-A3B-Instruct-Q4_K_M.gguf -ngl 100 --ctx-size 16384 --metrics";
-            };
-            "Qwen3-Coder-30B-A3B-Instruct-Q4_K_M" = {
+
+            # "DeepSeek-R1-Distill-Qwen-32B-Q6_K_L" = {
+            #   cmd = "${llamaCmdVulkan} -m ${modelsPath}/DeepSeek-R1-Distill-Qwen-32B-Q6_K_L.gguf -ngl 100 --ctx-size 0 --metrics";
+            # };
+            # "gemma-3-27b-it-Q8_0" = {
+            #   cmd = "${llamaCmdVulkan} -m ${modelsPath}/gemma-3-27b-it-Q8_0.gguf --mmproj ${modelsPath}/mmproj-model-f16.gguf -ngl 100 --ctx-size 0 --metrics";
+            # };
+
+            # "Qwen3-Next-80B-A3B-Instruct-Q4_K_M" = {
+            #   cmd = "${llamaCmdVulkan} -m ${modelsPath}/Qwen3-Next-80B-A3B-Instruct-Q4_K_M.gguf -ngl 100 --ctx-size 32768 --metrics";
+            # };
+
+            "[Fast] Qwen3-Coder-30B-A3B-Instruct-Q4_K_M" = {
               cmd = "${llamaCmdVulkan} -m ${modelsPath}/Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf -ngl 100 --ctx-size 0 --metrics";
+            };
+            "[Slow] Qwen3-Coder-Next-Q4_K_S" = {
+              cmd = "${llamaCmdVulkan} -m ${modelsPath}/Qwen3-Coder-Next-Q4_K_S.gguf -ngl 100 --ctx-size 0 --metrics";
+            };
+            "[Slow] Qwen3-Next-80B-A3B-Instruct-Q4_K_S" = {
+              cmd = "${llamaCmdVulkan} -m ${modelsPath}/Qwen3-Next-80B-A3B-Instruct-Q4_K_S.gguf -ngl 100 --ctx-size 32768 --metrics";
             };
           };
         };

@@ -8,11 +8,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1764011051,
-        "narHash": "sha256-M7SZyPZiqZUR/EiiBJnmyUbOi5oE/03tCeFrTiUZchI=",
+        "lastModified": 1768818222,
+        "narHash": "sha256-460jc0+CZfyaO8+w8JNtlClB2n4ui1RbHfPTLkpwhU8=",
         "owner": "numtide",
         "repo": "devshell",
-        "rev": "17ed8d9744ebe70424659b0ef74ad6d41fc87071",
+        "rev": "255a2b1725a20d060f566e4755dbf571bbbb5f76",
         "type": "github"
       },
       "original": {
@@ -222,11 +222,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1765051437,
-        "narHash": "sha256-KqaaeU1q/yGpzYjMO5TQdemFY5UZC1ubIp+aTAzeD1s=",
+        "lastModified": 1771272718,
+        "narHash": "sha256-3m/58a0IuON0JRupQnyxhEgp2fHVFVNluRuG1iZVTbg=",
         "owner": "tale",
         "repo": "headplane",
-        "rev": "d1e2773179babe3396a8649cdb0d021a74f692df",
+        "rev": "9183ec294244a5a2c2b0c05f4629d7aac68eb120",
         "type": "github"
       },
       "original": {
@@ -244,16 +244,16 @@
         ]
       },
       "locked": {
-        "lastModified": 1766053692,
-        "narHash": "sha256-GYUtiDQazZrPntFYdpcgleS2QjhFGptJUiEvt0DNIa8=",
-        "owner": "leigh-hackspace",
+        "lastModified": 1771494219,
+        "narHash": "sha256-nOgWAQy8Wyqa7WefHKOOWbbzUmFQ0mht4fNm+fikgIg=",
+        "owner": "ggml-org",
         "repo": "llama.cpp",
-        "rev": "93a109f3fcb1c04d7243a1b72216c4dffed7c633",
+        "rev": "0a28841e5d9d588edd877415251069e9ed3fc4e7",
         "type": "github"
       },
       "original": {
-        "owner": "leigh-hackspace",
-        "ref": "rocm-uma",
+        "owner": "ggml-org",
+        "ref": "0cc4m/vulkan-fix-19509-mmq",
         "repo": "llama.cpp",
         "type": "github"
       }
@@ -341,11 +341,11 @@
     },
     "nixpkgs_3": {
       "locked": {
-        "lastModified": 1765838191,
-        "narHash": "sha256-m5KWt1nOm76ILk/JSCxBM4MfK3rYY7Wq9/TZIIeGnT8=",
+        "lastModified": 1771208521,
+        "narHash": "sha256-X01Q3DgSpjeBpapoGA4rzKOn25qdKxbPnxHeMLNoHTU=",
         "owner": "nixos",
         "repo": "nixpkgs",
-        "rev": "c6f52ebd45e5925c188d1a20119978aa4ffd5ef6",
+        "rev": "fa56d7d6de78f5a7f997b0ea2bc6efd5868ad9e8",
         "type": "github"
       },
       "original": {
@@ -363,10 +363,10 @@
         ]
       },
       "locked": {
-        "lastModified": 1761163349,
-        "narHash": "sha256-4VUWVIm/iWcHZ/joZG8PugGQV6QiFDZ/oVN8fxg3KFA=",
+        "lastModified": 1763424156,
+        "narHash": "sha256-sGJ+Cp1V5IfB5Fl8yVgEzqODYTxb/aXSNrVoIJqmrhY=",
         "ref": "refs/heads/main",
-        "rev": "cd7a54869c6e6f9e92105fe9a358a63e61449ad6",
+        "rev": "f28428c52beebde5f43d07be0f5f226592e811a4",
         "revCount": 1,
         "type": "git",
         "url": "file:///home/leigh-admin/Projects/pxe-server"
