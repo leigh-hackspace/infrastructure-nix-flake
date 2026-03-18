@@ -41,6 +41,7 @@ in
           "*.ai.leighhack.org"
           "*.int.leighhack.org"
           "*.ai.int.leighhack.org"
+          "*.test.leighhack.org"
         ];
       };
     };
@@ -179,16 +180,16 @@ in
         };
       };
 
-      "filestore.int.leighhack.org" = {
-        useACMEHost = "leighhack.org";
-        forceSSL = true;
+      # "filestore.int.leighhack.org" = {
+      #   useACMEHost = "leighhack.org";
+      #   forceSSL = true;
 
-        locations."/" = {
-          proxyPass = "http://10.3.1.30:8001";
-          recommendedProxySettings = true;
-          extraConfig = CONFIG.LOCAL_NETWORK;
-        };
-      };
+      #   locations."/" = {
+      #     proxyPass = "http://10.3.1.30:8001";
+      #     recommendedProxySettings = true;
+      #     extraConfig = CONFIG.LOCAL_NETWORK;
+      #   };
+      # };
 
       "grafana.int.leighhack.org" = {
         useACMEHost = "leighhack.org";

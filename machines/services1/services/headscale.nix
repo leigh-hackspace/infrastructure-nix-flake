@@ -29,11 +29,11 @@ in
         magic_dns = true;
         search_domains = [ "int.leighhack.org" ];
         nameservers = {
-          global = [
-            "9.9.9.9"
-            "8.8.8.8"
-            "1.1.1.1"
-          ];
+          # global = [
+          #   "9.9.9.9"
+          #   "8.8.8.8"
+          #   "1.1.1.1"
+          # ];
           split = {
             "int.leighhack.org" = [ "10.3.1.1" ];
           };
@@ -84,6 +84,7 @@ in
           host = "127.0.0.1";
           port = 8086;
           cookie_secret_path = pkgs.writeText "cookie_secret_path" "12345678123456781234567812345678";
+          base_url = "https://${CONFIG.HEADSCALE_DOMAIN}/admin";
         };
         headscale = {
           url = "https://${CONFIG.HEADSCALE_DOMAIN}";
@@ -105,7 +106,7 @@ in
           token_endpoint_auth_method = "client_secret_post";
 
           headscale_api_key_path = CONFIG.HEADPLANE_API_KEY_FILE;
-          redirect_uri = "https://${CONFIG.HEADSCALE_DOMAIN}/admin/oidc/callback";
+          # redirect_uri = "https://${CONFIG.HEADSCALE_DOMAIN}/admin/oidc/callback";
         };
       };
     };

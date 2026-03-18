@@ -1,11 +1,3 @@
-{
-  config,
-  lib,
-  pkgs,
-  modulesPath,
-  ...
-}:
-
 let
   CONFIG = import ./config.nix;
   mkSSOVirtualHost = import ./lib/nginx-sso-helper.nix;
