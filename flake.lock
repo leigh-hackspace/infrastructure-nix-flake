@@ -244,16 +244,15 @@
         ]
       },
       "locked": {
-        "lastModified": 1771494219,
-        "narHash": "sha256-nOgWAQy8Wyqa7WefHKOOWbbzUmFQ0mht4fNm+fikgIg=",
+        "lastModified": 1773854627,
+        "narHash": "sha256-oL8yAqhjAyxWLV1mjUDMPHrZjgznPL1VqkwFlm4F/j8=",
         "owner": "ggml-org",
         "repo": "llama.cpp",
-        "rev": "0a28841e5d9d588edd877415251069e9ed3fc4e7",
+        "rev": "8ced5f41f9ec0808cfdcb46bbd6300439d07160d",
         "type": "github"
       },
       "original": {
         "owner": "ggml-org",
-        "ref": "0cc4m/vulkan-fix-19509-mmq",
         "repo": "llama.cpp",
         "type": "github"
       }
