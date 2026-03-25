@@ -13,8 +13,8 @@
     door-entry-bluetooth-web-app.url = "github:leigh-hackspace/door-entry-system?dir=bluetooth-web-app";
 
     llama-cpp = {
-      url = "github:ggml-org/llama.cpp";
-      # url = "github:leigh-hackspace/llama.cpp/rocm-uma";
+      # url = "github:ggml-org/llama.cpp";
+      url = "github:leigh-hackspace/llama.cpp/new-webui-build";
       # url = "git+file:///home/leigh-admin/Projects/llama.cpp";
       inputs.nixpkgs.follows = "nixpkgs";
     };

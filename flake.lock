@@ -244,15 +244,16 @@
         ]
       },
       "locked": {
-        "lastModified": 1773854627,
-        "narHash": "sha256-oL8yAqhjAyxWLV1mjUDMPHrZjgznPL1VqkwFlm4F/j8=",
-        "owner": "ggml-org",
+        "lastModified": 1773857048,
+        "narHash": "sha256-npMvkOiWWbJ2yoMZ2aHgfPF4colu9TxpDjqUf0Yu+CE=",
+        "owner": "leigh-hackspace",
         "repo": "llama.cpp",
-        "rev": "8ced5f41f9ec0808cfdcb46bbd6300439d07160d",
+        "rev": "e6057a44c7a8cc376ca347e50ee6f81e931b230c",
         "type": "github"
       },
       "original": {
-        "owner": "ggml-org",
+        "owner": "leigh-hackspace",
+        "ref": "new-webui-build",
         "repo": "llama.cpp",
         "type": "github"
       }
@@ -362,11 +363,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1763424156,
-        "narHash": "sha256-sGJ+Cp1V5IfB5Fl8yVgEzqODYTxb/aXSNrVoIJqmrhY=",
+        "lastModified": 1774454186,
+        "narHash": "sha256-xK1sqZLyj2LNBkBIA3MkCW34esfn5EVMGMxV7aLrQ60=",
         "ref": "refs/heads/main",
-        "rev": "f28428c52beebde5f43d07be0f5f226592e811a4",
-        "revCount": 1,
+        "rev": "900656cee7c3404242705c1d49ef355458266f43",
+        "revCount": 3,
         "type": "git",
         "url": "file:///home/leigh-admin/Projects/pxe-server"
       },
