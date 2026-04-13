@@ -22,6 +22,7 @@ in
 
   fileSystems."/exports/pxe-server-squashfs" = {
     device = "${pxeServer.squashfsStore}";
+    fsType = "bind";
     options = [ "bind" ];
   };
 

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+set -euo pipefail
 
 # Convenience script for updating the "pxe-server" flake and rebuilding the system
 

@@ -244,16 +244,15 @@
         ]
       },
       "locked": {
-        "lastModified": 1773857048,
-        "narHash": "sha256-npMvkOiWWbJ2yoMZ2aHgfPF4colu9TxpDjqUf0Yu+CE=",
-        "owner": "leigh-hackspace",
+        "lastModified": 1776082891,
+        "narHash": "sha256-TpXoozA/HlrTb4VCJ2J+zFzDbzQErZE1cWc4P0Riisk=",
+        "owner": "ggml-org",
         "repo": "llama.cpp",
-        "rev": "e6057a44c7a8cc376ca347e50ee6f81e931b230c",
+        "rev": "75f3bc94e649616162981c322e8e6b88ca5491e8",
         "type": "github"
       },
       "original": {
-        "owner": "leigh-hackspace",
-        "ref": "new-webui-build",
+        "owner": "ggml-org",
         "repo": "llama.cpp",
         "type": "github"
       }
@@ -355,27 +354,6 @@
         "type": "github"
       }
     },
-    "pxe-server": {
-      "inputs": {
-        "flake-utils": "flake-utils_6",
-        "nixpkgs": [
-          "nixpkgs"
-        ]
-      },
-      "locked": {
-        "lastModified": 1774454186,
-        "narHash": "sha256-xK1sqZLyj2LNBkBIA3MkCW34esfn5EVMGMxV7aLrQ60=",
-        "ref": "refs/heads/main",
-        "rev": "900656cee7c3404242705c1d49ef355458266f43",
-        "revCount": 3,
-        "type": "git",
-        "url": "file:///home/leigh-admin/Projects/pxe-server"
-      },
-      "original": {
-        "type": "git",
-        "url": "file:///home/leigh-admin/Projects/pxe-server"
-      }
-    },
     "pyproject-build-systems": {
       "inputs": {
         "nixpkgs": [
@@ -435,8 +413,7 @@
         "llama-cpp": "llama-cpp",
         "nixos-hardware": "nixos-hardware",
         "nixos-utils": "nixos-utils",
-        "nixpkgs": "nixpkgs_3",
-        "pxe-server": "pxe-server"
+        "nixpkgs": "nixpkgs_3"
       }
     },
     "systems": {
