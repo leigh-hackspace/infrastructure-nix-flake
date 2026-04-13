@@ -1,6 +1,6 @@
 {
   inputs = {
-    nixpkgs.url = "github:nixos/nixpkgs/nixos-25.11";
+    nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
     nixos-hardware.url = "github:NixOS/nixos-hardware/master";
 
     nixos-utils = {
@@ -21,6 +21,7 @@
 
     gocardless-tools = {
       url = "git+file:///home/leigh-admin/Projects/gocardless-tools";
+      # url = "github:leigh-hackspace/gocardless-tools";
       inputs.nixpkgs.follows = "nixpkgs";
     };
     pxe-server = {
@@ -28,7 +29,7 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     headplane = {
-      url = "github:tale/headplane/main";
+      url = "github:tale/headplane/v0.6.2";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };

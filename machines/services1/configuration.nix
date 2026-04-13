@@ -26,7 +26,7 @@
   boot.loader.efi.canTouchEfiVariables = true;
 
   # boot.kernelPackages = pkgs.linuxPackages_latest;
-  boot.extraModulePackages = [ pkgs.linuxKernel.packages.linux_6_12.gasket ];
+  boot.extraModulePackages = [ pkgs.linuxKernel.packages.linux_6_18.gasket ];
 
   # Set your time zone.
   time.timeZone = "Europe/London";

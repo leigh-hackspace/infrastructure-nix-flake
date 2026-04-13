@@ -23,17 +23,19 @@ in
     settings = {
       server_url = "https://${CONFIG.HEADSCALE_DOMAIN}";
 
+      log.level = "debug";
+
       dns = {
-        override_local_dns = false;   # Doesn't interfere with local DNS resolution
+        override_local_dns = false;
         base_domain = "ts.leighhack.org";
         magic_dns = true;
         search_domains = [ "int.leighhack.org" ];
         nameservers = {
-          # global = [
-          #   "9.9.9.9"
-          #   "8.8.8.8"
-          #   "1.1.1.1"
-          # ];
+          global = [
+            "9.9.9.9"
+            "8.8.8.8"
+            "1.1.1.1"
+          ];
           split = {
             "int.leighhack.org" = [ "10.3.1.1" ];
           };
