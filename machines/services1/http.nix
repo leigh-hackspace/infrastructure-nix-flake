@@ -13,7 +13,7 @@
 
 let
   CONFIG = import ./config.nix;
-  nginxSso = import ./lib/nginx-sso-config.nix;
+  nginxSsoConfig = import ./lib/nginx-sso-config.nix;
   mkSSOVirtualHost = import ./lib/nginx-sso-helper.nix;
 in
 {
@@ -48,22 +48,27 @@ in
   };
 
   # journalctl -u nginx-sso -f
-  systemd.services.nginx-sso = {
-    description = "NGINX SSO";
-
-    # Ensure the service is started at boot
-    wantedBy = [ "multi-user.target" ];
-
-    serviceConfig = {
-      ExecStart = "${pkgs.nginx-sso}/bin/nginx-sso --frontend-dir=${pkgs.nginx-sso}/share/frontend -c ${
-        pkgs.writeText "nginx-sso-config" (nginxSso {
+  systemd.services.nginx-sso = (
+    let
+      configFilePath = (
+        pkgs.writeText "nginx-sso-config" (nginxSsoConfig {
           inherit lib;
         })
-      }";
-      Restart = "always";
-      RestartSec = 5;
-    };
-  };
+      );
+    in
+    {
+      description = "NGINX SSO";
+
+      # Ensure the service is started at boot
+      wantedBy = [ "multi-user.target" ];
+
+      serviceConfig = {
+        ExecStart = "${pkgs.nginx-sso}/bin/nginx-sso --frontend-dir=${pkgs.nginx-sso}/share/frontend -c ${configFilePath}";
+        Restart = "always";
+        RestartSec = 5;
+      };
+    }
+  );
 
   services.nginx = {
     enable = true;

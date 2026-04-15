@@ -94,6 +94,16 @@ lib.generators.toYAML { } {
       ];
       allow = [ "@_anonymous" ];
     }
+    # Grant Chris (IPv6)
+    {
+      rules = [
+        {
+          field = "x-real-ip";
+          regexp = "^2a02:8010:6680";
+        }
+      ];
+      allow = [ "@_anonymous" ];
+    }
   ];
 
   providers.oidc = {
