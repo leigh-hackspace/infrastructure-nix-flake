@@ -76,11 +76,20 @@ in
           DHCP = false;
           Address = [
             "10.3.1.20/24"
+            "10.3.1.21/24"
             "2001:8b0:1d14:225:d::1020/64"
+            "2001:8b0:1d14:225:d::1021/64"
           ];
-          Gateway = ["10.3.1.1"];
-          DNS = ["10.3.1.1"];
+          Gateway = [ "10.3.1.1" ];
+          DNS = [ "10.3.1.1" ];
           IPv6AcceptRA = true;
+        };
+        # Accept the RA for routing/gateway but don't autoconfigure addresses
+        ipv6AcceptRAConfig = {
+          UseAutonomousPrefix = false; # suppress SLAAC — no new addresses from RA prefixes
+          UseOnLinkPrefix = true; # still treat the prefix as on-link (routing works)
+          UseGateway = true; # install the RA default route (connectivity)
+          UseDNS = false; # optional: ignore RA-advertised DNS if you prefer yours
         };
       };
 
@@ -97,7 +106,9 @@ in
   # This server handles HTTP traffic so we need to re-route to itself
   networking.extraHosts = ''
     10.3.1.20                 id.leighhack.org id.int.leighhack.org tailscale.leighhack.org
+    10.3.1.21                 unifi.int.leighhack.org
     2001:8b0:1d14:225:d::1020 id.leighhack.org id.int.leighhack.org tailscale.leighhack.org
+    2001:8b0:1d14:225:d::1021 unifi.int.leighhack.org
   '';
 
   # Enable NAT

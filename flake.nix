@@ -20,7 +20,7 @@
     };
 
     gocardless-tools = {
-      url = "git+file:///home/leigh-admin/Projects/gocardless-tools";
+      url = "git+file:///home/leigh-admin/Projects/gocardless-tools"; # Private Git repo
       # url = "github:leigh-hackspace/gocardless-tools";
       inputs.nixpkgs.follows = "nixpkgs";
     };
@@ -74,8 +74,8 @@
             modules = [
               fix-nix-shell
 
-              nixos-utils.modules.rollback
-              nixos-utils.modules.containers
+              nixos-utils.nixosModules.rollback
+              nixos-utils.nixosModules.containers
 
               ./common/tools.nix
               ./common/users.nix

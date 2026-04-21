@@ -73,6 +73,11 @@ in
   services.nginx = {
     enable = true;
 
+    defaultListenAddresses = [
+      "10.3.1.20"
+      "[2001:8b0:1d14:225:d::1020]"
+    ];
+
     # recommendedProxySettings = true;  # Breaks Home Assistant
     recommendedTlsSettings = true;
     recommendedOptimisation = true;
