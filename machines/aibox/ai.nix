@@ -40,26 +40,14 @@
         llamaConfig = {
           models = {
             "[Reasoning] gemma-4-26B-A4B-it-UD-Q4_K_M" = {
-              cmd = "${llamaCmdVulkan} -m ${modelsPath}/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf -ngl 100 --ctx-size 0 --metrics";
+              cmd = "${llamaCmdVulkan} -m ${modelsPath}/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf --mmproj ${modelsPath}/mmproj-F16.gguf -ngl 100 --ctx-size 0 --metrics";
             };
-            # "gemma-4-31B-it-Q4_K_M" = {
-            #   cmd = "${llamaCmdVulkan} -m ${modelsPath}/gemma-4-31B-it-Q4_K_M.gguf -ngl 100 --ctx-size 0 --metrics";
-            # };
 
             "[Vision] Qwen2.5-VL-7B-Instruct-Q8_0" = {
               cmd = "${llamaCmdVulkan} -m ${modelsPath}/Qwen2.5-VL-7B-Instruct-Q8_0.gguf --mmproj ${modelsPath}/mmproj-Qwen2.5-VL-7B-Instruct-Q8_0.gguf -ngl 100 --ctx-size 0 --metrics";
             };
-            # "[Vision] Qwen3VL-8B-Instruct-Q8_0" = {
-            #   cmd = "${llamaCmdVulkan} -m ${modelsPath}/Qwen3VL-8B-Instruct-Q8_0.gguf --mmproj ${modelsPath}/mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf -ngl 100 --ctx-size 0 --metrics";
-            # };
 
-            "[Fast] Qwen3-Coder-30B-A3B-Instruct-Q4_K_M" = {
-              cmd = "${llamaCmdVulkan} -m ${modelsPath}/Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf -ngl 100 --ctx-size 0 --metrics";
-            };
-            # "[Slow] Qwen3-Coder-Next-Q4_K_S" = {
-            #   cmd = "${llamaCmdVulkan} -m ${modelsPath}/Qwen3-Coder-Next-Q4_K_S.gguf -ngl 100 --ctx-size 0 --metrics";
-            # };
-            "[Slow] Qwen3-Next-80B-A3B-Instruct-Q4_K_S" = {
+            "[General] Qwen3-Next-80B-A3B-Instruct-Q4_K_S" = {
               cmd = "${llamaCmdVulkan} -m ${modelsPath}/Qwen3-Next-80B-A3B-Instruct-Q4_K_S.gguf -ngl 100 --ctx-size 32768 --metrics";
             };
           };

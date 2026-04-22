@@ -171,6 +171,24 @@
         "type": "github"
       }
     },
+    "flake-utils_6": {
+      "inputs": {
+        "systems": "systems_6"
+      },
+      "locked": {
+        "lastModified": 1731533236,
+        "narHash": "sha256-l0KFg5HjrsfsO/JpG+r7fRrqm12kzFHyUHqHCVpMMbI=",
+        "owner": "numtide",
+        "repo": "flake-utils",
+        "rev": "11707dc2f618dd54ca8739b309ec4fc024de578b",
+        "type": "github"
+      },
+      "original": {
+        "owner": "numtide",
+        "repo": "flake-utils",
+        "type": "github"
+      }
+    },
     "gocardless-tools": {
       "inputs": {
         "flake-utils": "flake-utils_3",
@@ -336,6 +354,27 @@
         "type": "github"
       }
     },
+    "pxe-server": {
+      "inputs": {
+        "flake-utils": "flake-utils_6",
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1776807802,
+        "narHash": "sha256-pc9twhID2TTUiniMrdpRKqZgtWXqBEM+5+bhd3PAqbk=",
+        "ref": "refs/heads/main",
+        "rev": "b1ecb81691e0af7cf0086a2ffe0f5354d8027bf6",
+        "revCount": 6,
+        "type": "git",
+        "url": "file:///home/leigh-admin/Projects/pxe-server"
+      },
+      "original": {
+        "type": "git",
+        "url": "file:///home/leigh-admin/Projects/pxe-server"
+      }
+    },
     "pyproject-build-systems": {
       "inputs": {
         "nixpkgs": [
@@ -395,7 +434,8 @@
         "llama-cpp": "llama-cpp",
         "nixos-hardware": "nixos-hardware",
         "nixos-utils": "nixos-utils",
-        "nixpkgs": "nixpkgs_3"
+        "nixpkgs": "nixpkgs_3",
+        "pxe-server": "pxe-server"
       }
     },
     "systems": {
@@ -459,6 +499,21 @@
       }
     },
     "systems_5": {
+      "locked": {
+        "lastModified": 1681028828,
+        "narHash": "sha256-Vy1rq5AaRuLzOxct8nz4T6wlgyUR7zLU309k9mBC768=",
+        "owner": "nix-systems",
+        "repo": "default",
+        "rev": "da67096a3b9bf56a91d16901293e51ba5b49a27e",
+        "type": "github"
+      },
+      "original": {
+        "owner": "nix-systems",
+        "repo": "default",
+        "type": "github"
+      }
+    },
+    "systems_6": {
       "locked": {
         "lastModified": 1681028828,
         "narHash": "sha256-Vy1rq5AaRuLzOxct8nz4T6wlgyUR7zLU309k9mBC768=",

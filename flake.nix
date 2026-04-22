@@ -108,7 +108,7 @@
               modules = [
                 fix-nix-shell
 
-                nixos-utils.modules.rollback
+                nixos-utils.nixosModules.rollback
 
                 ./common/tools.nix
                 ./common/users.nix
