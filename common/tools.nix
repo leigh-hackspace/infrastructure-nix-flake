@@ -53,7 +53,7 @@
       Type = "oneshot";
       RemainAfterExit = true;
       ExecStart = "${pkgs.bash}/bin/bash -c 'until ${pkgs.iputils}/bin/ping -c1 -W2 10.3.1.1 >/dev/null 2>&1; do sleep 2; done; sleep 1'";
-      TimeoutStartSec = 30;
+      TimeoutStartSec = 300;
     };
   };
 }
