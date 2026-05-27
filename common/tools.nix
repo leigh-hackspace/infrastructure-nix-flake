@@ -44,7 +44,7 @@
     memray
   ];
 
-  # Ping the router and only exit once a successful ping comes back. Prevents services starting before the network is truely ready.
+  # Ping the NAS and only exit once a successful ping comes back. Prevents services starting before the network is truely ready.
   systemd.services.wait-for-network = {
     description = "Wait for Network";
     after = [ "network-online.target" ];
@@ -52,7 +52,7 @@
     serviceConfig = {
       Type = "oneshot";
       RemainAfterExit = true;
-      ExecStart = "${pkgs.bash}/bin/bash -c 'until ${pkgs.iputils}/bin/ping -c1 -W2 10.3.1.1 >/dev/null 2>&1; do sleep 2; done; sleep 1'";
+      ExecStart = "${pkgs.bash}/bin/bash -c 'until ${pkgs.iputils}/bin/ping -c1 -W2 10.3.1.6 >/dev/null 2>&1; do sleep 2; done; sleep 1'";
       TimeoutStartSec = 300;
     };
   };

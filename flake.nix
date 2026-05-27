@@ -10,7 +10,7 @@
     };
 
     door-entry-management-system.url = "github:leigh-hackspace/door-entry-system?dir=management-system";
-    door-entry-bluetooth-web-app.url = "github:leigh-hackspace/door-entry-system?dir=bluetooth-web-app";
+    # door-entry-bluetooth-web-app.url = "github:leigh-hackspace/door-entry-system?dir=bluetooth-web-app";
 
     llama-cpp = {
       url = "github:ggml-org/llama.cpp";
