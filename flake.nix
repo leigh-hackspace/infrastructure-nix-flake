@@ -1,6 +1,6 @@
 {
   inputs = {
-    nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
+    nixpkgs.url = "github:nixos/nixpkgs/nixos-26.05";
     nixos-hardware.url = "github:NixOS/nixos-hardware/master";
 
     nixos-utils = {
@@ -28,10 +28,10 @@
       url = "git+file:///home/leigh-admin/Projects/pxe-server";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    headplane = {
-      url = "github:tale/headplane/v0.6.2";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
+    # headplane = {
+    #   url = "github:tale/headplane/v0.6.2";
+    #   inputs.nixpkgs.follows = "nixpkgs";
+    # };
   };
 
   outputs =
@@ -40,7 +40,7 @@
       nixos-utils,
       llama-cpp,
       pxe-server,
-      headplane,
+      # headplane,
       ...
     }@flakeInputs:
     let
@@ -80,13 +80,13 @@
               ./common/tools.nix
               ./common/users.nix
 
-              # provides `services.headplane.*` NixOS options.
-              headplane.nixosModules.headplane
+              # # provides `services.headplane.*` NixOS options.
+              # headplane.nixosModules.headplane
 
-              {
-                # provides `pkgs.headplane`
-                nixpkgs.overlays = [ headplane.overlays.default ];
-              }
+              # {
+              #   # provides `pkgs.headplane`
+              #   nixpkgs.overlays = [ headplane.overlays.default ];
+              # }
 
               ((import ./machines/services1) { inherit flakeInputs; })
             ];
