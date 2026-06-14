@@ -18,6 +18,7 @@ in
     gid = UNIFI_UID;
   };
 
+  # journalctl -u podman-unifi -f
   virtualisation.oci-containers.containers.unifi = {
     hostname = "unifi";
     image = "lscr.io/linuxserver/unifi-network-application:latest";

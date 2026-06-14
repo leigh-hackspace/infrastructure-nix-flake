@@ -1,5 +1,6 @@
 # Make sure hackspace LAN is advertised
-# sudo tailscale set --advertise-routes=2001:8b0:1d14::0/48,10.3.0.0/16
+# sudo tailscale set --advertise-routes=10.3.0.0/16,2001:8b0:1d14::0/48,fd99:dead:beef:0225::/64
+# sudo tailscale set --advertise-routes=10.3.0.0/16,fd99:dead:beef:0225::/64
 
 {
   pkgs,

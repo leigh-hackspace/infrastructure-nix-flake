@@ -18,7 +18,7 @@ in
     })
   ];
 
-  # sudo journalctl -u door-entry-management-system-backend -f
+  # journalctl -u door-entry-management-system-backend -f
   systemd.services.door-entry-management-system-backend = {
     description = "Door Entry Management System Backend";
     requires = [
@@ -48,7 +48,7 @@ in
     };
   };
 
-  # sudo journalctl -u door-entry-management-system-frontend -f
+  # journalctl -u door-entry-management-system-frontend -f
   systemd.services.door-entry-management-system-frontend = {
     description = "Door Entry Management System Frontend";
     requires = [ "door-entry-management-system-backend.service" ];

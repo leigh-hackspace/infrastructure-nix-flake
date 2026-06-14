@@ -1,26 +1,26 @@
 {
   # May need to change if the repo is cloned to a different home folder
-  ENV_FILE                          = "/var/lib/secrets/.env";
-  HTTP_BASIC_AUTH_FILE              = "/var/lib/secrets/http_basic_auth";
-  WIREGUARD_KEY_FILE                = "/var/lib/secrets/wg.key";
-  SLACK_URL_FILE                    = "/var/lib/secrets/slack_url.txt";
-  UNIFI_DB_PASSWORD_FILE            = "/var/lib/secrets/unifi_db_password.txt";
+  ENV_FILE = "/var/lib/secrets/.env";
+  HTTP_BASIC_AUTH_FILE = "/var/lib/secrets/http_basic_auth";
+  WIREGUARD_KEY_FILE = "/var/lib/secrets/wg.key";
+  SLACK_URL_FILE = "/var/lib/secrets/slack_url.txt";
+  UNIFI_DB_PASSWORD_FILE = "/var/lib/secrets/unifi_db_password.txt";
 
-  AUTHENTIK_DOMAIN                  = "id.leighhack.org";
+  AUTHENTIK_DOMAIN = "id.leighhack.org";
 
-  MATTERMOST_AUTHENTIK_SECRET_FILE  = "/var/lib/secrets/mattermost_authentik_secret.key";
+  MATTERMOST_AUTHENTIK_SECRET_FILE = "/var/lib/secrets/mattermost_authentik_secret.key";
 
-  HEADSCALE_DOMAIN                  = "tailscale.leighhack.org";
-  HEADPLANE_PRE_AUTHKEY_FILE        = "/var/lib/secrets/headplane_pre_authkey.key";
-  HEADPLANE_API_KEY_FILE            = "/var/lib/secrets/headplane_api_key.key";
-  HEADPLANE_CLIENT_SECRET_FILE      = "/var/lib/secrets/headplane_client_secret.key";
+  HEADSCALE_DOMAIN = "tailscale.leighhack.org";
+  HEADPLANE_PRE_AUTHKEY_FILE = "/var/lib/secrets/headplane_pre_authkey.key";
+  HEADPLANE_API_KEY_FILE = "/var/lib/secrets/headplane_api_key.key";
+  HEADPLANE_CLIENT_SECRET_FILE = "/var/lib/secrets/headplane_client_secret.key";
 
-  OUTLINE_CLIENT_SECRET_FILE        = "/var/lib/secrets/outline_client_secret.key";
+  OUTLINE_CLIENT_SECRET_FILE = "/var/lib/secrets/outline_client_secret.key";
 
-  NGINX_SSO_CLIENT_SECRET_FILE      = "/var/lib/secrets/nginx_sso_client_secret.key";
-  NGINX_SSO_AUTH_KEY_FILE           = "/var/lib/secrets/nginx_sso_auth.key";
-  
-  BACKUP_KEY_FILE                   = "/var/lib/secrets/id_ed25519_backups";
+  NGINX_SSO_CLIENT_SECRET_FILE = "/var/lib/secrets/nginx_sso_client_secret.key";
+  NGINX_SSO_AUTH_KEY_FILE = "/var/lib/secrets/nginx_sso_auth.key";
+
+  BACKUP_KEY_FILE = "/var/lib/secrets/id_ed25519_backups";
 
   # Creating the `http_basic_auth` file
   # nix-shell --packages apacheHttpd --run 'htpasswd -B -c /var/lib/secrets/http_basic_auth leighhack'
@@ -32,8 +32,8 @@
     allow 192.168.2.0/24;           # CS_VLAN Internal
     allow 100.64.0.0/16;            # Tailscale Tailnet (IPv4)
     allow fd7a:115c:a1e0::0/48;     # Tailscale Tailnet (IPv6)
-    allow 10.47.0.0/16;             # Chris VPN
     allow 2001:8b0:1d14::0/48;      # Hackspace AAISP range
+    allow fd99:dead:beef::0/48;     # Hackspace IPv6 LAN range
 
     # Chris stuff...
     allow 192.168.49.0/24;          # Chris Home Internal
@@ -43,7 +43,7 @@
     allow 2001:4860:7::0/48;        # Society1
 
     allow 217.155.231.1/32;         # Kian
-    
+
     deny all;
   '';
 

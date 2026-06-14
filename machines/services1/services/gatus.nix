@@ -33,4 +33,16 @@ in
       ];
     };
   };
+
+  services.nginx.virtualHosts = {
+    "gatus.int.leighhack.org" = {
+      useACMEHost = "leighhack.org";
+      forceSSL = true;
+
+      locations."/" = {
+        proxyPass = "http://localhost:8999";
+        recommendedProxySettings = true;
+      };
+    };
+  };
 }
