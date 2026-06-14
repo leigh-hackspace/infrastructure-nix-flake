@@ -62,6 +62,7 @@
                 ];
               };
             };
+            specialArgs = flakeInputs;
             modules = [
               fix-nix-shell
 
@@ -71,7 +72,7 @@
               ./common/tools.nix
               ./common/users.nix
 
-              ((import ./machines/services1) { inherit flakeInputs; })
+              ./machines/services1
             ];
           };
 

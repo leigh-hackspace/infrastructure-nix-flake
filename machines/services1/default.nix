@@ -1,10 +1,8 @@
-{ flakeInputs }:
-
 {
   networking.hostName = "services1"; # Define your hostname.
 
   imports = [
-    ((import ./services) { inherit flakeInputs; })
+    ./services
 
     ./ai.nix
     ./configuration.nix

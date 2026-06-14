@@ -1,7 +1,6 @@
-{ flakeInputs }:
-
 {
   pkgs,
+  specialArgs,
   ...
 }:
 
@@ -11,7 +10,7 @@ in
 {
   nixpkgs.overlays = [
     (final: prev: {
-      gocardless-tools = flakeInputs.gocardless-tools.packages.${pkgs.system}.default;
+      gocardless-tools = specialArgs.gocardless-tools.packages.${pkgs.system}.default;
     })
   ];
 

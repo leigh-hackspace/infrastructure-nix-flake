@@ -1,7 +1,6 @@
-{ flakeInputs }:
-
 {
   pkgs,
+  specialArgs,
   ...
 }:
 
@@ -12,9 +11,9 @@ in
   nixpkgs.overlays = [
     (final: prev: {
       door-entry-management-system =
-        flakeInputs.door-entry-management-system.packages.${pkgs.system}.default;
+        specialArgs.door-entry-management-system.packages.${pkgs.system}.default;
       # door-entry-bluetooth-web-app =
-      #   flakeInputs.door-entry-bluetooth-web-app.packages.${pkgs.system}.default;
+      #   specialArgs.door-entry-bluetooth-web-app.packages.${pkgs.system}.default;
     })
   ];
 

@@ -1,15 +1,13 @@
-{ flakeInputs }:
-
 {
   imports = [
     # ./affine.nix
     ./backup.nix
     ./cockpit.nix
-    ((import ./door-entry-management-system.nix) { inherit flakeInputs; })
+    ./door-entry-management-system.nix
     ./frigate.nix
     ./gatus.nix
     # ./gitlab.nix
-    ((import ./gocardless-authentik-sync.nix) { inherit flakeInputs; })
+    ./gocardless-authentik-sync.nix
     ./headscale.nix
     ./librespeed.nix
     # ./matrix.nix
