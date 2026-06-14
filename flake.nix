@@ -24,14 +24,11 @@
       # url = "github:leigh-hackspace/gocardless-tools";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+
     pxe-server = {
       url = "git+file:///home/leigh-admin/Projects/pxe-server";
-      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.nixpkgs-new.follows = "nixpkgs";
     };
-    # headplane = {
-    #   url = "github:tale/headplane/v0.6.2";
-    #   inputs.nixpkgs.follows = "nixpkgs";
-    # };
   };
 
   outputs =
@@ -39,25 +36,19 @@
       nixpkgs,
       nixos-utils,
       llama-cpp,
-      pxe-server,
-      # headplane,
       ...
     }@flakeInputs:
+
     let
       system = "x86_64-linux";
     in
     {
-      listGenerations =
-        let
-          pkgs = import nixpkgs { inherit system; };
-        in
-        (pkgs.writers.writeNuBin "list-generations" ./nu/list-generations.nu);
-
       nixosConfigurations =
         let
           fix-nix-shell = {
+            # Make "nix-shell" use the flake version
             nix.registry.nixpkgs.flake = nixpkgs;
-          }; # Make "nix-shell" use the flake version
+          };
         in
         {
           services1 = nixpkgs.lib.nixosSystem {
@@ -79,14 +70,6 @@
 
               ./common/tools.nix
               ./common/users.nix
-
-              # # provides `services.headplane.*` NixOS options.
-              # headplane.nixosModules.headplane
-
-              # {
-              #   # provides `pkgs.headplane`
-              #   nixpkgs.overlays = [ headplane.overlays.default ];
-              # }
 
               ((import ./machines/services1) { inherit flakeInputs; })
             ];
@@ -131,7 +114,7 @@
                   }
                 )
 
-                (import ./machines/aibox pxe-server)
+                ((import ./machines/aibox) flakeInputs)
               ];
             };
         };

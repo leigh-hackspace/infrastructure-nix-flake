@@ -1,4 +1,5 @@
-pxe-server:
+flakeInputs:
+
 { config, pkgs, ... }:
 
 {
@@ -10,7 +11,7 @@ pxe-server:
     ./containers.nix
     ./hardware-configuration.nix
     ./networking.nix
-    (import ./pxe-server.nix pxe-server)
+    ((import ./pxe-server.nix) flakeInputs)
     ./sso.nix
     ./sunshine.nix
   ];

@@ -1,4 +1,5 @@
-pxe-server:
+{ pxe-server, ... }:
+
 { config, pkgs, ... }:
 
 let
@@ -15,18 +16,16 @@ in
     '';
   };
 
-  # fileSystems."/exports/pxe-server-nix-store" = {
-  #   device = "${pxeServer.nixStore}/nix-store";
-  #   options = [ "bind" ];
-  # };
-
+  ## Test NFS is working...
+  # sudo mount -t nfs4      10.3.14.32:/pxe-server-squashfs              /mnt/pxe-server-squashfs
+  # sudo mount -t squashfs  /mnt/pxe-server-squashfs/squashfs.squashfs   /mnt/pxe-server-nix-store
   fileSystems."/exports/pxe-server-squashfs" = {
     device = "${pxeServer.squashfsStore}";
     fsType = "bind";
     options = [ "bind" ];
   };
 
-  # sudo journalctl -u pxe-server -f
+  # journalctl -u pxe-server -f
   systemd.services.pxe-server = {
     description = "PXE Server";
     requires = [
