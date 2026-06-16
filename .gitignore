@@ -3,3 +3,5 @@
 *.ignore
 ai-resources
 junk/
+notes.txt
+/initrd*

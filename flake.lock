@@ -262,11 +262,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1781414168,
-        "narHash": "sha256-3FUpIDAQPyVkFhebc+KRCUl5Ww9CPDsjoeuvdqfFE6c=",
+        "lastModified": 1781537790,
+        "narHash": "sha256-wFgN6juQUnLX+w9ak8xUTu1XrLXVTwKAfMGBvU/9TmI=",
         "ref": "refs/heads/main",
-        "rev": "e0d10617f86e47dd07f80bff3e74a22a5ed50e2d",
-        "revCount": 8,
+        "rev": "42f8ce0044552bf497b5696d9c61d4f894e6b611",
+        "revCount": 11,
         "type": "git",
         "url": "file:///home/leigh-admin/Projects/pxe-server"
       },

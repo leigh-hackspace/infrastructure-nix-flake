@@ -11,8 +11,9 @@ in
   services.nfs.server = {
     enable = true;
     exports = ''
-      /exports                        10.3.0.0/16(rw,fsid=0,no_subtree_check)
-      /exports/pxe-server-squashfs    10.3.0.0/16(ro,nohide,insecure,no_subtree_check)
+      /exports                          10.3.0.0/16(rw,fsid=0,no_subtree_check)
+      /exports/pxe-server-squashfs      10.3.0.0/16(ro,nohide,insecure,no_subtree_check)
+      /exports/pxe-server-squashfs-min  10.3.0.0/16(ro,nohide,insecure,no_subtree_check)
     '';
   };
 
@@ -25,7 +26,14 @@ in
     options = [ "bind" ];
   };
 
+  fileSystems."/exports/pxe-server-squashfs-min" = {
+    device = "${pxeServer.squashfsStoreMin}";
+    fsType = "bind";
+    options = [ "bind" ];
+  };
+
   # journalctl -u pxe-server -f
+  # systemctl cat pxe-server
   systemd.services.pxe-server = {
     description = "PXE Server";
     requires = [
@@ -42,4 +50,14 @@ in
       RestartSec = 5;
     };
   };
+
+  environment.systemPackages = with pkgs; [ qemu ];
+
+  virtualisation.libvirtd = {
+    enable = true;
+    allowedBridges = [ "br227" ];
+  };
 }
+
+## Launch a VM to test PXE boot
+# qemu-system-x86_64 -m 2048 -netdev tap,id=net0,br=br227,helper=$(type -p qemu-bridge-helper) -device virtio-net-pci,netdev=net0 -display vnc=:0 -vga qxl

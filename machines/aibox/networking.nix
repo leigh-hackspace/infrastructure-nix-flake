@@ -50,6 +50,15 @@
         };
         vlanConfig.Id = 227;
       };
+
+      # Brigde needed for QEMU quests
+      "13-br227" = {
+        netdevConfig = {
+          Kind = "bridge";
+          Name = "br227";
+          MACAddress = "84:47:09:40:d3:27";
+        };
+      };
     };
 
     networks = {
@@ -75,6 +84,14 @@
 
       "12-vlan227" = {
         matchConfig.Name = "vlan227";
+        networkConfig = {
+          DHCP = false; # Do not assign IP to vlan227 directly — use br227
+        };
+        bridge = [ "br227" ]; # Attach vlan227 to bridge
+      };
+
+      "13-br227" = {
+        matchConfig.Name = "br227";
         networkConfig = {
           DHCP = true;
           IPv6AcceptRA = true;
