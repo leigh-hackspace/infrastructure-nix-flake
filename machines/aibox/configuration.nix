@@ -2,8 +2,6 @@
 # your system.  Help is available in the configuration.nix(5) man page
 # and in the NixOS manual (accessible by running ‘nixos-help’).
 
-{ config, pkgs, ... }:
-
 {
   system.autoRollback.enable = true;
 
@@ -34,14 +32,6 @@
     LC_TIME = "en_GB.UTF-8";
   };
 
-  # # Enable the X11 windowing system.
-  # # You can disable this if you're only using the Wayland session.
-  # services.xserver.enable = true;
-
-  # # Enable the KDE Plasma Desktop Environment.
-  # services.displayManager.sddm.enable = true;
-  # services.desktopManager.plasma6.enable = true;
-
   # Configure keymap in X11
   services.xserver.xkb = {
     layout = "gb";
@@ -50,29 +40,6 @@
 
   # Configure console keymap
   console.keyMap = "uk";
-
-  # # Enable sound with pipewire.
-  # services.pulseaudio.enable = false;
-  # security.rtkit.enable = true;
-  # services.pipewire = {
-  #   enable = true;
-  #   alsa.enable = true;
-  #   alsa.support32Bit = true;
-  #   pulse.enable = true;
-  #   # If you want to use JACK applications, uncomment this
-  #   #jack.enable = true;
-
-  #   # use the example session manager (no others are packaged yet so this is enabled by default,
-  #   # no need to redefine it in your config for now)
-  #   #media-session.enable = true;
-  # };
-
-  # systemd.sleep.settings.Sleep = ''
-  #   AllowSuspend=no
-  #   AllowHibernation=no
-  #   AllowHybridSleep=no
-  #   AllowSuspendThenHibernate=no
-  # '';
 
   # Use sudo without password
   security.sudo.wheelNeedsPassword = false;
@@ -98,5 +65,4 @@
   # Before changing this value read the documentation for this option
   # (e.g. man configuration.nix or on https://nixos.org/nixos/options.html).
   system.stateVersion = "24.11"; # Did you read the comment?
-
 }

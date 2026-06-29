@@ -38,6 +38,8 @@
     "ttm.page_pool_size=13668850"
   ];
 
+  boot.zfs.forceImportRoot = false;
+
   hardware.graphics.enable = true;
 
   fileSystems."/" = {

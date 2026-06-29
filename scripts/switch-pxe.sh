@@ -1,10 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Convenience script for updating the "pxe-server" flake and rebuilding the system
-
-nix flake update pxe-server
-sudo bash -c 'umount -f -l /exports/pxe-server-squashfs | true'
+sudo bash -c 'umount -f -l /exports/netboot-squashfs | true'
 sudo nixos-rebuild switch --flake . --impure
 sudo nixos-confirm
 sudo mount -a

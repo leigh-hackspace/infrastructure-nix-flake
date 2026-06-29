@@ -1,7 +1,11 @@
 **/secrets/*
+
+junk/
+initrd*/
+tmp/
+result-fd/
+
 !.env.sample
 *.ignore
 ai-resources
-junk/
 notes.txt
-/initrd*

@@ -10,9 +10,8 @@ flakeInputs:
     ./configuration.nix
     ./containers.nix
     ./hardware-configuration.nix
+    ./netboot.nix
     ./networking.nix
-    ((import ./pxe-server.nix) flakeInputs)
     ./sso.nix
-    ./sunshine.nix
   ];
 }

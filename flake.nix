@@ -24,11 +24,6 @@
       # url = "github:leigh-hackspace/gocardless-tools";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-
-    pxe-server = {
-      url = "git+file:///home/leigh-admin/Projects/pxe-server";
-      inputs.nixpkgs-new.follows = "nixpkgs";
-    };
   };
 
   outputs =

@@ -34,9 +34,11 @@
     git
     direnv
     deno
-    nixfmt-rfc-style
+    nixfmt
     nil
     nixd
+    alejandra
+    just
     # System Monitoring Tools
     iotop
     lsof
