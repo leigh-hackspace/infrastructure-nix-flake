@@ -10,7 +10,7 @@
     ./gocardless-authentik-sync.nix
     ./headscale.nix
     ./librespeed.nix
-    # ./matrix.nix
+    ./matrix.nix
     ./mattermost.nix
     ./mqtt.nix
     ./outline.nix

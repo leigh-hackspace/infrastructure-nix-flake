@@ -11,9 +11,9 @@ in
   nixpkgs.overlays = [
     (final: prev: {
       door-entry-management-system =
-        specialArgs.door-entry-management-system.packages.${pkgs.system}.default;
+        specialArgs.door-entry-management-system.packages.${pkgs.stdenv.hostPlatform.system}.default;
       # door-entry-bluetooth-web-app =
-      #   specialArgs.door-entry-bluetooth-web-app.packages.${pkgs.system}.default;
+      #   specialArgs.door-entry-bluetooth-web-app.packages.${pkgs.stdenv.hostPlatform.system}.default;
     })
   ];
 

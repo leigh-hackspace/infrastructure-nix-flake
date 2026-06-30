@@ -10,7 +10,7 @@ in
 {
   nixpkgs.overlays = [
     (final: prev: {
-      gocardless-tools = specialArgs.gocardless-tools.packages.${pkgs.system}.default;
+      gocardless-tools = specialArgs.gocardless-tools.packages.${pkgs.stdenv.hostPlatform.system}.default;
     })
   ];
 

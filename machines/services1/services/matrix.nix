@@ -18,7 +18,10 @@ let
 in
 {
   # Necessary for secret access
-  users.groups.secrets.members = [ "synapse" "matrix-synapse" ];
+  users.groups.secrets.members = [
+    "synapse"
+    "matrix-synapse"
+  ];
 
   services.nginx = {
     virtualHosts = {
@@ -81,26 +84,35 @@ in
 
   services.matrix-synapse = {
     enable = true;
-    settings.server_name = "matrix.leighhack.org";
-    settings.public_baseurl = baseUrl;
-    settings.listeners = [
-      {
-        port = 8008;
-        bind_addresses = [ "::1" ];
-        type = "http";
-        tls = false;
-        x_forwarded = true;
-        resources = [
-          {
-            names = [
-              "client"
-              "federation"
-            ];
-            compress = true;
-          }
-        ];
-      }
-    ];
+    settings = {
+      server_name = "matrix.leighhack.org";
+      public_baseurl = baseUrl;
+
+      login_via_existing_session = {
+        enabled = true;
+        require_ui_auth = false;
+        token_timeout = "5m";
+      };
+
+      listeners = [
+        {
+          port = 8008;
+          bind_addresses = [ "::1" ];
+          type = "http";
+          tls = false;
+          x_forwarded = true;
+          resources = [
+            {
+              names = [
+                "client"
+                "federation"
+              ];
+              compress = true;
+            }
+          ];
+        }
+      ];
+    };
     extras = [ "oidc" ];
     extraConfigFiles = [ "/var/lib/secrets/synapse-authentik.yaml" ];
   };
@@ -115,8 +127,6 @@ in
   # '';
 }
 
-/*
-  sudo -u postgres psql matrix-synapse
-
-  UPDATE users SET admin = 1 WHERE name = '@cjdell:matrix.leighhack.org';
-*/
+## Make a Authentik signed in user as admin...
+# sudo -u postgres psql matrix-synapse
+# UPDATE users SET admin = 1 WHERE name = '@cjdell:matrix.leighhack.org';
