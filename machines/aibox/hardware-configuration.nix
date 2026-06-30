@@ -20,6 +20,10 @@
     "sd_mod"
   ];
   boot.initrd.kernelModules = [ ];
+  boot.initrd.supportedFilesystems.zfs = false;
+
+  boot.supportedFilesystems.zfs = false;
+
   boot.kernelModules = [ "kvm-amd" ];
   boot.extraModulePackages = [ ];
 
@@ -37,8 +41,6 @@
     "ttm.pages_limit=13668850"
     "ttm.page_pool_size=13668850"
   ];
-
-  boot.zfs.forceImportRoot = false;
 
   hardware.graphics.enable = true;
 

@@ -34,8 +34,6 @@
     "kernel.task_delayacct" = 1;
   };
 
-  boot.zfs.forceImportRoot = false;
-
   hardware.graphics = {
     enable = true;
     extraPackages = with pkgs; [

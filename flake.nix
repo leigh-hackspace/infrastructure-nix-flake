@@ -24,6 +24,11 @@
       # url = "github:leigh-hackspace/gocardless-tools";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+
+    nix-software-center = {
+      url = "github:snowfallorg/nix-software-center";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
@@ -84,6 +89,7 @@
                   allowUnfree = true;
                 };
               };
+              specialArgs = flakeInputs;
               modules = [
                 fix-nix-shell
 
@@ -102,9 +108,9 @@
                   {
                     nixpkgs.overlays = [
                       (final: prev: {
-                        # llama-cpp-leigh-rocm = llama-cpp.packages.${pkgs.system}.rocm;
-                        llama-cpp-leigh-vulkan = llama-cpp.packages.${pkgs.system}.vulkan;
-                        # llama-cpp-cpu = llama-cpp.packages.${pkgs.system}.default;
+                        # llama-cpp-leigh-rocm = llama-cpp.packages.${pkgs.stdenv.hostPlatform.system}.rocm;
+                        llama-cpp-leigh-vulkan = llama-cpp.packages.${pkgs.stdenv.hostPlatform.system}.vulkan;
+                        # llama-cpp-cpu = llama-cpp.packages.${pkgs.stdenv.hostPlatform.system}.default;
                       })
                     ];
                   }

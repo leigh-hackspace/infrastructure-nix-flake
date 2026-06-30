@@ -62,10 +62,11 @@ in
       };
     };
 
-    supportedFilesystems = [
-      "nfs"
-      "nfsv4"
-    ];
+    supportedFilesystems = {
+      nfs = true;
+      nfsv4 = true;
+      zfs = false;
+    };
 
     availableKernelModules = [
       "squashfs"
@@ -107,7 +108,7 @@ in
     };
   };
 
-  boot.zfs.forceImportRoot = false;
+  boot.supportedFilesystems.zfs = false;
 
   boot.kernel.sysctl = {
     # TCP buffer sizes

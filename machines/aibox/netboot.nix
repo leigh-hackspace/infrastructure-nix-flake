@@ -1,7 +1,15 @@
-{ lib, pkgs, ... }:
+{
+  lib,
+  pkgs,
+  specialArgs,
+  ...
+}:
 
 let
-  sys = (import ../../pi-room-sys) { inherit lib pkgs; };
+  sys = (import ../../pi-room-sys) {
+    inherit lib pkgs;
+    inherit (specialArgs) nix-software-center;
+  };
   build = sys.config.system.build;
   nfsServer = "aibox.int.leighhack.org";
 in
