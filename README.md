@@ -6,12 +6,13 @@ infrastructure.
 ## Applying Config
 
 ```bash
-scripts/boot.sh      # Build for next reboot
-scripts/switch.sh    # Build and apply now
+scripts/boot.sh                 # Build for next reboot
+scripts/switch.sh               # Build and apply now
+scripts/switch-netboot.sh       # Special script which updates the netboot image from `pi-room-sys` flake and restarts clients
 
-sudo nixos-confirm   # Mark this generation as good as we don't get rollbacked
+sudo nixos-confirm              # Mark this generation as good as we don't get rollbacked
 
-list-generations     # List generations including the last "good", the current and what was booted
+list-generations                # List generations including the last "good", the current and what was booted
 ```
 
 Unless `sudo nixos-confirm` is run within 5 minutes of a new generation being
@@ -31,4 +32,5 @@ Various hackspace services for members. See
 
 Path: `machines/aibox`
 
-Experimental machine with LLMs and Stable Diffusion
+Experimental machine with LLMs and Stable Diffusion. Always hosts the netboot
+server for the Pi Room computers.
