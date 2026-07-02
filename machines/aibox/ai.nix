@@ -39,7 +39,7 @@
             };
 
             "[General] Qwen3-Next-80B-A3B-Instruct-Q4_K_S" = {
-              cmd = "${llamaCmdVulkan} -m ${modelsPath}/Qwen3-Next-80B-A3B-Instruct-Q4_K_S.gguf -ngl 100 --ctx-size 32768 --metrics";
+              cmd = "${llamaCmdVulkan} -m ${modelsPath}/Qwen3-Next-80B-A3B-Instruct-Q4_K_S.gguf -ngl 100 --ctx-size 65536 --metrics";
             };
           };
         };
@@ -52,6 +52,22 @@
         WorkingDirectory = "/home/leigh-admin/Projects/infrastructure-nix-flake";
         Restart = "always";
       };
+  };
+
+  # sudo podman build .
+  # sudo podman tag b9856843437b diamcp:latest
+  virtualisation.oci-containers.containers.diamcp = {
+    hostname = "diamcp";
+    image = "localhost/diamcp";
+    autoStart = true;
+    ports = [ "8000:8000" ];
+    volumes = [
+      # "/home/leigh-admin/workspace:/workspace"
+      "/mnt/filestore/ai-workspace:/workspace"
+    ];
+    extraOptions = [
+      "--user=3002:100"
+    ];
   };
 
   # # View logs with: journalctl -u stable-diffusion -f

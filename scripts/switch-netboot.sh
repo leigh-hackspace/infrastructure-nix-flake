@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+nix flake update pi-room-sys
+
 sudo bash -c 'umount -f -l /exports/netboot-squashfs | true'
 sudo nixos-rebuild switch --flake . --impure
 sudo nixos-confirm

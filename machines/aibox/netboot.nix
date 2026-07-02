@@ -6,10 +6,7 @@
 }:
 
 let
-  sys = (import ../../pi-room-sys) {
-    inherit lib pkgs;
-    inherit (specialArgs) nix-software-center;
-  };
+  sys = specialArgs.pi-room-sys.nixosConfigurations.pi-room-sys;
   build = sys.config.system.build;
   nfsServer = "aibox.int.leighhack.org";
 in
@@ -110,7 +107,7 @@ in
           };
 
           "= /boot/logo.png" = {
-            alias = "${../../pi-room-sys/leigh-logo.png}";
+            alias = "${specialArgs.pi-room-sys.resources.leigh-logo}";
           };
 
           "/" = {

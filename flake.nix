@@ -25,8 +25,8 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
-    nix-software-center = {
-      url = "github:snowfallorg/nix-software-center";
+    pi-room-sys = {
+      url = "git+file:///home/leigh-admin/Projects/pi-room-sys";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
