@@ -42,7 +42,7 @@ let
       };
 
       # Fake service worker (override the one provided by the app)
-      locations."/sw.js" = {
+      locations."~ /sw\\.js$" = {
         extraConfig = ''
           return 200 'self.addEventListener("install", function(e) { e.waitUntil(self.skipWaiting()); }); self.addEventListener("activate", function(e) { e.waitUntil(self.clients.claim()); });';
           add_header Content-Type application/javascript;
