@@ -3,7 +3,7 @@
 junk/
 initrd*/
 tmp/
-result-fd/
+result-fd
 
 !.env.sample
 *.ignore
