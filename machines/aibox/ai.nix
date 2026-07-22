@@ -39,7 +39,7 @@
             };
 
             "[General] Qwen3-Next-80B-A3B-Instruct-Q4_K_S" = {
-              cmd = "${llamaCmdVulkan} -m ${modelsPath}/Qwen3-Next-80B-A3B-Instruct-Q4_K_S.gguf -ngl 100 --ctx-size 65536 --metrics";
+              cmd = "${llamaCmdVulkan} -m ${modelsPath}/Qwen3-Next-80B-A3B-Instruct-Q4_K_S.gguf -ngl 100 --ctx-size 262144 --metrics";
             };
           };
         };
