@@ -104,3 +104,15 @@ update-gocardless-input:
 
 update-pkgs:
     nix flake update nixpkgs
+
+install-sops-key:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    mkdir -p /var/lib/sops-nix
+    chmod 500 /var/lib/sops-nix
+    nix-shell -p ssh-to-age --run "ssh-to-age -private-key -i /home/leigh-admin/.ssh/id_ed25519_leigh_admin > /var/lib/sops-nix/key.txt"
+    chmod 400 /var/lib/sops-nix/key.txt
+
+edit-secrets:
+    sudo sops edit secrets/secrets.yaml

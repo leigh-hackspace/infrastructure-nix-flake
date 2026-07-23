@@ -29,6 +29,11 @@
       url = "git+file:///home/leigh-admin/Projects/pi-room-sys";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+
+    sops-nix = {
+      url = "github:Mic92/sops-nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
@@ -95,6 +100,7 @@
 
                 nixos-utils.nixosModules.rollback
 
+                ./common/sops.nix
                 ./common/tools.nix
                 ./common/users.nix
 

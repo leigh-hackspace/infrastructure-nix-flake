@@ -64,6 +64,12 @@
     options = [ "nfsvers=4.2" ];
   };
 
+  fileSystems."/mnt/ds-photos" = {
+    device = "10.3.1.6:/mnt/sas-10k/ds-photos";
+    fsType = "nfs";
+    options = [ "nfsvers=4.2" ];
+  };
+
   swapDevices = [
     { device = "/dev/disk/by-uuid/b44042ef-cd03-49b9-aa18-b923c243cba8"; }
   ];
