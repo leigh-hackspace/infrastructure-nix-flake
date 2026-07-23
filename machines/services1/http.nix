@@ -311,6 +311,24 @@ in
       "voron.leighhack.org" = mkSSOVirtualHost {
         proxyPass = "http://10.3.2.50";
       };
+
+      "immich.leighhack.org" = {
+        useACMEHost = "leighhack.org";
+        forceSSL = true;
+
+        locations."/" = {
+          proxyPass = "http://10.3.1.32:2283";
+          recommendedProxySettings = true;
+          proxyWebsockets = true;
+
+          extraConfig = ''
+            client_max_body_size 50000M;
+            proxy_read_timeout   600s;
+            proxy_send_timeout   600s;
+            send_timeout         600s;
+          '';
+        };
+      };
     };
   };
 }
