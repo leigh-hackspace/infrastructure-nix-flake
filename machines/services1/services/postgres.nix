@@ -98,9 +98,16 @@ in
   };
 
   system.activationScripts.postgresqlBackup = ''
-    mkdir -p /mnt/backups/services1.int.leighhack.org/postgres
-    chown -R backups:backups /mnt/backups/services1.int.leighhack.org
-    chmod -R u+rwX,g+rwX,o-rwx /mnt/backups/services1.int.leighhack.org
+    # Only set up the backup dir when the NAS share is actually mounted.  When
+    # the NAS is still booting (e.g. after a power cut) this must not fail the
+    # activation, and must not create a shadowing local directory either.
+    # (findmnt reports "autofs" while the automount point is idle.)
+    if [ "$(findmnt -n -o FSTYPE /mnt/backups 2>/dev/null)" != "autofs" ] \
+       && [ -n "$(findmnt -n -o FSTYPE /mnt/backups 2>/dev/null)" ]; then
+      mkdir -p /mnt/backups/services1.int.leighhack.org/postgres
+      chown -R backups:backups /mnt/backups/services1.int.leighhack.org
+      chmod -R u+rwX,g+rwX,o-rwx /mnt/backups/services1.int.leighhack.org
+    fi
   '';
 }
 

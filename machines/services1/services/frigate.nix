@@ -44,10 +44,18 @@ in
     ];
   };
 
-  # Wait for the mount to become available
+  # Wait for the NAS to be reachable and the camera share to be mounted
+  # before starting, and keep retrying if the start fails (e.g. NAS still
+  # booting after a power cut).  Restart policy lives in containers.nix.
   systemd.services.podman-frigate = {
-    after = [ "mnt-cameras.mount" ];
-    requires = [ "mnt-cameras.mount" ];
+    after = [
+      "wait-for-nas.service"
+      "mnt-cameras.mount"
+    ];
+    requires = [
+      "wait-for-nas.service"
+      "mnt-cameras.mount"
+    ];
   };
 
   services.nginx.virtualHosts = {

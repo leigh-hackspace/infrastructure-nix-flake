@@ -5,6 +5,9 @@ initrd*/
 tmp/
 result-fd
 
+# Rust build output for the status dashboard
+**/status-dashboard/target/
+
 !.env.sample
 *.ignore
 ai-resources

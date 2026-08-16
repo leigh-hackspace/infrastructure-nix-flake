@@ -87,6 +87,28 @@
     }
   ];
 
+  # NOTE: `x-systemd.automount` in the mount options above is only honoured
+  # for /etc/fstab entries.  For unit-file mounts (which is what NixOS
+  # `systemd.mounts` generates) the automount unit must be defined explicitly,
+  # otherwise the shares would be mounted eagerly (or not at all) instead of
+  # lazily on first access.  `wait-for-nas.service` (see nfs-client.nix)
+  # triggers these automounts and waits until the shares are genuinely mounted.
+  systemd.automounts = [
+    {
+      where = "/mnt/cameras";
+      # Enable at boot so the mount points exist and can be triggered lazily.
+      wantedBy = [ "multi-user.target" ];
+    }
+    {
+      where = "/mnt/filestore";
+      wantedBy = [ "multi-user.target" ];
+    }
+    {
+      where = "/mnt/backups";
+      wantedBy = [ "multi-user.target" ];
+    }
+  ];
+
   swapDevices = [ ];
 
   nixpkgs.hostPlatform = lib.mkDefault "x86_64-linux";

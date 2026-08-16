@@ -17,6 +17,7 @@
     ./postgres.nix
     ./redis.nix
     # ./samba.nix
+    ./status.nix
     ./unifi.nix
     ./zigbee2mqtt.nix
   ];

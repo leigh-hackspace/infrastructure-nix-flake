@@ -51,11 +51,14 @@
     description = "Wait for Network";
     after = [ "network-online.target" ];
     wants = [ "network-online.target" ];
+    # Start at boot so its state is always visible (e.g. on the status dashboard).
+    wantedBy = [ "multi-user.target" ];
     serviceConfig = {
       Type = "oneshot";
       RemainAfterExit = true;
       ExecStart = "${pkgs.bash}/bin/bash -c 'until ${pkgs.iputils}/bin/ping -c1 -W2 10.3.1.6 >/dev/null 2>&1; do sleep 2; done; sleep 1'";
-      TimeoutStartSec = 300;
+      # Never give up: the NAS can take a long time to come back after a power cut.
+      TimeoutStartSec = 0;
     };
   };
 }
