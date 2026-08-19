@@ -131,4 +131,14 @@ in
       ];
     };
   };
+
+  systemd.services.podman-immich-server = {
+    requires = [ "wait-for-network.service" ];
+    after = [ "wait-for-network.service" ];
+  };
+
+  systemd.services.podman-immich-machine-learning = {
+    requires = [ "wait-for-network.service" ];
+    after = [ "wait-for-network.service" ];
+  };
 }
