@@ -1,6 +1,7 @@
-//! Simple systemd status dashboard for the services1 box.
+//! Simple systemd status dashboard, shared by all machines in the flake.
 //!
-//! Runs on 127.0.0.1 behind nginx (see ../status.nix).  Provides:
+//! Runs behind nginx on services1 (the SSL-terminating reverse proxy for
+//! every machine; see common/status-dashboard.nix).  Provides:
 //!
 //!   GET  /                    HTML dashboard (auto-refreshing)
 //!   GET  /api/status          JSON snapshot of watched unit states
@@ -21,7 +22,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 const NAS_IP: &str = "10.3.1.6";
-const NAS_MOUNTS: [&str; 3] = ["/mnt/cameras", "/mnt/filestore", "/mnt/backups"];
+/// Fallback NAS mount list when --mounts is not given (services1 layout).
+const DEFAULT_NAS_MOUNTS: [&str; 3] = ["/mnt/cameras", "/mnt/filestore", "/mnt/backups"];
 
 /// Units we surface on the dashboard: containers, NAS mounts, boot gates.
 const WATCH_PREFIXES: [&str; 3] = ["podman-", "mnt-", "wait-for-"];
@@ -241,7 +243,7 @@ fn host_status() -> (String, String, String) {
     (hostname, uptime, load)
 }
 
-fn nas_status() -> (bool, Option<f64>, Vec<(String, String)>) {
+fn nas_status(mounts: &[String]) -> (bool, Option<f64>, Vec<(String, String)>) {
     let (reachable, rtt) = run_cmd(&["ping", "-c", "1", "-W", "2", NAS_IP], PING_TIMEOUT)
         .map(|(ok, out)| {
             let rtt = out
@@ -255,8 +257,8 @@ fn nas_status() -> (bool, Option<f64>, Vec<(String, String)>) {
         })
         .unwrap_or((false, None));
 
-    let mut mounts = Vec::new();
-    for path in NAS_MOUNTS {
+    let mut mounts_out = Vec::new();
+    for path in mounts {
         // findmnt prints the autofs entry and (once mounted) the real nfs*
         // entry on separate lines; the last one is the actual filesystem type.
         let fstype = run_cmd(&["findmnt", "-n", "-o", "FSTYPE", path], CMD_TIMEOUT)
@@ -268,9 +270,9 @@ fn nas_status() -> (bool, Option<f64>, Vec<(String, String)>) {
                     .unwrap_or_default()
             })
             .unwrap_or_default();
-        mounts.push((path.to_string(), fstype));
+        mounts_out.push((path.to_string(), fstype));
     }
-    (reachable, rtt, mounts)
+    (reachable, rtt, mounts_out)
 }
 
 // ---------------------------------------------------------------------------
@@ -299,7 +301,7 @@ fn json_error(msg: &str) -> String {
     format!(r#"{{"error":{}}}"#, json_str(msg))
 }
 
-fn status_payload() -> String {
+fn status_payload(mounts: &[String]) -> String {
     let units = all_units();
 
     let mut states: HashMap<String, (String, String)> = HashMap::new();
@@ -375,12 +377,12 @@ fn status_payload() -> String {
     }
 
     let (hostname, uptime, load) = host_status();
-    let (nas_ok, rtt, mounts) = nas_status();
+    let (nas_ok, rtt, nas_mounts) = nas_status(mounts);
     let now = run_cmd(&["date", "+%Y-%m-%d %H:%M:%S"], CMD_TIMEOUT)
         .map(|(_, o)| o.trim().to_string())
         .unwrap_or_default();
 
-    let mount_json: Vec<String> = mounts
+    let mount_json: Vec<String> = nas_mounts
         .iter()
         .map(|(p, f)| format!(r#"{{"path":{},"fstype":{}}}"#, json_str(p), json_str(f)))
         .collect();
@@ -450,10 +452,20 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-fn route(method: &str, path: &str, headers: &HashMap<String, String>) -> (u16, String, String) {
+#[derive(Clone)]
+struct Args {
+    title: String,
+    mounts: Vec<String>,
+}
+
+fn route(method: &str, path: &str, headers: &HashMap<String, String>, args: &Args) -> (u16, String, String) {
     match (method, path) {
-        ("GET", "/") | ("GET", "/index.html") => (200, "text/html; charset=utf-8".to_string(), PAGE.to_string()),
-        ("GET", "/api/status") => (200, "application/json".to_string(), status_payload()),
+        ("GET", "/") | ("GET", "/index.html") => (
+            200,
+            "text/html; charset=utf-8".to_string(),
+            PAGE.replace("__TITLE__", &args.title),
+        ),
+        ("GET", "/api/status") => (200, "application/json".to_string(), status_payload(&args.mounts)),
         ("POST", _) if path.starts_with("/api/restart/") => {
             let unit = percent_decode(&path["/api/restart/".len()..]);
             if !is_safe_unit(&unit) {
@@ -489,7 +501,7 @@ fn route(method: &str, path: &str, headers: &HashMap<String, String>) -> (u16, S
     }
 }
 
-fn handle_client(mut stream: TcpStream) {
+fn handle_client(mut stream: TcpStream, args: &Args) {
     // Read the request head up to the blank line.
     let mut buf = Vec::new();
     let mut tmp = [0u8; 4096];
@@ -521,7 +533,7 @@ fn handle_client(mut stream: TcpStream) {
         }
     }
 
-    let (status, ctype, body) = route(method, path, &headers);
+    let (status, ctype, body) = route(method, path, &headers, args);
     let reason = match status {
         200 => "OK",
         400 => "Bad Request",
@@ -547,7 +559,7 @@ const PAGE: &str = r##"<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>services1 status</title>
+<title>__TITLE__</title>
 <style>
   :root {
     --bg: #101418; --panel: #1a2129; --border: #2a333d;
@@ -727,21 +739,41 @@ setInterval(refresh, 10000);
 // ---------------------------------------------------------------------------
 
 fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let argv: Vec<String> = std::env::args().skip(1).collect();
     let mut bind = "127.0.0.1".to_string();
     let mut port: u16 = 8088;
+    let mut title = "status".to_string();
+    let mut mounts: Vec<String> = Vec::new();
     let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
+    while i < argv.len() {
+        match argv[i].as_str() {
             "--bind" => {
-                if let Some(v) = args.get(i + 1) {
+                if let Some(v) = argv.get(i + 1) {
                     bind = v.clone();
                     i += 1;
                 }
             }
             "--port" => {
-                if let Some(v) = args.get(i + 1) {
+                if let Some(v) = argv.get(i + 1) {
                     port = v.parse().unwrap_or(port);
+                    i += 1;
+                }
+            }
+            // Comma-separated list of NAS mount points to probe on this host.
+            "--mounts" => {
+                if let Some(v) = argv.get(i + 1) {
+                    mounts = v
+                        .split(',')
+                        .map(|m| m.trim().to_string())
+                        .filter(|m| !m.is_empty())
+                        .collect();
+                    i += 1;
+                }
+            }
+            // Page title (the hostname is shown separately in the header).
+            "--title" => {
+                if let Some(v) = argv.get(i + 1) {
+                    title = v.clone();
                     i += 1;
                 }
             }
@@ -749,6 +781,13 @@ fn main() {
         }
         i += 1;
     }
+    if mounts.is_empty() {
+        mounts = DEFAULT_NAS_MOUNTS.iter().map(|m| m.to_string()).collect();
+    }
+    let args = Args {
+        title,
+        mounts,
+    };
 
     let listener = match TcpListener::bind((bind.as_str(), port)) {
         Ok(l) => l,
@@ -762,7 +801,8 @@ fn main() {
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
-                thread::spawn(move || handle_client(stream));
+                let args = args.clone();
+                thread::spawn(move || handle_client(stream, &args));
             }
             Err(_) => continue,
         }

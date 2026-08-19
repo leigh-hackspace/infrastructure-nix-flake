@@ -81,50 +81,45 @@
             ];
           };
 
-          aibox =
-            let
-              # Local repo just for experiments...
-              llama-cpp-local = builtins.getFlake (toString /home/leigh-admin/Projects/llama.cpp);
-            in
-            nixpkgs.lib.nixosSystem {
+          aibox = nixpkgs.lib.nixosSystem {
+            inherit system;
+            pkgs = import nixpkgs {
               inherit system;
-              pkgs = import nixpkgs {
-                inherit system;
-                config = {
-                  allowUnfree = true;
-                };
+              config = {
+                allowUnfree = true;
               };
-              specialArgs = flakeInputs;
-              modules = [
-                fix-nix-shell
-
-                nixos-utils.nixosModules.rollback
-
-                ./common/sops.nix
-                ./common/tools.nix
-                ./common/users.nix
-
-                (
-                  {
-                    config,
-                    pkgs,
-                    options,
-                    ...
-                  }:
-                  {
-                    nixpkgs.overlays = [
-                      (final: prev: {
-                        # llama-cpp-leigh-rocm = llama-cpp.packages.${pkgs.stdenv.hostPlatform.system}.rocm;
-                        llama-cpp-leigh-vulkan = llama-cpp.packages.${pkgs.stdenv.hostPlatform.system}.vulkan;
-                        # llama-cpp-cpu = llama-cpp.packages.${pkgs.stdenv.hostPlatform.system}.default;
-                      })
-                    ];
-                  }
-                )
-
-                ((import ./machines/aibox) flakeInputs)
-              ];
             };
+            specialArgs = flakeInputs;
+            modules = [
+              fix-nix-shell
+
+              nixos-utils.nixosModules.rollback
+
+              ./common/sops.nix
+              ./common/tools.nix
+              ./common/users.nix
+
+              (
+                {
+                  config,
+                  pkgs,
+                  options,
+                  ...
+                }:
+                {
+                  nixpkgs.overlays = [
+                    (final: prev: {
+                      # llama-cpp-leigh-rocm = llama-cpp.packages.${pkgs.stdenv.hostPlatform.system}.rocm;
+                      llama-cpp-leigh-vulkan = llama-cpp.packages.${pkgs.stdenv.hostPlatform.system}.vulkan;
+                      # llama-cpp-cpu = llama-cpp.packages.${pkgs.stdenv.hostPlatform.system}.default;
+                    })
+                  ];
+                }
+              )
+
+              ((import ./machines/aibox) flakeInputs)
+            ];
+          };
         };
     };
 }

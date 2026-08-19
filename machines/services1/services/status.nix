@@ -1,46 +1,24 @@
-{
-  config,
-  lib,
-  pkgs,
-  ...
-}:
+{ ... }:
 
 let
   CONFIG = import ../config.nix;
   mkSSOVirtualHost = import ../lib/nginx-sso-helper.nix;
 
-  statusDashboard = pkgs.rustPlatform.buildRustPackage {
-    pname = "status-dashboard";
-    version = "0.1.0";
-    src = ./status-dashboard;
-    cargoLock.lockFile = ./status-dashboard/Cargo.lock;
-    doCheck = false;
-  };
+  AIBOX_IP = "10.3.1.32";
 in
 {
-  # Simple web dashboard showing the health of the NAS, its mounts and all
-  # container services (good / bad / waiting for deps), with a one-click
-  # restart for fault finding.
-  systemd.services.status-dashboard = {
-    description = "Systemd status dashboard";
-    wantedBy = [ "multi-user.target" ];
-    after = [ "network.target" ];
-    # Tools the dashboard shells out to (findmnt / ping / uptime / hostname).
-    path = [
-      pkgs.util-linux
-      pkgs.iputils
-      pkgs.procps
-    ];
-    serviceConfig = {
-      Type = "simple";
-      ExecStart = "${statusDashboard}/bin/status-dashboard --bind 127.0.0.1 --port 8088";
-      Restart = "always";
-      RestartSec = "5s";
-    };
-    startLimitIntervalSec = 0;
+  # Runs the shared dashboard (common/status-dashboard.nix) locally on
+  # 127.0.0.1:8088, probing services1's NAS mounts.
+  imports = [ ../../../common/status-dashboard.nix ];
+
+  services.status-dashboard = {
+    enable = true;
+    title = "services1";
   };
 
   services.nginx.virtualHosts = {
+    # --- services1's own dashboard --------------------------------------
+
     # Public, SSO-protected: restart buttons work here (nginx injects
     # X-WEBAUTH-USER which the dashboard requires for POST /api/restart).
     "status.leighhack.org" = mkSSOVirtualHost {
@@ -54,6 +32,26 @@ in
 
       locations."/" = {
         proxyPass = "http://127.0.0.1:8088";
+        recommendedProxySettings = true;
+        extraConfig = CONFIG.LOCAL_NETWORK;
+      };
+    };
+
+    # --- aibox's dashboard (proxied from 10.3.1.32) ---------------------
+    # services1 remains the SSL terminator for aibox too; X-WEBAUTH-USER is
+    # injected by nginx here and forwarded to the aibox dashboard, so the
+    # restart buttons work over the SSO vhost.
+
+    "aibox.status.leighhack.org" = mkSSOVirtualHost {
+      proxyPass = "http://${AIBOX_IP}:8088";
+    };
+
+    "aibox.status.int.leighhack.org" = {
+      useACMEHost = "leighhack.org";
+      forceSSL = true;
+
+      locations."/" = {
+        proxyPass = "http://${AIBOX_IP}:8088";
         recommendedProxySettings = true;
         extraConfig = CONFIG.LOCAL_NETWORK;
       };

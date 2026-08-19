@@ -6,7 +6,7 @@ Guidance for AI agents working in this repository. Read this before making chang
 
 - **Use Rust for new programs/tools.** Do not write new services, daemons,
   scripts-as-programs, or CLI tools in Python (or other languages) without a
-  strong reason. See `machines/services1/services/status-dashboard/` for the
+  strong reason. See `status-dashboard/` (top level) for the
   house style: zero external crates (stdlib only), built with
   `pkgs.rustPlatform.buildRustPackage` + `cargoLock`.
 - Shell one-liners inside NixOS `ExecStart`/activation scripts are fine for
@@ -26,8 +26,10 @@ Guidance for AI agents working in this repository. Read this before making chang
     services must wait on.
   - `containers.nix` — podman + the "never give up" restart policy for all
     `podman-*` services.
-  - `services/` — one file per service; `status.nix` + `status-dashboard/`
-    is the Rust web dashboard.
+  - `services/` — one file per service; `status.nix` wires up the status
+    dashboard (shared Rust code in top-level `status-dashboard/`, shared
+    module in `common/status-dashboard.nix`, run on both machines;
+    services1 reverse-proxies both as `status.*` / `aibox.status.*`).
   - `lib/` — nginx SSO helpers (`nginx-sso-helper.nix` etc.).
   - `config.nix` — paths to secrets under `/var/lib/secrets` (do not read
     secret contents; reference the paths).

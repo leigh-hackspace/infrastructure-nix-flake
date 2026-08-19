@@ -14,6 +14,7 @@ flakeInputs:
     ./netboot.nix
     ./networking.nix
     ./sso.nix
+    ./status-dashboard.nix
 
     flakeInputs.sops-nix.nixosModules.sops
   ];
