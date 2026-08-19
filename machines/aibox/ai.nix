@@ -56,14 +56,18 @@
             # for KV cache + compute buffers. Alternatives below (uncomment to use):
             #   UD-Q3_K_XL 54.1GB - better quality, still fits (3 shards; pass 00001)
             #   UD-IQ2_M 37.3GB   - max tokens/s, noticeably lower quality
+            # Thinking is OFF by default in this model's chat template (enable_thinking
+            # defaults to false, so the prompt says </think> with no opening tag). The
+            # --chat-template-kwargs flag turns it on server-wide; clients can override
+            # per request with "chat_template_kwargs": {"enable_thinking": false}.
             "[Coding] Laguna-S-2.1-UD-IQ3_S" = {
-              cmd = "${llamaCmdVulkan} -m ${modelsPath}/Laguna-S-2.1-UD-IQ3_S.gguf -ngl all -fa on --ctx-size 65536 --reasoning-preserve --metrics";
+              cmd = "${llamaCmdVulkan} -m ${modelsPath}/Laguna-S-2.1-UD-IQ3_S.gguf -ngl all -fa on --ctx-size 65536 --metrics --chat-template-kwargs '{\"enable_thinking\":true}'";
             };
             # "[Coding] Laguna-S-2.1-UD-Q3_K_XL" = {
-            #   cmd = "${llamaCmdVulkan} -m ${modelsPath}/Laguna-S-2.1-UD-Q3_K_XL-00001-of-00003.gguf -ngl all -fa on --ctx-size 65536 --metrics";
+            #   cmd = "${llamaCmdVulkan} -m ${modelsPath}/Laguna-S-2.1-UD-Q3_K_XL-00001-of-00003.gguf -ngl all -fa on --ctx-size 65536 --metrics --chat-template-kwargs '{\"enable_thinking\":true}'";
             # };
             # "[Coding] Laguna-S-2.1-UD-IQ2_M" = {
-            #   cmd = "${llamaCmdVulkan} -m ${modelsPath}/Laguna-S-2.1-UD-IQ2_M.gguf -ngl all -fa on --ctx-size 65536 --metrics";
+            #   cmd = "${llamaCmdVulkan} -m ${modelsPath}/Laguna-S-2.1-UD-IQ2_M.gguf -ngl all -fa on --ctx-size 65536 --metrics --chat-template-kwargs '{\"enable_thinking\":true}'";
             # };
           };
         };
