@@ -13,6 +13,7 @@ flakeInputs:
     ./immich.nix
     ./netboot.nix
     ./networking.nix
+    ./nvidia.nix
     ./sso.nix
     ./status-dashboard.nix
 

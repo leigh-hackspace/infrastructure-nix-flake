@@ -28,7 +28,11 @@
 
     serviceConfig =
       let
-        llamaCmdVulkan = "${pkgs.llama-cpp-leigh-vulkan}/bin/llama-server --host 127.0.0.1 --port \${PORT} -t 12";
+        # Pin the main model to the iGPU: with the GTX 1060 (Vulkan1) present,
+        # auto device selection splits layers onto it and model load fails
+        # (alloc + compute-pipeline errors; see gtx1060-draft-report.md).
+        # Draft models go on Vulkan1 later via -devd, not -dev.
+        llamaCmdVulkan = "${pkgs.llama-cpp-leigh-vulkan}/bin/llama-server --host 127.0.0.1 --port \${PORT} -t 12 -dev Vulkan0";
         modelsPath = "/home/leigh-admin/Models";
 
         # Per-model configuration for the router (INI preset, docs/preset.md).
