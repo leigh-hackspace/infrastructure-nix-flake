@@ -5,6 +5,16 @@ let
   mkSSOVirtualHost = import ../lib/nginx-sso-helper.nix;
 
   AIBOX_IP = "10.3.1.32";
+
+  # Injected into the LAN-only *.int vhosts so the dashboard's restart
+  # endpoint works without SSO sign-in (the vhosts are already
+  # ACL-restricted to the local network). Must match
+  # services.status-dashboard.restartToken on this machine and on aibox.
+  lanTokenHeader =
+    token:
+    ''
+      proxy_set_header X-Status-Token ${token};
+    '';
 in
 {
   # Runs the shared dashboard (common/status-dashboard.nix) locally on
@@ -14,6 +24,7 @@ in
   services.status-dashboard = {
     enable = true;
     title = "services1";
+    restartToken = CONFIG.STATUS_DASHBOARD_LAN_TOKEN;
   };
 
   services.nginx.virtualHosts = {
@@ -25,7 +36,7 @@ in
       proxyPass = "http://127.0.0.1:8088";
     };
 
-    # LAN-only, read-only (no SSO headers, so restarts are refused).
+    # LAN-only (ACL-restricted), restart allowed via the LAN token below.
     "status.int.leighhack.org" = {
       useACMEHost = "leighhack.org";
       forceSSL = true;
@@ -33,7 +44,9 @@ in
       locations."/" = {
         proxyPass = "http://127.0.0.1:8088";
         recommendedProxySettings = true;
-        extraConfig = CONFIG.LOCAL_NETWORK;
+        extraConfig =
+          CONFIG.LOCAL_NETWORK
+          + lanTokenHeader CONFIG.STATUS_DASHBOARD_LAN_TOKEN;
       };
     };
 
@@ -53,7 +66,9 @@ in
       locations."/" = {
         proxyPass = "http://${AIBOX_IP}:8088";
         recommendedProxySettings = true;
-        extraConfig = CONFIG.LOCAL_NETWORK;
+        extraConfig =
+          CONFIG.LOCAL_NETWORK
+          + lanTokenHeader CONFIG.STATUS_DASHBOARD_LAN_TOKEN;
       };
     };
   };

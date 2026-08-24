@@ -16,5 +16,10 @@
       "/mnt/ds-photos"
     ];
     bind = "0.0.0.0";
+    # Shared with the *.int vhosts on services1 (see
+    # CONFIG.STATUS_DASHBOARD_LAN_TOKEN in
+    # machines/services1/config.nix) so restart works on the LAN without
+    # SSO sign-in.
+    restartToken = "11d01e910d40fc204701df70a7e0db0436630a0d4e2a2872";
   };
 }

@@ -65,4 +65,10 @@
   '';
 
   PG_PASS = "leighhack1234";
+
+  # Status dashboard LAN restart token: injected by the *.int nginx vhosts as
+  # X-Status-Token so restart works on the LAN without SSO sign-in. Must
+  # match services.status-dashboard.restartToken on services1 AND aibox
+  # (machines/aibox/status-dashboard.nix).
+  STATUS_DASHBOARD_LAN_TOKEN = "11d01e910d40fc204701df70a7e0db0436630a0d4e2a2872";
 }

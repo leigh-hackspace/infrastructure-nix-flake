@@ -5,10 +5,16 @@
 //!
 //!   GET  /                    HTML dashboard (auto-refreshing)
 //!   GET  /api/status          JSON snapshot of watched unit states
-//!   POST /api/restart/<unit>  restart a unit (requires X-WEBAUTH-USER header)
+//!   POST /api/restart/<unit>  restart a unit (requires X-WEBAUTH-USER or a
+//!                              matching X-Status-Token, see --restart-token)
 //!
-//! The restart endpoint is only reachable through the SSO-protected nginx
-//! vhost, which injects X-WEBAUTH-USER after a successful auth_request.
+//! The restart endpoint is protected in two ways:
+//!   - The SSO-protected nginx vhost injects X-WEBAUTH-USER after a
+//!     successful auth_request.
+//!   - The LAN-only (*.int) vhost is already restricted to trusted networks
+//!     by ACL, so it instead injects X-Status-Token (a shared secret set via
+//!     --restart-token), which lets restart work without signing in.  With
+//!     no token configured, only SSO-authenticated requests may restart.
 //!
 //! Deliberately zero external dependencies: it talks to systemd purely by
 //! shelling out to `systemctl`, so the flake build needs no crates.io access.
@@ -456,6 +462,7 @@ fn percent_decode(s: &str) -> String {
 struct Args {
     title: String,
     mounts: Vec<String>,
+    restart_token: String,
 }
 
 fn route(method: &str, path: &str, headers: &HashMap<String, String>, args: &Args) -> (u16, String, String) {
@@ -474,12 +481,26 @@ fn route(method: &str, path: &str, headers: &HashMap<String, String>, args: &Arg
             let user = headers
                 .get("x-webauth-user")
                 .map(|s| s.trim().to_string())
-                .unwrap_or_default();
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| {
+                    // LAN fallback: the *.int vhost (already ACL-restricted
+                    // to the local network) injects a shared secret instead
+                    // of requiring SSO sign-in.
+                    let token = headers
+                        .get("x-status-token")
+                        .map(|s| s.trim())
+                        .unwrap_or_default();
+                    if !args.restart_token.is_empty() && token == args.restart_token {
+                        "lan".to_string()
+                    } else {
+                        String::new()
+                    }
+                });
             if user.is_empty() {
                 return (
                     403,
                     "application/json".to_string(),
-                    json_error("not authenticated (SSO required)"),
+                    json_error("not authenticated (SSO or LAN token required)"),
                 );
             }
             let _ = systemctl(&["reset-failed", &unit], CMD_TIMEOUT);
@@ -744,6 +765,7 @@ fn main() {
     let mut port: u16 = 8088;
     let mut title = "status".to_string();
     let mut mounts: Vec<String> = Vec::new();
+    let mut restart_token = String::new();
     let mut i = 0;
     while i < argv.len() {
         match argv[i].as_str() {
@@ -777,6 +799,14 @@ fn main() {
                     i += 1;
                 }
             }
+            // Shared secret the LAN-only (*.int) vhost injects as
+            // X-Status-Token, allowing restarts without SSO sign-in.
+            "--restart-token" => {
+                if let Some(v) = argv.get(i + 1) {
+                    restart_token = v.clone();
+                    i += 1;
+                }
+            }
             _ => {}
         }
         i += 1;
@@ -787,6 +817,7 @@ fn main() {
     let args = Args {
         title,
         mounts,
+        restart_token,
     };
 
     let listener = match TcpListener::bind((bind.as_str(), port)) {

@@ -56,6 +56,15 @@ in
       description = "Address the dashboard listens on.";
     };
 
+    # Shared secret that the LAN-only (*.int) nginx vhost injects as
+    # X-Status-Token, allowing restarts without SSO sign-in. Empty (the
+    # default) means restarts require SSO only.
+    restartToken = lib.mkOption {
+      type = lib.types.str;
+      default = "";
+      description = "Token accepted by POST /api/restart in place of X-WEBAUTH-USER.";
+    };
+
     # The live hostname is shown in the header regardless.
     title = lib.mkOption {
       type = lib.types.str;
@@ -77,13 +86,18 @@ in
       ];
       serviceConfig = {
         Type = "simple";
-        ExecStart = lib.concatStringsSep " " [
-          "${statusDashboard}/bin/status-dashboard"
-          "--bind" cfg.bind
-          "--port" "8088"
-          "--mounts" (lib.concatStringsSep "," cfg.mounts)
-          "--title" cfg.title
-        ];
+        ExecStart = lib.concatStringsSep " " (
+          [
+            "${statusDashboard}/bin/status-dashboard"
+            "--bind" cfg.bind
+            "--port" "8088"
+            "--mounts" (lib.concatStringsSep "," cfg.mounts)
+            "--title" cfg.title
+          ]
+          # Only passed when a LAN token is configured.
+          ++ lib.optional (cfg.restartToken != "")
+          ("--restart-token ${cfg.restartToken}")
+        );
         Restart = "always";
         RestartSec = "5s";
       };
