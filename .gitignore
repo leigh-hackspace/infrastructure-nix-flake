@@ -4,6 +4,7 @@ junk/
 initrd*/
 tmp/
 result-fd
+/result
 
 # Rust build output for the status dashboard
 **/status-dashboard/target/
