@@ -13,6 +13,10 @@
     ];
     openssh.authorizedKeys.keys = [
       "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFGBmtfOyJYWOoWMiZljl+XArMepgIZQ+D1ZhoUqOhT7 admin@leighhack.org"
+      # Shared inter-machine key: same private key on every flake-managed
+      # machine so agents can hop across them passwordlessly.
+      # Private key: ~/.ssh/agent-hop-key (copy to the other machines).
+      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICtr1ewQo09xFMODjPXlPXXvjuW94zQCMqhrpKAT/yGI machine-hop-key"
     ];
   };
 
