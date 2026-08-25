@@ -78,6 +78,80 @@ Guidance for AI agents working in this repository. Read this before making chang
   but many pre-existing files are not alejandra-clean. Match the surrounding
   file's style; do not reformat whole pre-existing files.
 
+## Nix commands (local dev)
+
+The flake is `--impure` and sources come from the git tree, so everything
+below must run from this repo root. `nixos-rebuild` is the primary tool and
+handles the flake plumbing; avoid hand-rolling `import flake.nix` scripts
+unless you need to extract a single value (see the gotcha there).
+
+**Test a change without applying** (the standard, preferred way):
+
+```bash
+# services1 (the default)
+nixos-rebuild dry-run --flake . --impure
+
+# aibox specifically
+nixos-rebuild dry-run --flake .#aibox --impure
+
+# Actually build the toplevel locally (no deploy) to get the store path:
+nixos-rebuild build --flake .#aibox --impure   # prints the new system path
+```
+
+`dry-run` alone may not build all dependencies, so for anything touching
+packages/bins, run `build` and inspect the result under `/nix/store/` (it is
+printed on success). Use `--target-host root@aibox` to target a remote host
+without deploying (`nixos-rebuild dry-run --target-host root=aibox ...`),
+but local `build` is enough to validate config.
+
+**Inspect generated output once you have a system path $SYS**
+
+```bash
+cat $SYS/etc/systemd/system/<unit>.service   # exact rendered unit
+grep -rn something $SYS/etc/                   # search the built config
+```
+
+This is the reliable way to confirm what a service actually runs, what port
+it binds, and what paths/flags end up in `ExecStart`.
+
+**Extract a single value/package** (handy for checking help/paths):
+
+```bash
+# Build the toplevel, then read a store path out of it:
+nix build --no-link --out-link /tmp/aibox-sys .#aibox --impure
+ls /tmp/aibox-sys/bin            # symlinks into the system
+```
+
+Gotcha: `flake.outputs` is a **function** (its args are
+`{ nixpkgs, nixos-utils, llama-cpp, ... }`), and `flake.nix` itself is a plain
+set — import it with no args, then call `outputs flake.inputs`. But beware:
+evaluating `nixosConfigurations.aibox.config` via `import flake.nix` fails with
+`attribute 'lib' missing`, because `specialArgs`/`nixpkgs.lib` need the
+flake-resolved inputs that `nixos-rebuild` provides. So reach for the flake
+reference form (`nix build .#aibox --impure`) for building, and avoid
+`nix eval`/`nix build` against a bare path from the repo root — those resolve
+against the repo flake, not nixpkgs.
+
+**Common checks**
+
+```bash
+nix flake show --impure      # what the flake exposes (aibox, services1)
+git status --short           # untracked files are EXCLUDED from the flake!
+nix flake metadata           # locked inputs / rev
+```
+
+**Gotchas**
+
+- Untracked files are invisible to the flake — `git add` new/changed `.nix`
+  files first (see Workflow).
+- `nix eval`/`nix build` on a bare path (e.g. `nix build nixpkgs#foo --impure`)
+  from the repo root will resolve against the repo flake, not nixpkgs; use
+  `--file <(...)` with an explicit `import` for standalone nixpkgs lookups.
+- Editing a service's `ExecStart`/flags: always re-run `nixos-rebuild build`
+  and read back the rendered unit — NixOS normalises quoting and expands
+  `${...}` and `
+` line-continuations differently from what you typed.
+
 ## Known follow-ups
 
 - **aibox NAS mounts:** `machines/aibox/hardware-configuration.nix` mounts
