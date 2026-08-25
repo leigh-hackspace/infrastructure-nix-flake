@@ -94,6 +94,7 @@
               fix-nix-shell
 
               nixos-utils.nixosModules.rollback
+              nixos-utils.nixosModules.containers
 
               ./common/sops.nix
               ./common/tools.nix

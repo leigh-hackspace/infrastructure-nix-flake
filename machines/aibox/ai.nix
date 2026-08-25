@@ -56,7 +56,7 @@ in
             -t 12 \
             -dev Vulkan0 \
             -ngl all \
-            --ctx-size 65536 \
+            --ctx-size 262144 \
             --flash-attn on
         '';
         WorkingDirectory = "/home/leigh-admin/Projects/infrastructure-nix-flake";
