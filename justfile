@@ -13,6 +13,20 @@ boot:
 switch:
     sudo nixos-rebuild switch --flake . --impure
 
+# --- DNS sync (keeps router dnsmasq + DigitalOcean DNS in step with the
+# --- *.int.leighhack.org nginx vhosts; requires the machine-hop key and a
+# --- deployed dns-sync on services1 — see ROUTER.md / DO.md) ---
+
+# Report whether every *.int.leighhack.org nginx vhost is present in the
+# router/DO DNS (change nothing; exit 0 when nothing is missing).
+dns-sync-check:
+    ssh -i ~/.ssh/agent-hop-key -o BatchMode=yes leigh-admin@10.3.1.20 'sudo -n dns-sync check'
+
+# Add missing DNS records (router host override aliases + DO CNAMEs).
+# Strictly additive — never deletes or rewrites existing records.
+dns-sync-sync:
+    ssh -i ~/.ssh/agent-hop-key -o BatchMode=yes leigh-admin@10.3.1.20 'sudo -n dns-sync sync'
+
 switch-netboot:
     #!/usr/bin/env bash
     set -euo pipefail

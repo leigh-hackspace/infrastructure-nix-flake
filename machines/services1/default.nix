@@ -7,6 +7,7 @@
     ./ai.nix
     ./configuration.nix
     ./containers.nix
+    ./dns-sync.nix
     ./hardware-configuration.nix
     ./http.nix
     ./networking.nix

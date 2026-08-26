@@ -19,6 +19,11 @@ Guidance for AI agents working in this repository. Read this before making chang
   Machines: `services1` (the main services box, 10.3.1.20) and `aibox`.
 - `common/` — shared modules imported by both machines (`tools.nix`,
   `users.nix`, `sops.nix`).
+- `dns-sync/` — top-level Rust tool (zero external crates) that keeps the
+  router's dnsmasq and DigitalOcean DNS in step with the `*.int.leighhack.org`
+  nginx vhosts. Wired in via `machines/services1/dns-sync.nix`, which also
+  renders the expected-name list to `/etc/dns-sync/expected-int-names`.
+  Run with `just dns-sync-check` / `just dns-sync-sync` (see ROUTER.md/DO.md).
 - `machines/services1/` — the services box:
   - `hardware-configuration.nix` — NFS mounts for the NAS and their explicit
     automount units (see gotcha below).
@@ -92,6 +97,7 @@ Guidance for AI agents working in this repository. Read this before making chang
 - **New vhosts need DNS records** before they resolve: public `*.leighhack.org`
   names point at the box's public IP, `*.int.leighhack.org` at 10.3.1.20.
   The wildcard ACME cert already covers both, so no cert work is needed.
+  For `*.int` names, sync DNS after switching: `just dns-sync-sync`.
 - **New files must be `git add`-ed** before they are visible to the flake
   (flake sources come from the git tree; untracked files are excluded).
 - Do not commit unless asked. Staging (`git add`) is fine and often required.

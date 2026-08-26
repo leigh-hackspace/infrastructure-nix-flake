@@ -46,15 +46,17 @@ ssh root@10.3.1.1 'grep <name> /var/etc/dnsmasq-hosts'
 
 ### Current mapping: names → services1 (10.3.1.20)
 
-A single host override `<host>services1</host>` maps **25 names** to all three
+A single host override `<host>services1</host>` maps **31 names** to all three
 of services1's addresses (`10.3.1.20`, `2001:8b0:1d14:225::20`,
-`fd99:dead:beef:225d::20`):
+`fd99:dead:beef:225d::20`). **This list is managed by `dns-sync`** (see
+"Syncing DNS ↔ nginx vhosts" below) — it mirrors the `*.int.leighhack.org`
+vhosts in services1's nginx config:
 
 ```
 services1, mqtt, nginx, ldap, id, ha, firewall, truenas, unifi-admin,
 grafana, filestore, monster, uptime-kuma, frigate, access-api, retro,
 tailscale, zigbee2mqtt, login, gitlab, gatus, ai, mcp, status,
-aibox.status, whisper
+aibox.status, whisper, api-doors, api, doors, foo, jenkins, user-tweaker
 ```
 
 (all `.int.leighhack.org`; verified live 2026-08-26)
@@ -65,6 +67,10 @@ Notes:
   backend directly: `truenas.*` → NAS at 10.3.1.6, `firewall.*` → router's
   60443, `monster.*` → 10.3.1.11:8006, `unifi-admin.*` → UniFi controller.
 - `aibox.int.leighhack.org` → 10.3.1.32 (its own record — not services1).
+- `authentik.int.leighhack.org` is its own host override → 10.3.1.36
+  (directly to the Authentik box), even though nginx also serves the name
+  as an alias of `id.int`. `dns-sync` reports this as “resolves elsewhere”
+  and leaves it alone.
 - Inconsistency: services1 `networking.nix` `extraHosts` maps
   `unifi.int.leighhack.org` → 10.3.1.21, but the router has **no**
   `unifi.int.leighhack.org` record (only `unifi-admin.int`).
@@ -78,13 +84,39 @@ reservations: `services1` (10.3.1.20, MACs `c8:d3:ff:a5:b2:25`/`c8:d3:ff:a5:be:7
 
 ## Syncing DNS ↔ nginx vhosts (workflow)
 
-1. Add the nginx `virtualHost` in `machines/services1/services/*.nix` (public
-   apps via `mkSSOVirtualHost`; internal apps are `*.int.leighhack.org` vhosts
-   with `CONFIG.LOCAL_NETWORK` ACLs).
-2. Add the name to the router: extend the `services1` host override's
-   `<aliases>` (or add a new host record) so dnsmasq answers it.
-3. Verify from the router: `grep <name> /var/etc/dnsmasq-hosts`, and live:
+**Use the `dns-sync` tool** (Rust, deployed to services1 via
+`machines/services1/dns-sync.nix`). It keeps the router host override _and_
+DigitalOcean in step with the `*.int.leighhack.org` vhosts that services1's
+nginx serves (vhost names + `serverAliases`). The expected list is generated
+from the nginx config at build time (`/etc/dns-sync/expected-int-names`); the
+source of truth is therefore `services.nginx.virtualHosts`, wherever the
+vhost is declared (`http.nix`, `ai.nix`, `services/*.nix`).
+
+1. Add (or change) the nginx `virtualHost` in `machines/services1/*.nix`.
+2. Deploy: `just switch` on services1.
+3. Sync: `just dns-sync-sync` (or `sudo dns-sync sync` on services1). The
+   tool appends missing names to the `services1` host override's `<aliases>`
+   in `/conf/config.xml` (backing it up first), restarts dnsmasq, verifies
+   `/var/etc/dnsmasq-hosts`, and creates the matching DO CNAMEs.
+4. Verify: `just dns-sync-check` — all names `OK`, exit code 0. Live:
    `getent ahostsv4 <name>.int.leighhack.org` (must be `10.3.1.20`).
-4. The wildcard ACME cert (`*.int.leighhack.org`) already covers new names — no
-   cert work needed. Public `*.leighhack.org` names need the public DNS record
-   (points at the box's public IP) — not handled on the router.
+5. The wildcard ACME cert (`*.int.leighhack.org`) already covers new names —
+   no cert work needed. Public `*.leighhack.org` names need the public DNS
+   record (points at the box's public IP) — not handled on the router.
+
+Notes:
+
+- **Strictly additive — never purge/cleanup.** The router's `*.int` zone
+  contains many names that are _not_ services1 vhosts (cameras, Pis, APs,
+  switches, printers, ...) and DO could carry int records for anything, so
+  `dns-sync` only ever _adds_ missing names and never deletes or rewrites an
+  existing record. Names with a different target (e.g. `authentik.int` →
+  10.3.1.36, or DO CNAMEs with another target) are reported and left as-is.
+- Manual fallback (if the tool is unavailable): edit the host override in the
+  OPNsense web UI (Services → Dnsmasq DNS → Host overrides), or directly in
+  `/conf/config.xml` (then restart dnsmasq). OPNsense flushes
+  `/var/etc/dnsmasq-hosts` from the config; verify with:
+
+  ```sh
+  ssh root@10.3.1.1 'grep <name> /var/etc/dnsmasq-hosts'
+  ```

@@ -83,6 +83,32 @@ in
     '';
 
     virtualHosts = {
+      # DNS-sync test page (machines/services1/dns-sync.nix): proves the
+      # router's dnsmasq + DigitalOcean records are in sync with this vhost.
+      # Records are synced with `sudo dns-sync sync` on services1.
+      "foo.int.leighhack.org" = {
+        useACMEHost = "leighhack.org";
+        forceSSL = true;
+
+        locations."/" = {
+          root = "${pkgs.writeTextDir "foo/index.html" ''
+            <!doctype html>
+            <html lang="en">
+              <head>
+                <meta charset="utf-8">
+                <title>foo.int.leighhack.org</title>
+              </head>
+              <body>
+                <h1>foo.int.leighhack.org</h1>
+                <p>This page is served by services1 nginx and resolves via the
+                   router dnsmasq and DigitalOcean DNS (dns-sync test).</p>
+              </body>
+            </html>
+          ''}/foo";
+          extraConfig = CONFIG.LOCAL_NETWORK;
+        };
+      };
+
       "login.int.leighhack.org" = {
         serverAliases = [ "login.leighhack.org" ];
         useACMEHost = "leighhack.org";
