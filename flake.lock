@@ -503,11 +503,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1787770837,
-        "narHash": "sha256-VNDyGAuUGDgb9YVEJDZoOxNig+pCNz1jwHmjrN4gk6E=",
+        "lastModified": 1787773052,
+        "narHash": "sha256-RE+gdufluPc3eucuS0HZRaCLWZfl1rWmkolkMxUEqvs=",
         "ref": "refs/heads/master",
-        "rev": "8a8f9fa3b0559093226b30b3fad93d0a5bcf946f",
-        "revCount": 5,
+        "rev": "9b46e74ecaeef8f74db78f21c28552b47a89a245",
+        "revCount": 6,
         "type": "git",
         "url": "file:///home/leigh-admin/Projects/whisper-ws"
       },
