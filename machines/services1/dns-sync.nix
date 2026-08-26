@@ -17,12 +17,18 @@
 # Usage on services1 (via the justfile recipes, or directly):
 #
 #   sudo dns-sync check            # report whether every vhost is in DNS
+#                                  # (and any stale rename leftovers)
 #   sudo dns-sync sync             # add missing records (router + DO)
+#   sudo dns-sync prune            # remove stale rename leftovers the tool
+#                                  # manages (never records that predate it)
 #
-# The tool is strictly additive: it only adds missing names (router
+# `sync` is strictly additive: it only adds missing names (router
 # host-override aliases / DO CNAMEs) and never deletes or rewrites existing
 # records — many *.int.leighhack.org names legitimately point at other
-# hosts, so the router/DO zones are never cleaned up.
+# hosts, so other records are never touched. `prune` is the explicit
+# exception and is scoped tightly: it removes only (a) services1 override
+# aliases and (b) DO CNAMEs -> nginx.int, and only when the name was in the
+# previous expected list (/var/lib/dns-sync/last-expected) but is no longer.
 {
   config,
   lib,

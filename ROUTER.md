@@ -16,7 +16,12 @@ out-of-band from this repo — there is **no flake configuration for it**.
 SSH access was verified 2026-08-26. Host key is already in `~/.ssh/known_hosts`.
 
 **Gotcha:** the root shell is **tcsh** — FreeBSD-style redirection like
-`2>` fails. Use `ssh root@10.3.1.1 'cmd ...'` with plain pipes/grep only.
+`2>` fails. Use `ssh root@10.3.1.1 'cmd ...'` with plain pipes/grep only;
+patterns containing `<`/`>` must be double-quoted (`grep "<host>" f`) or
+tcsh treats them as redirection. Multi-line XML matching in grep doesn't
+work (grep is line-based) — that's why `dns-sync` does all `/conf/config.xml`
+surgery with a python3 script over ssh instead. **Don't hand-edit the XML**
+unless the tool is unavailable; see "Syncing DNS ↔ nginx vhosts" below.
 
 ## DNS (dnsmasq — this is what we sync with nginx)
 
@@ -34,11 +39,13 @@ resolver that every LAN client and NixOS box uses (`DNS = 10.3.1.1`).
   hand-written dnsmasq additions (survives GUI rewrites, but is not managed by
   this repo).
 
-### Adding / changing a name
+### Adding / changing / removing a name
 
-Edit the host override in the OPNsense web UI (Services → Dnsmasq DNS →
-Host overrides), or directly in `/conf/config.xml` (then restart dnsmasq).
-OPNsense flushes `/var/etc/dnsmasq-hosts` from the config; verify with:
+`dns-sync` owns the services1 host override (see below) — use it instead of
+hand-editing. Manual fallback: edit the host override in the OPNsense web UI
+(Services → Dnsmasq DNS → Host overrides), or directly in
+`/conf/config.xml` (then restart dnsmasq). OPNsense flushes
+`/var/etc/dnsmasq-hosts` from the config; verify with:
 
 ```sh
 ssh root@10.3.1.1 'grep <name> /var/etc/dnsmasq-hosts'
@@ -55,8 +62,8 @@ vhosts in services1's nginx config:
 ```
 services1, mqtt, nginx, ldap, id, ha, firewall, truenas, unifi-admin,
 grafana, filestore, monster, uptime-kuma, frigate, access-api, retro,
-tailscale, zigbee2mqtt, login, gitlab, gatus, ai, mcp, status,
-aibox.status, whisper, api-doors, api, doors, foo, jenkins, user-tweaker
+tailscale, zigbee2mqtt, login, gitlab, gatus, ai, mcp, services1-status,
+aibox-status, whisper, api-doors, api, doors, foo, jenkins, user-tweaker
 ```
 
 (all `.int.leighhack.org`; verified live 2026-08-26)
@@ -74,6 +81,18 @@ Notes:
 - Inconsistency: services1 `networking.nix` `extraHosts` maps
   `unifi.int.leighhack.org` → 10.3.1.21, but the router has **no**
   `unifi.int.leighhack.org` record (only `unifi-admin.int`).
+- The dashboard vhosts were renamed 2026-08-26: `status.int` →
+  `services1-status.int` and `aibox.status.int` → `aibox-status.int`
+  (see `machines/services1/services/status.nix`), and the stale
+  `status.int.leighhack.org` / `aibox.status.int.leighhack.org` records
+  were removed from router + DO DNS the same day. At the time `dns-sync`
+  had no removal support, so this was done by hand (aliases edited out of
+  `/conf/config.xml` with a backup + dnsmasq restart, DO CNAMEs deleted via
+  the API); the tool has had `dns-sync prune` for that ever since.
+- Pre-existing names in the services1 override with no corresponding nginx
+  vhost (`filestore`, `gitlab`, `ldap`, `mqtt`, `nginx`, `tailscale`) are
+  reported by `dns-sync` as "never expected" and **left as-is** — they
+  predate the tool.
 
 ## DHCP
 
@@ -92,26 +111,37 @@ from the nginx config at build time (`/etc/dns-sync/expected-int-names`); the
 source of truth is therefore `services.nginx.virtualHosts`, wherever the
 vhost is declared (`http.nix`, `ai.nix`, `services/*.nix`).
 
-1. Add (or change) the nginx `virtualHost` in `machines/services1/*.nix`.
+1. Add, change, or remove the nginx `virtualHost` in `machines/services1/*.nix`.
 2. Deploy: `just switch` on services1.
 3. Sync: `just dns-sync-sync` (or `sudo dns-sync sync` on services1). The
    tool appends missing names to the `services1` host override's `<aliases>`
    in `/conf/config.xml` (backing it up first), restarts dnsmasq, verifies
    `/var/etc/dnsmasq-hosts`, and creates the matching DO CNAMEs.
-4. Verify: `just dns-sync-check` — all names `OK`, exit code 0. Live:
-   `getent ahostsv4 <name>.int.leighhack.org` (must be `10.3.1.20`).
-5. The wildcard ACME cert (`*.int.leighhack.org`) already covers new names —
+4. **If you renamed/removed a vhost**, prune the leftovers:
+   `just dns-sync-prune` (or `sudo dns-sync prune`). This removes exactly the
+   records dns-sync manages that were expected previously but no longer are
+   (tracked in `/var/lib/dns-sync/last-expected`); it never touches records
+   that predate dns-sync.
+5. Verify: `just dns-sync-check` — all names `OK`, no stale, exit code 0.
+   Live: `getent ahostsv4 <name>.int.leighhack.org` (must be `10.3.1.20`).
+6. The wildcard ACME cert (`*.int.leighhack.org`) already covers new names —
    no cert work needed. Public `*.leighhack.org` names need the public DNS
    record (points at the box's public IP) — not handled on the router.
 
 Notes:
 
-- **Strictly additive — never purge/cleanup.** The router's `*.int` zone
-  contains many names that are _not_ services1 vhosts (cameras, Pis, APs,
-  switches, printers, ...) and DO could carry int records for anything, so
-  `dns-sync` only ever _adds_ missing names and never deletes or rewrites an
-  existing record. Names with a different target (e.g. `authentik.int` →
-  10.3.1.36, or DO CNAMEs with another target) are reported and left as-is.
+- **Additive by default; removal only via explicit `prune`.** The router's
+  `*.int` zone contains many names that are _not_ services1 vhosts (cameras,
+  Pis, APs, switches, printers, ...) and DO could carry int records for
+  anything, so `dns-sync sync` only ever _adds_ missing names and never
+  deletes or rewrites an existing record. `dns-sync prune` is the explicit
+  exception, and it is scoped strictly: it removes only (a) aliases in the
+  `services1` host override and (b) DO CNAMEs whose data is
+  `nginx.int.leighhack.org` — and only when the name was in the previous
+  expected list (`/var/lib/dns-sync/last-expected`) but is no longer.
+  Names with a different target (e.g. `authentik.int` → 10.3.1.36, or DO
+  CNAMEs with another target) and names that predate dns-sync are reported
+  and left as-is.
 - Manual fallback (if the tool is unavailable): edit the host override in the
   OPNsense web UI (Services → Dnsmasq DNS → Host overrides), or directly in
   `/conf/config.xml` (then restart dnsmasq). OPNsense flushes

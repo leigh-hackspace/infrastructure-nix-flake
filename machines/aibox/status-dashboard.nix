@@ -2,7 +2,7 @@
 #
 # aibox has no nginx of its own: it binds on 0.0.0.0 and services1 is the
 # SSL-terminating reverse proxy for it (aibox.status.leighhack.org /
-# aibox.status.int.leighhack.org, see machines/services1/services/status.nix).
+# aibox-status.int.leighhack.org, see machines/services1/services/status.nix).
 { ... }:
 
 {

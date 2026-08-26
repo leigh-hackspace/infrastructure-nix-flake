@@ -134,13 +134,17 @@ Expected results: `201` → `200` → `204` → `404`.
 
 The `*.int.leighhack.org` CNAMEs are maintained by the `dns-sync` tool
 (Rust, deployed to services1 via `machines/services1/dns-sync.nix`; run it
-with `just dns-sync-check` / `just dns-sync-sync` from the repo, or directly
-with `sudo dns-sync check|sync` on services1). It reads the expected names
-from `/etc/dns-sync/expected-int-names` (generated from the nginx config)
-and creates any missing CNAMEs (`<label>.int` → `nginx.int.leighhack.org.`,
-ttl 60). **It is strictly additive**: it never deletes or rewrites existing
+with `just dns-sync-check` / `just dns-sync-sync` / `just dns-sync-prune`
+from the repo, or directly with `sudo dns-sync check|sync|prune` on
+services1). It reads the expected names from
+`/etc/dns-sync/expected-int-names` (generated from the nginx config) and
+creates any missing CNAMEs (`<label>.int` → `nginx.int.leighhack.org.`,
+ttl 60). `sync` is strictly additive — it never deletes or rewrites existing
 records, since many `*.int.leighhack.org` names legitimately point
-elsewhere. See ROUTER.md.
+elsewhere. `prune` is the explicit exception: it deletes only CNAMEs whose
+data is `nginx.int.leighhack.org` that were expected previously but are no
+longer (rename leftovers, tracked via `/var/lib/dns-sync/last-expected`);
+records that predate dns-sync are reported and left as-is. See ROUTER.md.
 
 ## Environment notes
 

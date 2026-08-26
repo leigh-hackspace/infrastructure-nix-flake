@@ -18,14 +18,21 @@ switch:
 # --- deployed dns-sync on services1 — see ROUTER.md / DO.md) ---
 
 # Report whether every *.int.leighhack.org nginx vhost is present in the
-# router/DO DNS (change nothing; exit 0 when nothing is missing).
+# router/DO DNS (change nothing; exit 0 when nothing is missing or stale).
 dns-sync-check:
     ssh -i ~/.ssh/agent-hop-key -o BatchMode=yes leigh-admin@10.3.1.20 'sudo -n dns-sync check'
 
 # Add missing DNS records (router host override aliases + DO CNAMEs).
-# Strictly additive — never deletes or rewrites existing records.
+# Additive only — never deletes or rewrites existing records.
 dns-sync-sync:
     ssh -i ~/.ssh/agent-hop-key -o BatchMode=yes leigh-admin@10.3.1.20 'sudo -n dns-sync sync'
+
+# Remove stale records left behind by vhost renames/removals: names dns-sync
+# manages that were expected previously but no longer are. Run after
+# dns-sync-sync when a vhost name changed. Never touches records that
+# predate dns-sync.
+dns-sync-prune:
+    ssh -i ~/.ssh/agent-hop-key -o BatchMode=yes leigh-admin@10.3.1.20 'sudo -n dns-sync prune'
 
 switch-netboot:
     #!/usr/bin/env bash

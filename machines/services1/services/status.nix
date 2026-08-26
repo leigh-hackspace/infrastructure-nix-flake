@@ -37,7 +37,7 @@ in
     };
 
     # LAN-only (ACL-restricted), restart allowed via the LAN token below.
-    "status.int.leighhack.org" = {
+    "services1-status.int.leighhack.org" = {
       useACMEHost = "leighhack.org";
       forceSSL = true;
 
@@ -59,7 +59,7 @@ in
       proxyPass = "http://${AIBOX_IP}:8088";
     };
 
-    "aibox.status.int.leighhack.org" = {
+    "aibox-status.int.leighhack.org" = {
       useACMEHost = "leighhack.org";
       forceSSL = true;
 

@@ -39,6 +39,10 @@ const DEFAULT_EXPECTED: &str = "/etc/dns-sync/expected-int-names";
 const DEFAULT_SSH_KEY: &str = "/home/leigh-admin/.ssh/agent-hop-key";
 const DEFAULT_ROUTER: &str = "root@10.3.1.1";
 const DEFAULT_ENV_FILE: &str = "/var/lib/secrets/.env";
+/// Names DNS was last brought in line with (written by `prune`). Used to
+/// tell rename leftovers (were expected, no longer are — prune them) apart
+/// from records that predate dns-sync and were never expected (left as-is).
+const DEFAULT_LAST_EXPECTED: &str = "/var/lib/dns-sync/last-expected";
 
 const ZONE: &str = "leighhack.org";
 /// IPv4 of services1 — what every *.int.leighhack.org record must answer.
@@ -86,6 +90,60 @@ shutil.copy2(CONF, bak)
 open(CONF, "w").write(new_xml)
 print("backup: " + bak)
 print("added: " + ", ".join(sorted(set(missing) - set(cur))))
+"#;
+
+/// python3 script run on the router: print the services1 host override's
+/// current aliases (FQDNs), one per line.
+const PY_GET_ALIASES: &str = r#"import re, sys
+
+CONF = "/conf/config.xml"
+s = open(CONF, "r").read()
+start = s.index("<dnsmasq")
+end = s.index("</dnsmasq>", start)
+section = s[start:end]
+m = re.search(r"(<host>services1</host>.*?<aliases>)([^<]*)(</aliases>)", section, re.S)
+if not m:
+    print("ERROR: services1 host override not found under <dnsmasq>", file=sys.stderr)
+    sys.exit(1)
+print("\n".join(x.strip() for x in m.group(2).split(",") if x.strip()))
+"#;
+
+/// python3 script run on the router: remove the given FQDNs from the
+/// services1 host override's `<aliases>` (backed up, XML-validated), leaving
+/// everything else byte-for-byte intact.
+const PY_REMOVE_ALIASES: &str = r#"import re, sys, shutil, time, xml.etree.ElementTree as ET
+
+remove = [a for a in sys.argv[1:] if a]
+if not remove:
+    print("no names to remove")
+    sys.exit(0)
+
+CONF = "/conf/config.xml"
+s = open(CONF, "r").read()
+start = s.index("<dnsmasq")
+end = s.index("</dnsmasq>", start)
+section = s[start:end]
+m = re.search(r"(<host>services1</host>.*?<aliases>)([^<]*)(</aliases>)", section, re.S)
+if not m:
+    print("ERROR: services1 host override not found under <dnsmasq>", file=sys.stderr)
+    sys.exit(1)
+cur = [x.strip() for x in m.group(2).split(",") if x.strip()]
+removed = [x for x in cur if x in remove]
+if not removed:
+    print("aliases do not contain any requested names; nothing to do")
+    sys.exit(0)
+want = [x for x in cur if x not in remove]
+new_xml = s[: start + m.start()] + m.group(1) + ",".join(want) + m.group(3) + s[start + m.end() :]
+try:
+    ET.fromstring(new_xml)
+except ET.ParseError as e:
+    print("ERROR: edited config.xml failed XML validation: %s" % e, file=sys.stderr)
+    sys.exit(1)
+bak = CONF + ".dns-sync-remove-" + time.strftime("%Y%m%d-%H%M%S")
+shutil.copy2(CONF, bak)
+open(CONF, "w").write(new_xml)
+print("backup: " + bak)
+print("removed: " + ", ".join(sorted(removed)))
 "#;
 
 // ---------------------------------------------------------------------------
@@ -184,6 +242,35 @@ fn read_expected(path: &str) -> Result<Vec<String>, String> {
     Ok(names)
 }
 
+/// Names DNS was last brought in line with. A missing file means no history
+/// yet (baseline) — nothing is considered stale until `prune` runs once.
+fn read_last_expected(path: &str) -> Result<Vec<String>, String> {
+    match std::fs::read_to_string(path) {
+        Ok(raw) => {
+            let mut names: Vec<String> = raw
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                .map(str::to_string)
+                .collect();
+            names.sort();
+            names.dedup();
+            Ok(names)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(e) => Err(format!("cannot read {}: {}", path, e)),
+    }
+}
+
+fn write_last_expected(path: &str, names: &[String]) -> Result<(), String> {
+    let dir = std::path::Path::new(path)
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("/"));
+    std::fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {}", dir.display(), e))?;
+    std::fs::write(path, names.join("\n") + "\n")
+        .map_err(|e| format!("cannot write {}: {}", path, e))
+}
+
 // ---------------------------------------------------------------------------
 // Router (OPNsense dnsmasq)
 // ---------------------------------------------------------------------------
@@ -205,10 +292,9 @@ fn router_hosts(ssh_key: &str, router: &str) -> Result<BTreeMap<String, String>,
     Ok(map)
 }
 
-/// Append names to the services1 host override's aliases and restart dnsmasq.
-fn router_add_aliases(ssh_key: &str, router: &str, missing: &[String]) -> Result<(), String> {
-    println!("  editing /conf/config.xml (backup taken) and restarting dnsmasq...");
-    let mut args: Vec<String> = vec![
+/// Base ssh args to reach the router (same policy as the documented dev flow).
+fn router_ssh_args(ssh_key: &str, router: &str) -> Vec<String> {
+    vec![
         "-i".into(),
         ssh_key.into(),
         "-o".into(),
@@ -218,13 +304,40 @@ fn router_add_aliases(ssh_key: &str, router: &str, missing: &[String]) -> Result
         "-o".into(),
         "StrictHostKeyChecking=accept-new".into(),
         router.into(),
-        "python3".into(),
-        // Read the script from stdin; the requested names arrive as argv.
-        "-".into(),
-    ];
-    args.extend(missing.iter().cloned());
+    ]
+}
+
+/// Run `python3 - <script>` on the router; `script_args` arrive as argv.
+fn router_python(
+    ssh_key: &str,
+    router: &str,
+    script: &str,
+    script_args: &[String],
+) -> Result<(bool, String, String), String> {
+    let mut args = router_ssh_args(ssh_key, router);
+    args.push("python3".into());
+    // Read the script from stdin; the requested names arrive as argv.
+    args.push("-".into());
+    args.extend(script_args.iter().cloned());
     let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-    let (ok, stdout, stderr) = run_input("ssh", &refs, PY_ADD_ALIASES)?;
+    run_input("ssh", &refs, script)
+}
+
+fn router_restart_dnsmasq(ssh_key: &str, router: &str) -> Result<(), String> {
+    let restart = ssh(ssh_key, router, "configctl dnsmasq restart")
+        .map_err(|e| format!("dnsmasq restart failed: {}", e))?;
+    if !restart.trim().is_empty() {
+        for line in restart.lines() {
+            println!("    {}", line);
+        }
+    }
+    Ok(())
+}
+
+/// Append names to the services1 host override's aliases and restart dnsmasq.
+fn router_add_aliases(ssh_key: &str, router: &str, missing: &[String]) -> Result<(), String> {
+    println!("  editing /conf/config.xml (backup taken) and restarting dnsmasq...");
+    let (ok, stdout, stderr) = router_python(ssh_key, router, PY_ADD_ALIASES, missing)?;
     if !stdout.trim().is_empty() {
         for line in stdout.lines() {
             println!("    {}", line);
@@ -236,15 +349,43 @@ fn router_add_aliases(ssh_key: &str, router: &str, missing: &[String]) -> Result
     if !ok {
         return Err("router edit failed (see above)".into());
     }
+    router_restart_dnsmasq(ssh_key, router)
+}
 
-    let restart = ssh(ssh_key, router, "configctl dnsmasq restart")
-        .map_err(|e| format!("dnsmasq restart failed: {}", e))?;
-    if !restart.trim().is_empty() {
-        for line in restart.lines() {
+/// Current services1 host-override aliases (FQDNs) from /conf/config.xml —
+/// the names dns-sync manages on the router.
+fn router_managed_aliases(ssh_key: &str, router: &str) -> Result<Vec<String>, String> {
+    let (ok, stdout, stderr) = router_python(ssh_key, router, PY_GET_ALIASES, &[])?;
+    if !ok {
+        return Err(format!("router alias read failed: {}", stderr.trim()));
+    }
+    let mut names: Vec<String> = stdout
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect();
+    names.sort();
+    names.dedup();
+    Ok(names)
+}
+
+/// Remove names from the services1 host override's aliases and restart dnsmasq.
+fn router_remove_aliases(ssh_key: &str, router: &str, stale: &[String]) -> Result<(), String> {
+    println!("  editing /conf/config.xml (backup taken) and restarting dnsmasq...");
+    let (ok, stdout, stderr) = router_python(ssh_key, router, PY_REMOVE_ALIASES, stale)?;
+    if !stdout.trim().is_empty() {
+        for line in stdout.lines() {
             println!("    {}", line);
         }
     }
-    Ok(())
+    if !stderr.trim().is_empty() {
+        eprintln!("  (router stderr) {}", stderr.trim());
+    }
+    if !ok {
+        return Err("router edit failed (see above)".into());
+    }
+    router_restart_dnsmasq(ssh_key, router)
 }
 
 // ---------------------------------------------------------------------------
@@ -293,9 +434,11 @@ fn do_api(token: &str, method: &str, url: &str, body: Option<&str>) -> Result<(u
         "-H".into(),
         format!("Authorization: Bearer {}", token),
     ];
-    if let Some(b) = body {
+    if method != "GET" {
         args.push("-X".into());
         args.push(method.into());
+    }
+    if let Some(b) = body {
         args.push("-H".into());
         args.push("Content-Type: application/json".into());
         args.push("-d".into());
@@ -364,6 +507,21 @@ fn do_create_cname(token: &str, label: &str) -> Result<u64, String> {
         .and_then(|r| r.get("id"))
         .and_then(|v| v.as_u64())
         .ok_or_else(|| format!("no domain_record.id in DO create response for {}", label))
+}
+
+/// Delete a DO record by id (HTTP 204 on success).
+fn do_delete_record(token: &str, id: u64) -> Result<(), String> {
+    let url = format!("{}/{}", DO_RECORDS_API, id);
+    let (code, resp) = do_api(token, "DELETE", &url, None)?;
+    if code != 204 {
+        return Err(format!(
+            "DO delete id {} failed with HTTP {}: {}",
+            id,
+            code,
+            truncate(&resp, 300)
+        ));
+    }
+    Ok(())
 }
 
 /// Normalise a DO name (relative label or FQDN) to the bare label:
@@ -436,11 +594,66 @@ fn do_status(expected: &[String], records: &[DoRecord]) -> Vec<(String, String, 
 }
 
 // ---------------------------------------------------------------------------
-// check / sync
+// Managed-name triage: split the records dns-sync manages into
+//   stale  — were expected previously, no longer are (rename leftovers)
+//   legacy — managed but never expected (predate dns-sync; left as-is)
+// ---------------------------------------------------------------------------
+
+/// Router: services1 override aliases (FQDNs).
+fn router_managed_split(
+    last: &[String],
+    expected: &[String],
+    managed: &[String],
+) -> (Vec<String>, Vec<String>) {
+    let mut stale = Vec::new();
+    let mut legacy = Vec::new();
+    for n in managed {
+        if !expected.contains(n) {
+            if last.contains(n) {
+                stale.push(n.clone());
+            } else {
+                legacy.push(n.clone());
+            }
+        }
+    }
+    stale.sort();
+    legacy.sort();
+    (stale, legacy)
+}
+
+/// DO: CNAMEs whose data -> nginx.int.
+fn do_managed_split(
+    last: &[String],
+    expected: &[String],
+    records: &[DoRecord],
+) -> (Vec<DoRecord>, Vec<DoRecord>) {
+    let expected_labels: Vec<String> = expected.iter().map(|n| do_label(n)).collect();
+    let last_labels: Vec<String> = last.iter().map(|n| do_label(n)).collect();
+    let (mut stale, mut legacy) = (Vec::new(), Vec::new());
+    for r in records {
+        if r.typ == "CNAME" && cname_target_eq(&r.data, DO_CNAME_TARGET) {
+            let label = do_label(&r.name);
+            if !expected_labels.contains(&label) {
+                if last_labels.contains(&label) {
+                    stale.push(r.clone());
+                } else {
+                    legacy.push(r.clone());
+                }
+            }
+        }
+    }
+    stale.sort_by(|a, b| a.name.cmp(&b.name));
+    legacy.sort_by(|a, b| a.name.cmp(&b.name));
+    (stale, legacy)
+}
+
+// ---------------------------------------------------------------------------
+// check / sync / prune
 // ---------------------------------------------------------------------------
 
 struct Opts {
     expected: String,
+    last_expected: String,
     ssh_key: String,
     router: String,
     env_file: String,
@@ -450,8 +663,8 @@ struct Opts {
 
 fn usage() -> ! {
     eprintln!(
-        "usage: dns-sync <check|sync> [--expected FILE] [--ssh-key PATH] [--router HOST] \
-         [--env-file PATH] [--router-only|--do-only]"
+        "usage: dns-sync <check|sync|prune> [--expected FILE] [--last-expected FILE] \
+         [--ssh-key PATH] [--router HOST] [--env-file PATH] [--router-only|--do-only]\n\n  check  report expected vs present DNS (exit 1 if missing or stale)\n  sync   add missing records (strictly additive)\n  prune  remove rename leftovers — records dns-sync manages that were\n         expected previously but are no longer (never touches records that\n         predate dns-sync)"
     );
     std::process::exit(2);
 }
@@ -459,6 +672,7 @@ fn usage() -> ! {
 fn parse_args() -> (Opts, String) {
     let mut opts = Opts {
         expected: DEFAULT_EXPECTED.into(),
+        last_expected: DEFAULT_LAST_EXPECTED.into(),
         ssh_key: DEFAULT_SSH_KEY.into(),
         router: DEFAULT_ROUTER.into(),
         env_file: DEFAULT_ENV_FILE.into(),
@@ -469,11 +683,12 @@ fn parse_args() -> (Opts, String) {
     let mut args = env::args().skip(1).peekable();
     while let Some(a) = args.next() {
         match a.as_str() {
-            "check" | "sync" if subcmd.is_none() => subcmd = Some(a),
-            "--expected" | "--ssh-key" | "--router" | "--env-file" => {
+            "check" | "sync" | "prune" if subcmd.is_none() => subcmd = Some(a),
+            "--expected" | "--last-expected" | "--ssh-key" | "--router" | "--env-file" => {
                 let v = args.next().unwrap_or_else(|| usage());
                 match a.as_str() {
                     "--expected" => opts.expected = v,
+                    "--last-expected" => opts.last_expected = v,
                     "--ssh-key" => opts.ssh_key = v,
                     "--router" => opts.router = v,
                     _ => opts.env_file = v,
@@ -521,8 +736,17 @@ fn run_check(opts: &Opts) -> i32 {
             return 1;
         }
     };
+    let last = match read_last_expected(&opts.last_expected) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("{}", e);
+            return 1;
+        }
+    };
     println!("expected: {} names (from {})", expected.len(), opts.expected);
     let mut missing = 0usize;
+    let mut stale: Vec<String> = Vec::new();
+    let mut legacy: Vec<String> = Vec::new();
 
     if !opts.do_only {
         let hosts = match router_hosts(&opts.ssh_key, &opts.router) {
@@ -540,6 +764,16 @@ fn run_check(opts: &Opts) -> i32 {
             .iter()
             .filter(|(s, _, _)| s == "MISSING")
             .count();
+        let managed = match router_managed_aliases(&opts.ssh_key, &opts.router) {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!("router: {}", e);
+                return 1;
+            }
+        };
+        let (s, l) = router_managed_split(&last, &expected, &managed);
+        stale.extend(s);
+        legacy.extend(l);
     }
 
     if !opts.router_only {
@@ -565,6 +799,28 @@ fn run_check(opts: &Opts) -> i32 {
             .iter()
             .filter(|(s, _, _)| s == "MISSING")
             .count();
+        let (s, l) = do_managed_split(&last, &expected, &records);
+        stale.extend(s.iter().map(|r| r.name.clone()));
+        legacy.extend(l.iter().map(|r| r.name.clone()));
+    }
+
+    stale.sort();
+    stale.dedup();
+    legacy.sort();
+    legacy.dedup();
+    if !stale.is_empty() {
+        println!("\n-- stale (were expected previously, no longer are) --");
+        for n in &stale {
+            println!("  {}", n);
+        }
+    }
+    if !legacy.is_empty() {
+        println!(
+            "\n-- note: managed by dns-sync but never expected (predates dns-sync, left as-is) --"
+        );
+        for n in &legacy {
+            println!("  {}", n);
+        }
     }
 
     if missing > 0 {
@@ -573,8 +829,14 @@ fn run_check(opts: &Opts) -> i32 {
             missing
         );
         1
+    } else if !stale.is_empty() {
+        println!(
+            "\n{} stale record(s) — run `sudo dns-sync prune` to remove",
+            stale.len()
+        );
+        1
     } else {
-        println!("\nno missing records (notes above, if any, are informational)");
+        println!("\nno missing or stale records (notes above, if any, are informational)");
         0
     }
 }
@@ -699,11 +961,163 @@ fn run_sync(opts: &Opts) -> i32 {
     0
 }
 
+/// Remove rename leftovers — records dns-sync manages that were expected
+/// previously but are no longer. Explicitly *not* part of `sync`: removal is
+/// never automatic. Never touches records that predate dns-sync. Writes the
+/// current expected list as the new baseline on success.
+fn run_prune(opts: &Opts) -> i32 {
+    let expected = match read_expected(&opts.expected) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("{}", e);
+            return 1;
+        }
+    };
+    let last = match read_last_expected(&opts.last_expected) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("{}", e);
+            return 1;
+        }
+    };
+    println!("== dns-sync prune: {} expected names ==", expected.len());
+
+    // --- router ---
+    if !opts.do_only {
+        let managed = match router_managed_aliases(&opts.ssh_key, &opts.router) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("router: {}", e);
+                return 1;
+            }
+        };
+        let (stale, legacy) = router_managed_split(&last, &expected, &managed);
+        if !stale.is_empty() {
+            println!(
+                "\nrouter: removing {} stale names from services1 host override aliases",
+                stale.len()
+            );
+            for n in &stale {
+                println!("  - {}", n);
+            }
+            if let Err(e) = router_remove_aliases(&opts.ssh_key, &opts.router, &stale) {
+                eprintln!("router: {}", e);
+                return 1;
+            }
+            match router_hosts(&opts.ssh_key, &opts.router) {
+                Ok(after) => {
+                    let still: Vec<&String> =
+                        stale.iter().filter(|n| after.contains_key(*n)).collect();
+                    if still.is_empty() {
+                        println!(
+                            "  verified: all {} names gone from /var/etc/dnsmasq-hosts",
+                            stale.len()
+                        );
+                    } else {
+                        eprintln!("  NOT verified, still present: {:?}", still);
+                        return 1;
+                    }
+                }
+                Err(e) => {
+                    eprintln!("router re-read failed: {}", e);
+                    return 1;
+                }
+            }
+        } else {
+            println!(
+                "\nrouter: no stale aliases ({} managed, {} legacy left as-is)",
+                managed.len(),
+                legacy.len()
+            );
+        }
+        if !legacy.is_empty() {
+            println!("  note: left as-is (never expected): {}", legacy.join(", "));
+        }
+    }
+
+    // --- DigitalOcean ---
+    if !opts.router_only {
+        let token = match do_token(&opts.env_file) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("do: {}", e);
+                return 1;
+            }
+        };
+        let records = match do_list_records(&token) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("do: {}", e);
+                return 1;
+            }
+        };
+        let (stale, legacy) = do_managed_split(&last, &expected, &records);
+        if !stale.is_empty() {
+            println!(
+                "\nDO: deleting {} stale CNAMEs -> {}",
+                stale.len(),
+                DO_CNAME_TARGET
+            );
+            for r in &stale {
+                println!("  - {} (id {})", r.name, r.id);
+            }
+            for r in &stale {
+                if let Err(e) = do_delete_record(&token, r.id) {
+                    eprintln!("do: {}", e);
+                    return 1;
+                }
+            }
+            match do_list_records(&token) {
+                Ok(after) => {
+                    let still: Vec<String> = stale
+                        .iter()
+                        .filter(|r| after.iter().any(|a| a.id == r.id))
+                        .map(|r| r.name.clone())
+                        .collect();
+                    if still.is_empty() {
+                        println!("  verified: all {} records deleted", stale.len());
+                    } else {
+                        eprintln!("  NOT verified, still present: {:?}", still);
+                        return 1;
+                    }
+                }
+                Err(e) => {
+                    eprintln!("do re-read failed: {}", e);
+                    return 1;
+                }
+            }
+        } else {
+            println!(
+                "\nDO: no stale CNAMEs ({} managed, {} legacy left as-is)",
+                records
+                    .iter()
+                    .filter(|r| r.typ == "CNAME" && cname_target_eq(&r.data, DO_CNAME_TARGET))
+                    .count(),
+                legacy.len()
+            );
+        }
+        if !legacy.is_empty() {
+            println!(
+                "  note: left as-is (never expected): {}",
+                legacy.iter().map(|r| r.name.clone()).collect::<Vec<_>>().join(", ")
+            );
+        }
+    }
+
+    // Success: DNS is now in line with the current expected list.
+    if let Err(e) = write_last_expected(&opts.last_expected, &expected) {
+        eprintln!("warning: could not update {}: {}", opts.last_expected, e);
+    }
+    println!("\nprune complete");
+    0
+}
+
 fn main() {
     let (opts, subcmd) = parse_args();
     let code = match subcmd.as_str() {
         "check" => run_check(&opts),
         "sync" => run_sync(&opts),
+        "prune" => run_prune(&opts),
         _ => usage(),
     };
     std::process::exit(code);
