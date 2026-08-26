@@ -60,6 +60,27 @@ Guidance for AI agents working in this repository. Read this before making chang
   `status.int`-style vhosts with `CONFIG.LOCAL_NETWORK` ACLs. The ACME cert
   covers `*.leighhack.org` / `*.int.leighhack.org` (DNS challenge).
 
+## SSH between machines (machine-hop-key)
+
+- Every flake-managed machine shares the **machine-hop-key**: the same
+  private key at `~/.ssh/agent-hop-key` on each machine, with the matching
+  public key authorized for the `leigh-admin` user in `common/users.nix`
+  (commit 729b1e1). Use it to hop from any flake machine to any other
+  (aibox ↔ services1) without a password.
+- Connect as **`leigh-admin`, never `root`** — root SSH is not keyed on
+  either machine (verified both directions). `leigh-admin` has passwordless
+  sudo, so run `sudo nixos-rebuild ...` / `sudo nixos-confirm` after
+  logging in.
+- No ssh-agent is running, so pass the key explicitly:
+
+  ```bash
+  ssh -i ~/.ssh/agent-hop-key leigh-admin@10.3.1.20   # services1
+  ssh -i ~/.ssh/agent-hop-key leigh-admin@10.3.1.32   # aibox
+  ```
+
+- Gotcha: on aibox, `/etc/hosts` maps `aibox` to `127.0.0.2` (self
+  reference), so use the IPs above rather than hostnames.
+
 ## Workflow
 
 - Deploy with the justfile: `just switch` / `just boot`
@@ -100,8 +121,9 @@ nixos-rebuild build --flake .#aibox --impure   # prints the new system path
 
 `dry-run` alone may not build all dependencies, so for anything touching
 packages/bins, run `build` and inspect the result under `/nix/store/` (it is
-printed on success). Use `--target-host root@aibox` to target a remote host
-without deploying (`nixos-rebuild dry-run --target-host root=aibox ...`),
+printed on success). Use `--target-host` to target a remote host without
+deploying, e.g. `nixos-rebuild dry-run --target-host leigh-admin@aibox ...`
+(log in as `leigh-admin` — root is not keyed — with its passwordless sudo),
 but local `build` is enough to validate config.
 
 **Inspect generated output once you have a system path $SYS**
@@ -154,9 +176,8 @@ nix flake metadata           # locked inputs / rev
 
 ## Known follow-ups
 
-- **aibox NAS mounts:** `machines/aibox/hardware-configuration.nix` mounts
-  `/mnt/filestore` and `/mnt/ds-photos` without `_netdev`, automount or
-  `wait-for-network` ordering — a slow NAS can hang its boot. Apply the same
-  pattern as services1 (explicit automounts + `wait-for-nas`) when next
-  touching aibox. Note: evaluating aibox locally requires the `pi-room-sys`
+- ~~aibox NAS mounts~~ — resolved by commit 1811d93 ("Make aibox startup
+  more reliable", deployed 2026-08-26): aibox now mirrors services1
+  (explicit automounts + `_netdev` + `wait-for-network` ordering +
+  `wait-for-nas`). Evaluating aibox locally still requires the `pi-room-sys`
   git input to exist at `/home/leigh-admin/Projects/pi-room-sys`.
