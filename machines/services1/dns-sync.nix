@@ -2,7 +2,6 @@
 # with the *.int.leighhack.org vhosts this box's nginx serves.
 #
 # Rust source: ../../dns-sync (zero external crates, see status-dashboard/).
-# Docs: ROUTER.md + DO.md at the repo root.
 #
 # The source of truth is `services.nginx.virtualHosts` (all vhost names plus
 # their serverAliases that end in .int.leighhack.org — those are the DNS

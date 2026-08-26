@@ -24,7 +24,7 @@ Guidance for AI agents working in this repository. Read this before making chang
   nginx vhosts. Wired in via `machines/services1/dns-sync.nix`, which also
   renders the expected-name list to `/etc/dns-sync/expected-int-names`.
   Run with `just dns-sync-check` / `just dns-sync-sync` / `just dns-sync-prune`
-  (see ROUTER.md/DO.md).
+  (router + DO facts below).
 - `machines/services1/` — the services box:
   - `hardware-configuration.nix` — NFS mounts for the NAS and their explicit
     automount units (see gotcha below).
@@ -65,6 +65,36 @@ Guidance for AI agents working in this repository. Read this before making chang
   127.0.0.1:8082, injects `X-WEBAUTH-USER`); internal apps use
   `status.int`-style vhosts with `CONFIG.LOCAL_NETWORK` ACLs. The ACME cert
   covers `*.leighhack.org` / `*.int.leighhack.org` (DNS challenge).
+
+## Router (gw) & DigitalOcean DNS
+
+- The router (OPNsense 26.7, FreeBSD) is managed out-of-band — no flake
+  config. Access: `ssh root@10.3.1.1` with the machine-hop-key; web UI at
+  `https://firewall.int.leighhack.org` (→ 10.3.1.1:60443). Gotcha: the root
+  shell is **tcsh** — `2>` redirection fails, and grep patterns containing
+  `<`/`>` must be double-quoted.
+- The router runs **dnsmasq** (LAN resolver 10.3.1.1): `/conf/config.xml` is
+  the OPNsense source of truth (host overrides under `<opnsense><dnsmasq><hosts>`);
+  `/var/etc/dnsmasq-hosts` is the generated addn-hosts dump that actually
+  answers `*.int.leighhack.org`. Never edit the auto-generated
+  `/usr/local/etc/dnsmasq.conf`. Manual fallback if `dns-sync` is unavailable:
+  edit the host override in the OPNsense web UI (Services → Dnsmasq DNS →
+  Host overrides) or `/conf/config.xml`, then restart dnsmasq; verify with
+  `ssh root@10.3.1.1 'grep <name> /var/etc/dnsmasq-hosts'`.
+- Reading `dns-sync check` output: `aibox.int` → 10.3.1.32 (own record) and
+  `authentik.int` → 10.3.1.36 (own override; nginx also serves it as an alias
+  of `id.int`) legitimately resolve elsewhere and are left as-is; `filestore`,
+  `gitlab`, `ldap`, `mqtt`, `nginx`, `tailscale` predate dns-sync and are
+  reported "never expected" / left as-is.
+- DHCP reservations live in the same dnsmasq config: services1 (10.3.1.20,
+  MACs `c8:d3:ff:a5:b2:25`/`c8:d3:ff:a5:be:7c`), aibox (10.3.1.32),
+  nas1/nas2 (10.3.1.5/10.3.1.6), apps1 (10.3.1.30), yunohost (10.3.1.15).
+- DigitalOcean zone `leighhack.org`: the DO token is `DO_AUTH_TOKEN` in
+  `/var/lib/secrets/.env` (referenced via `CONFIG.ENV_FILE`; read+write scope)
+  — never print it or copy it off services1. `*.int` names are CNAMEs →
+  `nginx.int.leighhack.org` (managed by dns-sync); the apex points at GitHub
+  Pages, public apps CNAME → `nginx.leighhack.org`, `yunohost` → A
+  81.187.195.18.
 
 ## SSH between machines (machine-hop-key)
 

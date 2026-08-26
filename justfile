@@ -15,7 +15,7 @@ switch:
 
 # --- DNS sync (keeps router dnsmasq + DigitalOcean DNS in step with the
 # --- *.int.leighhack.org nginx vhosts; requires the machine-hop key and a
-# --- deployed dns-sync on services1 — see ROUTER.md / DO.md) ---
+# --- deployed dns-sync on services1) ---
 
 # Report whether every *.int.leighhack.org nginx vhost is present in the
 # router/DO DNS (change nothing; exit 0 when nothing is missing or stale).
