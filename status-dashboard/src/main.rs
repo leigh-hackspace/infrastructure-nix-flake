@@ -424,7 +424,7 @@ fn is_safe_unit(name: &str) -> bool {
     let chars_ok = !name.is_empty()
         && name
             .chars()
-            .all(|c| c.is_ascii_alphanumeric() || "@._:+-".contains(c));
+            .all(|c| c.is_ascii_alphanumeric() || "@._:+-".contains(c) || c == '\\');
     chars_ok
         && (name.ends_with(".service")
             || name.ends_with(".mount")
@@ -652,6 +652,13 @@ function esc(s) {
   return d.innerHTML;
 }
 
+// Unit names can contain systemd escapes (\x2d, ...). Percent-encode the name
+// so it survives the HTML -> JS string-literal round trip unchanged; the
+// backend percent-decodes it back before talking to systemctl.
+function enc(s) {
+  return encodeURIComponent(s).replace(/'/g, '%27');
+}
+
 async function getJSON(url, opts) {
   const r = await fetch(url, opts);
   const body = await r.json().catch(() => ({}));
@@ -700,7 +707,7 @@ function render(data) {
       row.className = 'failed-row';
       row.innerHTML = '<code>' + esc(u.unit) + '</code>'
         + '<span class="muted"> ' + esc(u.description) + '</span>'
-        + '<button onclick="restart(\'' + esc(u.unit) + '\')">restart</button>';
+        + '<button onclick="restart(\'' + enc(u.unit) + '\')">restart</button>';
       failedEl.appendChild(row);
     }
   }
@@ -713,7 +720,7 @@ function render(data) {
       + '<thead><tr><th>Unit</th><th>State</th><th>Detail</th><th>Since</th><th></th></tr></thead><tbody>';
     for (const u of group.units) {
       const btn = u.restartable
-        ? '<button onclick="restart(\'' + esc(u.unit) + '\')">restart</button>' : '';
+        ? '<button onclick="restart(\'' + enc(u.unit) + '\')">restart</button>' : '';
       tbl += '<tr><td><code>' + esc(u.unit) + '</code><br><span class="muted">'
         + esc(u.description) + '</span></td>'
         + '<td>' + pill(u.status) + '</td>'
@@ -732,9 +739,10 @@ async function refresh() {
 }
 
 async function restart(unit) {
+  // unit arrives already percent-encoded (see enc()).
   const btn = event.target;
   btn.disabled = true;
-  const { r, body } = await getJSON('/api/restart/' + encodeURIComponent(unit), { method: 'POST' });
+  const { r, body } = await getJSON('/api/restart/' + unit, { method: 'POST' });
   toast(body.message || body.error || (r.ok ? 'restarted' : 'failed'), r.ok ? 'good' : 'bad');
   setTimeout(refresh, 2000);
 }
