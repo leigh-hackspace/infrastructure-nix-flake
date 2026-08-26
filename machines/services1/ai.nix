@@ -64,6 +64,28 @@ in
       };
     };
 
+    # Whisper.cpp WebSocket gateway (whisper-ws on aibox:8083, OpenAI
+    # Realtime protocol). LAN-only; DNS alias added on the router's dnsmasq.
+    # Long timeouts: WebSocket sessions can sit idle for a while.
+    "whisper.int.leighhack.org" = {
+      useACMEHost = "leighhack.org";
+      forceSSL = true;
+
+      locations."/" = {
+        proxyPass = "http://10.3.1.32:8083";
+        recommendedProxySettings = true;
+        proxyWebsockets = true;
+
+        extraConfig = ''
+          ${CONFIG.LOCAL_NETWORK}
+
+          proxy_read_timeout  3600;
+          proxy_send_timeout  3600;
+          send_timeout        3600;
+        '';
+      };
+    };
+
     # "sd.ai.leighhack.org" = {
     #   useACMEHost = "leighhack.org";
     #   forceSSL = true;

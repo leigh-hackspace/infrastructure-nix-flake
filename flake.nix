@@ -19,6 +19,11 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
+    whisper-ws = {
+      url = "git+file:///home/leigh-admin/Projects/whisper-ws"; # WebSocket gateway for whisper.cpp
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+
     gocardless-tools = {
       url = "git+file:///home/leigh-admin/Projects/gocardless-tools"; # Private Git repo
       # url = "github:leigh-hackspace/gocardless-tools";
@@ -41,6 +46,7 @@
       nixpkgs,
       nixos-utils,
       llama-cpp,
+      whisper-ws,
       ...
     }@flakeInputs:
 
@@ -113,6 +119,7 @@
                       # llama-cpp-leigh-rocm = llama-cpp.packages.${pkgs.stdenv.hostPlatform.system}.rocm;
                       llama-cpp-leigh-vulkan = llama-cpp.packages.${pkgs.stdenv.hostPlatform.system}.vulkan;
                       # llama-cpp-cpu = llama-cpp.packages.${pkgs.stdenv.hostPlatform.system}.default;
+                      whisper-ws = whisper-ws.packages.${pkgs.stdenv.hostPlatform.system}.default;
                     })
                   ];
                 }

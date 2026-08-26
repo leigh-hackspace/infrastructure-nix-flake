@@ -5,13 +5,13 @@ out-of-band from this repo — there is **no flake configuration for it**.
 
 ## Access
 
-| | |
-|---|---|
-| Address | `10.3.1.1` (LAN gateway + DNS, per `machines/services1/networking.nix`) |
-| Hostname | `gw.int.leighhack.org` |
-| OS | OPNsense 26.7 (FreeBSD 15.1-RELEASE-p1) |
-| SSH | `ssh root@10.3.1.1` — key-based auth with the workstation's `~/.ssh/id_ed25519`, no password |
-| Web UI | `https://firewall.int.leighhack.org` (proxied by services1 nginx → `https://10.3.1.1:60443`) |
+|          |                                                                                                     |
+| -------- | --------------------------------------------------------------------------------------------------- |
+| Address  | `10.3.1.1` (LAN gateway + DNS, per `machines/services1/networking.nix`)                             |
+| Hostname | `gw.int.leighhack.org`                                                                              |
+| OS       | OPNsense 26.7 (FreeBSD 15.1-RELEASE-p1)                                                             |
+| SSH      | `ssh root@10.3.1.1` — key-based auth with the machine-hop-key (`~/.ssh/agent-hop-key`), no password |
+| Web UI   | `https://firewall.int.leighhack.org` (proxied by services1 nginx → `https://10.3.1.1:60443`)        |
 
 SSH access was verified 2026-08-26. Host key is already in `~/.ssh/known_hosts`.
 
@@ -54,7 +54,7 @@ of services1's addresses (`10.3.1.20`, `2001:8b0:1d14:225::20`,
 services1, mqtt, nginx, ldap, id, ha, firewall, truenas, unifi-admin,
 grafana, filestore, monster, uptime-kuma, frigate, access-api, retro,
 tailscale, zigbee2mqtt, login, gitlab, gatus, ai, mcp, status,
-aibox.status
+aibox.status, whisper
 ```
 
 (all `.int.leighhack.org`; verified live 2026-08-26)

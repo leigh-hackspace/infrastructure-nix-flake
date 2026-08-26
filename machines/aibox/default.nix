@@ -17,6 +17,7 @@ flakeInputs:
     ./nfs-client.nix
     ./sso.nix
     ./status-dashboard.nix
+    ./whisper.nix
 
     flakeInputs.sops-nix.nixosModules.sops
   ];
