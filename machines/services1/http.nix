@@ -109,6 +109,21 @@ in
         };
       };
 
+      # Router network dashboard (machines/services1/network-status.nix):
+      # realtime per-interface bandwidth, connection counts and issues for
+      # the OPNsense box at 10.3.1.1. LAN-only; the router/DO records are
+      # synced by dns-sync.
+      "network-info.int.leighhack.org" = {
+        useACMEHost = "leighhack.org";
+        forceSSL = true;
+
+        locations."/" = {
+          proxyPass = "http://127.0.0.1:8091";
+          recommendedProxySettings = true;
+          extraConfig = CONFIG.LOCAL_NETWORK;
+        };
+      };
+
       "login.int.leighhack.org" = {
         serverAliases = [ "login.leighhack.org" ];
         useACMEHost = "leighhack.org";

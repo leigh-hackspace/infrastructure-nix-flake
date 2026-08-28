@@ -10,6 +10,7 @@
     ./dns-sync.nix
     ./hardware-configuration.nix
     ./http.nix
+    ./network-status.nix
     ./networking.nix
     ./nfs-client.nix
   ];
