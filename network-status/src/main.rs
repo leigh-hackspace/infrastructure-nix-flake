@@ -18,13 +18,18 @@
 //!
 //! Endpoints (served behind nginx at network-info.int.leighhack.org):
 //!
-//!   GET  /               HTML dashboard (hand-rolled canvas charts, no CDN)
+//!   GET  /               SPA shell (index.html) from --static-dir, or a
+//!                        minimal embedded page if none is configured
+//!   GET  /{asset}        static SPA assets (bundle.js, bundle.css, ...) from
+//!                        --static-dir, with SPA fallback to index.html for
+//!                        unknown client-side routes
+//!   GET  /api/config     {"wan":...,"title":...} consumed by the SPA
 //!   GET  /api/snapshot   latest snapshot as JSON
 //!   GET  /api/history    full rolling history as JSON
 //!
 //! Zero external crates (house style, see status-dashboard/): ssh goes
-//! through the `ssh` binary, JSON is hand-rolled, the frontend uses no
-//! external JavaScript.
+//! through the `ssh` binary, JSON is hand-rolled, and the frontend is a
+//! prebuilt SolidJS + TypeScript SPA served as static files (--static-dir).
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::Write;
@@ -595,13 +600,6 @@ fn jopt_u64(v: Option<u64>) -> String {
     v.map(|n| n.to_string()).unwrap_or_else(|| "null".into())
 }
 
-fn opt_series(vals: &[Option<f64>]) -> String {
-    format!(
-        "[{}]",
-        vals.iter().map(|v| jopt_num(*v)).collect::<Vec<_>>().join(",")
-    )
-}
-
 fn snapshot_json(s: &Snapshot, args: &Args) -> String {
     let ifaces: Vec<String> = s
         .ifaces
@@ -699,14 +697,22 @@ struct Args {
     interval: Duration,
     wan: String,
     title: String,
+    /// Directory of pre-built static SPA files (SolidJS/Vite build). When set,
+    /// the binary serves those files; when None a minimal embedded page is
+    /// returned so the backend still runs standalone (e.g. local dev).
+    static_dir: Option<String>,
 }
 
 fn route(method: &str, path: &str, state: &State, args: &Args) -> (u16, String, String) {
     match (method, path) {
-        ("GET", "/") | ("GET", "/index.html") => (
+        ("GET", "/api/config") => (
             200,
-            "text/html; charset=utf-8".to_string(),
-            PAGE.replace("__TITLE__", &args.title),
+            "application/json".to_string(),
+            format!(
+                r#"{{"wan":{},"title":{}}}"#,
+                json_str(&args.wan),
+                json_str(&args.title)
+            ),
         ),
         ("GET", "/api/snapshot") => {
             let g = state.last.lock().unwrap();
@@ -724,7 +730,89 @@ fn route(method: &str, path: &str, state: &State, args: &Args) -> (u16, String, 
             let points: Vec<&HistoryPoint> = g.iter().collect();
             (200, "application/json".to_string(), history_json(&points))
         }
+        // Anything else is a SPA route: serve the static asset if present,
+        // otherwise fall back to index.html (client-side routing).
+        ("GET", _) => match serve_static(&args.static_dir, path) {
+            Some(r) => r,
+            None => (200, "text/html; charset=utf-8".to_string(), FALLBACK_HTML.replace("__TITLE__", &args.title)),
+        },
         _ => (404, "application/json".to_string(), r#"{"error":"not found"}"#.to_string()),
+    }
+}
+
+const FALLBACK_HTML: &str = r#"<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>__TITLE__</title></head>
+<body style="font:16px system-ui;background:#0d1117;color:#d7e0e8;padding:40px">
+<h1>__TITLE__</h1>
+<p>The frontend has not been built yet. Build it and point <code>--static-dir</code> at the output:</p>
+<pre>cd network-status/frontend &amp;&amp; npm install &amp;&amp; npm run build</pre>
+<p>The dashboard will appear once the static files are served.</p>
+</body>
+</html>
+"#;
+
+/// MIME type for a URL path (best-effort, by extension).
+fn static_content_type(path: &str) -> &'static str {
+    let ext = path.rsplit('.').next().unwrap_or("").to_lowercase();
+    match ext.as_str() {
+        "html" | "htm" => "text/html; charset=utf-8",
+        "css" => "text/css; charset=utf-8",
+        "js" | "mjs" => "text/javascript; charset=utf-8",
+        "map" | "json" => "application/json; charset=utf-8",
+        "svg" => "image/svg+xml",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "ico" => "image/x-icon",
+        "webp" => "image/webp",
+        "woff2" => "font/woff2",
+        "woff" => "font/woff",
+        "ttf" => "font/ttf",
+        _ => "application/octet-stream",
+    }
+}
+
+/// Join `path` onto `dir`, refusing any `..` that would escape the directory.
+fn within_dir(dir: &std::path::Path, path: &str) -> Option<std::path::PathBuf> {
+    let mut out = std::path::PathBuf::from(dir);
+    for comp in path.split(['/', '\\']) {
+        match comp {
+            "" | "." => {}
+            ".." => return None,
+            c => out.push(c),
+        }
+    }
+    Some(out)
+}
+
+/// Serve a path from `static_dir`, with SPA fallback to index.html.
+/// Returns `None` when no static dir is configured.
+fn serve_static(static_dir: &Option<String>, path: &str) -> Option<(u16, String, String)> {
+    let dir = std::path::Path::new(static_dir.as_ref()?);
+    // Drop any query string.
+    let clean = path.split('?').next().unwrap_or("/");
+    let mut file = within_dir(dir, clean)?;
+    if file.is_dir() {
+        file.push("index.html");
+    }
+    match std::fs::read(&file) {
+        Ok(bytes) => Some((
+            200,
+            static_content_type(&file.to_string_lossy()).to_string(),
+            String::from_utf8_lossy(&bytes).into_owned(),
+        )),
+        Err(_) => {
+            // SPA fallback: hand back index.html for unrecognised routes.
+            match std::fs::read(dir.join("index.html")) {
+                Ok(bytes) => Some((
+                    200,
+                    "text/html; charset=utf-8".to_string(),
+                    String::from_utf8_lossy(&bytes).into_owned(),
+                )),
+                Err(_) => None,
+            }
+        }
     }
 }
 
@@ -751,7 +839,8 @@ fn handle_client(mut stream: TcpStream, state: &State, args: &Args) {
     let request_line = lines.next().unwrap_or("");
     let mut parts = request_line.split_whitespace();
     let method = parts.next().unwrap_or("");
-    let path = parts.next().unwrap_or("");
+    // Drop any query string so static routes resolve by path only.
+    let path = parts.next().unwrap_or("").split('?').next().unwrap_or("");
 
     let (status, ctype, body) = route(method, path, state, args);
     let reason = match status {
@@ -769,579 +858,6 @@ fn handle_client(mut stream: TcpStream, state: &State, args: &Args) {
 }
 
 // ---------------------------------------------------------------------------
-// Frontend
-// ---------------------------------------------------------------------------
-
-const PAGE: &str = r##"<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>__TITLE__</title>
-<style>
-  :root {
-    --bg: #0d1117; --panel: #161d26; --panel2: #1c2530; --border: #2a3542;
-    --text: #d7e0e8; --muted: #8b98a5;
-    --good: #2ecc71; --bad: #e74c3c; --warn: #f1c40f; --inactive: #7f8c8d;
-    --up: #2dd4bf; --down: #60a5fa;
-  }
-  * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--text);
-         font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
-  main { max-width: 1240px; margin: 0 auto; padding: 20px; }
-  header { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
-  h1 { font-size: 20px; margin: 0; }
-  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 0 0 8px; }
-  .sub, .muted { color: var(--muted); }
-  .mono { font-variant-numeric: tabular-nums; font-family: ui-monospace, "SF Mono", Menlo, monospace; }
-  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 12px; margin-bottom: 16px; }
-  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; min-width: 0; }
-  .card.wide { grid-column: 1 / -1; }
-  .pill { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; }
-  .pill.good { background: rgba(46,204,113,.15); color: var(--good); }
-  .pill.bad { background: rgba(231,76,60,.15); color: var(--bad); }
-  .pill.warn { background: rgba(241,196,15,.15); color: var(--warn); }
-  .banner { display: none; background: rgba(231,76,60,.12); border: 1px solid rgba(231,76,60,.4);
-            color: #fca5a5; border-radius: 8px; padding: 10px 14px; margin-bottom: 14px; }
-  canvas { display: block; width: 100%; }
-  .chart-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
-  .chart-head h2 { margin: 0; }
-  .chart-head .now { margin-left: auto; font-size: 13px; }
-  .legend { display: flex; gap: 14px; font-size: 12px; color: var(--muted); margin-top: 6px; flex-wrap: wrap; }
-  .legend .sw { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
-  select { background: var(--panel2); color: var(--text); border: 1px solid var(--border);
-           border-radius: 6px; padding: 3px 8px; font-size: 13px; }
-  .iface-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px; }
-  .iface { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; }
-  .iface .head { display: flex; align-items: center; gap: 8px; }
-  .iface .name { font-weight: 600; font-size: 13px; }
-  .iface .rates { margin-top: 4px; font-size: 12px; display: flex; justify-content: space-between; }
-  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
-  .dot.up { background: var(--good); box-shadow: 0 0 6px rgba(46,204,113,.7); }
-  .dot.down { background: var(--bad); }
-  .issue { padding: 6px 10px; border-radius: 6px; margin-bottom: 6px; font-size: 13px; }
-  .issue.bad { background: rgba(231,76,60,.12); border: 1px solid rgba(231,76,60,.35); color: #fca5a5; }
-  .issue.warn { background: rgba(241,196,15,.10); border: 1px solid rgba(241,196,15,.3); color: #fde68a; }
-  .upc { color: var(--up); } .downc { color: var(--down); }
-</style>
-</head>
-<body>
-<main>
-  <header>
-    <h1>&#x1F310; <span id="title"></span></h1>
-    <span class="sub mono" id="meta"></span>
-    <span class="pill good" id="statusPill" style="margin-left:auto">waiting&hellip;</span>
-  </header>
-
-  <div class="banner" id="errBanner"></div>
-
-  <section class="cards">
-    <div class="card wide">
-      <div class="chart-head">
-        <h2>Bandwidth</h2>
-        <select id="ifaceSelect"></select>
-        <span class="now mono" id="bwNow"></span>
-      </div>
-      <canvas id="bwChart" height="220"></canvas>
-      <div class="legend">
-        <span><span class="sw" style="background:var(--up)"></span>up (to internet)</span>
-        <span><span class="sw" style="background:var(--down)"></span>down (from internet)</span>
-        <span class="muted" id="bwTotal"></span>
-      </div>
-    </div>
-    <div class="card">
-      <h2>Connections (firewall state table)</h2>
-      <canvas id="connChart" height="150"></canvas>
-      <div class="legend"><span class="mono" id="connNow"></span></div>
-    </div>
-    <div class="card">
-      <h2>Load average</h2>
-      <canvas id="loadChart" height="150"></canvas>
-      <div class="legend"><span class="mono" id="loadNow"></span></div>
-    </div>
-  </section>
-
-  <section class="card" style="margin-bottom:16px">
-    <h2>Interfaces</h2>
-    <div class="iface-grid" id="ifaceGrid"></div>
-  </section>
-
-  <section class="card">
-    <h2>Issues</h2>
-    <div id="issues"></div>
-  </section>
-</main>
-<script>
-const MAXPTS = 720;          // keep 1 hour of 5s samples on the client
-const BW_WINDOW = 120;       // points shown in the big bandwidth chart (10 min)
-const CONN_WINDOW = 240;     // 20 min
-const SPARK_WINDOW = 60;     // 5 min sparklines
-
-// history: { ts: [], rates: { name: { up: [], down: [] } }, pf: [], load: [] }
-const hist = { ts: [], rates: {}, pf: [], load: [] };
-let lastTs = null;
-let selectedIface = null;   // 'total' (default) or an interface name
-let lastSnap = null;        // last snapshot, for re-render on dropdown change
-
-// Sum of up/down across all interfaces, aligned to hist.ts (right-aligned,
-// so an interface that only appears later doesn't shift the sums).
-function totalSeries() {
-  const n = hist.ts.length;
-  const up = new Array(n).fill(null);
-  const down = new Array(n).fill(null);
-  for (const name in hist.rates) {
-    const s = hist.rates[name];
-    const len = s.up.length;
-    const off = n - len;
-    for (let i = 0; i < len; i++) {
-      const j = off + i;
-      if (s.up[i] != null) up[j] = (up[j] == null ? 0 : up[j]) + s.up[i];
-      if (s.down[i] != null) down[j] = (down[j] == null ? 0 : down[j]) + s.down[i];
-    }
-  }
-  return { up: up, down: down };
-}
-
-function pushPoint(p) {
-  if (lastTs !== null && p.ts <= lastTs) return;
-  lastTs = p.ts;
-  hist.ts.push(p.ts);
-  hist.pf.push(p.pf_states == null ? null : p.pf_states);
-  hist.load.push(p.load ? p.load[0] : null);
-  for (const i of p.ifaces) {
-    if (!hist.rates[i.name]) hist.rates[i.name] = { up: [], down: [] };
-    hist.rates[i.name].up.push(i.up_bps == null ? null : i.up_bps);
-    hist.rates[i.name].down.push(i.down_bps == null ? null : i.down_bps);
-  }
-  while (hist.ts.length > MAXPTS) {
-    hist.ts.shift();
-    hist.pf.shift();
-    hist.load.shift();
-    for (const k in hist.rates) { hist.rates[k].up.shift(); hist.rates[k].down.shift(); }
-  }
-}
-
-function seedFromHistory(h) {
-  for (let i = 0; i < h.ts.length; i++) pushPoint({
-    ts: h.ts[i],
-    ifaces: Object.keys(h.ifaces).map(function (name) {
-      return {
-        name: name,
-        up_bps: h.ifaces[name].up[i] == null ? null : h.ifaces[name].up[i],
-        down_bps: h.ifaces[name].down[i] == null ? null : h.ifaces[name].down[i]
-      };
-    }),
-    pf_states: h.pf[i] == null ? null : h.pf[i],
-    load: h.load[i] == null ? null : [h.load[i]]
-  });
-}
-
-// --- formatting ------------------------------------------------------------
-
-function fmtRate(bps) {
-  if (bps == null) return '–';
-  if (bps >= 1e9) return (bps / 1e9).toFixed(2) + ' GB/s';
-  if (bps >= 1e6) return (bps / 1e6).toFixed(2) + ' MB/s';
-  if (bps >= 1e3) return (bps / 1e3).toFixed(1) + ' KB/s';
-  return Math.round(bps) + ' B/s';
-}
-function fmtTotal(b) {
-  if (b == null) return '–';
-  if (b >= 1e12) return (b / 1e12).toFixed(2) + ' TB';
-  if (b >= 1e9) return (b / 1e9).toFixed(2) + ' GB';
-  if (b >= 1e6) return (b / 1e6).toFixed(1) + ' MB';
-  if (b >= 1e3) return (b / 1e3).toFixed(1) + ' KB';
-  return b + ' B';
-}
-function fmtDur(s) {
-  if (s == null) return '–';
-  const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
-  if (d) return d + 'd ' + h + 'h ' + m + 'm';
-  if (h) return h + 'h ' + m + 'm';
-  return m + 'm ' + Math.floor(s % 60) + 's';
-}
-function fmtMem(b) {
-  if (b == null) return '–';
-  if (b >= 1e9) return (b / 1e9).toFixed(2) + ' GB';
-  if (b >= 1e6) return (b / 1e6).toFixed(0) + ' MB';
-  return (b / 1e3).toFixed(0) + ' KB';
-}
-function fmtTime(ts) {
-  const d = new Date(ts * 1000);
-  function p(n) { return n < 10 ? '0' + n : '' + n; }
-  return p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
-}
-
-// --- canvas charting (hand-rolled, no dependencies) ------------------------
-
-function setupCanvas(canvas, cssHeight) {
-  const dpr = window.devicePixelRatio || 1;
-  const w = canvas.clientWidth || 300;
-  canvas.width = Math.max(1, Math.round(w * dpr));
-  canvas.height = Math.max(1, Math.round(cssHeight * dpr));
-  const ctx = canvas.getContext('2d');
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  return { ctx, w, h: cssHeight };
-}
-
-function niceMax(v) {
-  if (v <= 0) return 1;
-  const exp = Math.pow(10, Math.floor(Math.log10(v)));
-  const m = v / exp;
-  if (m <= 1) return exp;
-  if (m <= 2) return 2 * exp;
-  if (m <= 5) return 5 * exp;
-  return 10 * exp;
-}
-
-// series: [{data: (number|null)[], color, fill, window}]
-function drawChart(canvas, series, opts) {
-  opts = opts || {};
-  const fmt = opts.fmt || (v => v.toFixed(1));
-  const { ctx, w, h } = setupCanvas(canvas, opts.height || 200);
-  const padL = 58, padR = 8, padT = 8, padB = 20;
-  const pw = w - padL - padR, ph = h - padT - padB;
-
-  let maxv = 0;
-  for (const s of series) {
-    const start = Math.max(0, s.data.length - s.window);
-    for (let i = start; i < s.data.length; i++) {
-      const v = s.data[i];
-      if (v != null && v > maxv) maxv = v;
-    }
-  }
-  const ymax = niceMax(maxv * 1.05);
-  const n = series[0] ? series[0].data.length : 0;
-  const win = series[0] ? series[0].window : n;
-
-  ctx.clearRect(0, 0, w, h);
-  ctx.font = '11px ui-monospace, monospace';
-
-  // grid + y labels
-  ctx.strokeStyle = '#232d38';
-  ctx.fillStyle = '#8b98a5';
-  ctx.lineWidth = 1;
-  for (let g = 0; g <= 4; g++) {
-    const y = padT + ph - (ph * g) / 4;
-    ctx.beginPath();
-    ctx.moveTo(padL, y);
-    ctx.lineTo(w - padR, y);
-    ctx.stroke();
-    ctx.fillText(fmt((ymax * g) / 4), 4, y + 4);
-  }
-  // x labels (3). Series can be shorter than hist.ts (an interface that
-  // appeared later in the history), so offset into the timestamp array.
-  if (n > 1) {
-    const ts = hist.ts;
-    const off = ts.length - n;
-    [0, Math.floor((n - 1) / 2), n - 1].forEach(function (i) {
-      const x = padL + (pw * i) / (n - 1);
-      const right = i === n - 1, mid = i === Math.floor((n - 1) / 2);
-      ctx.textAlign = right ? 'right' : (mid ? 'center' : 'left');
-      ctx.fillText(fmtTime(ts[off + i] || 0), x, h - 5);
-    });
-    ctx.textAlign = 'left';
-  }
-
-  if (n === 0) {
-    ctx.fillStyle = '#8b98a5';
-    ctx.fillText('no data yet', padL + 8, padT + ph / 2);
-    return;
-  }
-
-  for (const s of series) {
-    const start = Math.max(0, s.data.length - s.window);
-    const count = s.data.length - start;
-    if (count < 2) continue;
-    const xAt = i => padL + (pw * (i - start)) / (count - 1);
-    const yAt = v => padT + ph - (ph * Math.min(v, ymax)) / ymax;
-
-    if (s.fill) {
-      ctx.beginPath();
-      let started = false;
-      for (let i = start; i < s.data.length; i++) {
-        const v = s.data[i];
-        if (v == null) { started = false; continue; }
-        const x = xAt(i), y = yAt(v);
-        if (!started) { ctx.moveTo(x, y); started = true; }
-        else ctx.lineTo(x, y);
-      }
-      // close the fill path down to the axis
-      let lastX = null, firstX = null;
-      for (let i = start; i < s.data.length; i++) {
-        if (s.data[i] == null) continue;
-        if (firstX === null) firstX = xAt(i);
-        lastX = xAt(i);
-      }
-      if (firstX !== null && lastX !== null) {
-        ctx.lineTo(lastX, padT + ph);
-        ctx.lineTo(firstX, padT + ph);
-        ctx.closePath();
-        const grad = ctx.createLinearGradient(0, padT, 0, padT + ph);
-        grad.addColorStop(0, s.color + '55');
-        grad.addColorStop(1, s.color + '05');
-        ctx.fillStyle = grad;
-        ctx.fill();
-      }
-    }
-
-    ctx.beginPath();
-    let started = false;
-    for (let i = start; i < s.data.length; i++) {
-      const v = s.data[i];
-      if (v == null) { started = false; continue; }
-      const x = xAt(i), y = yAt(v);
-      if (!started) { ctx.moveTo(x, y); started = true; }
-      else ctx.lineTo(x, y);
-    }
-    ctx.strokeStyle = s.color;
-    ctx.lineWidth = s.width || 1.8;
-    ctx.lineJoin = 'round';
-    ctx.stroke();
-  }
-}
-
-// series: [{data: (number|null)[], color}]
-function sparkline(canvas, series) {
-  const { ctx, w, h } = setupCanvas(canvas, 46);
-  ctx.clearRect(0, 0, w, h);
-  const n = series[0] ? series[0].data.length : 0;
-  const start = Math.max(0, n - SPARK_WINDOW);
-  const count = n - start;
-  if (count < 2) {
-    ctx.fillStyle = '#4a5560';
-    ctx.font = '10px ui-monospace, monospace';
-    ctx.fillText('…', 4, h / 2 + 3);
-    return;
-  }
-  let maxv = 0;
-  for (const s of series)
-    for (let i = start; i < n; i++) {
-      const v = s.data[i];
-      if (v != null && v > maxv) maxv = v;
-    }
-  const ymax = niceMax(maxv * 1.1) || 1;
-  const xAt = i => (w * (i - start)) / (count - 1);
-  const yAt = v => h - 2 - ((h - 6) * Math.min(v, ymax)) / ymax;
-  for (const s of series) {
-    ctx.beginPath();
-    let started = false;
-    for (let i = start; i < n; i++) {
-      const v = s.data[i];
-      if (v == null) { started = false; continue; }
-      const x = xAt(i), y = yAt(v);
-      if (!started) { ctx.moveTo(x, y); started = true; }
-      else ctx.lineTo(x, y);
-    }
-    ctx.strokeStyle = s.color;
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
-  }
-}
-
-// --- rendering --------------------------------------------------------------
-
-function interestingIfaces(snap) {
-  return snap.ifaces.filter(function (i) {
-    return i.active || i.down_total > 0 || i.up_total > 0;
-  });
-}
-
-function render(snap) {
-  document.getElementById('title').textContent = document.title;
-
-  const r = snap.router;
-  // textContent (no HTML entities) — use the literal middle dot.
-  document.getElementById('meta').textContent =
-    'router up ' + fmtDur(r.uptime_secs) +
-    (r.nprocs != null ? ' · ' + r.nprocs + ' CPUs' : '') +
-    (r.cpu.user != null ? ' · cpu ' + (100 - r.cpu.idle).toFixed(1) + '%' : '') +
-    (r.mem.free != null ? ' · ' + fmtMem(r.mem.free) + ' mem free' : '') +
-    ' · ' + fmtTime(snap.ts);
-
-  const pill = document.getElementById('statusPill');
-  if (!snap.ok) {
-    pill.textContent = 'router unreachable';
-    pill.className = 'pill bad';
-  } else if (snap.issues.some(i => i.level === 'bad')) {
-    pill.textContent = 'problem detected';
-    pill.className = 'pill bad';
-  } else if (snap.issues.length) {
-    pill.textContent = snap.issues.length + ' warning' + (snap.issues.length > 1 ? 's' : '');
-    pill.className = 'pill warn';
-  } else {
-    pill.textContent = 'all good';
-    pill.className = 'pill good';
-  }
-
-  const banner = document.getElementById('errBanner');
-  if (!snap.ok) {
-    banner.style.display = 'block';
-    banner.textContent = 'Cannot reach the router (10.3.1.1) — ' + (snap.error || 'unknown error') +
-      '. Showing last known data; will retry automatically.';
-  } else {
-    banner.style.display = 'none';
-  }
-
-  // interface selector: a synthetic 'total' (all interfaces, the default)
-  // plus every interface that is active or has traffic.
-  const ifaces = interestingIfaces(snap);
-  const sel = document.getElementById('ifaceSelect');
-  if (!selectedIface) selectedIface = 'total';
-  if (selectedIface !== 'total' && !ifaces.some(i => i.name === selectedIface)) {
-    selectedIface = 'total'; // previously selected interface went away
-  }
-  const options = [{ name: 'total', label: 'total (all interfaces)' }].concat(
-    ifaces.map(function (i) {
-      return { name: i.name, label: i.name === (snap.wan || 'em0') ? i.name + ' (WAN)' : i.name };
-    }));
-  const sig = options.map(o => o.name).join(',');
-  if (sel.dataset.sig !== sig) {
-    sel.dataset.sig = sig;
-    sel.innerHTML = options.map(function (o) {
-      return '<option value="' + o.name + '"' + (o.name === selectedIface ? ' selected' : '') + '>' +
-        o.label + '</option>';
-    }).join('');
-  } else if (sel.value !== selectedIface) {
-    sel.value = selectedIface;
-  }
-
-  // Bandwidth chart: either the synthetic total or one interface.
-  let upSeries, downSeries, curUp, curDown, totUp, totDown;
-  if (selectedIface === 'total') {
-    const t = totalSeries();
-    upSeries = t.up; downSeries = t.down;
-    curUp = 0; curDown = 0; totUp = 0; totDown = 0;
-    for (const i of snap.ifaces) {
-      if (i.up_bps != null) curUp += i.up_bps;
-      if (i.down_bps != null) curDown += i.down_bps;
-      totUp += i.up_total || 0;
-      totDown += i.down_total || 0;
-    }
-  } else {
-    const h = hist.rates[selectedIface];
-    if (h) {
-      upSeries = h.up; downSeries = h.down;
-      const cur = snap.ifaces.find(i => i.name === selectedIface);
-      curUp = cur ? cur.up_bps : null;
-      curDown = cur ? cur.down_bps : null;
-      totUp = cur ? cur.up_total : null;
-      totDown = cur ? cur.down_total : null;
-    }
-  }
-  if (upSeries) {
-    drawChart(document.getElementById('bwChart'), [
-      { data: upSeries, color: '#2dd4bf', fill: true, window: BW_WINDOW },
-      { data: downSeries, color: '#60a5fa', fill: true, window: BW_WINDOW }
-    ], { fmt: fmtRate, height: 220 });
-    document.getElementById('bwNow').innerHTML =
-      '<span class="upc">▲ ' + fmtRate(curUp) + '</span> &nbsp; <span class="downc">▼ ' +
-      fmtRate(curDown) + '</span>';
-    document.getElementById('bwTotal').textContent =
-      (selectedIface === 'total' ? 'all: ' : '') + '▼ ' + fmtTotal(totDown) + ' · ▲ ' + fmtTotal(totUp);
-  }
-
-  drawChart(document.getElementById('connChart'),
-    [{ data: hist.pf, color: '#a78bfa', fill: true, window: CONN_WINDOW }],
-    { fmt: v => Math.round(v) + '', height: 150 });
-  document.getElementById('connNow').textContent =
-    (r.pf_states != null ? r.pf_states + ' active states' : '–') +
-    (r.own_tcp != null ? '  ·  ' + r.own_tcp + ' router sockets' : '') +
-    (r.retrans_rate != null ? '  ·  retrans ' + r.retrans_rate.toFixed(2) + '/s' : '');
-
-  drawChart(document.getElementById('loadChart'),
-    [{ data: hist.load, color: '#f1c40f', fill: true, window: CONN_WINDOW }],
-    { fmt: v => v.toFixed(1), height: 150 });
-  document.getElementById('loadNow').textContent = r.load
-    ? 'load ' + r.load.map(l => l.toFixed(2)).join(' / ') + (r.nprocs ? ' on ' + r.nprocs + ' CPUs' : '')
-    : '–';
-
-  // per-interface cards
-  const grid = document.getElementById('ifaceGrid');
-  const cards = ifaces.map(function (i) {
-    const up = hist.rates[i.name] ? hist.rates[i.name].up : [];
-    const down = hist.rates[i.name] ? hist.rates[i.name].down : [];
-    return { i: i, up: up, down: down };
-  }).sort(function (a, b) {
-    return (b.i.down_total + b.i.up_total) - (a.i.down_total + a.i.up_total);
-  });
-  const existing = grid.querySelectorAll('.iface canvas');
-  grid.innerHTML = cards.map(function (c, idx) {
-    return '<div class="iface" data-idx="' + idx + '">' +
-      '<div class="head"><span class="dot ' + (c.i.active ? 'up' : 'down') + '"></span>' +
-      '<span class="name">' + c.i.name + (c.i.name === (snap.wan || 'em0') ? ' <span class="muted">(WAN)</span>' : '') +
-      '</span><span class="muted mono" style="margin-left:auto">' +
-      (c.i.active ? 'linked' : 'no carrier') + '</span></div>' +
-      '<canvas></canvas>' +
-      '<div class="rates mono">' +
-      '<span class="upc">▲ ' + fmtRate(c.i.up_bps) + '</span>' +
-      '<span class="downc">▼ ' + fmtRate(c.i.down_bps) + '</span></div>' +
-      '</div>';
-  }).join('');
-  grid.querySelectorAll('.iface').forEach(function (el, idx) {
-    const c = cards[idx];
-    sparkline(el.querySelector('canvas'), [
-      { data: c.down, color: '#60a5fa' },
-      { data: c.up, color: '#2dd4bf' }
-    ]);
-  });
-
-  // issues
-  const issuesEl = document.getElementById('issues');
-  if (!snap.issues.length) {
-    issuesEl.innerHTML = '<span class="muted">✔ no issues detected</span>';
-  } else {
-    issuesEl.innerHTML = snap.issues.map(function (i) {
-      return '<div class="issue ' + i.level + '">' + (i.level === 'bad' ? '&#x1F534; ' : '&#x26A0; ') +
-        i.message + '</div>';
-    }).join('');
-  }
-}
-
-// --- main loop ---------------------------------------------------------------
-
-function poll() {
-  fetch('/api/snapshot')
-    .then(function (r) { return r.json().then(function (b) { return { ok: r.ok, b: b }; }); })
-    .then(function (res) {
-      if (!res.ok || res.b.error) return;
-      pushPoint({
-        ts: res.b.ts,
-        ifaces: res.b.ifaces,
-        pf_states: res.b.router.pf_states,
-        load: res.b.router.load
-      });
-      res.b.wan = WAN;
-      lastSnap = res.b;
-      render(res.b);
-    })
-    .catch(function () {});
-}
-
-const WAN = '__WAN__';
-document.getElementById('title').textContent = document.title;
-document.title = '__TITLE__';
-
-fetch('/api/history')
-  .then(function (r) { return r.json(); })
-  .then(seedFromHistory)
-  .catch(function () {})
-  .finally(function () {
-    // Re-render immediately when the user picks a different interface.
-    document.getElementById('ifaceSelect').addEventListener('change', function () {
-      selectedIface = this.value;
-      if (lastSnap) render(lastSnap);
-    });
-    poll();
-    setInterval(poll, 5000);
-    window.addEventListener('resize', function () { poll(); });
-  });
-</script>
-</body>
-</html>
-"##;
-
-// ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
@@ -1354,6 +870,7 @@ fn main() {
     let mut interval_secs: u64 = 5;
     let mut wan = "em0".to_string();
     let mut title = "network-info".to_string();
+    let mut static_dir: Option<String> = None;
     let mut i = 0;
     while i < argv.len() {
         match argv[i].as_str() {
@@ -1399,6 +916,12 @@ fn main() {
                     i += 1;
                 }
             }
+            "--static-dir" => {
+                if let Some(v) = argv.get(i + 1) {
+                    static_dir = Some(v.clone());
+                    i += 1;
+                }
+            }
             _ => {}
         }
         i += 1;
@@ -1412,6 +935,7 @@ fn main() {
         interval: Duration::from_secs(interval_secs),
         wan,
         title,
+        static_dir,
     };
     let state = Arc::new(State {
         last: Mutex::new(None),
@@ -1427,8 +951,13 @@ fn main() {
         }
     };
     eprintln!(
-        "network-status listening on {}:{} (router: {}, wan: {}, interval: {}s)",
-        args.bind, args.port, args.router, args.wan, interval_secs
+        "network-status listening on {}:{} (router: {}, wan: {}, interval: {}s, static_dir: {})",
+        args.bind,
+        args.port,
+        args.router,
+        args.wan,
+        interval_secs,
+        args.static_dir.as_deref().unwrap_or("<embedded>"),
     );
 
     // Sampler thread

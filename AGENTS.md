@@ -25,6 +25,16 @@ Guidance for AI agents working in this repository. Read this before making chang
   renders the expected-name list to `/etc/dns-sync/expected-int-names`.
   Run with `just dns-sync-check` / `just dns-sync-sync` / `just dns-sync-prune`
   (router + DO facts below).
+- `network-status/` — the router network dashboard (served at
+  `network-info.int.leighhack.org`). The Rust binary (`src/`, zero external
+  crates) ssh's to the router every 5s, keeps a rolling history, serves the
+  JSON API (`/api/snapshot`, `/api/history`, `/api/config`) and static files
+  via `--static-dir`. The frontend is a SolidJS + TypeScript SPA in
+  `frontend/` (esbuild + `esbuild-plugin-solid`, minimal deps — no router, state, or chart libs). `frontend/dist/` is **committed** and copied into the Nix store
+  by `machines/services1/network-status.nix` (Nix builds are offline and the
+  npm deps aren't nixpkgs-cached, so the SPA is not rebuilt in Nix): after
+  editing the SPA, run `npm install && npm run build` in `frontend/` and commit
+  the result.
 - `machines/services1/` — the services box:
   - `hardware-configuration.nix` — NFS mounts for the NAS and their explicit
     automount units (see gotcha below).
