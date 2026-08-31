@@ -23,7 +23,7 @@ in
     settings = {
       "GitLabSettings" = {
         "Enable" = true;
-        "Secret" = builtins.readFile CONFIG.MATTERMOST_AUTHENTIK_SECRET_FILE;
+        "Secret" = lib.strings.trim (builtins.readFile (config.sopsSecretText "mattermost_authentik_secret"));
         "Id" = "CEqUaJOX3VDU2j4HJhnBWY0SHYkvbx7AIoIVSdZJ";
         "Scope" = "";
         "AuthEndpoint" = "https://${CONFIG.AUTHENTIK_DOMAIN}/application/o/authorize/";

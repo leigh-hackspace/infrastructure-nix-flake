@@ -53,6 +53,7 @@ in
       configFilePath = (
         pkgs.writeText "nginx-sso-config" (nginxSsoConfig {
           inherit lib;
+          sopsSecretText = config.sopsSecretText;
         })
       );
     in

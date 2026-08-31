@@ -1,11 +1,13 @@
 {
   lib,
+  config,
   ...
 }:
 
 let
   CONFIG = import ../config.nix;
   UNIFI_UID = 8901;
+  mongoPass = lib.strings.trim (builtins.readFile (config.sopsSecretText "unifi_db_password"));
 in
 {
   users.users.unifi = {
@@ -31,7 +33,7 @@ in
       PGID = (toString UNIFI_UID);
       TZ = "Etc/UTC";
       MONGO_USER = "unifi";
-      MONGO_PASS = lib.strings.trim (builtins.readFile CONFIG.UNIFI_DB_PASSWORD_FILE);
+      MONGO_PASS = mongoPass;
       MONGO_HOST = "localhost";
       MONGO_PORT = "27017";
       MONGO_DBNAME = "unifi";
@@ -52,7 +54,7 @@ in
     ];
     environment = {
       MONGO_INITDB_ROOT_USERNAME = "unifi";
-      MONGO_INITDB_ROOT_PASSWORD = lib.strings.trim (builtins.readFile CONFIG.UNIFI_DB_PASSWORD_FILE);
+      MONGO_INITDB_ROOT_PASSWORD = mongoPass;
     };
     extraOptions = [
       "--privileged"

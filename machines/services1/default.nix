@@ -1,7 +1,10 @@
+flakeInputs:
+
 {
   networking.hostName = "services1"; # Define your hostname.
 
   imports = [
+    ./sops.nix
     ./services
 
     ./ai.nix
@@ -13,5 +16,7 @@
     ./network-status.nix
     ./networking.nix
     ./nfs-client.nix
+
+    flakeInputs.sops-nix.nixosModules.sops
   ];
 }

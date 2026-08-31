@@ -1,8 +1,8 @@
-{ lib }:
+{ lib, sopsSecretText }:
 let
   CONFIG = import ../config.nix;
 
-  readSecret = file: lib.strings.trim (builtins.readFile file);
+  readSecret = name: lib.strings.trim (builtins.readFile (sopsSecretText name));
 in
 lib.generators.toYAML { } {
   login = {
@@ -14,7 +14,7 @@ lib.generators.toYAML { } {
 
   cookie = {
     domain = ".leighhack.org";
-    authentication_key = readSecret CONFIG.NGINX_SSO_AUTH_KEY_FILE;
+    authentication_key = readSecret "nginx_sso_auth";
     expire = 86400;
   };
 
@@ -108,7 +108,7 @@ lib.generators.toYAML { } {
 
   providers.oidc = {
     client_id = "pyBuPjaPD7xaiy8hAQpy4W02A3G0aIKyUakPtSaD";
-    client_secret = readSecret CONFIG.NGINX_SSO_CLIENT_SECRET_FILE;
+    client_secret = readSecret "nginx_sso_client_secret";
     redirect_url = "https://login.leighhack.org/login";
     issuer_name = "Leigh Hackspace";
     issuer_url = "https://${CONFIG.AUTHENTIK_DOMAIN}/application/o/nginx-login/";

@@ -8,13 +8,14 @@
 
 let
   CONFIG = import ../config.nix;
-  slackWebhookUrl = lib.strings.trim (builtins.readFile CONFIG.SLACK_URL_FILE);
+  slackWebhookUrl = lib.strings.trim (builtins.readFile (config.sopsSecretText "slack_url"));
+  pgPass = lib.strings.trim (builtins.readFile (config.sopsSecretText "pg_pass"));
   # Define a single data structure for DB names and passwords.
   dbs = {
-    door_system = CONFIG.PG_PASS;
-    door_system_dev = CONFIG.PG_PASS;
-    affine = CONFIG.PG_PASS;
-    outline = CONFIG.PG_PASS;
+    door_system = pgPass;
+    door_system_dev = pgPass;
+    affine = pgPass;
+    outline = pgPass;
   };
 in
 {

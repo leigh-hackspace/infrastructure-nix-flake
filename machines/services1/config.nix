@@ -1,29 +1,21 @@
 {
-  # May need to change if the repo is cloned to a different home folder
-  ENV_FILE = "/var/lib/secrets/.env";
-  HTTP_BASIC_AUTH_FILE = "/var/lib/secrets/http_basic_auth";
-  WIREGUARD_KEY_FILE = "/var/lib/secrets/wg.key";
-  SLACK_URL_FILE = "/var/lib/secrets/slack_url.txt";
-  UNIFI_DB_PASSWORD_FILE = "/var/lib/secrets/unifi_db_password.txt";
+  # Runtime secret files, provisioned by sops-nix from secrets/secrets.yaml
+  # (see sops.nix). Secrets embedded into configs at build time are read via
+  # config.sopsSecretText instead (see common/sops.nix).
+  ENV_FILE = "/run/secrets/env_file";
+  HTTP_BASIC_AUTH_FILE = "/run/secrets/http_basic_auth";
+  WIREGUARD_KEY_FILE = "/run/secrets/wg_key";
 
   AUTHENTIK_DOMAIN = "id.leighhack.org";
 
-  MATTERMOST_AUTHENTIK_SECRET_FILE = "/var/lib/secrets/mattermost_authentik_secret.key";
-
   HEADSCALE_DOMAIN = "tailscale.leighhack.org";
-  HEADPLANE_PRE_AUTHKEY_FILE = "/var/lib/secrets/headplane_pre_authkey.key";
-  HEADPLANE_API_KEY_FILE = "/var/lib/secrets/headplane_api_key.key";
-  HEADPLANE_CLIENT_SECRET_FILE = "/var/lib/secrets/headplane_client_secret.key";
+  HEADPLANE_PRE_AUTHKEY_FILE = "/run/secrets/headplane_pre_authkey";
+  HEADPLANE_API_KEY_FILE = "/run/secrets/headplane_api_key";
+  HEADPLANE_CLIENT_SECRET_FILE = "/run/secrets/headplane_client_secret";
 
-  OUTLINE_CLIENT_SECRET_FILE = "/var/lib/secrets/outline_client_secret.key";
+  OUTLINE_CLIENT_SECRET_FILE = "/run/secrets/outline_client_secret";
 
-  NGINX_SSO_CLIENT_SECRET_FILE = "/var/lib/secrets/nginx_sso_client_secret.key";
-  NGINX_SSO_AUTH_KEY_FILE = "/var/lib/secrets/nginx_sso_auth.key";
-
-  BACKUP_KEY_FILE = "/var/lib/secrets/id_ed25519_backups";
-
-  # Creating the `http_basic_auth` file
-  # nix-shell --packages apacheHttpd --run 'htpasswd -B -c /var/lib/secrets/http_basic_auth leighhack'
+  BACKUP_KEY_FILE = "/run/secrets/backup_key";
 
   # NGINX Firewall for "*.int.leighhack.org"
   # Allow only LAN access for internal services
@@ -64,11 +56,7 @@
     host    sameuser  all     2001:4860:7::0/48       scram-sha-256
   '';
 
-  PG_PASS = "leighhack1234";
-
-  # Status dashboard LAN restart token: injected by the *.int nginx vhosts as
-  # X-Status-Token so restart works on the LAN without SSO sign-in. Must
-  # match services.status-dashboard.restartToken on services1 AND aibox
-  # (machines/aibox/status-dashboard.nix).
-  STATUS_DASHBOARD_LAN_TOKEN = "11d01e910d40fc204701df70a7e0db0436630a0d4e2a2872";
+  # The postgres password (pg_pass) and the status-dashboard LAN restart
+  # token (status_dashboard_lan_token) are sops secrets: read them via
+  # config.sopsSecretText, never hard-code them here.
 }

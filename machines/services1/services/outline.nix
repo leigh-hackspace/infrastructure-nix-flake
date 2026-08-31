@@ -23,7 +23,7 @@ in
       storageType = "local";
       localRootDir = "/srv/outline/data";
     };
-    databaseUrl = "postgresql://outline:${CONFIG.PG_PASS}@127.0.0.1:5432/outline";
+    databaseUrl = "postgresql://outline:${lib.strings.trim (builtins.readFile (config.sopsSecretText "pg_pass"))}@127.0.0.1:5432/outline";
     redisUrl = "redis://127.0.0.1:8401";
     oidcAuthentication = {
       authUrl = "https://${CONFIG.AUTHENTIK_DOMAIN}/application/o/authorize/";

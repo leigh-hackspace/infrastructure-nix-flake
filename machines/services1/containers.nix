@@ -12,7 +12,7 @@ in
 {
   system.updateContainers = {
     enable = true;
-    webhookUrl = lib.strings.trim (builtins.readFile CONFIG.SLACK_URL_FILE);
+    webhookUrl = lib.strings.trim (builtins.readFile (config.sopsSecretText "slack_url"));
   };
 
   virtualisation.podman = {

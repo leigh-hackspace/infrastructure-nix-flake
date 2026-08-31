@@ -3,15 +3,17 @@
 default:
     @ {{just_executable()}} --list --justfile {{justfile()}} --unsorted
 
+SOPS_KEY_FILE := "{{env_var_or_error('HOME')}}/.config/sops/age/keys.txt"
+
 reboot:
     sync
     sudo bash -c "echo b > /proc/sysrq-trigger"
 
 boot:
-    sudo nixos-rebuild boot --flake . --impure
+    sudo nixos-rebuild boot --flake .
 
 switch:
-    sudo nixos-rebuild switch --flake . --impure
+    sudo nixos-rebuild switch --flake .
 
 # --- DNS sync (keeps router dnsmasq + DigitalOcean DNS in step with the
 # --- *.int.leighhack.org nginx vhosts; requires the machine-hop key and a
@@ -41,7 +43,7 @@ switch-netboot:
     nix flake update pi-room-sys
 
     sudo bash -c 'umount -f -l /exports/netboot-squashfs | true'
-    sudo nixos-rebuild switch --flake . --impure
+    sudo nixos-rebuild switch --flake .
     sudo nixos-confirm
     sudo mount -a
 
@@ -126,14 +128,16 @@ update-gocardless-input:
 update-pkgs:
     nix flake update nixpkgs
 
+# Install the shared age key (used to edit secrets) so sops-nix can
+# decrypt at runtime and build time on this machine. Run after a fresh
+# 'nixos-rebuild'. The nixbld group ownership is what lets nix builds
+# decrypt secrets (see common/sops.nix).
 install-sops-key:
     #!/usr/bin/env bash
     set -euo pipefail
 
-    mkdir -p /var/lib/sops-nix
-    chmod 500 /var/lib/sops-nix
-    nix-shell -p ssh-to-age --run "ssh-to-age -private-key -i /home/leigh-admin/.ssh/id_ed25519_leigh_admin > /var/lib/sops-nix/key.txt"
-    chmod 400 /var/lib/sops-nix/key.txt
+    sudo install -d -m 550 -g nixbld /var/lib/sops-nix
+    sudo install -m 440 -g nixbld "{{SOPS_KEY_FILE}}" /var/lib/sops-nix/key.txt
 
 edit-secrets:
-    sudo sops edit secrets/secrets.yaml
+    sops edit secrets/secrets.yaml

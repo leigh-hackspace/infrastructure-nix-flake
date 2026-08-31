@@ -11,7 +11,7 @@ let
   CONFIG_LOCATION = "/srv/affine/config";
   DB_DATABASE = "affine";
   DB_USERNAME = "affine";
-  DB_PASSWORD = CONFIG.PG_PASS;
+  DB_PASSWORD = lib.strings.trim (builtins.readFile (config.sopsSecretText "pg_pass"));
 in
 {
   users.users.affine = {

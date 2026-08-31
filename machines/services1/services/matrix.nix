@@ -114,7 +114,7 @@ in
       ];
     };
     extras = [ "oidc" ];
-    extraConfigFiles = [ "/var/lib/secrets/synapse-authentik.yaml" ];
+    extraConfigFiles = [ "/run/secrets/synapse_authentik" ];
   };
 
   # # Didn't work, run manually...

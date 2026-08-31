@@ -1,10 +1,14 @@
-{ ... }:
+{ config, ... }:
 
 let
   CONFIG = import ../config.nix;
   mkSSOVirtualHost = import ../lib/nginx-sso-helper.nix;
 
   AIBOX_IP = "10.3.1.32";
+
+  # LAN restart token, shared with aibox via the sops secret
+  # status_dashboard_lan_token.
+  lanToken = builtins.readFile (config.sopsSecretText "status_dashboard_lan_token");
 
   # Injected into the LAN-only *.int vhosts so the dashboard's restart
   # endpoint works without SSO sign-in (the vhosts are already
@@ -24,7 +28,7 @@ in
   services.status-dashboard = {
     enable = true;
     title = "services1";
-    restartToken = CONFIG.STATUS_DASHBOARD_LAN_TOKEN;
+    restartToken = lanToken;
   };
 
   services.nginx.virtualHosts = {
@@ -46,7 +50,7 @@ in
         recommendedProxySettings = true;
         extraConfig =
           CONFIG.LOCAL_NETWORK
-          + lanTokenHeader CONFIG.STATUS_DASHBOARD_LAN_TOKEN;
+          + lanTokenHeader lanToken;
       };
     };
 
@@ -68,7 +72,7 @@ in
         recommendedProxySettings = true;
         extraConfig =
           CONFIG.LOCAL_NETWORK
-          + lanTokenHeader CONFIG.STATUS_DASHBOARD_LAN_TOKEN;
+          + lanTokenHeader lanToken;
       };
     };
   };

@@ -80,10 +80,11 @@
               nixos-utils.nixosModules.rollback
               nixos-utils.nixosModules.containers
 
+              ./common/sops.nix
               ./common/tools.nix
               ./common/users.nix
 
-              ./machines/services1
+              ((import ./machines/services1) flakeInputs)
             ];
           };
 

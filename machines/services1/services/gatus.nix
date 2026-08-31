@@ -1,17 +1,15 @@
 {
   lib,
+  config,
   ...
 }:
 
-let
-  CONFIG = import ../config.nix;
-in
 {
   services.gatus = {
     enable = true;
     settings = {
       web.port = 8999;
-      alerting.slack.webhook-url = lib.strings.trim (builtins.readFile CONFIG.SLACK_URL_FILE);
+      alerting.slack.webhook-url = lib.strings.trim (builtins.readFile (config.sopsSecretText "slack_url"));
       endpoints = [
         {
           name = "Uptime Kuma";
