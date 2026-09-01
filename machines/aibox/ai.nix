@@ -59,7 +59,8 @@ in
             -dev Vulkan0 \
             -ngl all \
             --ctx-size 262144 \
-            --flash-attn on
+            --flash-attn on \
+            --reasoning-preserve
         '';
         WorkingDirectory = "/home/leigh-admin/Projects/infrastructure-nix-flake";
         # Defence in depth: index-based filter so no code path (presets, auto
