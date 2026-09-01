@@ -11,6 +11,7 @@ flakeInputs:
     ./containers.nix
     ./hardware-configuration.nix
     ./immich.nix
+    ./monitoring.nix
     ./netboot.nix
     ./networking.nix
     ./nvidia.nix

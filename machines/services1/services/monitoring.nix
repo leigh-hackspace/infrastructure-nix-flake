@@ -7,7 +7,8 @@
 
 # Prometheus + Grafana monitoring server for this machine (for now — the
 # scrape configs are structured so other hosts can be added later, e.g.
-# aibox at 10.3.1.32). Dashboards are declarative: see
+# (aibox at 10.3.1.32 is already wired up in the scrape configs below).
+# Dashboards are declarative: see
 # monitoring-dashboards.nix; edit there and `just switch`.
 #
 #   https://grafana.int.leighhack.org      (anonymous view; admin via sops)
@@ -119,19 +120,28 @@ in
         job_name = "prometheus";
         static_configs = [ { targets = [ "127.0.0.1:${toString PROM_PORT}" ]; } ];
       }
-      # services1 itself for now; add more targets here (e.g.
-      # "10.3.1.32:9100") as other machines get node exporters.
+      # services1 + aibox; add more targets here as other machines get
+      # node exporters.
       {
         job_name = "node";
-        static_configs = [ { targets = [ "127.0.0.1:9100" ]; } ];
+        static_configs = [
+          { targets = [ "127.0.0.1:9100" ]; labels.instance = "services1:9100"; }
+          { targets = [ "10.3.1.32:9100" ]; }
+        ];
       }
       {
         job_name = "systemd";
-        static_configs = [ { targets = [ "127.0.0.1:9558" ]; } ];
+        static_configs = [
+          { targets = [ "127.0.0.1:9558" ]; labels.instance = "services1:9558"; }
+          { targets = [ "10.3.1.32:9558" ]; }
+        ];
       }
       {
         job_name = "smartctl";
-        static_configs = [ { targets = [ "127.0.0.1:9633" ]; } ];
+        static_configs = [
+          { targets = [ "127.0.0.1:9633" ]; labels.instance = "services1:9633"; }
+          { targets = [ "10.3.1.32:9633" ]; }
+        ];
         # SMART queries can be slow on large/degraded disks.
         scrape_interval = "5m";
         scrape_timeout = "30s";
