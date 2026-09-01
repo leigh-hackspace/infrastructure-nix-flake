@@ -12,6 +12,7 @@
     ./librespeed.nix
     ./matrix.nix
     ./mattermost.nix
+    ./monitoring.nix
     ./mqtt.nix
     ./outline.nix
     ./postgres.nix

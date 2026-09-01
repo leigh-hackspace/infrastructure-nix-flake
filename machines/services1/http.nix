@@ -238,17 +238,6 @@ in
       #   };
       # };
 
-      "grafana.int.leighhack.org" = {
-        useACMEHost = "leighhack.org";
-        forceSSL = true;
-
-        locations."/" = {
-          proxyPass = "http://10.3.1.30:3000";
-          recommendedProxySettings = true;
-          extraConfig = CONFIG.LOCAL_NETWORK;
-        };
-      };
-
       "id.int.leighhack.org" = {
         serverAliases = [
           "id.leighhack.org"
