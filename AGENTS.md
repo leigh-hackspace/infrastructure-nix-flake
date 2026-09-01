@@ -106,6 +106,37 @@ Guidance for AI agents working in this repository. Read this before making chang
   Pages, public apps CNAME → `nginx.leighhack.org`, `yunohost` → A
   81.187.195.18.
 
+## Authentik (id.leighhack.org, 10.3.1.36)
+
+- Runs out-of-band on its own box (docker compose in `/srv/authentik`), not
+  flake-managed. Web UI: https://id.leighhack.org (also served as
+  `authentik.int.leighhack.org`); nginx on the box proxies to 127.0.0.1:9000.
+- Admin access: the default `akadmin` user is **disabled**. Real admins are
+  members of the superuser groups `Infra` (or `pgina`), e.g. `cjdell`. To
+  use the admin API, mint a token as an active admin via the ORM:
+
+  ```bash
+  docker exec -i authentik-server-1 ak shell <<'PY'
+  from authentik.core.models import Token, User
+  t = Token(identifier="setup", user=User.objects.get(username="cjdell"),
+            intent="api", expiring=False)
+  t.save(); print(t.key)   # shown once — delete the token when done
+  PY
+  ```
+
+  API base `http://127.0.0.1:9000/api/v3` from the box (Bearer token).
+- OAuth2 providers/apps are managed via the API/UI (no declarative config).
+  Client secrets are **write-only**: generate your own, pass it on
+  create/PATCH, and store it in sops — they can never be read back.
+- Property mappings: list via `/api/v3/propertymappings/all/`; create scope
+  mappings via `/api/v3/propertymappings/provider/scope/`.
+- Grafana OIDC integration (services1): provider pk 3, client_id
+  `8TMM2mYHBV2YQCovNbgGKbuEp0LJcxo2TjpqNN9s`, client secret in sops as
+  `grafana_oidc_client_secret` (runtime secret on services1). Role mapping:
+  authentik group `Infra` → GrafanaAdmin, else Viewer.
+- The DB is reachable from the box:
+  `docker exec authentik-postgresql-1 psql -U authentik -d authentik`.
+
 ## SSH between machines (machine-hop-key)
 
 - Every flake-managed machine shares the **machine-hop-key**: the same

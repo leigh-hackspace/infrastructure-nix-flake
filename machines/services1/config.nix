@@ -14,6 +14,7 @@
   HEADPLANE_CLIENT_SECRET_FILE = "/run/secrets/headplane_client_secret";
 
   OUTLINE_CLIENT_SECRET_FILE = "/run/secrets/outline_client_secret";
+  GRAFANA_OIDC_CLIENT_SECRET_FILE = "/run/secrets/grafana_oidc_client_secret";
 
   BACKUP_KEY_FILE = "/run/secrets/backup_key";
 

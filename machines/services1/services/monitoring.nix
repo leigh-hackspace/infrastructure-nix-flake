@@ -109,6 +109,8 @@ let
     );
 in
 {
+  users.groups.secrets.members = [ "grafana" ];
+
   # --- Prometheus -----------------------------------------------------
   services.prometheus = {
     enable = true;
@@ -193,6 +195,25 @@ in
         enabled = true;
         org_name = "Main Org.";
         org_role = "Viewer";
+      };
+      # Sign-in via authentik (id.leighhack.org). Anonymous viewing above
+      # stays enabled; on login, members of the authentik "Infra" group get
+      # Grafana Admin, everyone else gets Viewer.
+      "auth.generic_oauth" = {
+        enabled = true;
+        name = "Authentik";
+        client_id = "8TMM2mYHBV2YQCovNbgGKbuEp0LJcxo2TjpqNN9s";
+        client_secret = "$__file{${CONFIG.GRAFANA_OIDC_CLIENT_SECRET_FILE}}";
+        scopes = "openid profile email groups";
+        auth_url = "https://${CONFIG.AUTHENTIK_DOMAIN}/application/o/authorize/";
+        token_url = "https://${CONFIG.AUTHENTIK_DOMAIN}/application/o/token/";
+        api_url = "https://${CONFIG.AUTHENTIK_DOMAIN}/application/o/userinfo/";
+        use_pkce = true;
+        use_refresh_token = true;
+        allow_sign_up = true;
+        login_attribute_path = "preferred_username";
+        role_attribute_path = "contains(groups[*], 'Infra') && 'GrafanaAdmin' || 'Viewer'";
+        allow_assign_grafana_admin = true;
       };
     };
 

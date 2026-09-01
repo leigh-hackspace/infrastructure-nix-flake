@@ -45,6 +45,12 @@
       mode = "0440";
     };
 
+    # OIDC client secret for Grafana via authentik (services/monitoring.nix)
+    grafana_oidc_client_secret = {
+      group = "secrets";
+      mode = "0440";
+    };
+
     # Synapse authentik config (services/matrix.nix)
     synapse_authentik = {
       group = "secrets";
