@@ -110,6 +110,30 @@ in
         };
       };
 
+      # Alexandria audiobook generator on aibox (machines/aibox/alexandria.nix):
+      # AI book -> voiced audiobook WebUI (FastAPI on 4200). LAN/tailscale only;
+      # the int record is synced by dns-sync.
+      "alexandria.int.leighhack.org" = {
+        useACMEHost = "leighhack.org";
+        forceSSL = true;
+
+        locations."/" = {
+          proxyPass = "http://10.3.1.32:4200";
+          recommendedProxySettings = true;
+          proxyWebsockets = true;
+
+          extraConfig = ''
+            ${CONFIG.LOCAL_NETWORK}
+            # Book uploads + long audio-generation requests
+            client_max_body_size 1024M;
+            proxy_buffering off;
+            proxy_read_timeout   3600s;
+            proxy_send_timeout   3600s;
+            send_timeout         3600s;
+          '';
+        };
+      };
+
       # Router network dashboard (machines/services1/network-status.nix):
       # realtime per-interface bandwidth, connection counts and issues for
       # the OPNsense box at 10.3.1.1. LAN-only; the router/DO records are

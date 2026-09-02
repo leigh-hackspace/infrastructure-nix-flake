@@ -1,8 +1,13 @@
 # GTX 1060 3GB as a speculative-draft device for Laguna-S-2.1 (aibox)
 
+> **STATUS: HARDWARE REMOVED (2026-09-02).** The GTX 1060 was never installed
+> as a permanent fixture and has since been taken out of aibox entirely. This
+> document is retained as a historical record; aibox now has only the AMD
+> Radeon 660M iGPU (gfx1035, `Vulkan0`).
+
 Date: 2026-08-19
-Scope: analysis only — no config changes made. Question: *"If I add a spare GTX 1060 3GB to this
-machine and use it as a draft model device, can I get more than 8 tps on Laguna-S-2.1?"*
+Scope: analysis only — no config changes made. Question: _"If I add a spare GTX 1060 3GB to this
+machine and use it as a draft model device, can I get more than 8 tps on Laguna-S-2.1?"_
 
 ## TL;DR
 
@@ -33,11 +38,11 @@ as the 64K context fills up.**
 
 ### Relevant hardware numbers
 
-| Item | Value |
-|---|---|
-| Ryzen 5 6600H iGPU (Radeon 660M, RDNA2, 6 CU) | UMA, 56GB GTT, ~77 GB/s (DDR5-4800 dual channel; ~102 GB/s if LPDDR5-6400) |
-| GTX 1060 3GB (Pascal) | 1152 CUDA cores, 192 GB/s GDDR5, ~3.9 TFLOPS, 120W TDP, 1x 6-pin, PCIe 3.0 x16, Vulkan 1.2+ |
-| Active weights read per target pass | ~4GB at IQ3_S (8B active), i.e. ~52ms of pure UMA bandwidth → decode is not purely weight-bandwidth-bound; the rest of the 125ms is KV reads + compute |
+| Item                                          | Value                                                                                                                                                  |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Ryzen 5 6600H iGPU (Radeon 660M, RDNA2, 6 CU) | UMA, 56GB GTT, ~77 GB/s (DDR5-4800 dual channel; ~102 GB/s if LPDDR5-6400)                                                                             |
+| GTX 1060 3GB (Pascal)                         | 1152 CUDA cores, 192 GB/s GDDR5, ~3.9 TFLOPS, 120W TDP, 1x 6-pin, PCIe 3.0 x16, Vulkan 1.2+                                                            |
+| Active weights read per target pass           | ~4GB at IQ3_S (8B active), i.e. ~52ms of pure UMA bandwidth → decode is not purely weight-bandwidth-bound; the rest of the 125ms is KV reads + compute |
 
 ## 2. Verified llama.cpp capabilities (pinned build)
 
@@ -67,11 +72,11 @@ producing `1 + E[accepted]` tokens, where `E[accepted] = α(1-α^K)/(1-α)`.
 
 Draft on the 1060 (e.g. 1.7B Q4_K_M, ~1.1GB): ~80-150 tps → ~7-12ms per draft token.
 
-| Scenario | t_draft | α (acceptance) | K | Est. tps |
-|---|---|---|---|---|
-| Conservative | 12ms | 0.55 | 5 | ~12 |
-| Typical | 10ms | 0.60 | 5 | ~14 |
-| Good (smaller draft) | 7ms | 0.70 | 5 | ~17 |
+| Scenario             | t_draft | α (acceptance) | K   | Est. tps |
+| -------------------- | ------- | -------------- | --- | -------- |
+| Conservative         | 12ms    | 0.55           | 5   | ~12      |
+| Typical              | 10ms    | 0.60           | 5   | ~14      |
+| Good (smaller draft) | 7ms     | 0.70           | 5   | ~17      |
 
 (`--spec-draft-n-max` default is 3; with t_draft ≈ 10ms, K=5 is about the sweet spot — the
 acceptance probability drops off geometrically, so larger K mostly adds draft time.)

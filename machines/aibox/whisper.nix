@@ -1,9 +1,10 @@
 { lib, pkgs, ... }:
 
 let
-  # Whisper.cpp with the Vulkan backend for the GTX 1060 (Vulkan1), plus
-  # ffmpeg so whisper-server's --convert accepts non-WAV uploads.
-  # See gtx1060-followup.md §4 for the background/verdict.
+  # Whisper.cpp with the Vulkan backend + ffmpeg so whisper-server's --convert
+  # accepts non-WAV uploads. The Vulkan build was chosen for the GTX 1060
+  # (gtx1060-followup.md §4); with that card removed (2026-09-02) it needs
+  # repinning — see the note under whisper-server below.
   whisperVulkan = pkgs.whisper-cpp.override {
     vulkanSupport = true;
     withFFmpegSupport = true;
@@ -12,9 +13,13 @@ in
 {
   environment.systemPackages = [ whisperVulkan ];
 
-  # Whisper speech-to-text on the GTX 1060. The iGPU (Vulkan0) is exclusively
-  # llama-server's; whisper is pinned to Vulkan1 (--device 1) and the 1060 is
-  # hard-excluded from llama in ai.nix (GGML_VK_VISIBLE_DEVICES=0).
+  # Whisper speech-to-text server.
+  # NOTE (2026-09-02): the GTX 1060 (Vulkan1) is gone and the box now has a
+  # single Vulkan device — the Radeon 660M iGPU (Vulkan0), which is
+  # exclusively llama-server's — so `--device 1` below no longer exists and
+  # this service cannot (re)start until it is repinned. Options: Vulkan0
+  # (contends with llama-server) or drop the Vulkan override and run the CPU
+  # backend. Config change pending.
   # journalctl -u whisper-server -f
   systemd.services.whisper-server = {
     description = "Whisper.cpp speech-to-text server (GTX 1060)";

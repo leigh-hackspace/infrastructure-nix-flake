@@ -1,11 +1,11 @@
 { lib, pkgs, ... }:
 
 let
-  # Pin the main model to the iGPU: with the GTX 1060 (Vulkan1) present,
-  # auto device selection splits layers onto it and model load fails
-  # (alloc + compute-pipeline errors; see gtx1060-draft-report.md).
-  # GGML_VK_VISIBLE_DEVICES=0 additionally stops ggml from even enumerating
-  # the 1060 (see whisper.nix — the card belongs to whisper-server).
+  # Pin the main model to the iGPU — the only Vulkan device on this box since
+  # the GTX 1060 (Vulkan1) was removed (2026-09-02; see gtx1060-followup.md).
+  # GGML_VK_VISIBLE_DEVICES=0 is kept as defence in depth so no code path
+  # (presets, auto device selection, future flag removal) can ever enumerate
+  # past the iGPU.
   llamaServer = "${pkgs.llama-cpp-leigh-vulkan}/bin/llama-server";
   modelsPath = "/home/leigh-admin/Models";
   # Per-model speculative decoding presets for the inner llama.cpp routers.
@@ -63,8 +63,9 @@ in
             --reasoning-preserve
         '';
         WorkingDirectory = "/home/leigh-admin/Projects/infrastructure-nix-flake";
-        # Defence in depth: index-based filter so no code path (presets, auto
-        # device selection, future flag removal) can touch the 1060.
+        # Defence in depth: index-based filter so no code path can stray from
+        # the iGPU — the only Vulkan device since the GTX 1060 was removed
+        # (2026-09-02).
         Environment = [ "GGML_VK_VISIBLE_DEVICES=0" ];
         Restart = "always";
       };

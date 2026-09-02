@@ -1,6 +1,10 @@
-# NVIDIA GTX 1060 3GB (Pascal) — speculative-draft device for llama.cpp
-# (see gtx1060-draft-report.md). Compute-only: PRIME offload keeps the display
-# on the AMD iGPU, so both GPU bus IDs are required.
+# NVIDIA GTX 1060 3GB (Pascal) — DEPRECATED.
+#
+# The card was removed from aibox on 2026-09-02 (see gtx1060-followup.md) and
+# there is no NVIDIA GPU on the box anymore; everything below is dead config.
+# On the next config pass, drop `./nvidia.nix` from default.nix and delete this
+# file together with ./nvidia-580-linux-7-strncpy.patch (this legacy_580
+# driver build is the patch's only remaining user).
 {
   config,
   ...

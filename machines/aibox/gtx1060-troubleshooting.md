@@ -1,5 +1,10 @@
 # GTX 1060 troubleshooting findings (2026-08-22)
 
+> **STATUS: HARDWARE REMOVED (2026-09-02).** The GTX 1060 has been taken out
+> of aibox. This document is retained as a historical record of the driver
+> bring-up investigation; aibox now has only the AMD Radeon 660M iGPU
+> (gfx1035, `Vulkan0`).
+
 Follow-up to `gtx1060-draft-report.md`. Driver bring-up succeeded (legacy_580 /
 PRIME offload / kernel-7.2 strncpy patch — see git history for
 `machines/aibox/nvidia.nix`), but the card is **not usable for compute yet**.
@@ -11,7 +16,7 @@ This documents the investigation and the one config fix applied.
 
 ## Short answer
 
-Not a device *enumeration* problem. When the card is healthy,
+Not a device _enumeration_ problem. When the card is healthy,
 `llama-server --list-devices` lists both devices:
 
 ```
@@ -37,9 +42,9 @@ E alloc_tensor_range: failed to allocate Vulkan1 buffer of size 1050944000
 E llama_model_load: error loading model: unable to allocate Vulkan1 buffer
 ```
 
-This is the exact trap the draft report warned about: *"once the 1060 is
+This is the exact trap the draft report warned about: _"once the 1060 is
 installed, pin the main model to the iGPU (`-dev Vulkan0`); device
-auto-selection might otherwise try to use the new card for the main model."*
+auto-selection might otherwise try to use the new card for the main model."_
 
 The 1060 exposes a proper 3 GiB `DEVICE_LOCAL` heap (memory type 7) and
 `maxMemoryAllocationSize` ≈ 4 GiB, yet a 1 GB allocation fails — i.e. the

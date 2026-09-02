@@ -1,5 +1,12 @@
 # GTX 1060 follow-up: capabilities, draft verdict, and the Whisper.cpp plan (aibox)
 
+> **STATUS: HARDWARE REMOVED (2026-09-02).** The GTX 1060 has been taken out
+> of aibox. This document is retained as a historical record of the
+> investigation and verdicts; it no longer describes the machine's hardware.
+> aibox now has only the AMD Radeon 660M iGPU (gfx1035, `Vulkan0`). See
+> `machines/aibox/nvidia.nix` (deprecation note) and `whisper.nix` (service
+> needs repinning).
+
 Date: 2026-08-26
 Scope: live verification on the box + source analysis of the pinned llama.cpp
 (flake.lock rev `f280b26983ad0fdb705a0d9ebf0503e76f2899b0`) and pinned nixpkgs
@@ -41,16 +48,16 @@ Scope: live verification on the box + source analysis of the pinned llama.cpp
 Live probe (this date): 250-token generation via the running instance while
 sampling both GPUs at 1 Hz.
 
-| Metric | During generation |
-|---|---|
-| AMD iGPU `gpu_busy_percent` | 100% (whole run) |
-| GTX 1060 SM/util (30 samples) | 0% every sample |
-| GTX 1060 memory bandwidth | 0% every sample |
-| Decode speed | 19.3 t/s (15–19 t/s session-wide) |
+| Metric                        | During generation                 |
+| ----------------------------- | --------------------------------- |
+| AMD iGPU `gpu_busy_percent`   | 100% (whole run)                  |
+| GTX 1060 SM/util (30 samples) | 0% every sample                   |
+| GTX 1060 memory bandwidth     | 0% every sample                   |
+| Decode speed                  | 19.3 t/s (15–19 t/s session-wide) |
 
 The 1060 shows `1122MiB` used at rest (≈1115 child + 1 router) but that memory
 is never read during decode. Exact identity of the parked buffer unconfirmed
-(most consistent with the mmproj + buffers; it is *not* model layers — the
+(most consistent with the mmproj + buffers; it is _not_ model layers — the
 model fits on the iGPU with `-dev Vulkan0`). Either way: not in the per-token
 path.
 
@@ -102,15 +109,15 @@ size.** Keep `spec-type = draft-mtp`.
 
 Assessment based on package inspection (not yet built/tested on the card):
 
-| Factor | Finding |
-|---|---|
-| Models fit 3GB | `tiny` 75MB / `base` 142MB / `small` 466MB / `medium` 1.5GB / `large-v3-turbo` 1.6GB; `large-v3` ~2.9GB borderline |
+| Factor             | Finding                                                                                                                                              |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Models fit 3GB     | `tiny` 75MB / `base` 142MB / `small` 466MB / `medium` 1.5GB / `large-v3-turbo` 1.6GB; `large-v3` ~2.9GB borderline                                   |
 | Allocation profile | weights + graph buffers + tiny encoder/decoder KV over ~1500 frames — i.e. the path that **works** on this card (§3.2), not the broken KV-cache path |
-| Backend | `whisper-cpp` 1.8.4 in pinned nixpkgs with `vulkanSupport` (same ggml Vulkan as llama) |
-| CUDA | dead end: nixpkgs 26.05 defaults to CUDA 13, which dropped compute capability < 7.5 (Pascal sm_61 not supported) — Vulkan is the only GPU path |
-| Link | irrelevant: model resident in VRAM, audio input ~2MB/min at 16kHz f32 |
-| Expected perf | `medium` on the 1060 ≈ 5–15× realtime; frees the iGPU for llama and CPU for everything else |
-| Fallback | whisper.cpp CPU backend works fine; if the card flakes mid-job the workload degrades gracefully (restart/retry) — low stakes vs a live llama session |
+| Backend            | `whisper-cpp` 1.8.4 in pinned nixpkgs with `vulkanSupport` (same ggml Vulkan as llama)                                                               |
+| CUDA               | dead end: nixpkgs 26.05 defaults to CUDA 13, which dropped compute capability < 7.5 (Pascal sm_61 not supported) — Vulkan is the only GPU path       |
+| Link               | irrelevant: model resident in VRAM, audio input ~2MB/min at 16kHz f32                                                                                |
+| Expected perf      | `medium` on the 1060 ≈ 5–15× realtime; frees the iGPU for llama and CPU for everything else                                                          |
+| Fallback           | whisper.cpp CPU backend works fine; if the card flakes mid-job the workload degrades gracefully (restart/retry) — low stakes vs a live llama session |
 
 ### Plan (not yet executed)
 
@@ -123,7 +130,7 @@ Assessment based on package inspection (not yet built/tested on the card):
    `--device Vulkan1` (pin away from the iGPU which serves llama), port 8082,
    `Restart = always`, `after/wants = wait-for-network.service` (house style).
 4. Build locally (`nixos-rebuild build --flake .#aibox --impure`), run a
-   30-second load + transcription test on the card *before* deploying (same
+   30-second load + transcription test on the card _before_ deploying (same
    pattern as §5 below); if the allocation quirk bites, fall back to CPU or the
    iGPU.
 
@@ -133,7 +140,7 @@ Assessment based on package inspection (not yet built/tested on the card):
   **zero `RmInitAdapter failed`** in dmesg for the whole boot, including after
   Vulkan compute use (the 2026-08-22 storm did not reappear).
 - Vulkan enumeration stable: `Vulkan0: AMD Radeon 660M`, `Vulkan1: NVIDIA GTX
-  1060 3GB`.
+1060 3GB`.
 - Compute verified via forced `-dev Vulkan1 -ngl 4 -fa on`:
   - `ornith-1.0-9b-Q4_K_M` (Gated Delta Net): fused GDN op assigned to Vulkan1,
     generation OK (4.05 t/s, mostly CPU as only 4 layers offloaded).
@@ -160,7 +167,7 @@ Assessment based on package inspection (not yet built/tested on the card):
   `draft-simple` — it silently changes the load config.
 - Preset cascade: cached models < models-dir < custom INI, then the router's
   own CLI args merge on top of every model (so `-dev Vulkan0 -ngl all
-  --ctx-size 262144 ...` reach all children).
+--ctx-size 262144 ...` reach all children).
 - The router binds the `--host` IP (`10.3.1.32:8081`), **not** 127.0.0.1 —
   earlier "empty /v1/models" observations were curl connection-refused
   artifacts, not a router bug. Child instances bind 127.0.0.1 on ephemeral
