@@ -81,6 +81,42 @@ let
   green = "green";
   orange = "orange";
   red = "red";
+
+  # Stat tile that renders a numeric state code as text. `mapping` is
+  # { code = "label" } — keep the tables in sync with the exporter
+  # (moonraker-exporter/src/main.rs).
+  stateStat =
+    { id, x, y, w ? 4, h ? 4, title, mapping, target }:
+    let
+      options = lib.listToAttrs (
+        lib.imap0 (i: code: {
+          name = code;
+          value = { inherit i; text = mapping.${code}; };
+        }) (lib.attrNames mapping)
+      );
+    in
+    {
+      inherit id x y w h title;
+      type = "stat";
+      datasource = DS;
+      gridPos = { inherit x y w h; };
+      targets = [
+        { inherit target; instant = true; legendFormat = "auto"; }
+      ];
+      fieldConfig.defaults = {
+        mappings = [ { type = "value"; inherit options; } ];
+        thresholds = {
+          mode = "absolute";
+          steps = [ { color = green; value = null; } ];
+        };
+      };
+      options = {
+        colorMode = "background";
+        graphMode = "area";
+        reduceOptions = { calcs = [ "lastNotNull" ]; };
+        textMode = "value";
+      };
+    };
 in
 {
   # ------------------------------------------------------------------
@@ -331,6 +367,293 @@ in
         targets = [
           "sum by (name) (systemd_unit_state{state=\"failed\"})"
         ];
+      })
+    ];
+  };
+
+  # ------------------------------------------------------------------
+  # 3D-print servers (3d-blue/3d-lime, Klipper + Moonraker on Raspberry
+  # Pi 3s). Data comes from the moonraker-exporter (scrape job
+  # "moonraker"); the two printers are told apart by the `printer` label.
+  # ------------------------------------------------------------------
+  "3d-printers" = {
+    uid = "3d-printers";
+    title = "3D Printers";
+    tags = [ "printers" "moonraker" "klipper" ];
+    timezone = "browser";
+    schemaVersion = 39;
+    version = 1;
+    refresh = "30s";
+    time = { from = "now-6h"; to = "now"; };
+    panels = [
+      # --- blue: state row -------------------------------------------
+      (stateStat {
+        id = 1;
+        x = 0;
+        y = 0;
+        title = "blue · Klipper";
+        mapping = {
+          "0" = "startup";
+          "1" = "ready";
+          "2" = "error";
+          "3" = "shutdown";
+          "4" = "disconnected";
+        };
+        target = "moonraker_klippy_state{printer=\"blue\"}";
+      })
+      (stateStat {
+        id = 2;
+        x = 4;
+        y = 0;
+        title = "blue · Job";
+        mapping = {
+          "0" = "standby";
+          "1" = "printing";
+          "2" = "paused";
+          "3" = "complete";
+          "4" = "cancelled";
+          "5" = "error";
+        };
+        target = "moonraker_print_state{printer=\"blue\"}";
+      })
+      (st {
+        id = 3;
+        x = 8;
+        y = 0;
+        title = "blue · Progress";
+        unit = "percent";
+        thresholds = [
+          { color = green; value = null; }
+          { color = orange; value = 50; }
+          { color = red; value = 90; }
+        ];
+        targets = [ "moonraker_print_progress{printer=\"blue\"} * 100" ];
+      })
+      (st {
+        id = 4;
+        x = 12;
+        y = 0;
+        title = "blue · Nozzle";
+        unit = "celsius";
+        thresholds = [ { color = green; value = null; } ];
+        targets = [ "moonraker_heater_temperature{printer=\"blue\",heater=\"extruder\"}" ];
+      })
+      (st {
+        id = 5;
+        x = 16;
+        y = 0;
+        title = "blue · Bed";
+        unit = "celsius";
+        thresholds = [ { color = green; value = null; } ];
+        targets = [ "moonraker_heater_temperature{printer=\"blue\",heater=\"heater_bed\"}" ];
+      })
+      (stateStat {
+        id = 6;
+        x = 20;
+        y = 0;
+        title = "blue · Moonraker";
+        mapping = {
+          "0" = "down";
+          "1" = "up";
+        };
+        target = "moonraker_up{printer=\"blue\"}";
+      })
+
+      # --- lime: state row -------------------------------------------
+      (stateStat {
+        id = 7;
+        x = 0;
+        y = 4;
+        title = "lime · Klipper";
+        mapping = {
+          "0" = "startup";
+          "1" = "ready";
+          "2" = "error";
+          "3" = "shutdown";
+          "4" = "disconnected";
+        };
+        target = "moonraker_klippy_state{printer=\"lime\"}";
+      })
+      (stateStat {
+        id = 8;
+        x = 4;
+        y = 4;
+        title = "lime · Job";
+        mapping = {
+          "0" = "standby";
+          "1" = "printing";
+          "2" = "paused";
+          "3" = "complete";
+          "4" = "cancelled";
+          "5" = "error";
+        };
+        target = "moonraker_print_state{printer=\"lime\"}";
+      })
+      (st {
+        id = 9;
+        x = 8;
+        y = 4;
+        title = "lime · Progress";
+        unit = "percent";
+        thresholds = [
+          { color = green; value = null; }
+          { color = orange; value = 50; }
+          { color = red; value = 90; }
+        ];
+        targets = [ "moonraker_print_progress{printer=\"lime\"} * 100" ];
+      })
+      (st {
+        id = 10;
+        x = 12;
+        y = 4;
+        title = "lime · Nozzle";
+        unit = "celsius";
+        thresholds = [ { color = green; value = null; } ];
+        targets = [ "moonraker_heater_temperature{printer=\"lime\",heater=\"extruder\"}" ];
+      })
+      (st {
+        id = 11;
+        x = 16;
+        y = 4;
+        title = "lime · Bed";
+        unit = "celsius";
+        thresholds = [ { color = green; value = null; } ];
+        targets = [ "moonraker_heater_temperature{printer=\"lime\",heater=\"heater_bed\"}" ];
+      })
+      (stateStat {
+        id = 12;
+        x = 20;
+        y = 4;
+        title = "lime · Moonraker";
+        mapping = {
+          "0" = "down";
+          "1" = "up";
+        };
+        target = "moonraker_up{printer=\"lime\"}";
+      })
+
+      # --- temperatures -----------------------------------------------
+      (ts {
+        id = 13;
+        x = 0;
+        y = 8;
+        w = 12;
+        title = "Nozzle temperature";
+        unit = "celsius";
+        targets = [
+          {
+            expr = "moonraker_heater_temperature{heater=\"extruder\"}";
+            legendFormat = "{{printer}} nozzle";
+          }
+          {
+            expr = "moonraker_heater_target{heater=\"extruder\"}";
+            legendFormat = "{{printer}} target";
+          }
+        ];
+      })
+      (ts {
+        id = 14;
+        x = 12;
+        y = 8;
+        w = 12;
+        title = "Bed temperature";
+        unit = "celsius";
+        targets = [
+          {
+            expr = "moonraker_heater_temperature{heater=\"heater_bed\"}";
+            legendFormat = "{{printer}} bed";
+          }
+          {
+            expr = "moonraker_heater_target{heater=\"heater_bed\"}";
+            legendFormat = "{{printer}} target";
+          }
+        ];
+      })
+
+      # --- print progress ---------------------------------------------
+      (ts {
+        id = 15;
+        x = 0;
+        y = 16;
+        w = 12;
+        title = "Print progress";
+        unit = "percent";
+        legendFormat = "{{printer}}";
+        targets = [ "moonraker_print_progress * 100" ];
+      })
+      (ts {
+        id = 16;
+        x = 12;
+        y = 16;
+        w = 12;
+        title = "Filament used";
+        unit = "lengthmm";
+        legendFormat = "{{printer}}";
+        targets = [ "moonraker_print_filament_used_mm" ];
+      })
+
+      # --- whole-Pi system -------------------------------------------
+      (ts {
+        id = 17;
+        x = 0;
+        y = 24;
+        w = 12;
+        title = "Pi CPU";
+        unit = "percent";
+        targets = [
+          {
+            expr = "moonraker_host_cpu_percent";
+            legendFormat = "{{printer}} system";
+          }
+          {
+            expr = "moonraker_process_cpu_percent";
+            legendFormat = "{{printer}} moonraker";
+          }
+        ];
+      })
+      (ts {
+        id = 18;
+        x = 12;
+        y = 24;
+        w = 12;
+        title = "Pi memory";
+        unit = "bytes";
+        targets = [
+          {
+            expr = "moonraker_host_memory_used_bytes";
+            legendFormat = "{{printer}} used";
+          }
+          {
+            expr = "moonraker_host_memory_available_bytes";
+            legendFormat = "{{printer}} available";
+          }
+          {
+            expr = "moonraker_host_memory_total_bytes";
+            legendFormat = "{{printer}} total";
+          }
+        ];
+      })
+
+      # --- SoC temp / moonraker process -------------------------------
+      (ts {
+        id = 19;
+        x = 0;
+        y = 32;
+        w = 12;
+        title = "Pi SoC temperature";
+        unit = "celsius";
+        legendFormat = "{{printer}}";
+        targets = [ "moonraker_cpu_temperature_celsius" ];
+      })
+      (ts {
+        id = 20;
+        x = 12;
+        y = 32;
+        w = 12;
+        title = "Moonraker process memory";
+        unit = "bytes";
+        legendFormat = "{{printer}}";
+        targets = [ "moonraker_process_memory_bytes" ];
       })
     ];
   };

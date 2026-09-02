@@ -102,6 +102,21 @@ let
                 labels.severity = "critical";
                 annotations.summary = "Unit {{ $labels.name }} is failed on {{ $labels.instance }}";
               }
+              {
+                alert = "PrinterMoonrakerDown";
+                expr = "moonraker_up == 0";
+                for = "5m";
+                labels.severity = "warning";
+                annotations.summary = "Moonraker unreachable on {{ $labels.printer }}";
+                annotations.description = "No response from the Moonraker API on {{ $labels.printer }} for 5 minutes";
+              }
+              {
+                alert = "KlipperError";
+                expr = "moonraker_klippy_state{state=\"error\"} == 2";
+                for = "10m";
+                labels.severity = "warning";
+                annotations.summary = "Klipper is in error state on {{ $labels.printer }}";
+              }
             ];
           }
         ];
@@ -147,6 +162,15 @@ in
         # SMART queries can be slow on large/degraded disks.
         scrape_interval = "5m";
         scrape_timeout = "30s";
+      }
+      # Klipper/Moonraker on the hackspace 3D-print servers (blue/lime),
+      # re-exported by moonraker-exporter (printer-monitoring.nix). Targets
+      # are fixed IPs: 3d-lime's DNS name also advertises 3d-blue's IPv6.
+      {
+        job_name = "moonraker";
+        scrape_interval = "30s";
+        scrape_timeout = "20s";
+        static_configs = [ { targets = [ "127.0.0.1:9701" ]; } ];
       }
     ];
 

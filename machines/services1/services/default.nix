@@ -16,6 +16,7 @@
     ./mqtt.nix
     ./outline.nix
     ./postgres.nix
+    ./printer-monitoring.nix
     ./redis.nix
     # ./samba.nix
     ./status.nix

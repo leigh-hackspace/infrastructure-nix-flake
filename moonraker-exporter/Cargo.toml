@@ -1,0 +1,10 @@
+[package]
+name = "moonraker-exporter"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "moonraker-exporter"
+path = "src/main.rs"
+
+[dependencies]
