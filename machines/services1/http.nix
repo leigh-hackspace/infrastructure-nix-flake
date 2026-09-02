@@ -133,6 +133,16 @@ in
         locations."/" = {
           proxyPass = "http://127.0.0.1:8082";
           recommendedProxySettings = true;
+
+          # The SSO cookie nginx-sso sets on a successful login exceeds
+          # nginx's default 4k proxy header buffer, which makes the /login
+          # callback fail with "upstream sent too big header" (502).
+          # busy >= buffer_size and busy < total buffers - one buffer.
+          extraConfig = ''
+            proxy_buffer_size       32k;
+            proxy_buffers           16 8k;
+            proxy_busy_buffers_size 32k;
+          '';
         };
       };
 

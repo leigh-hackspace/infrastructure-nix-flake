@@ -14,6 +14,14 @@ in
         locations."/resources" = {
           root = "/srv/ai-resources";
         };
+
+        # Browsers fetch the PWA manifest without cookies, so SSO would 401 it
+        # and bounce it to the login page (CORS error in the console). Serve it
+        # unauthenticated, like the fake /sw.js above.
+        locations."= /manifest.webmanifest" = {
+          proxyPass = "http://10.3.1.32:8081";
+          recommendedProxySettings = true;
+        };
       }
     ];
 

@@ -67,6 +67,12 @@ let
           proxy_set_header X-Real-IP $remote_addr;
           proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
           proxy_set_header X-Forwarded-Proto $scheme;
+          # The renewed SSO cookie returned by /auth can exceed nginx's
+          # default 4k proxy header buffer ("upstream sent too big header").
+          # busy >= buffer_size and busy < total buffers - one buffer.
+          proxy_buffer_size       32k;
+          proxy_buffers           16 8k;
+          proxy_busy_buffers_size 32k;
         '';
       };
 
