@@ -7,7 +7,7 @@ flakeInputs:
 
   imports = [
     ./ai.nix
-    ./alexandria.nix
+    # ./alexandria.nix
     ./configuration.nix
     ./containers.nix
     ./hardware-configuration.nix
