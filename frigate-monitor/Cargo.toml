@@ -1,0 +1,13 @@
+[package]
+name = "frigate-monitor"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "frigate-monitor"
+path = "src/main.rs"
+
+# House style is zero external crates, but image decoding/encoding in pure
+# stdlib is not sensible — the `image` crate (JPEG only) is the one exception.
+[dependencies]
+image = "0.25"

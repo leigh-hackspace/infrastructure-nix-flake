@@ -4,6 +4,7 @@
     ./backup.nix
     ./cockpit.nix
     ./door-entry-management-system.nix
+    ./frigate-monitor.nix
     ./frigate.nix
     ./gatus.nix
     # ./gitlab.nix

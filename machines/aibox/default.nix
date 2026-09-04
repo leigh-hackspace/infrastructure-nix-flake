@@ -10,6 +10,7 @@ flakeInputs:
     # ./alexandria.nix
     ./configuration.nix
     ./containers.nix
+    ./frigate-monitor.nix
     ./hardware-configuration.nix
     ./immich.nix
     ./monitoring.nix
