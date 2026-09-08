@@ -14,6 +14,31 @@
 - MQTT server
 - WireGuard VPN (currently only Chris Dell has access, ask for more information)
 
+## Tailscale (client)
+
+The tailscale **client** is installed manually (not part of this flake):
+`/etc/systemd/system/tailscaled.service` is a symlink into the nix store,
+with a NixOS drop-in from the deployed system. The **server** (headscale +
+headplane) is in `services/headscale.nix`.
+
+Grafton site-to-site (grafton LAN 192.168.49.0/24 reachable from the hackspace
+via the `grafton-hackspace-client` VM on the grafton router) depends on this
+client ACCEPTING the `192.168.49.0/24` subnet route advertised by that VM.
+The acceptance is stored in the tailscaled state file
+(`/var/lib/tailscale/tailscaled.state`) and survives reboots.
+
+If the node is ever re-registered / state reset, re-run:
+
+```bash
+sudo tailscale up --accept-routes --accept-dns=false \
+  --advertise-routes=10.3.0.0/16,2001:8b0:1d14::/48,fd99:dead:beef:225::/64 \
+  --login-server=https://tailscale.leighhack.org
+```
+
+(Headscale side: approve the route with
+`headscale nodes approve-routes -i <node> -r 192.168.49.0/24`.)
+
+
 ## Frigate CCTV
 
 https://frigate.int.leighhack.org/
