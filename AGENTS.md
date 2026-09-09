@@ -25,6 +25,16 @@ Guidance for AI agents working in this repository. Read this before making chang
   renders the expected-name list to `/etc/dns-sync/expected-int-names`.
   Run with `just dns-sync-check` / `just dns-sync-sync` / `just dns-sync-prune`
   (router + DO facts below).
+- `frigate-monitor/` — top-level Rust tool (one external crate: `image`) on
+  aibox that snapshots the Frigate `main_space` RTSP stream every 10 s and
+  records an event when a change persists across 4 consecutive snapshots
+  (moving people ignored; static changes like an object left/removed or a
+  chair moved are caught). Events store before/after with changed regions
+  outlined plus zoomed crops under `/var/lib/frigate-monitor/events/`.
+  Web UI on aibox:8090, proxied by services1 as
+  `frigate-monitor.int.leighhack.org` (LAN-only; see
+  `machines/aibox/frigate-monitor.nix` and
+  `machines/services1/services/frigate-monitor.nix`).
 - `network-status/` — the router network dashboard (served at
   `network-info.int.leighhack.org`). The Rust binary (`src/`, zero external
   crates) ssh's to the router every 5s, keeps a rolling history, serves the
@@ -162,10 +172,23 @@ Guidance for AI agents working in this repository. Read this before making chang
 
 - Deploy with the justfile: `just switch` / `just boot`
   (`sudo nixos-rebuild switch --flake . --impure`).
-- **Confirm after applying:** `system.autoRollback.enable = true` is set on
-  services1 (via nixos-utils), so a failed boot rolls back automatically.
-  Always run `sudo nixos-confirm` after `switch`/`boot` to mark the current
-  generation as good.
+- **GOLDEN RULE — confirm immediately after every switch/boot:**
+  `system.autoRollback.enable = true` is set on **both** machines
+  (services1 *and* aibox, via nixos-utils). The `auto-rollback.timer` rolls
+  the machine back to the last confirmed-good generation if the current one
+  is not confirmed, and it acts within a minute or two of the switch. So:
+  1. Run `sudo nixos-confirm` **immediately** after `switch`/`boot`
+     finishes — ideally in the **same shell invocation**
+     (`... switch ... && sudo nixos-confirm`), on the machine that was
+     switched. A confirm run later (or via a separate ssh session after a
+     delay) may land *after* the rollback and mark the old generation good,
+     which defeats the purpose.
+  2. After confirming, verify `readlink -f /run/current-system` still points
+     at the new generation.
+  3. When switching a remote machine over ssh, chain it all in one command:
+     `ssh ... 'cd ~/Projects/infrastructure-nix-flake && sudo nixos-rebuild
+     switch --flake .#<machine> --impure && sudo nixos-confirm'` (the `cd`
+     matters — `--flake .` resolves against the cwd).
 - **New vhosts need DNS records** before they resolve: public `*.leighhack.org`
   names point at the box's public IP, `*.int.leighhack.org` at 10.3.1.20.
   The wildcard ACME cert already covers both, so no cert work is needed.
