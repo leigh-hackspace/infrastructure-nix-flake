@@ -35,6 +35,16 @@
   .card:hover { border-color: #3f83c8; }
   .card:active { transform: translateY(1px); }
   .card img { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: cover; background: #000; }
+
+  /* Before/after crossfade on hover (see HoverReveal).
+     The resting layer sits in flow; the hover layer is overlaid and fades in. */
+  .hover-reveal { position: relative; display: block; }
+  .hover-reveal img { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: cover; background: #000; }
+  .hover-reveal .hr-hover {
+    position: absolute; inset: 0; z-index: 2; opacity: 0;
+    transition: opacity .25s ease-in-out;
+  }
+  .hover-reveal:hover .hr-hover { opacity: 1; }
   .cardmeta { padding: 7px 11px; color: #93a3b5; font-size: 12.5px; display: flex; justify-content: space-between; gap: 8px; }
 
   .empty { color: #6f7f90; padding: 60px 20px; text-align: center; white-space: pre-line; }

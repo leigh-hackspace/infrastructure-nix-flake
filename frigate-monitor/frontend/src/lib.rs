@@ -290,9 +290,15 @@ fn Header(status: Signal<Option<Status>>, events: usize, live_key: u64) -> Eleme
 fn ThumbCard(meta: EventMeta, onclick: EventHandler<()>) -> Element {
     let n = meta.regions.len();
     let label = format!("{} · {} region{}", meta.ts, n, if n == 1 { "" } else { "s" });
+    // Resting image is the small "after" thumb; hovering crossfades to the
+    // "before" frame, so a mouseover over the thumbnail reveals what changed.
     rsx! {
         button { class: "card", onclick: move |_| onclick.call(()),
-            img { loading: "lazy", src: file_url(meta.id, "thumb.jpg"), alt: "event thumbnail" }
+            HoverReveal {
+                rest_src: file_url(meta.id, "thumb.jpg"),
+                hover_src: file_url(meta.id, "before.jpg"),
+                rest_alt: "event thumbnail",
+            }
             div { class: "cardmeta", "{label}" }
         }
     }
@@ -329,14 +335,15 @@ fn DetailPopup(meta: EventMeta, onclose: EventHandler<()>) -> Element {
                 }
                 div { class: "subhead", "full frame" }
                 div { class: "pairs",
-                    Figure { caption: "before", id: id, name: "before.jpg" }
-                    Figure { caption: "after", id: id, name: "after.jpg" }
-                    Figure { caption: "diff", id: id, name: "diff.jpg" }
+                    Figure { caption: "before", id: id, name: "before.jpg", hover_src: None }
+                    Figure { caption: "after", id: id, name: "after.jpg", hover_src: None }
+                    // Hovering the diff crossfades to the "before" frame.
+                    Figure { caption: "diff", id: id, name: "diff.jpg", hover_src: Some(file_url(id, "before.jpg")) }
                 }
                 div { class: "subhead", "zoom — largest changed region" }
                 div { class: "pairs zoompairs",
-                    Figure { caption: "before", id: id, name: "before_z.jpg" }
-                    Figure { caption: "after", id: id, name: "after_z.jpg" }
+                    Figure { caption: "before", id: id, name: "before_z.jpg", hover_src: None }
+                    Figure { caption: "after", id: id, name: "after_z.jpg", hover_src: None }
                 }
             }
         }
@@ -344,12 +351,31 @@ fn DetailPopup(meta: EventMeta, onclose: EventHandler<()>) -> Element {
 }
 
 #[component]
-fn Figure(caption: &'static str, id: u64, name: &'static str) -> Element {
+fn Figure(caption: &'static str, id: u64, name: &'static str, hover_src: Option<String>) -> Element {
     let src = file_url(id, name);
     rsx! {
         figure {
             figcaption { "{caption}" }
-            a { href: "{src}", target: "_blank", img { src: "{src}", alt: "{caption}" } }
+            a { href: "{src}", target: "_blank",
+                if let Some(hover) = hover_src {
+                    HoverReveal { rest_src: src.clone(), hover_src: hover, rest_alt: caption }
+                } else {
+                    img { src: "{src}", alt: "{caption}" }
+                }
+            }
+        }
+    }
+}
+
+// Stacked pair of images that crossfades from `rest_src` to `hover_src`
+// whenever the pointer is over it — used to reveal the "before" frame over
+// the "after" (or "diff") on hover.
+#[component]
+fn HoverReveal(rest_src: String, hover_src: String, rest_alt: &'static str) -> Element {
+    rsx! {
+        div { class: "hover-reveal",
+            img { class: "hr-rest", src: "{rest_src}", alt: "{rest_alt}" }
+            img { class: "hr-hover", src: "{hover_src}", alt: "{rest_alt}" }
         }
     }
 }
