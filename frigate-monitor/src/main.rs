@@ -1,81 +1,85 @@
 //! frigate-monitor — persistent scene-change detector for an RTSP stream.
 //!
 //! Every `--interval` seconds a JPEG snapshot is grabbed from an RTSP stream
-//! (via ffmpeg) and compared against a slowly adapting background model. A
-//! change is recorded as an *event* only once the same regions keep
-//! differing from the background for `--persist` consecutive snapshots.
+//! (via ffmpeg) and fed to the detector in [`detect`].  The detector only
+//! records a change once the affected area has *settled*: the region must
+//! differ from the slowly adapting background and be completely still for
+//! `--persist` consecutive snapshots, and the whole frame must also be still
+//! (moving people are dismissed).  When an event fires, the "before" image
+//! is the snapshot from just before the change began, so a moved chair shows
+//! its old spot in "before" and its new spot in "after".  Two guards keep
+//! bogus events out: solid-colour glitch frames (a grey/black frame from an
+//! RTSP dropout) are ignored entirely, and a change whose "before" snapshot
+//! is no longer buffered (background reset mid-change, or a change that
+//! took >15 min to settle) is not recorded at all — never diffed against a
+//! meaningless frame.
 //!
-//! Why that shape: a human walking through the frame produces differences
-//! that appear, move and disappear, so no region stays "differing" long
-//! enough to trip the persistence threshold. A pair of scissors left on a
-//! table, a scissors taken off it, or a chair moved to a new spot produces a
-//! difference that stays put, and is recorded as an event shortly after.
-//!
-//! The background is an exponential moving average (small alpha) that only
-//! updates at pixels that currently match it, so:
-//!   - objects present at startup are absorbed into the background over a
-//!     few minutes;
-//!   - while an object sits still, the background does not update underneath
-//!     it, so removing it later still produces a persistent diff;
-//!   - a whole-scene change (lights on/off, camera reset) is detected by the
-//!     global-difference guard and re-seeds the background instead of
-//!     logging a garbage event.
-//!
-//! Each event stores, under `<data-dir>/events/<id>/`:
-//!   thumb.jpg    small "after" thumbnail (with outlines)
-//!   before.jpg   full-resolution "before" with changed regions outlined
-//!   after.jpg    full-resolution "after"  with changed regions outlined
-//!   before_z.jpg zoomed crop of the largest changed region (before)
-//!   after_z.jpg  same crop (after)
+//! Each event is stored under `<data-dir>/events/<id>/`:
+//!   thumb.jpg    small "after" thumbnail
+//!   before.jpg   full-res before with the changed regions boxed
+//!   after.jpg    full-res after  with the changed regions boxed
+//!   diff.jpg     after, dimmed, with the changed pixels tinted red
+//!   before_z.jpg / after_z.jpg   zoomed crops of the largest region
 //!   meta.json    id, timestamp, region boxes (full-resolution pixels)
 //!
-//! Web UI (single page, no build step):
-//!   GET  /                  SPA
-//!   GET  /api/status        {frames, last_frame_ts, scene_resets, events}
-//!   GET  /api/events        [meta, meta, ...] newest first
-//!   GET  /api/events/<id>   one meta
-//!   GET  /files/<id>/<f>    one of the event JPEGs
-//!   GET  /api/live          latest raw snapshot
+//! The web UI is a Dioxus SPA (frontend/dist, embedded at build time):
+//!   GET /                       SPA
+//!   GET /api/status             {frames, last_frame_ts, scene_resets,
+//!                                blank_frames, skipped_no_before, events}
+//!   GET /api/events?limit&before  paginated metas, newest first
+//!   GET /api/events/<id>        one meta
+//!   GET /files/<id>/<file>      one of the event JPEGs
+//!   GET /api/live               latest raw snapshot
+
+mod assets;
+mod detect;
+mod events;
+mod imgutil;
+mod server;
 
 use std::collections::VecDeque;
-use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, RwLock};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
+
+use detect::{Detector, Fired};
+use events::{scale_boxes, Box};
 
 const DEFAULT_BIND: &str = "0.0.0.0";
 const DEFAULT_PORT: &str = "8090";
 const DEFAULT_RTSP: &str = "rtsp://10.3.1.20:8554/main_space";
 const DEFAULT_FFMPEG: &str = "ffmpeg";
 const DEFAULT_INTERVAL: f64 = 10.0;
-const DEFAULT_WIDTH: u32 = 640; // detection resolution (width)
-
-const DIFF_THRESHOLD: f32 = 32.0; // max-channel |frame - bg| that counts as "changed"
-const BG_ALPHA: f32 = 0.02; // background adaptation rate (per snapshot)
-const BLOCK: u32 = 16; // block size at detection resolution
-const BLOCK_DIFF_FRAC: f32 = 0.25; // fraction of a block that must differ
-const GLOBAL_RESET_FRAC: f32 = 0.30; // > this fraction differing => re-seed background
-const ACK_CLEAR_FRAMES: u32 = 10; // clean frames before an acked block can re-trigger
-const MIN_AREA_FRAC: f64 = 1.0 / 2500.0; // min full-res region area (relative)
-const OUTLINE_STAMP: i32 = 3; // outline = 7px thick at full resolution
-const THUMB_WIDTH: u32 = 320;
-const RING_MAX: usize = 30; // snapshots kept for "before" images (~5 min at 10 s)
 const FFMPEG_TIMEOUT: Duration = Duration::from_secs(20);
+/// Snapshots kept for "before" images (must cover persist + grace + margin).
+const RING_MAX: usize = 90;
 
-const EVENT_FILES: [&str; 5] = ["thumb.jpg", "before.jpg", "after.jpg", "before_z.jpg", "after_z.jpg"];
+pub struct Config {
+    pub bind: String,
+    pub port: u16,
+    pub rtsp: String,
+    pub ffmpeg: String,
+    pub interval: f64,
+    pub width: u32,
+    pub persist: u32,
+    pub data_dir: PathBuf,
+}
 
-struct Config {
-    bind: String,
-    port: u16,
-    rtsp: String,
-    ffmpeg: String,
-    interval: f64,
-    width: u32,
-    persist: u32,
-    data_dir: PathBuf,
+impl Clone for Config {
+    fn clone(&self) -> Self {
+        Config {
+            bind: self.bind.clone(),
+            port: self.port,
+            rtsp: self.rtsp.clone(),
+            ffmpeg: self.ffmpeg.clone(),
+            interval: self.interval,
+            width: self.width,
+            persist: self.persist,
+            data_dir: self.data_dir.clone(),
+        }
+    }
 }
 
 fn parse_args() -> Config {
@@ -85,7 +89,7 @@ fn parse_args() -> Config {
         rtsp: DEFAULT_RTSP.to_string(),
         ffmpeg: DEFAULT_FFMPEG.to_string(),
         interval: DEFAULT_INTERVAL,
-        width: DEFAULT_WIDTH,
+        width: detect::W,
         persist: 4,
         data_dir: PathBuf::from("/var/lib/frigate-monitor"),
     };
@@ -108,29 +112,6 @@ fn parse_args() -> Config {
         }
     }
     cfg
-}
-
-/// Unix seconds -> "YYYY-MM-DDTHH:MM:SS" (UTC; no chrono, civil-from-days).
-fn fmt_ts(secs: i64) -> String {
-    let days = secs.div_euclid(86_400);
-    let tod = secs.rem_euclid(86_400);
-    let (h, m, s) = (tod / 3600, (tod % 3600) / 60, tod % 60);
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let mo = if mp < 10 { mp + 3 } else { mp - 9 };
-    // The civil calendar year starts in March; Jan/Feb belong to y + 1.
-    let y = y + if mo <= 2 { 1 } else { 0 };
-    format!("{y:04}-{mo:02}-{d:02}T{h:02}:{m:02}:{s:02}")
-}
-
-fn now_secs() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
 }
 
 /// Grab one JPEG frame from the RTSP stream with a hard timeout.
@@ -170,450 +151,75 @@ fn grab_frame(ffmpeg: &str, rtsp: &str, out: &Path) -> Result<(), String> {
     }
 }
 
-fn decode_rgb(bytes: &[u8]) -> Result<image::RgbImage, String> {
-    image::load_from_memory(bytes)
-        .map_err(|e| format!("decode: {e}"))
-        .map(|d| d.to_rgb8())
+/// Ring of snapshots, indexed by the detector's frame counter (see
+/// [`Detector::frame`]).  The entry for frame 0 is pushed right after a
+/// (re)seed; every analysed frame is pushed afterwards.
+struct RingEntry {
+    idx: u64,
+    jpeg: Vec<u8>,
 }
 
-fn encode_jpeg(img: &image::RgbImage, quality: u8) -> Vec<u8> {
-    let mut buf: Vec<u8> = Vec::new();
-    {
-        use image::codecs::jpeg::JpegEncoder;
-        use image::ExtendedColorType;
-        let mut enc = JpegEncoder::new_with_quality(&mut buf, quality);
-        enc.encode(img.as_raw(), img.width(), img.height(), ExtendedColorType::Rgb8)
-            .expect("jpeg encode");
-    }
-    buf
+/// Newest ring entry at or before `idx` (the "before" image).
+fn ring_before(ring: &VecDeque<RingEntry>, idx: u64) -> Option<Vec<u8>> {
+    ring.iter()
+        .rev()
+        .find(|e| e.idx <= idx)
+        .map(|e| e.jpeg.clone())
 }
 
-/// Per-block detection state. The background model plus a grid of blocks
-/// each carrying a "consecutive differing frames" counter and an ack flag.
-struct Detector {
-    w: u32,
-    h: u32,
-    bg: Vec<f32>, // w*h*3
-    have_bg: bool,
-    bw: u32,
-    bh: u32,
-    diff_count: Vec<u32>, // per block
-    acked: Vec<bool>,
-    clean_count: Vec<u32>,
-    full_w: u32,
-    full_h: u32,
-    persist: u32,
-}
-
-impl Detector {
-    fn new(width: u32, persist: u32) -> Self {
-        Detector {
-            w: width,
-            h: 0,
-            bg: Vec::new(),
-            have_bg: false,
-            bw: 0,
-            bh: 0,
-            diff_count: Vec::new(),
-            acked: Vec::new(),
-            clean_count: Vec::new(),
-            full_w: 0,
-            full_h: 0,
-            persist,
-        }
-    }
-
-    /// Seed the background from the first frame.
-    fn seed(&mut self, full: &image::RgbImage) {
-        let small = downscale(full, self.w);
-        self.h = small.height();
-        self.full_w = full.width();
-        self.full_h = full.height();
-        self.bg = small.pixels().flat_map(|p| [p[0] as f32, p[1] as f32, p[2] as f32]).collect();
-        self.bw = self.w.div_ceil(BLOCK);
-        self.bh = self.h.div_ceil(BLOCK);
-        let n = (self.bw * self.bh) as usize;
-        self.diff_count = vec![0; n];
-        self.acked = vec![false; n];
-        self.clean_count = vec![0; n];
-        self.have_bg = true;
-    }
-
-    /// Compare a frame against the background; update the model and block
-    /// counters. Returns true when a whole-scene reset happened (background
-    /// re-seeded) and, otherwise, the list of blocks that just crossed the
-    /// persistence threshold.
-    fn step(&mut self, full: &image::RgbImage) -> (bool, Vec<usize>) {
-        if !self.have_bg || full.width() != self.full_w || full.height() != self.full_h {
-            self.seed(full);
-            return (true, Vec::new());
-        }
-        let small = downscale(full, self.w);
-        let (w, h) = (self.w, self.h);
-        let n = (w * h) as usize;
-
-        // Per-pixel mask: any channel differs from the background by more
-        // than the threshold.
-        let mut mask = vec![false; n];
-        let mut masked = 0usize;
-        for y in 0..h {
-            for x in 0..w {
-                let i = (y * w + x) as usize;
-                let f = small.get_pixel(x, y);
-                let b = &self.bg[i * 3..i * 3 + 3];
-                let d = (f[0] as f32 - b[0]).abs().max((f[1] as f32 - b[1]).abs()).max((f[2] as f32 - b[2]).abs());
-                if d > DIFF_THRESHOLD {
-                    mask[i] = true;
-                    masked += 1;
-                }
-            }
-        }
-
-        // Global guard: a big scene change (lights, camera reset) re-seeds
-        // the background instead of producing a garbage event.
-        if masked as f32 > GLOBAL_RESET_FRAC * n as f32 {
-            self.seed(full);
-            return (true, Vec::new());
-        }
-
-        // Adapt the background, but only where it currently matches.
-        for y in 0..h {
-            for x in 0..w {
-                let i = (y * w + x) as usize;
-                if mask[i] {
-                    continue;
-                }
-                let f = small.get_pixel(x, y);
-                let b = &mut self.bg[i * 3..i * 3 + 3];
-                b[0] += (f[0] as f32 - b[0]) * BG_ALPHA;
-                b[1] += (f[1] as f32 - b[1]) * BG_ALPHA;
-                b[2] += (f[2] as f32 - b[2]) * BG_ALPHA;
-            }
-        }
-
-        // Block counters.
-        let mut triggered = Vec::new();
-        for by in 0..self.bh {
-            for bx in 0..self.bw {
-                let bi = (by * self.bw + bx) as usize;
-                let mut diff_px = 0usize;
-                let mut total = 0usize;
-                for y in by * BLOCK..(by * BLOCK + BLOCK).min(h) {
-                    for x in bx * BLOCK..(bx * BLOCK + BLOCK).min(w) {
-                        total += 1;
-                        if mask[(y * w + x) as usize] {
-                            diff_px += 1;
-                        }
-                    }
-                }
-                let diffing = total > 0 && diff_px as f32 >= BLOCK_DIFF_FRAC * total as f32;
-                if diffing {
-                    if !self.acked[bi] {
-                        self.diff_count[bi] += 1;
-                        if self.diff_count[bi] == self.persist {
-                            triggered.push(bi);
-                        }
-                    }
-                    self.clean_count[bi] = 0;
-                } else {
-                    self.diff_count[bi] = 0;
-                    if self.acked[bi] {
-                        self.clean_count[bi] += 1;
-                        if self.clean_count[bi] >= ACK_CLEAR_FRAMES {
-                            self.acked[bi] = false;
-                            self.clean_count[bi] = 0;
-                        }
-                    }
-                }
-            }
-        }
-        (false, triggered)
-    }
-}
-
-fn downscale(full: &image::RgbImage, width: u32) -> image::RgbImage {
-    let scale = width as f32 / full.width() as f32;
-    let height = (full.height() as f32 * scale).round().max(1.0) as u32;
-    image::imageops::resize(full, width, height, image::imageops::FilterType::Triangle)
-}
-
-/// Full-resolution difference mask between two same-size images.
-fn diff_mask(a: &image::RgbImage, b: &image::RgbImage, threshold: f32) -> Vec<bool> {
-    let (w, h) = (a.width(), a.height());
-    let n = (w * h) as usize;
-    let mut mask = vec![false; n];
-    let pa = a.as_raw();
-    let pb = b.as_raw();
-    for i in 0..n {
-        let d = (pa[i * 3] as f32 - pb[i * 3] as f32).abs()
-            .max((pa[i * 3 + 1] as f32 - pb[i * 3 + 1] as f32).abs())
-            .max((pa[i * 3 + 2] as f32 - pb[i * 3 + 2] as f32).abs());
-        if d > threshold {
-            mask[i] = true;
-        }
-    }
-    mask
-}
-
-struct Region {
-    x: u32,
-    y: u32,
-    w: u32,
-    h: u32,
-    area: u32,
-}
-
-/// Connected components (4-connected) of the mask; returns regions sorted by
-/// area descending, keeping only those at least `min_area` pixels.
-fn find_regions(mask: &[bool], w: u32, h: u32, min_area: u32) -> Vec<Region> {
-    let n = (w * h) as usize;
-    let mut visited = vec![false; n];
-    let mut stack: Vec<usize> = Vec::with_capacity(1024);
-    let mut regions = Vec::new();
-    for start in 0..n {
-        if !mask[start] || visited[start] {
-            continue;
-        }
-        let mut minx = w;
-        let mut miny = h;
-        let mut maxx = 0u32;
-        let mut maxy = 0u32;
-        let mut area = 0u32;
-        stack.clear();
-        stack.push(start);
-        visited[start] = true;
-        while let Some(i) = stack.pop() {
-            let x = (i % w as usize) as u32;
-            let y = (i / w as usize) as u32;
-            if x < minx { minx = x; }
-            if y < miny { miny = y; }
-            if x > maxx { maxx = x; }
-            if y > maxy { maxy = y; }
-            area += 1;
-            // Neighbours (4-connected).
-            if x > 0 {
-                let j = i - 1;
-                if mask[j] && !visited[j] { visited[j] = true; stack.push(j); }
-            }
-            if x + 1 < w {
-                let j = i + 1;
-                if mask[j] && !visited[j] { visited[j] = true; stack.push(j); }
-            }
-            if y > 0 {
-                let j = i - w as usize;
-                if mask[j] && !visited[j] { visited[j] = true; stack.push(j); }
-            }
-            if y + 1 < h {
-                let j = i + w as usize;
-                if mask[j] && !visited[j] { visited[j] = true; stack.push(j); }
-            }
-        }
-        if area >= min_area {
-            regions.push(Region { x: minx, y: miny, w: maxx - minx + 1, h: maxy - miny + 1, area });
-        }
-    }
-    regions.sort_by(|a, b| b.area.cmp(&a.area));
-    regions
-}
-
-/// Stamp the outline (boundary pixels of the mask, thickened) in red.
-fn draw_outline(img: &mut image::RgbImage, mask: &[bool]) {
-    let (w, h) = (img.width(), img.height());
-    let red = image::Rgb([255u8, 40, 40]);
-    let mut stamp = |x: i32, y: i32| {
-        if x < 0 || y < 0 {
-            return;
-        }
-        let (x, y) = (x as u32, y as u32);
-        if x >= w || y >= h {
-            return;
-        }
-        for dy in 0..=OUTLINE_STAMP * 2 {
-            for dx in 0..=OUTLINE_STAMP * 2 {
-                let (nx, ny) = (x as i64 + dx as i64 - OUTLINE_STAMP as i64, y as i64 + dy as i64 - OUTLINE_STAMP as i64);
-                if nx >= 0 && ny >= 0 && (nx as u32) < w && (ny as u32) < h {
-                    *img.get_pixel_mut(nx as u32, ny as u32) = red;
-                }
-            }
-        }
-    };
-    for y in 0..h {
-        for x in 0..w {
-            let i = (y * w + x) as usize;
-            if !mask[i] {
-                continue;
-            }
-            // Boundary: any of the 8 neighbours is outside the mask.
-            let mut boundary = false;
-            'outer: for dy in -1i32..=1 {
-                for dx in -1i32..=1 {
-                    if dx == 0 && dy == 0 {
-                        continue;
-                    }
-                    let (nx, ny) = (x as i32 + dx, y as i32 + dy);
-                    if nx < 0 || ny < 0 || nx >= w as i32 || ny >= h as i32 {
-                        boundary = true;
-                        break 'outer;
-                    }
-                    if !mask[(ny as u32 * w + nx as u32) as usize] {
-                        boundary = true;
-                        break 'outer;
-                    }
-                }
-            }
-            if boundary {
-                stamp(x as i32, y as i32);
-            }
-        }
-    }
-}
-
-fn crop(img: &image::RgbImage, r: &Region) -> image::RgbImage {
-    let pad_x = (r.w as f64 * 0.35) as u32;
-    let pad_y = (r.h as f64 * 0.35) as u32;
-    let x0 = r.x.saturating_sub(pad_x);
-    let y0 = r.y.saturating_sub(pad_y);
-    let x1 = (r.x + r.w + pad_x).min(img.width());
-    let y1 = (r.y + r.h + pad_y).min(img.height());
-    let cw = (x1 - x0).max(8);
-    let ch = (y1 - y0).max(8);
-    let mut tmp = img.clone();
-    image::imageops::crop_imm(&mut tmp, x0, y0, cw, ch).to_image()
-}
-
-/// Record an event: before/after with outlines, zoomed crops, thumbnail,
-/// meta. `before_bytes` is the oldest snapshot in the ring.
-fn record_event(
-    data_dir: &Path,
-    before_bytes: &[u8],
-    after_full: &image::RgbImage,
-    ts: i64,
-) -> std::io::Result<Option<String>> {
-    let before_img = match decode_rgb(before_bytes) {
-        Ok(img) if img.width() == after_full.width() && img.height() == after_full.height() => img,
-        // Before image undecodable or size changed (camera restart): fall
-        // back to a solid placeholder so the event is still recorded with
-        // the "after" image.
-        _ => image::RgbImage::from_pixel(after_full.width(), after_full.height(), image::Rgb([80, 80, 80])),
-    };
-
-    let min_area = ((after_full.width() as f64 * after_full.height() as f64) * MIN_AREA_FRAC) as u32;
-    let mask = diff_mask(&before_img, after_full, DIFF_THRESHOLD);
-    let regions = find_regions(&mask, after_full.width(), after_full.height(), min_area);
-    if regions.is_empty() {
-        return Ok(None); // nothing real to show; caller acks the blocks
-    }
-
-    // Unique id from wall clock (seconds).
-    let events_dir = data_dir.join("events");
-    std::fs::create_dir_all(&events_dir)?;
-    let mut id = ts;
-    let mut dir = events_dir.join(id.to_string());
-    while dir.exists() {
-        id += 1;
-        dir = events_dir.join(id.to_string());
-    }
-    std::fs::create_dir_all(&dir)?;
-
-    let mut before_marked = before_img;
-    let mut after_marked = after_full.clone();
-    draw_outline(&mut before_marked, &mask);
-    draw_outline(&mut after_marked, &mask);
-
-    let biggest = &regions[0];
-    let before_z = crop(&before_marked, biggest);
-    let after_z = crop(&after_marked, biggest);
-    let thumb = downscale(&after_marked, THUMB_WIDTH);
-
-    std::fs::write(dir.join("thumb.jpg"), encode_jpeg(&thumb, 85))?;
-    std::fs::write(dir.join("before.jpg"), encode_jpeg(&before_marked, 85))?;
-    std::fs::write(dir.join("after.jpg"), encode_jpeg(&after_marked, 85))?;
-    std::fs::write(dir.join("before_z.jpg"), encode_jpeg(&before_z, 88))?;
-    std::fs::write(dir.join("after_z.jpg"), encode_jpeg(&after_z, 88))?;
-
-    let regions_json: Vec<String> = regions
-        .iter()
-        .map(|r| format!("{{\"x\":{},\"y\":{},\"w\":{},\"h\":{},\"area\":{}}}", r.x, r.y, r.w, r.h, r.area))
-        .collect();
-    let meta = format!(
-        "{{\"id\":{},\"ts\":\"{}\",\"width\":{},\"height\":{},\"regions\":[{}]}}",
-        id,
-        fmt_ts(ts),
-        after_full.width(),
-        after_full.height(),
-        regions_json.join(",")
-    );
-    std::fs::write(dir.join("meta.json"), meta)?;
-    eprintln!("event {id}: {} region(s), largest {}x{} at ({},{}))",
-        regions.len(), biggest.w, biggest.h, biggest.x, biggest.y);
-    Ok(Some(id.to_string()))
-}
-
-// ---------------------------------------------------------------------------
-// Shared state between the capture loop and the HTTP server.
-// ---------------------------------------------------------------------------
-
-struct Shared {
-    data_dir: PathBuf,
-    frames: u64,
-    last_frame_ts: i64,
-    scene_resets: u64,
-    events: u64,
-    last_error: String,
-    latest: Option<Vec<u8>>,
-}
-
-// ---------------------------------------------------------------------------
-// Capture loop
-// ---------------------------------------------------------------------------
-
-fn run_capture(cfg: Arc<Config>, shared: Arc<RwLock<Shared>>) {
+fn run_capture(cfg: Arc<Config>, shared: Arc<RwLock<server::Shared>>) {
     let mut detector = Detector::new(cfg.width, cfg.persist);
-    let mut ring: VecDeque<(i64, Vec<u8>)> = VecDeque::with_capacity(RING_MAX);
+    let mut ring: VecDeque<RingEntry> = VecDeque::with_capacity(RING_MAX);
     let tmp = cfg.data_dir.join("frame.jpg");
     let _ = std::fs::create_dir_all(&cfg.data_dir);
 
     loop {
         let t0 = Instant::now();
-        let ts = now_secs();
+        let ts = events::now_secs();
         let res = grab_frame(&cfg.ffmpeg, &cfg.rtsp, &tmp).and_then(|()| {
             std::fs::read(&tmp).map_err(|e| e.to_string())
         });
         match res {
-            Ok(jpeg) => match decode_rgb(&jpeg) {
+            Ok(jpeg) => match imgutil::decode_rgb(&jpeg) {
                 Ok(full) => {
-                    let (reset, triggered) = detector.step(&full);
-                    if reset {
-                        // New background baseline: drop old snapshots so
-                        // "before" images are never from before a scene reset.
-                        ring.clear();
-                        ring.push_back((ts, jpeg.clone()));
-                        shared.write().unwrap().scene_resets += 1;
-                    } else if !triggered.is_empty() {
-                        let before = ring.front().map(|(_, b)| b.clone());
-                        if let Some(before_bytes) = before {
-                            match record_event(&cfg.data_dir, &before_bytes, &full, ts) {
-                                Ok(Some(id)) => {
-                                    shared.write().unwrap().events += 1;
-                                    // Ack the triggered blocks so the same
-                                    // change is not re-recorded while it persists.
-                                    ack_blocks(&mut detector, &triggered);
-                                    let _ = id;
-                                }
-                                Ok(None) => ack_blocks(&mut detector, &triggered),
-                                Err(e) => eprintln!("event record failed: {e}"),
+                    if let Some(reason) = imgutil::blank_reason(&full) {
+                        // Stream glitch: a solid grey/black/colour frame (e.g.
+                        // a brief RTSP dropout or decoder hiccup).  Never feed
+                        // it to the detector (it would reset the background to
+                        // garbage) and never buffer it as a future "before"
+                        // image — diffs are only ever made against real frames.
+                        let mut s = shared.write().unwrap();
+                        s.blank_frames += 1;
+                        s.last_error = format!("ignored blank frame ({reason})");
+                    } else {
+                        let step = detector.step(&full);
+                        if step.reset {
+                            // New background baseline: the snapshot ring
+                            // restarts so "before" images are never from
+                            // before a reset.
+                            ring.clear();
+                            ring.push_back(RingEntry { idx: detector.frame, jpeg: jpeg.clone() });
+                            let mut s = shared.write().unwrap();
+                            s.frames += 1;
+                            s.last_frame_ts = ts;
+                            s.scene_resets += 1;
+                            s.last_error.clear();
+                            s.latest = Some(jpeg);
+                        } else {
+                            for fired in step.fired {
+                                record(&cfg, &detector, &ring, &shared, &full, fired, ts);
                             }
+                            ring.push_back(RingEntry { idx: detector.frame, jpeg: jpeg.clone() });
+                            while ring.len() > RING_MAX {
+                                ring.pop_front();
+                            }
+                            let mut s = shared.write().unwrap();
+                            s.frames += 1;
+                            s.last_frame_ts = ts;
+                            s.last_error.clear();
+                            s.latest = Some(jpeg);
                         }
                     }
-                    ring.push_back((ts, jpeg.clone()));
-                    while ring.len() > RING_MAX {
-                        ring.pop_front();
-                    }
-                    let mut s = shared.write().unwrap();
-                    s.frames += 1;
-                    s.last_frame_ts = ts;
-                    s.last_error.clear();
-                    s.latest = Some(jpeg);
                 }
                 Err(e) => {
                     shared.write().unwrap().last_error = e;
@@ -632,298 +238,122 @@ fn run_capture(cfg: Arc<Config>, shared: Arc<RwLock<Shared>>) {
     }
 }
 
-fn ack_blocks(det: &mut Detector, blocks: &[usize]) {
-    for &b in blocks {
-        det.acked[b] = true;
-        det.diff_count[b] = 0;
-        det.clean_count[b] = 0;
-    }
-}
-
-// ---------------------------------------------------------------------------
-// HTTP server (hand-rolled, like status-dashboard)
-// ---------------------------------------------------------------------------
-
-fn read_request(stream: &mut TcpStream) -> Option<(String, String)> {
-    let mut buf = Vec::with_capacity(1024);
-    let mut chunk = [0u8; 1024];
-    loop {
-        let n = stream.read(&mut chunk).ok()?;
-        if n == 0 {
-            return None;
-        }
-        buf.extend_from_slice(&chunk[..n]);
-        if buf.windows(4).any(|w| w == b"\r\n\r\n") || buf.len() > 8192 {
-            let head = String::from_utf8_lossy(&buf).to_string();
-            let first = head.lines().next().unwrap_or("");
-            let mut parts = first.split_whitespace();
-            let method = parts.next().unwrap_or("").to_string();
-            let target = parts.next().unwrap_or("/").to_string();
-            return Some((method, target));
-        }
-    }
-}
-
-fn send(stream: &mut TcpStream, status: &str, content_type: &str, body: Vec<u8>) {
-    let resp = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
-        body.len()
-    );
-    let _ = stream.write_all(resp.as_bytes());
-    let _ = stream.write_all(&body);
-    let _ = stream.flush();
-}
-
-fn send_file(stream: &mut TcpStream, path: &Path, content_type: &str) {
-    match std::fs::read(path) {
-        Ok(b) => send(stream, "200 OK", content_type, b),
-        Err(_) => send(stream, "404 Not Found", "text/plain", b"not found".to_vec()),
-    }
-}
-
-fn list_events(data_dir: &Path) -> Vec<(String, String)> {
-    let events_dir = data_dir.join("events");
-    let mut out = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(&events_dir) {
-        for e in entries.flatten() {
-            let name = e.file_name().to_string_lossy().to_string();
-            if let Ok(meta) = std::fs::read_to_string(e.path().join("meta.json")) {
-                out.push((name, meta));
-            }
-        }
-    }
-    out.sort_by(|a, b| b.0.cmp(&a.0)); // numeric ids => lexical = temporal
-    out.truncate(200);
-    out
-}
-
-fn handle_client(mut stream: TcpStream, shared: Arc<RwLock<Shared>>) {
-    let (method, target) = match read_request(&mut stream) {
-        Some(t) => t,
-        None => return,
-    };
-    if method != "GET" {
-        send(&mut stream, "405 Method Not Allowed", "text/plain", b"get only".to_vec());
-        return;
-    }
-    let path = target.split('?').next().unwrap_or("/").to_string();
-    let s = shared.read().unwrap();
-    match path.as_str() {
-        "/" => send(&mut stream, "200 OK", "text/html; charset=utf-8", INDEX_HTML.as_bytes().to_vec()),
-        "/favicon.ico" => send(&mut stream, "404 Not Found", "text/plain", vec![]),
-        "/api/status" => {
-            let body = format!(
-                "{{\"frames\":{},\"last_frame_ts\":{},\"scene_resets\":{},\"events\":{},\"last_error\":{}}}",
-                s.frames, s.last_frame_ts, s.scene_resets, s.events, json_str(&s.last_error)
+fn record(
+    cfg: &Config,
+    detector: &Detector,
+    ring: &VecDeque<RingEntry>,
+    shared: &Arc<RwLock<server::Shared>>,
+    after_full: &image::RgbImage,
+    fired: Fired,
+    ts: i64,
+) {
+    // The "before" snapshot is what makes an event meaningful: it shows the
+    // frame just before the change began and is diffed against "after".
+    // The ring normally covers far more than the persist+grace window, so a
+    // miss means the background (and ring) reset in the middle of this
+    // change, or the change's `born` frame predates the ring (a block that
+    // stayed foreground-but-flickering for >15 min before the GRACE path let
+    // it fire).  Either way the true "before" is gone; recording would store
+    // a grey placeholder and a bogus all-red diff, so drop the event instead.
+    let before_bytes = match ring_before(ring, fired.before_idx) {
+        Some(b) => b,
+        None => {
+            eprintln!(
+                "event skipped: no before snapshot (before_idx {})",
+                fired.before_idx
             );
-            send(&mut stream, "200 OK", "application/json", body.into_bytes());
-        }
-        "/api/events" => {
-            let metas = list_events(&s.data_dir);
-            let body = format!("[{}]", metas.iter().map(|(_, m)| m.as_str()).collect::<Vec<_>>().join(","));
-            send(&mut stream, "200 OK", "application/json", body.into_bytes());
-        }
-        "/api/live" => match &s.latest {
-            Some(bytes) => send(&mut stream, "200 OK", "image/jpeg", bytes.clone()),
-            None => send(&mut stream, "503 Service Unavailable", "text/plain", b"no frame yet".to_vec()),
-        },
-        _ => {
-            let ev = path.strip_prefix("/api/events/").or_else(|| path.strip_prefix("/files/"));
-            if let Some(rest) = ev {
-                let is_file = path.starts_with("/files/");
-                let parts: Vec<&str> = rest.split('/').collect();
-                if parts.len() == (if is_file { 2 } else { 1 })
-                    && parts[0].chars().all(|c| c.is_ascii_digit())
-                {
-                    let dir = s.data_dir.join("events").join(parts[0]);
-                    if is_file {
-                        if EVENT_FILES.contains(&parts[1]) && dir.join(parts[1]).is_file() {
-                            send_file(&mut stream, &dir.join(parts[1]), "image/jpeg");
-                            return;
-                        }
-                    } else if dir.join("meta.json").is_file() {
-                        send_file(&mut stream, &dir.join("meta.json"), "application/json");
-                        return;
-                    }
-                }
-            }
-            send(&mut stream, "404 Not Found", "text/plain", b"not found".to_vec());
-        }
-    }
-}
-
-fn json_str(s: &str) -> String {
-    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
-}
-
-fn run_http(cfg: Arc<Config>, shared: Arc<RwLock<Shared>>) {
-    let addr = format!("{}:{}", cfg.bind, cfg.port);
-    let listener = match TcpListener::bind(&addr) {
-        Ok(l) => l,
-        Err(e) => {
-            eprintln!("bind {addr}: {e}");
+            shared.write().unwrap().skipped_no_before += 1;
             return;
         }
     };
-    eprintln!("listening on {addr}");
-    for stream in listener.incoming() {
-        if let Ok(stream) = stream {
-            let shared = Arc::clone(&shared);
-            thread::spawn(move || handle_client(stream, shared));
+    // Belt-and-braces: the ring only ever holds frames that decoded at the
+    // detector's current resolution, but if the "before" ever turns out
+    // undecodable or size-mismatched, skip rather than fabricate a placeholder.
+    let before_usable = imgutil::decode_rgb(&before_bytes)
+        .map(|img| img.width() == after_full.width() && img.height() == after_full.height())
+        .unwrap_or(false);
+    if !before_usable {
+        eprintln!(
+            "event skipped: unusable before snapshot (before_idx {})",
+            fired.before_idx
+        );
+        shared.write().unwrap().skipped_no_before += 1;
+        return;
+    }
+    let (dw, dh) = detector.det_dims();
+    let boxes: Vec<Box> = scale_boxes(
+        &fired.regions,
+        after_full.width(),
+        dw,
+        after_full.height(),
+        dh,
+    );
+    match events::record_event(&cfg.data_dir, Some(&before_bytes), after_full, &boxes, ts) {
+        Ok(Some(_)) => {}
+        Ok(None) => eprintln!("event skipped: no regions"),
+        Err(e) => eprintln!("event record failed: {e}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// HTTP server
+// ---------------------------------------------------------------------------
+
+fn run_http(cfg: Config, shared: Arc<RwLock<server::Shared>>) {
+    server::run(cfg, shared);
+}
+
+// ---------------------------------------------------------------------------
+// Offline self-test
+// ---------------------------------------------------------------------------
+
+/// Record a synthetic event from two JPEG files (before/after), computing
+/// the changed regions directly from the full-resolution difference.  Used
+/// to validate the image pipeline without a camera.
+fn selftest(before_path: &str, after_path: &str, data_dir: &str) {
+    let before_bytes = std::fs::read(before_path).expect("read before");
+    let after_bytes = std::fs::read(after_path).expect("read after");
+    let after = imgutil::decode_rgb(&after_bytes).expect("decode after");
+    let before = imgutil::decode_rgb(&before_bytes).expect("decode before");
+    if before.width() != after.width() || before.height() != after.height() {
+        eprintln!("selftest: images differ in size");
+        std::process::exit(1);
+    }
+    let mask = imgutil::diff_mask(&before, &after, 32);
+    let (fw, fh) = (after.width(), after.height());
+    let regions = detect::connected_regions(&mask, fw, fh, detect::min_area(fw as usize, fh as usize));
+    let boxes: Vec<Box> = regions
+        .iter()
+        .map(|r| Box { x: r.x, y: r.y, w: r.w, h: r.h })
+        .collect();
+    let dir = PathBuf::from(data_dir);
+    match events::record_event(&dir, Some(&before_bytes), &after, &boxes, events::now_secs()) {
+        Ok(Some(id)) => println!("selftest event: {id}"),
+        Ok(None) => {
+            eprintln!("selftest: no regions found");
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("selftest failed: {e}");
+            std::process::exit(1);
         }
     }
 }
 
-const INDEX_HTML: &str = r##"<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>frigate-monitor · main_space</title>
-<style>
-  :root { color-scheme: dark; }
-  * { box-sizing: border-box; }
-  body { margin: 0; background: #111418; color: #dde3ea; font: 15px/1.45 system-ui, sans-serif; }
-  header { display: flex; gap: 18px; align-items: center; padding: 12px 20px; background: #181c22; border-bottom: 1px solid #262c35; flex-wrap: wrap; }
-  header h1 { font-size: 18px; margin: 0; font-weight: 600; }
-  #status-line { color: #8b97a5; font-size: 13px; font-weight: 400; }
-  #live { height: 72px; border-radius: 6px; background: #000; }
-  .err { color: #e07a7a; font-size: 13px; }
-  main { padding: 18px 20px; display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 16px; }
-  .card { background: #181c22; border: 1px solid #262c35; border-radius: 10px; overflow: hidden; cursor: pointer; transition: border-color .15s; }
-  .card:hover { border-color: #4a7dbd; }
-  .card img { width: 100%; display: block; }
-  .card .meta { padding: 8px 12px; font-size: 13px; color: #8b97a5; display: flex; justify-content: space-between; }
-  .empty { grid-column: 1/-1; color: #8b97a5; padding: 40px; text-align: center; }
-  #detail { padding: 18px 20px; }
-  #detail h2 { font-size: 16px; margin: 0 0 4px; }
-  #detail .sub { color: #8b97a5; font-size: 13px; margin-bottom: 14px; }
-  .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 22px; }
-  .pair figure { margin: 0; }
-  .pair figcaption { font-size: 13px; color: #8b97a5; margin-bottom: 6px; }
-  .pair img { width: 100%; border-radius: 8px; border: 1px solid #262c35; cursor: zoom-in; display: block; }
-  .zoom-pair img { cursor: zoom-in; }
-  a.back { color: #6ea1e0; text-decoration: none; font-size: 14px; }
-  a.back:hover { text-decoration: underline; }
-  h3 { font-size: 14px; color: #8b97a5; font-weight: 600; margin: 0 0 10px; }
-  @media (max-width: 700px) { .pair { grid-template-columns: 1fr; } }
-</style>
-</head>
-<body>
-<header>
-  <h1>main_space <span id="status-line">…</span></h1>
-  <img id="live" alt="live" title="latest snapshot">
-  <span id="live-err" class="err"></span>
-</header>
-<main id="list"></main>
-<section id="detail" hidden></section>
-<script>
-const $ = (s) => document.querySelector(s);
-const esc = (s) => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-
-async function jget(url) {
-  const r = await fetch(url);
-  if (!r.ok) throw new Error(url + ' -> ' + r.status);
-  return r.json();
-}
-
-async function refreshStatus() {
-  try {
-    const s = await jget('/api/status');
-    const now = Math.floor(Date.now() / 1000);
-    const age = s.last_frame_ts ? (now - s.last_frame_ts) + 's ago' : '—';
-    $('#status-line').textContent =
-      `frames: ${s.frames} · last ${age} · scene resets: ${s.scene_resets} · events: ${s.events}`;
-    if (s.last_error) $('#status-line').textContent += ' · ' + s.last_error;
-    $('#live-err').textContent = '';
-  } catch (e) {
-    $('#status-line').textContent = 'monitor unreachable';
-  }
-  // live frame (cache-busted)
-  const img = $('#live');
-  img.onload = () => { $('#live-err').textContent = ''; };
-  img.onerror = () => { $('#live-err').textContent = 'no frame'; };
-  img.src = '/api/live?t=' + Date.now();
-}
-
-async function refreshList() {
-  if (!$('#detail').hidden) return;
-  let events = [];
-  try { events = await jget('/api/events'); } catch (e) {}
-  const list = $('#list');
-  if (!events.length) {
-    list.innerHTML = '<div class="empty">No recorded changes yet.<br>Events appear when something in the scene is added, removed or moved and stays there.</div>';
-    return;
-  }
-  list.innerHTML = events.map(ev => `
-    <div class="card" data-id="${esc(ev.id)}">
-      <img loading="lazy" src="/files/${esc(ev.id)}/thumb.jpg" alt="">
-      <div class="meta"><span>${esc(ev.ts)}</span><span>${ev.regions.length} region${ev.regions.length === 1 ? '' : 's'}</span></div>
-    </div>`).join('');
-  list.querySelectorAll('.card').forEach(c => c.onclick = () => showEvent(c.dataset.id));
-}
-
-async function showEvent(id) {
-  let ev;
-  try { ev = await jget('/api/events/' + id); } catch (e) { return; }
-  $('#list').hidden = true;
-  const d = $('#detail');
-  d.hidden = false;
-  d.innerHTML = `
-    <a class="back" href="#" id="back">← all events</a>
-    <h2 style="margin-top:12px">${esc(ev.ts)}</h2>
-    <div class="sub">${ev.regions.length} changed region${ev.regions.length === 1 ? '' : 's'} · ${ev.width}×${ev.height} · outlined in red</div>
-    <h3>Full frame — before / after</h3>
-    <div class="pair">
-      <figure><figcaption>before</figcaption><img src="/files/${id}/before.jpg" alt="before"></figure>
-      <figure><figcaption>after</figcaption><img src="/files/${id}/after.jpg" alt="after"></figure>
-    </div>
-    <h3>Zoom — largest changed region</h3>
-    <div class="pair zoom-pair">
-      <figure><figcaption>before</figcaption><img src="/files/${id}/before_z.jpg" alt="before zoom"></figure>
-      <figure><figcaption>after</figcaption><img src="/files/${id}/after_z.jpg" alt="after zoom"></figure>
-    </div>`;
-  $('#back').onclick = (e) => { e.preventDefault(); showList(); };
-  d.querySelectorAll('img').forEach(im => im.onclick = () => window.open(im.src, '_blank'));
-}
-
-function showList() {
-  $('#detail').hidden = true;
-  $('#list').hidden = false;
-  refreshList();
-}
-
-refreshStatus();
-refreshList();
-setInterval(refreshStatus, 15000);
-setInterval(refreshList, 15000);
-</script>
-</body>
-</html>"##;
-
 fn main() {
-    // Offline self-test: record a synthetic event from two JPEG files and
-    // exit. Used to validate the outline/region/crop pipeline.
     let args: Vec<String> = std::env::args().collect();
     if args.len() >= 5 && args[1] == "--selftest" {
-        let (before, after, data_dir) = (&args[2], &args[3], PathBuf::from(&args[4]));
-        let before_bytes = std::fs::read(before).expect("read before");
-        let after_bytes = std::fs::read(after).expect("read after");
-        let after = decode_rgb(&after_bytes).expect("decode after");
-        match record_event(&data_dir, &before_bytes, &after, now_secs()) {
-            Ok(Some(id)) => println!("selftest event: {id}"),
-            Ok(None) => { eprintln!("selftest: no regions found"); std::process::exit(1); }
-            Err(e) => { eprintln!("selftest failed: {e}"); std::process::exit(1); }
-        }
+        selftest(&args[2], &args[3], &args[4]);
         return;
     }
     let cfg = Arc::new(parse_args());
-    let shared = Arc::new(RwLock::new(Shared {
+    let shared = Arc::new(RwLock::new(server::Shared {
         data_dir: cfg.data_dir.clone(),
         frames: 0,
         last_frame_ts: 0,
         scene_resets: 0,
-        events: 0,
+        blank_frames: 0,
+        skipped_no_before: 0,
         last_error: String::new(),
         latest: None,
     }));
@@ -937,7 +367,7 @@ fn main() {
     let cfg2 = Arc::clone(&cfg);
     let shared2 = Arc::clone(&shared);
     thread::spawn(move || run_capture(cfg2, shared2));
-    run_http(cfg, shared);
+    run_http((*cfg).clone(), shared);
 }
 
 #[cfg(test)]
@@ -958,109 +388,254 @@ mod tests {
         }
     }
 
-    /// Stable scene never triggers.
+    /// Seed helper: returns a detector whose background is `base`.
+    fn seed(det: &mut Detector, base: &image::RgbImage) {
+        let s = det.step(base);
+        assert!(s.reset, "first step must seed");
+        assert!(s.fired.is_empty());
+    }
+
+    /// Run snapshots, returning the fired events (each step must not reset).
+    fn run(det: &mut Detector, frames: &[&image::RgbImage]) -> Vec<Fired> {
+        let mut out = Vec::new();
+        for f in frames {
+            let s = det.step(f);
+            assert!(!s.reset, "unexpected scene reset");
+            out.extend(s.fired);
+        }
+        out
+    }
+
+    /// A stable scene never fires.
     #[test]
     fn no_event_on_stable_scene() {
         let mut det = Detector::new(64, 3);
-        let mut frame = scene(64, 48, 128);
-        let (reset, trig) = det.step(&frame);
-        assert!(reset);
-        for _ in 0..20 {
-            let (reset, trig) = det.step(&frame);
-            assert!(!reset);
-            assert!(trig.is_empty());
+        let base = scene(64, 48, 128);
+        seed(&mut det, &base);
+        let mut fired = 0;
+        for _ in 0..30 {
+            let s = det.step(&base);
+            assert!(!s.reset);
+            fired += s.fired.len();
         }
+        assert_eq!(fired, 0);
     }
 
-    /// A static object left in the scene triggers once it has persisted for
-    /// `persist` consecutive frames.
+    /// A static object left in the scene fires exactly once, shortly after
+    /// it has been still for `persist` snapshots; "before" points at the
+    /// frame just before it appeared.
     #[test]
-    fn static_object_triggers() {
+    fn static_object_triggers_once() {
         let mut det = Detector::new(64, 3);
         let base = scene(64, 48, 128);
-        let (reset, _) = det.step(&base);
-        assert!(reset);
+        seed(&mut det, &base);
 
-        let mut frame = base.clone();
-        stamp(&mut frame, 16, 16, 16, 16, image::Rgb([255, 0, 0])); // "scissors"
-        let mut triggered_at = None;
-        for i in 1..=10 {
-            let (reset, trig) = det.step(&frame.clone());
-            assert!(!reset);
-            if !trig.is_empty() && triggered_at.is_none() {
-                triggered_at = Some(i);
-            }
+        // Two unchanged frames, then the object appears and stays.
+        let mut frames = vec![base.clone(), base.clone()];
+        for _ in 0..20 {
+            let mut f = scene(64, 48, 128);
+            stamp(&mut f, 16, 16, 16, 16, image::Rgb([255, 0, 0]));
+            frames.push(f);
         }
-        assert_eq!(triggered_at, Some(3), "should trigger on the 3rd consecutive diff");
+        let frefs: Vec<&image::RgbImage> = frames.iter().collect();
+        let fired = run(&mut det, &frefs);
+        assert_eq!(fired.len(), 1, "a static object fires exactly once");
+        // The object appears on detector frame 3 (frames[2]); before = frame 2.
+        assert_eq!(fired[0].before_idx, 2, "before must precede the appearance");
+        assert_eq!(fired[0].regions.len(), 1);
+        let r = fired[0].regions[0];
+        assert!(
+            r.x <= 16 && r.y <= 16 && r.x + r.w >= 32 && r.y + r.h >= 32,
+            "region must cover the object, got {r:?}"
+        );
     }
 
-    /// An object that keeps moving (a walking person) never triggers.
+    /// A moving object (a person) never fires, however long it is present.
     #[test]
     fn moving_object_never_triggers() {
         let mut det = Detector::new(64, 3);
         let base = scene(64, 48, 128);
-        let (reset, _) = det.step(&base);
-        assert!(reset);
+        seed(&mut det, &base);
 
-        // 8x8 blob sliding one block (16 px) every step.
-        for x in (0..48).step_by(16) {
+        // 16x16 blob cycling through block positions: it always moves
+        // between snapshots, so it can never settle.
+        let mut fired_total = 0;
+        for i in 0..12 {
+            let x = [0u32, 16, 32][i % 3];
             let mut frame = base.clone();
-            stamp(&mut frame, x, 8, 8, 8, image::Rgb([0, 0, 255]));
-            let (reset, trig) = det.step(&frame);
-            assert!(!reset);
-            assert!(trig.is_empty(), "moving blob at x={x} must not trigger");
+            stamp(&mut frame, x, 8, 16, 16, image::Rgb([0, 0, 255]));
+            let s = det.step(&frame);
+            assert!(!s.reset);
+            fired_total += s.fired.len();
+        }
+        assert_eq!(fired_total, 0, "a moving blob must never trigger");
+    }
+
+    /// A slow-moving object (less than a block per snapshot) never fires
+    /// either: every snapshot differs, so nothing ever settles.
+    #[test]
+    fn slow_moving_object_never_triggers() {
+        let mut det = Detector::new(64, 3);
+        let base = scene(64, 48, 128);
+        seed(&mut det, &base);
+
+        for x in (0..48).step_by(4) {
+            let mut frame = base.clone();
+            stamp(&mut frame, x, 8, 16, 16, image::Rgb([0, 0, 255]));
+            let s = det.step(&frame);
+            assert!(!s.reset);
+            assert!(s.fired.is_empty(), "moving blob at x={x} must not trigger");
         }
     }
 
-    /// Removing an object that the background has absorbed also triggers.
+    /// Removing an object that the background absorbed also fires, with the
+    /// before image showing the object still present.
     #[test]
-    fn removal_triggers() {
+    fn removal_of_absorbed_object_fires() {
         let mut det = Detector::new(64, 3);
-        // Scene with the object for a while, so the background absorbs it.
+        // Seed with the object present, so the bg absorbs it.
         let mut with_obj = scene(64, 48, 128);
         stamp(&mut with_obj, 16, 16, 16, 16, image::Rgb([255, 0, 0]));
-        let (reset, _) = det.step(&with_obj.clone());
-        assert!(reset);
+        seed(&mut det, &with_obj);
         for _ in 0..10 {
-            let (_, trig) = det.step(&with_obj.clone());
-            assert!(trig.is_empty());
+            let s = det.step(&with_obj.clone());
+            assert!(s.fired.is_empty());
         }
-        // Now the object is gone: the (object-absorbing) background differs
-        // from the clean frame and the difference persists.
+        // Remove it: exactly one event; before = frame 10 (last with object).
         let clean = scene(64, 48, 128);
-        let mut triggered_at = None;
-        for i in 1..=10 {
-            let (reset, trig) = det.step(&clean.clone());
-            assert!(!reset);
-            if !trig.is_empty() && triggered_at.is_none() {
-                triggered_at = Some(i);
+        let mut fired_total = 0;
+        let mut first_before = None;
+        for _ in 0..30 {
+            let s = det.step(&clean.clone());
+            assert!(!s.reset);
+            for f in s.fired {
+                fired_total += 1;
+                if first_before.is_none() {
+                    first_before = Some(f.before_idx);
+                }
             }
         }
-        assert_eq!(triggered_at, Some(3));
+        assert_eq!(fired_total, 1);
+        assert_eq!(first_before, Some(10), "before must still show the object");
+    }
+
+    /// A previously-recorded object that is later removed fires a second,
+    /// removal event, once its ack has cleared.
+    #[test]
+    fn placed_then_removed_object_fires_twice() {
+        let mut det = Detector::new(64, 3);
+        let base = scene(64, 48, 128);
+        seed(&mut det, &base);
+
+        // Place the object and let the placement event fire.
+        let mut placed = scene(64, 48, 128);
+        stamp(&mut placed, 16, 16, 16, 16, image::Rgb([255, 0, 0]));
+        let mut fires_place = 0;
+        let mut before_place = None;
+        for _ in 0..60 {
+            let s = det.step(&placed.clone());
+            for f in s.fired {
+                fires_place += 1;
+                if before_place.is_none() {
+                    before_place = Some(f.before_idx);
+                }
+            }
+        }
+        assert_eq!(fires_place, 1);
+        assert_eq!(before_place, Some(0), "before = frame before the placement");
+
+        // Now remove it: the removal fires once, near the removal.
+        let clean = scene(64, 48, 128);
+        let mut fires_remove = 0;
+        for i in 0..30 {
+            let s = det.step(&clean.clone());
+            assert!(!s.reset);
+            for f in s.fired {
+                fires_remove += 1;
+                assert!(f.before_idx >= 60, "removal before must be near the removal (step {i})");
+            }
+        }
+        assert_eq!(fires_remove, 1, "removal of a recorded object fires once");
+    }
+
+    /// An object with internal motion but a constant silhouette (spinning
+    /// fan, flickering screen) never fires: raw frame-diff marks it active
+    /// even though the foreground shape never changes.
+    #[test]
+    fn internal_motion_never_triggers() {
+        let mut det = Detector::new(64, 3);
+        let base = scene(64, 48, 128);
+        seed(&mut det, &base);
+
+        let mut fired = 0;
+        for i in 0..20 {
+            let mut frame = scene(64, 48, 128);
+            let c = if i % 2 == 0 { image::Rgb([255, 0, 0]) } else { image::Rgb([0, 0, 255]) };
+            stamp(&mut frame, 16, 16, 16, 16, c); // same place, alternating colour
+            let s = det.step(&frame);
+            assert!(!s.reset);
+            fired += s.fired.len();
+        }
+        assert_eq!(fired, 0, "a flickering object must never trigger");
+    }
+
+    /// A static change made *while a person is still walking through* only
+    /// fires once the whole frame has settled (after the person leaves).
+    #[test]
+    fn change_during_activity_fires_after_settle() {
+        let mut det = Detector::new(64, 3);
+        let base = scene(64, 48, 128);
+        seed(&mut det, &base);
+
+        let person = |x: u32| -> image::RgbImage {
+            let mut f = base.clone();
+            stamp(&mut f, x, 4, 16, 16, image::Rgb([0, 0, 255]));
+            f
+        };
+        let object = |x: u32| -> image::RgbImage {
+            let mut f = base.clone();
+            stamp(&mut f, 16, 32, 16, 8, image::Rgb([255, 0, 0]));
+            stamp(&mut f, x, 4, 16, 16, image::Rgb([0, 0, 255])); // person still there
+            f
+        };
+        let object_alone = || -> image::RgbImage {
+            let mut f = base.clone();
+            stamp(&mut f, 16, 32, 16, 8, image::Rgb([255, 0, 0]));
+            f
+        };
+
+        // Person walks across (frames 1-3); at frame 4 an object is placed
+        // while the person is still visible; person leaves at frame 7.
+        let mut fired = Vec::new();
+        for x in [0u32, 16, 32] {
+            let s = det.step(&person(x));
+            assert!(!s.reset);
+        }
+        for x in [0u32, 16] {
+            let s = det.step(&object(x));
+            assert!(!s.reset);
+            fired.extend(s.fired);
+        }
+        for _ in 0..25 {
+            let s = det.step(&object_alone());
+            assert!(!s.reset);
+            fired.extend(s.fired);
+        }
+        assert_eq!(fired.len(), 1, "exactly one event once everything settled");
+        assert_eq!(fired[0].before_idx, 3, "before = frame just before the object appeared");
     }
 
     /// A huge global change (lights on/off) re-seeds instead of triggering.
     #[test]
     fn global_change_reseeds() {
         let mut det = Detector::new(64, 3);
-        let (reset, _) = det.step(&scene(64, 48, 128));
-        assert!(reset);
-        let (reset, trig) = det.step(&scene(64, 48, 250)); // everything differs
-        assert!(reset, "global change should re-seed the background");
-        assert!(trig.is_empty());
-        // ...and is quiet afterwards.
-        let (reset, trig) = det.step(&scene(64, 48, 250));
-        assert!(!reset);
-        assert!(trig.is_empty());
-    }
-
-    fn fmt_ts_roundtrip() {
-        assert_eq!(fmt_ts(0), "1970-01-01T00:00:00");
-        assert_eq!(fmt_ts(1_700_000_000), "2023-11-14T22:13:20"); // UTC
-        assert_eq!(fmt_ts(1_643_695_199), "2022-02-01T05:59:59"); // Feb: y+1 case
-    }
-    #[test]
-    fn ts_formatting() {
-        fmt_ts_roundtrip();
+        let s = det.step(&scene(64, 48, 128));
+        assert!(s.reset);
+        let s = det.step(&scene(64, 48, 250)); // everything differs
+        assert!(s.reset, "global change should re-seed the background");
+        assert!(s.fired.is_empty());
+        let s = det.step(&scene(64, 48, 250));
+        assert!(!s.reset);
+        assert!(s.fired.is_empty());
     }
 }

@@ -1,0 +1,4 @@
+/target/
+# wasm-bindgen output; built by the flake (machines/aibox/frigate-monitor.nix)
+# or locally by ./build.sh — never committed.
+/dist/

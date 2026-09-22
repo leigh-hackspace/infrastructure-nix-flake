@@ -27,11 +27,15 @@ Guidance for AI agents working in this repository. Read this before making chang
   (router + DO facts below).
 - `frigate-monitor/` — top-level Rust tool (one external crate: `image`) on
   aibox that snapshots the Frigate `main_space` RTSP stream every 10 s and
-  records an event when a change persists across 4 consecutive snapshots
-  (moving people ignored; static changes like an object left/removed or a
-  chair moved are caught). Events store before/after with changed regions
-  outlined plus zoomed crops under `/var/lib/frigate-monitor/events/`.
-  Web UI on aibox:8090, proxied by services1 as
+  records an event when a static change appears and the area *settles* — a
+  region must differ from the background and be completely still for N
+  consecutive snapshots (moving people are dismissed). The `before` image is
+  taken from just before the change began; recorded objects are absorbed
+  into the background so their later removal is caught too. Events store
+  before/after/diff JPEGs with the changed regions boxed, zoom crops, and a
+  thumbnail under `/var/lib/frigate-monitor/events/`. Web UI on
+  aibox:8090 is a Dioxus SPA (frontend/, compiled to wasm by the flake as
+  `frontendDist` — no bundle is committed), proxied by services1 as
   `frigate-monitor.int.leighhack.org` (LAN-only; see
   `machines/aibox/frigate-monitor.nix` and
   `machines/services1/services/frigate-monitor.nix`).
