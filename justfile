@@ -15,6 +15,18 @@ boot:
 switch:
     sudo nixos-rebuild switch --flake .
 
+# --- frontend (frigate-monitor web UI) ---
+
+# Rebuild the Dioxus SPA into frigate-monitor/frontend/dist using the
+# devshell's toolchain (cargo/rustc/lld + pinned wasm-bindgen-cli 0.2.128).
+# Same toolchain the flake uses for its frontendDist; dist/ is git-ignored
+# and rebuilt by the flake on deploy, so this is just for local iteration.
+build-frontend:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    nix develop --impure --command bash -c 'cd frigate-monitor/frontend && exec ./build.sh'
+
+
 # --- DNS sync (keeps router dnsmasq + DigitalOcean DNS in step with the
 # --- *.int.leighhack.org nginx vhosts; requires the machine-hop key and a
 # --- deployed dns-sync on services1) ---

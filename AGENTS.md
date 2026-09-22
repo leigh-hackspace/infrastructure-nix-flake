@@ -281,6 +281,42 @@ nix flake metadata           # locked inputs / rev
   `${...}` and `
 ` line-continuations differently from what you typed.
 
+## frigate-monitor web UI — local development
+
+The Dioxus SPA in `frigate-monitor/frontend/` is built to wasm and embedded into
+the service as `frontendDist` (see `machines/aibox/frigate-monitor.nix`).
+`frigate-monitor/frontend/dist/` is **git-ignored and never committed** — the
+flake rebuilds it at deploy time. To iterate locally:
+
+```bash
+nix develop            # toolchain: cargo/rustc/rustfmt + lld + just + git
+just build-frontend    # = cd frigate-monitor/frontend && nix develop --command bash build.sh
+# or, equivalently:
+cd frigate-monitor/frontend && nix develop --command bash build.sh
+```
+
+The devshell is self-contained: `nix develop` installs the pinned
+`wasm-bindgen-cli 0.2.128` (via a shellHook `cargo install -f`) so the build
+works out of the box, and the stable toolchain already bundles the
+`wasm32-unknown-unknown` std — **no rustup and no network needed for the
+target**. `lld` is included because the wasm target links with `wasm-ld` from
+it (the flake sets `CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_LINKER=wasm-ld` and
+passes `pkgs.lld`).
+
+**Gotcha — wasm-bindgen CLI must match the crate version exactly.** The SPA is
+compiled against `wasm-bindgen 0.2.128` (in `frontend/Cargo.lock`). The JS glue
+it generates is schema-versioned, so `wasm-bindgen-cli 0.2.121` (what nixpkgs
+ships) **hard-fails** with a "schema version" error, not a warning. That is why
+the devshell installs 0.2.128 and the flake pins its own copy
+(`buildWasmBindgenCli` + `fetchurl` from `static.crates.io`, whose API endpoint
+is blocked — use `static`). The version check in `build.sh` is a *warning*, not
+a guard; the real constraint is the schema match. Do **not** "fix" this by
+bumping the crate or downgrading the CLI to nixpkgs' version — keep the crate
+pinned at 0.2.128 and match the CLI to it.
+
+The grid is infinitely scrollable — there is **no "load more" button**; the
+`onscroll` handler appends the next page when the bottom is within ~600px.
+
 ## Known follow-ups
 
 - ~~aibox NAS mounts~~ — resolved by commit 1811d93 ("Make aibox startup

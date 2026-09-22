@@ -173,8 +173,9 @@ fn App() -> Element {
         });
     });
 
-    // Append the next, older page (infinite scroll).  `use_callback` gives
-    // a Copy handle so both the scroll handler and the sentinel can call it.
+    // Append the next, older page (infinite scroll), triggered by the
+    // scroller's onscroll handler. `use_callback` gives a Copy handle so the
+    // handler can call it.
     let load_more = use_callback(move |_: ()| {
         if *loading.read() || !*has_more.read() {
             return;
@@ -242,12 +243,11 @@ fn App() -> Element {
                         }
                     }
                 }
-                if *has_more.read() {
-                    div {
-                        class: "sentinel",
-                        onclick: move |_| load_more(()),
-                        if *loading.read() { "loading more…" } else { "load more" }
-                    }
+                // No explicit "load more" control: the scroll handler above
+                // appends the next page as the grid approaches the bottom, so
+                // scrolling alone reveals more thumbnails.
+                if *loading.read() {
+                    div { class: "loadstatus", "loading more…" }
                 }
             }
         }

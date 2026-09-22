@@ -130,5 +130,46 @@
             ];
           };
         };
+
+        # `nix develop`
+        #
+        # Toolchain for building the frigate-monitor web UI locally, mirroring
+        # what machines/aibox/frigate-monitor.nix does in its frontendDist
+        # derivation: cargo/rustc/rustfmt, `lld` (the wasm32 linker / wasm-ld),
+        # `just` and `git`. The stable toolchain already ships the
+        # wasm32-unknown-unknown std library, so `cargo build --target
+        # wasm32-unknown-unknown` needs no rustup or network — see rustc.nix's
+        # `--target` list. `dist/` is git-ignored and rebuilt by the flake; run
+        # `cd frigate-monitor/frontend && nix develop --command bash build.sh`
+        # to iterate, or just `just build-frontend` (below).
+        devShells.${system}.default = let
+          pkgs = import nixpkgs { inherit system; };
+          rust = pkgs.rust.packages.stable;
+        in
+          pkgs.mkShell {
+            packages = [
+              rust.rustc
+              rust.cargo
+              rust.rustfmt
+              # NOTE: not pkgs.wasm-bindgen-cli. frigate-monitor's crate is
+              # pinned to wasm-bindgen 0.2.128 in Cargo.lock, and the wasm
+              # bindgen *schema* must match the CLI version exactly, so
+              # nixpkgs' 0.2.121 would refuse to process the output. The
+              # shellHook below installs the matching 0.2.128 from crates.io
+              # (cached after first run). `lld` is the linker the wasm32
+              # target links with.
+              pkgs.lld
+              pkgs.just
+              pkgs.git
+            ];
+            shellHook = ''
+              if [ "$(wasm-bindgen --version 2>/dev/null)" != "wasm-bindgen 0.2.128" ]; then
+                  echo "frigate-monitor: installing pinned wasm-bindgen-cli 0.2.128 (~1 min, cached afterwards)…"
+                  cargo install -f wasm-bindgen-cli --version 0.2.128 --quiet
+              fi
+              # Put the installed CLI ahead of any nixpkgs one on PATH.
+              export PATH="$HOME/.cargo/bin:$PATH"
+            '';
+          };
     };
 }
