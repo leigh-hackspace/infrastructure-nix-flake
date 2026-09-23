@@ -26,6 +26,10 @@
 //!   GET  /api/config     {"wan":...,"title":...} consumed by the SPA
 //!   GET  /api/snapshot   latest snapshot as JSON
 //!   GET  /api/history    full rolling history as JSON
+//!   GET  /metrics        latest snapshot in Prometheus text format, scraped
+//!                        by services1's Prometheus so Grafana can chart the
+//!                        same data as the SPA (see the "router" dashboard in
+//!                        machines/services1/services/monitoring-dashboards.nix)
 //!
 //! Zero external crates (house style, see status-dashboard/): ssh goes
 //! through the `ssh` binary, JSON is hand-rolled, and the frontend is a
@@ -654,6 +658,112 @@ fn router_host(router: &str) -> &str {
     router.rsplit('@').next().unwrap_or(router)
 }
 
+/// Latest snapshot in Prometheus text format. Cumulative counters (interface
+/// bytes/errors, retransmissions) are exported as `_total` counters so
+/// `rate()` works in PromQL; a router reboot resets them, which `rate()`
+/// handles. The current per-interface byte rates are recomputed by
+/// Prometheus from those counters, so they are not exported separately.
+fn metrics_text(s: &Snapshot) -> String {
+    let mut out = String::new();
+    let gauge = |out: &mut String, name: &str, value: Option<f64>| {
+        if let Some(v) = value {
+            if v.is_finite() {
+                out.push_str(&format!("{name} {v}\n"));
+            }
+        }
+    };
+    // `labels` is the full, already-quoted label set, e.g. `mode="user"`
+    // or `interface="em0",direction="down"`.
+    let labeled = |out: &mut String, name: &str, labels: &str, value: Option<f64>| {
+        if let Some(v) = value {
+            if v.is_finite() {
+                out.push_str(&format!("{name}{{{labels}}} {v}\n"));
+            }
+        }
+    };
+
+    out.push_str("# HELP router_up Whether the most recent router probe succeeded (1/0)\n");
+    out.push_str("# TYPE router_up gauge\n");
+    out.push_str(&format!("router_up {}\n", if s.ok { 1 } else { 0 }));
+
+    let uptime = s.uptime_secs.map(|u| u as f64);
+    gauge(&mut out, "router_uptime_seconds", uptime);
+    for (name, v) in [
+        ("router_load1", s.load.map(|l| l[0])),
+        ("router_load5", s.load.map(|l| l[1])),
+        ("router_load15", s.load.map(|l| l[2])),
+    ] {
+        gauge(&mut out, name, v);
+    }
+    gauge(
+        &mut out,
+        "router_nprocs",
+        s.nprocs.map(|n| n as f64),
+    );
+    for (mode, v) in [
+        ("user", s.cpu_user),
+        ("system", s.cpu_sys),
+        ("idle", s.cpu_idle),
+    ] {
+        labeled(&mut out, "router_cpu_percent", &format!("mode=\"{mode}\""), v);
+    }
+    for (state, v) in [
+        ("free", s.mem_free.map(|b| b as f64)),
+        ("active", s.mem_active.map(|b| b as f64)),
+        ("wired", s.mem_wired.map(|b| b as f64)),
+    ] {
+        labeled(&mut out, "router_mem_bytes", &format!("state=\"{state}\""), v);
+    }
+    gauge(&mut out, "router_pf_states", s.pf_states.map(|n| n as f64));
+    gauge(&mut out, "router_tcp_sockets", s.own_tcp.map(|n| n as f64));
+    gauge(
+        &mut out,
+        "router_retransmissions_rate_per_second",
+        s.retrans_rate,
+    );
+    gauge(
+        &mut out,
+        "router_retransmissions_total",
+        s.retrans_total.map(|n| n as f64),
+    );
+    for i in &s.ifaces {
+        // Interface names are FreeBSD tokens (alphanumerics, -, ., :, %),
+        // all safe inside a label value as-is.
+        labeled(&mut out, "router_interface_up", &format!("interface=\"{}\"", i.name), Some(if i.active { 1.0 } else { 0.0 }));
+        labeled(
+            &mut out,
+            "router_interface_bytes_total",
+            &format!("interface=\"{}\",direction=\"down\"", i.name),
+            Some(i.ibytes as f64),
+        );
+        labeled(
+            &mut out,
+            "router_interface_bytes_total",
+            &format!("interface=\"{}\",direction=\"up\"", i.name),
+            Some(i.obytes as f64),
+        );
+        labeled(
+            &mut out,
+            "router_interface_errors_total",
+            &format!("interface=\"{}\"", i.name),
+            Some((i.ierrors + i.oerrors) as f64),
+        );
+    }
+    // Active "potential issues" as 0/1 gauges; level+message are labels so
+    // a Grafana table can list them. Messages are short and stable-ish;
+    // they never appear when an issue is clear.
+    out.push_str("# HELP router_issue Active potential issue (1), labelled by level and message\n");
+    out.push_str("# TYPE router_issue gauge\n");
+    for issue in &s.issues {
+        out.push_str(&format!(
+            "router_issue{{level=\"{}\",message={}}} 1\n",
+            issue.level,
+            json_str(&issue.message)
+        ));
+    }
+    out
+}
+
 fn history_json(history: &[&HistoryPoint]) -> String {
     let ts: Vec<String> = history.iter().map(|h| h.ts.to_string()).collect();
     let mut names: BTreeSet<String> = BTreeSet::new();
@@ -722,6 +832,17 @@ fn route(method: &str, path: &str, state: &State, args: &Args) -> (u16, String, 
                     503,
                     "application/json".to_string(),
                     r#"{"error":"no data yet (first router probe in progress)"}"#.to_string(),
+                ),
+            }
+        }
+        ("GET", "/metrics") => {
+            let g = state.last.lock().unwrap();
+            match g.as_ref() {
+                Some(s) => (200, "text/plain; version=0.0.4; charset=utf-8".to_string(), metrics_text(s)),
+                None => (
+                    503,
+                    "text/plain; version=0.0.4; charset=utf-8".to_string(),
+                    "no data yet (first router probe in progress)".to_string(),
                 ),
             }
         }

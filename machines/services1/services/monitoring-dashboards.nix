@@ -86,12 +86,15 @@ let
   # { code = "label" } — keep the tables in sync with the exporter
   # (moonraker-exporter/src/main.rs).
   stateStat =
-    { id, x, y, w ? 4, h ? 4, title, mapping, target }:
+    { id, x, y, w ? 4, h ? 4, title, mapping, target, thresholds ? [ { color = green; value = null; } ] }:
     let
       options = lib.listToAttrs (
         lib.imap0 (i: code: {
           name = code;
-          value = { inherit i; text = mapping.${code}; };
+          # `index` selects the threshold step that colours this mapping
+          # (Grafana value-mapping schema); with the default single-step
+          # thresholds every state lands on step 0.
+          value = { index = i; text = mapping.${code}; };
         }) (lib.attrNames mapping)
       );
     in
@@ -107,7 +110,7 @@ let
         mappings = [ { type = "value"; inherit options; } ];
         thresholds = {
           mode = "absolute";
-          steps = [ { color = green; value = null; } ];
+          steps = thresholds;
         };
       };
       options = {
@@ -655,6 +658,250 @@ in
         legendFormat = "{{printer}}";
         targets = [ "moonraker_process_memory_bytes" ];
       })
+    ];
+  };
+
+  # ------------------------------------------------------------------
+  # OPNsense router (10.3.1.1) — the Grafana view of the same data as
+  # network-info.int.leighhack.org. The network-status service ssh's to
+  # the router every 5s and serves it at /metrics (job "router"); the
+  # panels mirror the SPA: status pill, bandwidth, firewall states,
+  # load, per-interface cards and potential issues.
+  # ------------------------------------------------------------------
+  "router" = {
+    uid = "router";
+    title = "Router (network-info)";
+    time = { from = "now-6h"; to = "now"; };
+    tags = [ "services1" "router" "opnsense" ];
+    timezone = "browser";
+    schemaVersion = 39;
+    version = 1;
+    refresh = "1m";
+    panels = [
+      # --- status row (header pill + meta) -----------------------------
+      (stateStat {
+        id = 1;
+        x = 0;
+        y = 0;
+        title = "Router";
+        mapping = {
+          "0" = "down";
+          "1" = "up";
+        };
+        thresholds = [
+          { color = red; value = null; }
+          { color = green; value = 1; }
+        ];
+        target = "router_up";
+      })
+      (st {
+        id = 2;
+        x = 4;
+        y = 0;
+        title = "Issues (bad)";
+        thresholds = [
+          { color = green; value = null; }
+          { color = red; value = 1; }
+        ];
+        targets = [ "sum(router_issue{level=\"bad\"}) or vector(0)" ];
+      })
+      (st {
+        id = 3;
+        x = 8;
+        y = 0;
+        title = "Warnings";
+        thresholds = [
+          { color = green; value = null; }
+          { color = orange; value = 1; }
+        ];
+        targets = [ "sum(router_issue{level=\"warn\"}) or vector(0)" ];
+      })
+      (st {
+        id = 4;
+        x = 12;
+        y = 0;
+        title = "Uptime";
+        unit = "s";
+        thresholds = [ { color = green; value = null; } ];
+        targets = [ "router_uptime_seconds" ];
+      })
+      (st {
+        id = 5;
+        x = 16;
+        y = 0;
+        title = "CPU usage";
+        unit = "percent";
+        thresholds = [
+          { color = green; value = null; }
+          { color = orange; value = 70; }
+          { color = red; value = 90; }
+        ];
+        targets = [ "100 - router_cpu_percent{mode=\"idle\"}" ];
+      })
+      (st {
+        id = 6;
+        x = 20;
+        y = 0;
+        title = "Memory free";
+        unit = "bytes";
+        thresholds = [
+          { color = green; value = null; }
+          { color = red; value = 52428800; }    # < 50 MiB free
+          { color = orange; value = 104857600; } # < 100 MiB free
+        ];
+        targets = [ "router_mem_bytes{state=\"free\"}" ];
+      })
+
+      # --- bandwidth (BwCard) ------------------------------------------
+      (ts {
+        id = 7;
+        x = 0;
+        y = 4;
+        w = 12;
+        h = 8;
+        title = "Bandwidth · total";
+        unit = "Bps";
+        targets = [
+          {
+            expr = "sum by (direction) (rate(router_interface_bytes_total[5m]))";
+            legendFormat = "{{direction}}";
+          }
+        ];
+      })
+      (ts {
+        id = 8;
+        x = 12;
+        y = 4;
+        w = 12;
+        h = 8;
+        title = "Bandwidth · per interface";
+        unit = "Bps";
+        legendFormat = "{{interface}} {{direction}}";
+        targets = [
+          "rate(router_interface_bytes_total[5m])"
+        ];
+      })
+
+      # --- connections / load (ConnChart + LoadChart) --------------------
+      (ts {
+        id = 9;
+        x = 0;
+        y = 12;
+        w = 8;
+        title = "Firewall state table";
+        legendFormat = "states";
+        targets = [ "router_pf_states" ];
+      })
+      (ts {
+        id = 10;
+        x = 8;
+        y = 12;
+        w = 8;
+        title = "Router TCP sockets";
+        legendFormat = "sockets";
+        targets = [ "router_tcp_sockets" ];
+      })
+      (ts {
+        id = 11;
+        x = 16;
+        y = 12;
+        w = 8;
+        title = "TCP retransmits";
+        unit = "ops";
+        legendFormat = "retrans/s (reported)";
+        targets = [ "router_retransmissions_rate_per_second" ];
+      })
+      (ts {
+        id = 12;
+        x = 0;
+        y = 16;
+        w = 12;
+        title = "Load average";
+        targets = [
+          { expr = "router_load1"; legendFormat = "1m"; }
+          { expr = "router_load5"; legendFormat = "5m"; }
+          { expr = "router_load15"; legendFormat = "15m"; }
+        ];
+      })
+
+      # --- per-interface cards ------------------------------------------
+      # Instant table, one row per interface: link state and the current
+      # up/down byte rate (5s scrape -> a 1m rate window is ~12 samples).
+      {
+        id = 13;
+        x = 12;
+        y = 16;
+        w = 12;
+        h = 5;
+        title = "Interfaces";
+        type = "table";
+        datasource = DS;
+        gridPos = { x = 12; y = 16; w = 12; h = 5; };
+        targets = [
+          { expr = "router_interface_up"; legendFormat = "link"; instant = true; }
+          {
+            expr = "sum by (interface) (rate(router_interface_bytes_total{direction=\"down\"}[1m]))";
+            legendFormat = "down";
+            instant = true;
+          }
+          {
+            expr = "sum by (interface) (rate(router_interface_bytes_total{direction=\"up\"}[1m]))";
+            legendFormat = "up";
+            instant = true;
+          }
+        ];
+        fieldConfig = {
+          defaults = { custom = { align = "auto"; }; };
+          overrides = [
+            { matcher = { id = "byName"; options = "down"; }; properties = [ { id = "unit"; value = "Bps"; } { id = "decimals"; value = 1; } ]; }
+            { matcher = { id = "byName"; options = "up"; }; properties = [ { id = "unit"; value = "Bps"; } { id = "decimals"; value = 1; } ]; }
+          ];
+        };
+        options = { showHeader = true; footer = { show = false; }; };
+      }
+
+      # --- CPU / memory breakdown ----------------------------------------
+      (ts {
+        id = 14;
+        x = 0;
+        y = 21;
+        w = 12;
+        title = "Router CPU";
+        unit = "percent";
+        legendFormat = "{{mode}}";
+        targets = [ "router_cpu_percent" ];
+      })
+      (ts {
+        id = 15;
+        x = 12;
+        y = 21;
+        w = 12;
+        title = "Router memory";
+        unit = "bytes";
+        legendFormat = "{{state}}";
+        targets = [ "router_mem_bytes" ];
+      })
+
+      # --- potential issues (Issues panel) --------------------------------
+      {
+        id = 16;
+        x = 0;
+        y = 26;
+        w = 24;
+        h = 6;
+        title = "Potential issues";
+        type = "table";
+        datasource = DS;
+        gridPos = { x = 0; y = 26; w = 24; h = 6; };
+        targets = [
+          {
+            expr = "router_issue == 1";
+            legendFormat = "issue";
+            instant = true;
+          }
+        ];
+        options = { showHeader = true; footer = { show = false; }; };
+      }
     ];
   };
 }

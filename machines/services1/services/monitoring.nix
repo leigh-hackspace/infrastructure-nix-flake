@@ -103,6 +103,13 @@ let
                 annotations.summary = "Unit {{ $labels.name }} is failed on {{ $labels.instance }}";
               }
               {
+                alert = "RouterUnreachable";
+                expr = "router_up == 0";
+                for = "2m";
+                labels.severity = "critical";
+                annotations.summary = "Router (10.3.1.1) unreachable from network-status";
+              }
+              {
                 alert = "PrinterMoonrakerDown";
                 expr = "moonraker_up == 0";
                 for = "5m";
@@ -162,6 +169,15 @@ in
         # SMART queries can be slow on large/degraded disks.
         scrape_interval = "5m";
         scrape_timeout = "30s";
+      }
+      # OPNsense router (10.3.1.1), re-exported by the network-status
+      # service's /metrics endpoint (127.0.0.1:8091) — the same data the
+      # network-info.int.leighhack.org SPA shows.
+      {
+        job_name = "router";
+        metrics_path = "/metrics";
+        scrape_interval = "10s";
+        static_configs = [ { targets = [ "127.0.0.1:8091" ]; labels.instance = "router:8091"; } ];
       }
       # Klipper/Moonraker on the hackspace 3D-print servers (blue/lime),
       # re-exported by moonraker-exporter (printer-monitoring.nix). Targets
