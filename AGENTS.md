@@ -175,7 +175,7 @@ Guidance for AI agents working in this repository. Read this before making chang
 ## Workflow
 
 - Deploy with the justfile: `just switch` / `just boot`
-  (`sudo nixos-rebuild switch --flake . --impure`).
+  (`sudo nixos-rebuild switch --flake .`).
 - **GOLDEN RULE — confirm immediately after every switch/boot:**
   `system.autoRollback.enable = true` is set on **both** machines
   (services1 *and* aibox, via nixos-utils). The `auto-rollback.timer` rolls
@@ -191,7 +191,7 @@ Guidance for AI agents working in this repository. Read this before making chang
      at the new generation.
   3. When switching a remote machine over ssh, chain it all in one command:
      `ssh ... 'cd ~/Projects/infrastructure-nix-flake && sudo nixos-rebuild
-     switch --flake .#<machine> --impure && sudo nixos-confirm'` (the `cd`
+     switch --flake .#<machine> && sudo nixos-confirm'` (the `cd`
      matters — `--flake .` resolves against the cwd).
 - **New vhosts need DNS records** before they resolve: public `*.leighhack.org`
   names point at the box's public IP, `*.int.leighhack.org` at 10.3.1.20.
@@ -208,7 +208,7 @@ Guidance for AI agents working in this repository. Read this before making chang
 
 ## Nix commands (local dev)
 
-The flake is `--impure` and sources come from the git tree, so everything
+The flake is pure and its sources come from the git tree, so everything
 below must run from this repo root. `nixos-rebuild` is the primary tool and
 handles the flake plumbing; avoid hand-rolling `import flake.nix` scripts
 unless you need to extract a single value (see the gotcha there).
@@ -217,13 +217,13 @@ unless you need to extract a single value (see the gotcha there).
 
 ```bash
 # services1 (the default)
-nixos-rebuild dry-run --flake . --impure
+nixos-rebuild dry-run --flake .
 
 # aibox specifically
-nixos-rebuild dry-run --flake .#aibox --impure
+nixos-rebuild dry-run --flake .#aibox
 
 # Actually build the toplevel locally (no deploy) to get the store path:
-nixos-rebuild build --flake .#aibox --impure   # prints the new system path
+nixos-rebuild build --flake .#aibox   # prints the new system path
 ```
 
 `dry-run` alone may not build all dependencies, so for anything touching
@@ -247,7 +247,7 @@ it binds, and what paths/flags end up in `ExecStart`.
 
 ```bash
 # Build the toplevel, then read a store path out of it:
-nix build --no-link --out-link /tmp/aibox-sys .#aibox --impure
+nix build --no-link --out-link /tmp/aibox-sys .#aibox
 ls /tmp/aibox-sys/bin            # symlinks into the system
 ```
 
@@ -257,14 +257,14 @@ set — import it with no args, then call `outputs flake.inputs`. But beware:
 evaluating `nixosConfigurations.aibox.config` via `import flake.nix` fails with
 `attribute 'lib' missing`, because `specialArgs`/`nixpkgs.lib` need the
 flake-resolved inputs that `nixos-rebuild` provides. So reach for the flake
-reference form (`nix build .#aibox --impure`) for building, and avoid
+reference form (`nix build .#aibox`) for building, and avoid
 `nix eval`/`nix build` against a bare path from the repo root — those resolve
 against the repo flake, not nixpkgs.
 
 **Common checks**
 
 ```bash
-nix flake show --impure      # what the flake exposes (aibox, services1)
+nix flake show               # what the flake exposes (aibox, services1)
 git status --short           # untracked files are EXCLUDED from the flake!
 nix flake metadata           # locked inputs / rev
 ```
@@ -273,7 +273,7 @@ nix flake metadata           # locked inputs / rev
 
 - Untracked files are invisible to the flake — `git add` new/changed `.nix`
   files first (see Workflow).
-- `nix eval`/`nix build` on a bare path (e.g. `nix build nixpkgs#foo --impure`)
+- `nix eval`/`nix build` on a bare path (e.g. `nix build nixpkgs#foo`)
   from the repo root will resolve against the repo flake, not nixpkgs; use
   `--file <(...)` with an explicit `import` for standalone nixpkgs lookups.
 - Editing a service's `ExecStart`/flags: always re-run `nixos-rebuild build`

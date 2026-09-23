@@ -24,7 +24,7 @@ switch:
 build-frontend:
     #!/usr/bin/env bash
     set -euo pipefail
-    nix develop --impure --command bash -c 'cd frigate-monitor/frontend && exec ./build.sh'
+    nix develop --command bash -c 'cd frigate-monitor/frontend && exec ./build.sh'
 
 
 # --- DNS sync (keeps router dnsmasq + DigitalOcean DNS in step with the

@@ -129,7 +129,7 @@ Assessment based on package inspection (not yet built/tested on the card):
 3. New `machines/aibox/whisper.nix`: `whisper-server` systemd unit,
    `--device Vulkan1` (pin away from the iGPU which serves llama), port 8082,
    `Restart = always`, `after/wants = wait-for-network.service` (house style).
-4. Build locally (`nixos-rebuild build --flake .#aibox --impure`), run a
+4. Build locally (`nixos-rebuild build --flake .#aibox`), run a
    30-second load + transcription test on the card _before_ deploying (same
    pattern as §5 below); if the allocation quirk bites, fall back to CPU or the
    iGPU.
