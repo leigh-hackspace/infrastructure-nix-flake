@@ -209,6 +209,42 @@ fn App() -> Element {
         });
     });
 
+    // Infinite-scroll bootstrap: `onscroll` only fires when the user actually
+    // scrolls, so if the loaded page does not overflow the viewport (tall
+    // window, few events) `load_more` would never be triggered.  After every
+    // change to the list, re-measure the scroller and keep loading pages
+    // until the content overflows.
+    let list_len = events.len();
+    use_effect(move || {
+        if list_len == 0 {
+            return;
+        }
+        let load_more = load_more;
+        let has_more = has_more;
+        spawn(async move {
+            if !*has_more.read() {
+                return;
+            }
+            // Wait two frames so the browser has laid out the freshly
+            // added cards before we measure the scroller.
+            let mut eval = document::eval(
+                r#"
+                const s = document.getElementById('scroller');
+                if (!s) return;
+                requestAnimationFrame(() => requestAnimationFrame(() => {
+                    const near = s.scrollHeight - (s.scrollTop + s.clientHeight);
+                    dioxus.send(String(near));
+                }));
+                "#,
+            );
+            if let Ok(m) = eval.recv::<String>().await {
+                if m.parse::<f64>().unwrap_or(f64::INFINITY) < 600.0 {
+                    load_more(());
+                }
+            }
+        });
+    });
+
     let list = events.read().clone();
     rsx! {
         div { class: "app",
