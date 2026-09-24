@@ -302,18 +302,6 @@ in
         };
       };
 
-      "uptime-kuma.int.leighhack.org" = {
-        useACMEHost = "leighhack.org";
-        forceSSL = true;
-
-        locations."/" = {
-          proxyPass = "http://10.3.1.30:3001";
-          recommendedProxySettings = true;
-          proxyWebsockets = true;
-          extraConfig = CONFIG.LOCAL_NETWORK;
-        };
-      };
-
       "user-tweaker.int.leighhack.org" = {
         serverAliases = [ "user-tweaker.leighhack.org" ];
         useACMEHost = "leighhack.org";
