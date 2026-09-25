@@ -55,6 +55,73 @@ async fn get_json<T: for<'de> Deserialize<'de>>(url: &str) -> Result<T, String> 
     resp.json::<T>().await.map_err(|e| format!("json: {e}"))
 }
 
+/// Fetch and append the next (older) page of events.
+async fn append_page(
+    mut events: Signal<Vec<EventMeta>>,
+    mut has_more: Signal<bool>,
+) -> Result<(), String> {
+    let cursor = events.read().last().map(|e| e.id);
+    let url = match cursor {
+        Some(id) => format!("/api/events?limit={PAGE}&before={id}"),
+        None => format!("/api/events?limit={PAGE}"),
+    };
+    let page = get_json::<EventPage>(&url).await?;
+    if page.events.is_empty() {
+        has_more.set(false);
+    } else {
+        let mut cur = events.write();
+        for e in page.events {
+            cur.push(e);
+        }
+        drop(cur);
+        has_more.set(page.has_more);
+    }
+    Ok(())
+}
+
+/// Keep appending pages while the grid does not overflow the scroller.
+/// `onscroll` only fires when the user actually scrolls, so content that
+/// fits inside a tall window would never trigger it — after anything that
+/// adds content (initial load, a page append, a window resize) re-measure
+/// the scroller and keep loading while the bottom is still in reach.
+async fn fill_viewport(
+    events: Signal<Vec<EventMeta>>,
+    has_more: Signal<bool>,
+    mut loading: Signal<bool>,
+) {
+    if *loading.read() || !*has_more.read() {
+        return;
+    }
+    while *has_more.read() {
+        // Wait two frames so the browser has laid out the freshly added
+        // cards before we measure the scroller.
+        let mut eval = document::eval(
+            r#"
+            const s = document.getElementById('scroller');
+            if (!s) return;
+            requestAnimationFrame(() => requestAnimationFrame(() => {
+                const near = s.scrollHeight - (s.scrollTop + s.clientHeight);
+                dioxus.send(String(near));
+            }));
+            "#,
+        );
+        let near = match eval.recv::<String>().await {
+            Ok(m) => m.parse::<f64>().unwrap_or(f64::INFINITY),
+            Err(_) => return,
+        };
+        if near >= 600.0 {
+            return;
+        }
+        loading.set(true);
+        if append_page(events, has_more).await.is_err() {
+            // Stop on error; a later scroll/tick/resize will retry.
+            loading.set(false);
+            return;
+        }
+        loading.set(false);
+    }
+}
+
 fn fmt_age(ts: i64) -> String {
     if ts <= 0 {
         return "no frame yet".into();
@@ -101,15 +168,19 @@ fn App() -> Element {
     let mut at_top = use_signal(|| true);
     let live_key = use_signal(|| 0u64);
 
-    // Load the first page on mount.
+    // Load the first page on mount, then fill the viewport: a tall window
+    // can fit a whole page with room to spare, in which case onscroll never
+    // fires and nothing else would load more.
     use_effect(move || {
         spawn(async move {
             let mut events = events;
             let mut has_more = has_more;
+            let loading = loading;
             if let Ok(page) = get_json::<EventPage>(&format!("/api/events?limit={PAGE}")).await {
                 events.set(page.events);
                 has_more.set(page.has_more);
             }
+            fill_viewport(events, has_more, loading).await;
         });
     });
 
@@ -121,6 +192,8 @@ fn App() -> Element {
         let mut status = status;
         let mut detail = detail;
         let mut events = events;
+        let has_more = has_more;
+        let loading = loading;
         let mut live_key = live_key;
         spawn(async move {
             let mut eval = document::eval(
@@ -130,6 +203,9 @@ fn App() -> Element {
                 };
                 document.addEventListener('keydown', onKey);
                 setInterval(() => dioxus.send('tick'), 15000);
+                // Re-fill after a resize: a larger window can swallow the
+                // overflow, a smaller one re-engages scrolling.
+                window.addEventListener('resize', () => dioxus.send('resize'));
                 "#,
             );
             loop {
@@ -142,6 +218,11 @@ fn App() -> Element {
                         if detail.read().is_some() {
                             detail.set(None);
                         }
+                    }
+                    "resize" => {
+                        spawn(async move {
+                            fill_viewport(events, has_more, loading).await;
+                        });
                     }
                     "tick" => {
                         *live_key.write() += 1;
@@ -175,73 +256,17 @@ fn App() -> Element {
 
     // Append the next, older page (infinite scroll), triggered by the
     // scroller's onscroll handler. `use_callback` gives a Copy handle so the
-    // handler can call it.
+    // handler can call it.  After the append, fill the viewport so a tall
+    // window keeps loading until the grid overflows.
     let load_more = use_callback(move |_: ()| {
         if *loading.read() || !*has_more.read() {
             return;
         }
-        let cursor = events.read().last().map(|e| e.id);
         loading.set(true);
         spawn(async move {
-            let mut events = events;
-            let mut has_more = has_more;
-            let mut loading = loading;
-            let url = match cursor {
-                Some(id) => format!("/api/events?limit={PAGE}&before={id}"),
-                None => format!("/api/events?limit={PAGE}"),
-            };
-            match get_json::<EventPage>(&url).await {
-                Ok(page) => {
-                    if page.events.is_empty() {
-                        has_more.set(false);
-                    } else {
-                        let mut cur = events.write();
-                        for e in page.events {
-                            cur.push(e);
-                        }
-                        drop(cur);
-                        has_more.set(page.has_more);
-                    }
-                }
-                Err(_) => {}
-            }
+            let _ = append_page(events, has_more).await;
             loading.set(false);
-        });
-    });
-
-    // Infinite-scroll bootstrap: `onscroll` only fires when the user actually
-    // scrolls, so if the loaded page does not overflow the viewport (tall
-    // window, few events) `load_more` would never be triggered.  After every
-    // change to the list, re-measure the scroller and keep loading pages
-    // until the content overflows.
-    let list_len = events.len();
-    use_effect(move || {
-        if list_len == 0 {
-            return;
-        }
-        let load_more = load_more;
-        let has_more = has_more;
-        spawn(async move {
-            if !*has_more.read() {
-                return;
-            }
-            // Wait two frames so the browser has laid out the freshly
-            // added cards before we measure the scroller.
-            let mut eval = document::eval(
-                r#"
-                const s = document.getElementById('scroller');
-                if (!s) return;
-                requestAnimationFrame(() => requestAnimationFrame(() => {
-                    const near = s.scrollHeight - (s.scrollTop + s.clientHeight);
-                    dioxus.send(String(near));
-                }));
-                "#,
-            );
-            if let Ok(m) = eval.recv::<String>().await {
-                if m.parse::<f64>().unwrap_or(f64::INFINITY) < 600.0 {
-                    load_more(());
-                }
-            }
+            fill_viewport(events, has_more, loading).await;
         });
     });
 
