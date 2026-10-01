@@ -16,6 +16,7 @@ let
     door_system_dev = pgPass;
     affine = pgPass;
     outline = pgPass;
+    gocardless_dashboard = pgPass;
   };
 in
 {

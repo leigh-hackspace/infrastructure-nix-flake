@@ -7,7 +7,7 @@ Guidance for AI agents working in this repository. Read this before making chang
 - **Use Rust for new programs/tools.** Do not write new services, daemons,
   scripts-as-programs, or CLI tools in Python (or other languages) without a
   strong reason. See `status-dashboard/` (top level) for the
-  house style: zero external crates (stdlib only), built with
+  house style: built with
   `pkgs.rustPlatform.buildRustPackage` + `cargoLock`.
 - Shell one-liners inside NixOS `ExecStart`/activation scripts are fine for
   small glue, but anything substantial belongs in Rust.
@@ -27,7 +27,7 @@ Guidance for AI agents working in this repository. Read this before making chang
   (router + DO facts below).
 - `frigate-monitor/` — top-level Rust tool (one external crate: `image`) on
   aibox that snapshots the Frigate `main_space` RTSP stream every 10 s and
-  records an event when a static change appears and the area *settles* — a
+  records an event when a static change appears and the area _settles_ — a
   region must differ from the background and be completely still for N
   consecutive snapshots (moving people are dismissed). The `before` image is
   taken from just before the change began; recorded objects are absorbed
@@ -39,6 +39,19 @@ Guidance for AI agents working in this repository. Read this before making chang
   `frigate-monitor.int.leighhack.org` (LAN-only; see
   `machines/aibox/frigate-monitor.nix` and
   `machines/services1/services/frigate-monitor.nix`).
+- `gocardless-dashboard/` — GoCardless Pro sync + operator dashboard on
+  services1: a Rust binary syncs customers/mandates/subscriptions/payments/
+  refunds/payouts from the GoCardless Pro API into local Postgres
+  (`gocardless_dashboard`) every 15 min, and serves a Dioxus SPA (frontend/,
+  wasm-built by the flake and embedded by build.rs — no bundle committed)
+  on 127.0.0.1:8095. Login is OIDC against authentik (provider pk 33,
+  `Infra` group gate; see the Authentik section). LAN-only vhost
+  `gocardless.int.leighhack.org`; packaging in
+  `machines/services1/services/gocardless-dashboard.nix`. The GoCardless Pro
+  API is at `https://api.gocardless.com` with **no** `/v1` path prefix and
+  requires the `GoCardless-Version: 2015-07-06` header; list responses wrap
+  items under the resource key (e.g. `customers`) and paginate with
+  `?after=<meta.cursors.after>`.
 - `network-status/` — the router network dashboard (served at
   `network-info.int.leighhack.org`). The Rust binary (`src/`, zero external
   crates) ssh's to the router every 5s, keeps a rolling history, serves the
@@ -138,18 +151,74 @@ Guidance for AI agents working in this repository. Read this before making chang
   PY
   ```
 
-  API base `http://127.0.0.1:9000/api/v3` from the box (Bearer token).
-- OAuth2 providers/apps are managed via the API/UI (no declarative config).
+  The admin REST API is **not** usable from the box (the box's nginx
+  proxies `/api/v3/...` collection endpoints to the UI SPA — they 404 with
+  HTML), so manage everything through the ORM shell above. `ak shell` prints
+  a banner and swallows tracebacks unless you keep stderr and filter the log
+  noise: `docker exec -i authentik-server-1 ak shell 2>&1 <<'PY' | grep -viE
+  "imported related module" | grep -vE '"level": "(debug|info)"'`.
+
+- OAuth2 providers/apps are managed via the ORM/UI (no declarative config).
   Client secrets are **write-only**: generate your own, pass it on
-  create/PATCH, and store it in sops — they can never be read back.
-- Property mappings: list via `/api/v3/propertymappings/all/`; create scope
-  mappings via `/api/v3/propertymappings/provider/scope/`.
-- Grafana OIDC integration (services1): provider pk 3, client_id
-  `8TMM2mYHBV2YQCovNbgGKbuEp0LJcxo2TjpqNN9s`, client secret in sops as
-  `grafana_oidc_client_secret` (runtime secret on services1). Role mapping:
-  authentik group `Infra` → GrafanaAdmin, else Viewer.
+  create/save, and store it in sops — they can never be read back.
+- **Creating an OIDC provider that actually works** (all three of these
+  bites are invisible until login is tried):
+  - Copy `authentication_flow` / `authorization_flow` /
+    `invalidation_flow` / `signing_key` from a known-good provider (Grafana,
+    pk 3). Redirect URIs match **strictly**.
+  - Duration fields (`access_code_validity`, `access_token_validity`,
+    `refresh_token_validity`) must be the `key=value` format, e.g.
+    `"minutes=5"` (what `authentik.lib.utils.time.timedelta_from_string`
+    parses). ISO-8601 values like `"5m"` save fine but crash
+    `/application/o/authorize/` with a 500 (`ValueError` in
+    `timedelta_from_string`).
+  - Custom scopes need a **ScopeMapping child row** (multi-table
+    inheritance). A plain `PropertyMapping` attached to the provider
+    silently does not advertise its scope — the token is issued without it
+    (log line: "Application requested scopes not configured, setting to
+    overlap"). Create it with:
+    ```python
+    from authentik.core.models import PropertyMapping
+    from authentik.providers.oauth2.models import ScopeMapping
+    pm = PropertyMapping.objects.create(name="... groups scope",
+                                        expression='''return {
+        "groups": [g.name for g in request.user.ak_groups.all()],
+    }''')
+    sm = ScopeMapping(pk=pm.pk, scope_name="groups")  # child reuses parent pk!
+    sm.save()
+    # then include pm in provider.property_mappings.set([...])
+    ```
+    `get_or_create(propertymapping_ptr=...)` does NOT work (it tries to
+    insert a second parent row → IntegrityError). The stock OpenID mappings
+    (openid/email/profile) are regular scope mappings already present.
+  - There is no `code_challenge_methods` field on this version's
+    `OAuth2Provider` (AttributeError) — S256 PKCE is just available.
+- **Client-side OIDC contract** (what `gocardless-dashboard` implements;
+  keep new clients consistent): authorization-code flow with **S256 PKCE**,
+  where the challenge must be **unpadded** base64url — authentik recomputes
+  `urlsafe_b64encode(sha256(verifier)).replace("=","")` and compares
+  equality, so a padded challenge fails at token time with `invalid_grant`
+  ("Code challenge not matching"). Scopes `openid profile email groups`;
+  group claims come from the groups scope mapping, not a user profile
+  attribute.
+- Debugging: `docker logs authentik-server-1` is JSON; `system_exception`
+  events carry full tracebacks, `authentik.asgi` lines carry request +
+  status. OIDC endpoints: `/application/o/authorize/` (browser GET),
+  `/application/o/token/` (client POST). A POST to `/application/o/authorize/`
+  with an API token 403s on CSRF — expected, not a bug.
+- Deployed integrations:
+  - Grafana (services1): provider pk 3, client_id
+    `8TMM2mYHBV2YQCovNbgGKbuEp0LJcxo2TjpqNN9s`, client secret in sops as
+    `grafana_oidc_client_secret` (runtime secret on services1). Role mapping:
+    authentik group `Infra` → GrafanaAdmin, else Viewer.
+  - gocardless-dashboard (services1): provider pk 33 (name
+    "gocardless-dashboard"), client_id
+    `UonE3N21HsJH5ia12zxUSqo8wzoG19Hk6LQbOfBw`, client secret in the shared
+    env-file sops secret as `GOCARDLESS_DASHBOARD_OIDC_CLIENT_SECRET`. App
+    slug `gocardless-dashboard`. The client (the Rust binary) gates on the
+    `Infra` group from the `groups` scope claim.
 - The DB is reachable from the box:
-  `docker exec authentik-postgresql-1 psql -U authentik -d authentik`.
+  `docker exec authentik-postgresql-1 psql -U authentik -d authentik`
 
 ## SSH between machines (machine-hop-key)
 
@@ -178,20 +247,20 @@ Guidance for AI agents working in this repository. Read this before making chang
   (`sudo nixos-rebuild switch --flake .`).
 - **GOLDEN RULE — confirm immediately after every switch/boot:**
   `system.autoRollback.enable = true` is set on **both** machines
-  (services1 *and* aibox, via nixos-utils). The `auto-rollback.timer` rolls
+  (services1 _and_ aibox, via nixos-utils). The `auto-rollback.timer` rolls
   the machine back to the last confirmed-good generation if the current one
   is not confirmed, and it acts within a minute or two of the switch. So:
   1. Run `sudo nixos-confirm` **immediately** after `switch`/`boot`
      finishes — ideally in the **same shell invocation**
      (`... switch ... && sudo nixos-confirm`), on the machine that was
      switched. A confirm run later (or via a separate ssh session after a
-     delay) may land *after* the rollback and mark the old generation good,
+     delay) may land _after_ the rollback and mark the old generation good,
      which defeats the purpose.
   2. After confirming, verify `readlink -f /run/current-system` still points
      at the new generation.
   3. When switching a remote machine over ssh, chain it all in one command:
      `ssh ... 'cd ~/Projects/infrastructure-nix-flake && sudo nixos-rebuild
-     switch --flake .#<machine> && sudo nixos-confirm'` (the `cd`
+switch --flake .#<machine> && sudo nixos-confirm'` (the `cd`
      matters — `--flake .` resolves against the cwd).
 - **New vhosts need DNS records** before they resolve: public `*.leighhack.org`
   names point at the box's public IP, `*.int.leighhack.org` at 10.3.1.20.
@@ -309,7 +378,7 @@ it generates is schema-versioned, so `wasm-bindgen-cli 0.2.121` (what nixpkgs
 ships) **hard-fails** with a "schema version" error, not a warning. That is why
 the devshell installs 0.2.128 and the flake pins its own copy
 (`buildWasmBindgenCli` + `fetchurl` from `static.crates.io`, whose API endpoint
-is blocked — use `static`). The version check in `build.sh` is a *warning*, not
+is blocked — use `static`). The version check in `build.sh` is a _warning_, not
 a guard; the real constraint is the schema match. Do **not** "fix" this by
 bumping the crate or downgrading the CLI to nixpkgs' version — keep the crate
 pinned at 0.2.128 and match the CLI to it.

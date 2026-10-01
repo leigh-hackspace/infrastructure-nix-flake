@@ -1,0 +1,36 @@
+[package]
+name = "gocardless-dashboard"
+version = "0.1.0"
+edition = "2021"
+build = "build.rs"
+
+[workspace]
+members = [".", "dto"]
+
+[[bin]]
+name = "gocardless-dashboard"
+path = "src/main.rs"
+
+# GoCardless Pro sync + operator dashboard.  Crates are used freely per
+# house policy (the zero-external-crates rule was relaxed): tiny_http for
+# the HTTP server, reqwest for outbound HTTPS (GoCardless + authentik),
+# sqlx/sea-query for the PostgreSQL layer (sea-query builds the queries,
+# sqlx-postgres executes them), chrono for date math.  Shared wire types
+# live in ./dto (gdash-dto) and are also compiled into the wasm frontend.
+# The Dioxus SPA is a separate crate in frontend/ (no bundle is committed;
+# the flake builds it — see
+# machines/services1/services/gocardless-dashboard.nix).
+[dependencies]
+gdash-dto = { path = "dto" }
+tiny_http = "0.12"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+sea-query = { version = "0.32", default-features = false, features = ["backend-postgres"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+sha2 = "0.10"
+base64ct = "1"
+getrandom = "0.2"
+urlencoding = "2"

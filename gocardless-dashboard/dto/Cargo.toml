@@ -1,0 +1,12 @@
+[package]
+name = "gdash-dto"
+version = "0.1.0"
+edition = "2021"
+
+# Shared API types for gocardless-dashboard: the GoCardless entity records
+# plus the views/summaries the backend serves and the Dioxus SPA consumes.
+# This crate is pure data (serde derives only) so it compiles for both the
+# native backend and the wasm frontend.
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
