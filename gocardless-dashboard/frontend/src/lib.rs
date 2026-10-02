@@ -57,16 +57,32 @@ fn push_path(path: &str) {
     }
 }
 
-/// Install the popstate listener once and seed the selection from the URL we
-/// actually landed on (handles reloads and deep-links onto a detail page).
-fn init_popstate(mut selected: Signal<Option<String>>) {
+/// Derive (ak_view, selected customer) from the current URL.
+fn apply_path(ak: &mut Signal<bool>, selected: &mut Signal<Option<String>>) {
+    let p = current_path();
+    if p == "/authentik-sync" {
+        ak.set(true);
+        selected.set(None);
+    } else if let Some(id) = path_to_selected(&p) {
+        ak.set(false);
+        selected.set(Some(id));
+    } else {
+        ak.set(false);
+        selected.set(None);
+    }
+}
+
+/// Install the popstate listener once and seed the view state from the URL we
+/// actually landed on (handles reloads and deep-links onto a detail page or
+/// the authentik sync view).
+fn init_popstate(mut ak: Signal<bool>, mut selected: Signal<Option<String>>) {
     let window = match web_sys::window() {
         Some(w) => w,
         None => return,
     };
-    selected.set(path_to_selected(&current_path()));
+    apply_path(&mut ak, &mut selected);
     let closure = wasm_bindgen::closure::Closure::wrap(Box::new(move || {
-        selected.set(path_to_selected(&current_path()));
+        apply_path(&mut ak, &mut selected);
     }) as Box<dyn FnMut()>);
     // addEventListener wants the underlying JS Function; leak the Rust closure
     // so its Drop (which invalidates the JS function) never runs for the page's
@@ -83,8 +99,9 @@ struct Session {
 
 // Shared API types come from the gdash-dto crate — the same definitions the
 // backend decodes GoCardless JSON into and serves (CustomerView is what the
-// customer list/detail endpoints return).
-use gdash_dto::{CustomerDetail as Detail, CustomerList, CustomerView, Summary};
+// customer list/detail endpoints return; AkLogRow/AkSyncStatus are the
+// authentik Members-sync audit log).
+use gdash_dto::{AkSyncStatus, CustomerDetail as Detail, CustomerList, CustomerView, Summary};
 
 async fn get_json<T: for<'de> Deserialize<'de>>(url: &str) -> Result<T, String> {
     let resp = Request::get(url).send().await.map_err(|e| format!("{url}: {e}"))?;
@@ -418,10 +435,10 @@ fn CustomerTable(selected: Signal<Option<String>>) -> Element {
     }
 }
 
-/// "← all customers": use the browser back when we can (so the forward
+/// "←" back button: use the browser back when we can (so the forward
 /// button returns here); otherwise (deep-linked, no history) replace the URL
-/// with the list route and reset the selection.
-fn go_back_list(back: &mut Signal<Option<String>>) {
+/// with the list route and reset the view state to `reset`.
+fn go_back<T: Clone + 'static>(back: &mut Signal<T>, reset: T) {
     if let Some(w) = web_sys::window() {
         if let Ok(h) = w.history() {
             if h.length().unwrap_or(0) > 1 {
@@ -431,13 +448,14 @@ fn go_back_list(back: &mut Signal<Option<String>>) {
             let _ = h.replace_state_with_url(&JsValue::NULL, "", Some("/"));
         }
     }
-    back.set(None);
+    back.set(reset);
 }
 
 /// A customer's detail view: mandates, subscriptions and payments, each with
 /// its GoCardless id, plus a plain-English note on what "active" means.
 #[component]
 fn DetailView(mut back: Signal<Option<String>>) -> Element {
+    // (back is handled below via go_back with None)
     let id = back.read().clone().unwrap_or_default();
     let detail = use_resource(move || {
         let id = id.clone();
@@ -452,7 +470,7 @@ fn DetailView(mut back: Signal<Option<String>>) -> Element {
         div {
             span {
                 class: "back",
-                onclick: move |_| go_back_list(&mut back),
+                onclick: move |_| go_back(&mut back, None),
                 "← all customers"
             }
             if let Some(Ok(d)) = state {
@@ -638,11 +656,141 @@ fn DetailView(mut back: Signal<Option<String>>) -> Element {
     }
 }
 
+fn ak_action_pill(action: &str) -> Element {
+    let cls = match action {
+        "add" | "user_created" | "attr_updated" | "name_updated" => "ok",
+        "remove" | "error" | "user_create_failed" => "bad",
+        _ => "mute",
+    };
+    rsx! { div { class: "pill {cls}", {action.replace('_', " ")} } }
+}
+
+/// The authentik `Members` group sync view: the latest run's summary plus
+/// its audit log rows (who was added/removed, attributes updated, errors),
+/// and a button to trigger a run on demand (the daily timer is the normal
+/// path).
+#[component]
+fn AkSyncView(mut back: Signal<bool>) -> Element {
+    let running = use_signal(|| false);
+    let err = use_signal(|| None::<String>);
+    let status = use_signal(|| None::<AkSyncStatus>);
+
+    use_effect(move || {
+        let mut s = status.clone();
+        spawn(async move {
+            if let Ok(v) = get_json::<AkSyncStatus>("/api/authentik-sync").await {
+                s.set(Some(v));
+            }
+        });
+    });
+
+    let mut run_btn = running.clone();
+    let mut err_sig = err.clone();
+    let mut status_sig = status.clone();
+
+    let st = status.read().clone();
+    let run_label = if *running.read() {
+        "running…".to_string()
+    } else {
+        "Run sync now".to_string()
+    };
+    let last_run_line = st
+        .as_ref()
+        .and_then(|s| s.last_run.as_ref())
+        .map(|r| {
+            let ts = r.ts.clone();
+            let detail = r.detail.clone().unwrap_or_default();
+            (ts, detail)
+        });
+
+    rsx! {
+        div {
+            span {
+                class: "back",
+                onclick: move |_| go_back(&mut back, false),
+                "← all customers"
+            }
+            if let Some(e) = err.read().clone() {
+                div { class: "errline", "sync failed: {e}" }
+            }
+
+            div { class: "subhead", "Members group sync (daily, 01:00)" }
+            if let Some(s) = &st {
+                if let Some((ts, detail)) = &last_run_line {
+                    div { class: "note",
+                        span { class: "id", "{ts}" }
+                        span { " — {detail}" }
+                    }
+                } else {
+                    div { class: "note", "No runs recorded yet — the daily timer (or the button below) will create the audit log." }
+                }
+
+                div { class: "filters",
+                    button {
+                        class: "action primary",
+                        disabled: *running.read(),
+                        onclick: move |_| {
+                            run_btn.set(true);
+                            err_sig.set(None);
+                            spawn(async move {
+                                match post("/api/authentik-sync").await {
+                                    Ok(()) => {
+                                        if let Ok(v) = get_json::<AkSyncStatus>("/api/authentik-sync").await {
+                                            status_sig.set(Some(v));
+                                        }
+                                    }
+                                    Err(e) => err_sig.set(Some(e)),
+                                }
+                                run_btn.set(false);
+                            });
+                        },
+                        "{run_label}"
+                    }
+                }
+
+                div { class: "subhead", "Audit log (newest first)" }
+                table {
+                    thead { tr { th { "Time" } th { "Action" } th { "User" } th { "Email" } th { "GC customer" } th { "Detail" } } }
+                    tbody {
+                        if s.rows.is_empty() {
+                            tr { td { colspan: "6", div { class: "empty", "no log rows yet" } } }
+                        } else {
+                            for r in s.rows.iter() {
+                                {
+                                    let ts = r.ts.clone();
+                                    let pill = ak_action_pill(&r.action);
+                                    let who = r.username.clone().unwrap_or_default();
+                                    let email = r.email.clone().unwrap_or_default();
+                                    let cid = r.customer_id.clone().unwrap_or_default();
+                                    let detail = r.detail.clone().unwrap_or_default();
+                                    rsx! {
+                                        tr {
+                                            td { class: "id", "{ts}" }
+                                            td { {pill} }
+                                            td { "{who}" }
+                                            td { class: "sub", "{email}" }
+                                            td { if cid.is_empty() { "—" } else { span { class: "id", "{cid}" } } }
+                                            td { class: "sub wrap", "{detail}" }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                div { class: "empty", "loading…" }
+            }
+        }
+    }
+}
+
 #[component]
 fn App() -> Element {
     let session = use_signal(|| None::<Session>);
     let summary = use_signal(|| None::<Summary>);
     let selected = use_signal(|| None::<String>);
+    let ak_view = use_signal(|| false);
     let loaded = use_signal(|| false);
 
     // Session check on mount.
@@ -656,12 +804,13 @@ fn App() -> Element {
         });
     });
 
-    // Wire the browser back/forward buttons to the selected-customer view
-    // (runs once: no reactive reads inside).
+    // Wire the browser back/forward buttons to the view state (runs once:
+    // no reactive reads inside).
     {
+        let popstate_ak = ak_view.clone();
         let popstate_selected = selected.clone();
         use_effect(move || {
-            init_popstate(popstate_selected);
+            init_popstate(popstate_ak, popstate_selected);
         });
     }
 
@@ -717,6 +866,19 @@ fn App() -> Element {
                 }
                 div { class: "spacer",
                     button {
+                        class: if *ak_view.read() { "action on" } else { "action" },
+                        onclick: {
+                            let mut ak = ak_view.clone();
+                            let mut sel = selected.clone();
+                            move |_| {
+                                push_path("/authentik-sync");
+                                ak.set(true);
+                                sel.set(None);
+                            }
+                        },
+                        "Members sync"
+                    }
+                    button {
                         class: "action",
                         disabled: sum.as_ref().map(|s| s.syncing).unwrap_or(false),
                         onclick: {
@@ -756,7 +918,11 @@ fn App() -> Element {
                 div { class: "errline", "sync error: {e}" }
             }
 
-            if selected.read().is_none() {
+            if *ak_view.read() {
+                div { class: "scroller",
+                    AkSyncView { back: ak_view }
+                }
+            } else if selected.read().is_none() {
                 if !*loaded.read() {
                     div { class: "empty", "loading…" }
                 } else {

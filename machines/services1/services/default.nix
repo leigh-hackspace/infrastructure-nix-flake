@@ -8,7 +8,6 @@
     ./frigate.nix
     ./gatus.nix
     # ./gitlab.nix
-    ./gocardless-authentik-sync.nix
     ./gocardless-dashboard.nix
     ./headscale.nix
     ./librespeed.nix

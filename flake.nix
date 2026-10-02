@@ -24,12 +24,6 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
-    gocardless-tools = {
-      url = "git+file:///home/leigh-admin/Projects/gocardless-tools"; # Private Git repo
-      # url = "github:leigh-hackspace/gocardless-tools";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
-
     pi-room-sys = {
       url = "git+file:///home/leigh-admin/Projects/pi-room-sys";
       inputs.nixpkgs.follows = "nixpkgs";

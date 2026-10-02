@@ -301,3 +301,37 @@ pub struct Session {
     #[serde(default)]
     pub email: Option<String>,
 }
+
+// ---------------------------------------------------------------------------
+// Authentik "Members" group sync (`/api/authentik-sync`).  One row per
+// action (add / remove / attribute update / user creation / the run summary
+// itself), newest first — the GUI renders the latest run plus its actions.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AkLogRow {
+    pub id: i64,
+    pub ts: String,
+    /// "run" | "add" | "remove" | "user_created" | "user_create_failed" |
+    /// "attr_updated" | "name_updated" | "left_unknown" | "error" |
+    /// "skipped_inactive" | "skipped_ambiguous" | "skipped_existing_username"
+    pub action: String,
+    #[serde(default)]
+    pub username: Option<String>,
+    #[serde(default)]
+    pub email: Option<String>,
+    #[serde(default)]
+    pub customer_id: Option<String>,
+    #[serde(default)]
+    pub detail: Option<String>,
+}
+
+/// `GET /api/authentik-sync`: the latest run (action="run" row) plus the
+/// most recent log rows.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AkSyncStatus {
+    #[serde(default)]
+    pub last_run: Option<AkLogRow>,
+    #[serde(default)]
+    pub rows: Vec<AkLogRow>,
+}

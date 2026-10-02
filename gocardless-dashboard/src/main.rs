@@ -5,6 +5,7 @@
 //!
 //! House style: hand-rolled HTTP server (src/server.rs), no web framework.
 
+mod authentik;
 mod auth;
 mod db;
 mod gocardless;
@@ -38,11 +39,18 @@ pub struct Config {
     /// authentik group required for login.
     pub required_group: String,
     pub sync_interval: u64,
+    /// Token for the authentik admin API (Members group sync).  Only
+    /// needed by the --authentik-sync oneshot and the on-demand API button.
+    pub authentik_token: Option<String>,
+    pub authentik_url: String,
+    pub authentik_group: String,
 }
 
 pub struct Shared {
     pub cfg: Config,
-    pub rt: tokio::runtime::Runtime,
+    /// Handle to the tokio runtime (the async main): request handler threads
+    /// use it to block_on the OIDC/authentik futures.
+    pub rt: tokio::runtime::Handle,
     pub pool: sqlx::postgres::PgPool,
     pub http: reqwest::Client,
     /// Latest snapshot published by the sync loop (API reads this; the DB is
@@ -94,7 +102,8 @@ fn arg<'a>(args: &'a [String], name: &str, default: Option<&'a str>) -> String {
     }
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
     let env_file = arg(&args, "--env-file", None);
@@ -142,27 +151,63 @@ fn main() {
         ),
         required_group: "Infra".to_string(),
         sync_interval: arg(&args, "--sync-interval", Some("900")).parse().expect("--sync-interval"),
+        authentik_token: env.get("AUTHENTIK_TOKEN").cloned(),
+        authentik_url: arg(
+            &args,
+            "--authentik-url",
+            Some("https://id.leighhack.org"),
+        ),
+        authentik_group: arg(&args, "--authentik-group", Some("Members")),
     };
 
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .expect("build tokio runtime");
+    // One-shot authentik `Members` group sync (the daily systemd timer runs
+    // this mode; it reads the local DB the daemon keeps fresh and writes an
+    // audit row to Postgres).  No HTTP server, no GoCardless sync.
+    if args.iter().any(|a| a == "--authentik-sync") {
+        let opts = crate::authentik::AkOpts {
+            token: cfg
+                .authentik_token
+                .clone()
+                .unwrap_or_else(|| {
+                    eprintln!("AUTHENTIK_TOKEN not set in env file");
+                    std::process::exit(1);
+                }),
+            base_url: cfg.authentik_url.clone(),
+            group_name: cfg.authentik_group.clone(),
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&cfg.db_url)
+            .await
+            .expect("connect to postgres");
+        let _ = db::init_schema(&pool).await;
+        let http = reqwest::Client::builder()
+            .user_agent("gocardless-dashboard/0.1")
+            .build()
+            .expect("build http client");
+        match crate::authentik::run(&pool, &http, &opts).await {
+            Ok(summary) => {
+                println!("authentik sync ok — {summary}");
+                std::process::exit(0);
+            }
+            Err(e) => {
+                eprintln!("authentik sync failed: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
 
-    let pool = rt
-        .block_on(async {
-            sqlx::postgres::PgPoolOptions::new()
-                .max_connections(5)
-                .connect(&cfg.db_url)
-                .await
-        })
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(5)
+        .connect(&cfg.db_url)
+        .await
         .expect("connect to postgres");
 
-    rt.block_on(db::init_schema(&pool)).expect("init schema");
+    db::init_schema(&pool).await.expect("init schema");
 
     // Load whatever is already in the DB so the UI has data before the first
     // sync finishes.
-    let initial = rt.block_on(db::load_all(&pool));
+    let initial = db::load_all(&pool).await;
     let (snapshot, last_sync) = match initial {
         Ok(data) if !data.customers.is_empty() => {
             let (snap, ls) = sync::build_snapshot(&data);
@@ -190,7 +235,7 @@ fn main() {
             last_error: None,
             in_flight: false,
         }),
-        rt,
+        rt: tokio::runtime::Handle::current(),
     });
 
     // Sync loop: initial sync immediately, then every `sync_interval` seconds.

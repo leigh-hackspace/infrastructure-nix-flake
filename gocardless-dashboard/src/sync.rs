@@ -329,8 +329,15 @@ pub async fn run_sync(shared: &Shared) {
 
 pub fn loop_sync(shared: Arc<Shared>) {
     let interval = Duration::from_secs(shared.cfg.sync_interval);
+    // The GoCardless sync loop runs on its own thread (started from the
+    // async main) with its own single-threaded runtime; the shared handle in
+    // Shared belongs to the main runtime and is used by the HTTP handlers.
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("build sync loop runtime");
     loop {
-        shared.rt.block_on(run_sync(&shared));
+        rt.block_on(run_sync(&shared));
         std::thread::sleep(interval);
     }
 }

@@ -119,6 +119,17 @@ CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS authentik_sync_log (
+    id          BIGSERIAL PRIMARY KEY,
+    ts          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    action      TEXT NOT NULL,
+    username    TEXT,
+    email       TEXT,
+    customer_id TEXT,
+    detail      TEXT
+);
+CREATE INDEX IF NOT EXISTS authentik_sync_log_ts_idx   ON authentik_sync_log(ts);
+CREATE INDEX IF NOT EXISTS authentik_sync_log_act_idx  ON authentik_sync_log(action);
 CREATE INDEX IF NOT EXISTS mandates_customer_idx        ON mandates(customer_id);
 CREATE INDEX IF NOT EXISTS subscriptions_customer_idx   ON subscriptions(customer_id);
 CREATE INDEX IF NOT EXISTS subscriptions_mandate_idx    ON subscriptions(mandate_id);
@@ -365,6 +376,78 @@ const COLS_PAYMENTS: &[&str] =
 const COLS_REFUNDS: &[&str] =
     &["id", "payment_id", "amount", "currency", "status", "json"];
 const COLS_PAYOUTS: &[&str] = &["id", "amount", "currency", "status", "json"];
+
+/// One row of the authentik sync audit log (also the wire type for the GUI;
+/// see gdash_dto::AkLogRow — kept here as a plain tuple-friendly struct for
+/// the insert).
+pub struct AkLogInsert<'a> {
+    pub action: &'a str,
+    pub username: Option<&'a str>,
+    pub email: Option<&'a str>,
+    pub customer_id: Option<&'a str>,
+    pub detail: Option<&'a str>,
+}
+
+/// Append rows to the authentik sync audit log in one transaction.
+pub async fn write_ak_log(pool: &PgPool, rows: &[AkLogInsert<'_>]) -> Result<(), String> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
+    for r in rows {
+        let sql = {
+            let mut ins = Query::insert();
+            ins.into_table(tbl("authentik_sync_log"));
+            ins.columns([
+                iden("action"),
+                iden("username"),
+                iden("email"),
+                iden("customer_id"),
+                iden("detail"),
+            ]);
+            ins.values_panic([
+                ev(r.action),
+                evo(r.username),
+                evo(r.email),
+                evo(r.customer_id),
+                evo(r.detail),
+            ]);
+            finalize_insert(ins)
+        };
+        sqlx::query(&sql)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    tx.commit().await.map_err(|e| e.to_string())
+}
+
+/// The most recent authentik sync log rows (newest first), decoded into the
+/// shared wire type.  `limit` is a small constant-sized number (inlined by
+/// hand, so it never goes through parameter binding).
+pub async fn read_ak_log(pool: &PgPool, limit: u32) -> Result<Vec<gdash_dto::AkLogRow>, String> {
+    // limit is a u32 we control (inlined by hand, never bound as a parameter).
+    let sql = format!(
+        "SELECT id, to_char(ts AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), action, \n         username, email, customer_id, detail \n         FROM authentik_sync_log \n         ORDER BY id DESC LIMIT {limit}"
+    );
+    let rows: Vec<(i64, String, String, Option<String>, Option<String>, Option<String>, Option<String>)> =
+        sqlx::query_as(&sql)
+            .fetch_all(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, ts, action, username, email, customer_id, detail)| gdash_dto::AkLogRow {
+            id,
+            ts,
+            action,
+            username,
+            email,
+            customer_id,
+            detail,
+        })
+        .collect())
+}
 
 /// Index a slice by the GoCardless customer id (via links.customer).
 pub fn index_by_customer<T>(

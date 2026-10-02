@@ -110,6 +110,37 @@ in
     startLimitIntervalSec = 0;
   };
 
+  # Daily authentik `Members` group sync — the Rust replacement for the old
+  # Python gocardless-tools job (active_members_to_authentik.py).  A oneshot
+  # running the same binary in --authentik-sync mode: it reads the local DB
+  # the daemon keeps fresh (no GoCardless token needed) and writes its audit
+  # log to Postgres (visible in the GUI under “Members sync”).
+  #
+  # sudo systemctl start gocardless-authentik-sync
+  # journalctl -u gocardless-authentik-sync -f
+  systemd.services.gocardless-authentik-sync = {
+    description = "GoCardless -> authentik Members group sync";
+    after = [ "postgresql.service" "network-online.target" ];
+    wants = [ "network-online.target" ];
+    serviceConfig = {
+      Type = "oneshot";
+      ExecStart = lib.concatStringsSep " " [
+        "${dashboard}/bin/gocardless-dashboard"
+        "--env-file" CONFIG.ENV_FILE
+        "--authentik-sync"
+      ];
+    };
+  };
+
+  systemd.timers.gocardless-authentik-sync = {
+    description = "Daily GoCardless -> authentik Members group sync";
+    timerConfig = {
+      Unit = "gocardless-authentik-sync.service";
+      OnCalendar = "*-*-* 01:00:00";
+    };
+    wantedBy = [ "timers.target" ];
+  };
+
   # LAN-only vhost (the binary only listens on 127.0.0.1).
   services.nginx.virtualHosts."gocardless.int.leighhack.org" = {
     useACMEHost = "leighhack.org";

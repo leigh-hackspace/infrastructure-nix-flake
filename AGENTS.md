@@ -51,7 +51,17 @@ Guidance for AI agents working in this repository. Read this before making chang
   API is at `https://api.gocardless.com` with **no** `/v1` path prefix and
   requires the `GoCardless-Version: 2015-07-06` header; list responses wrap
   items under the resource key (e.g. `customers`) and paginate with
-  `?after=<meta.cursors.after>`.
+  `?after=<meta.cursors.after>`. It also owns the authentik `Members` group
+  sync (replaces the old Python `gocardless-tools` job, 2026-10): the same
+  binary run as a daily oneshot (`gocardless-authentik-sync.timer`, 01:00,
+  `--authentik-sync`) adds customers with an active subscription whose name
+  contains "membership" to the `Members` group, removes no-longer-valid ones
+  (users unknown to GoCardless are never touched), keeps the
+  `leighhack.org/gocardless-customer-id` attribute in step, and writes an
+  audit log to `authentik_sync_log` (GUI: “Members sync” page; on-demand via
+  `POST /api/authentik-sync`). The old script's bugs (only read the first 20
+  users; user creation always failed on username collision) are fixed —
+  username collisions are now logged as `skipped_existing_username`.
 - `network-status/` — the router network dashboard (served at
   `network-info.int.leighhack.org`). The Rust binary (`src/`, zero external
   crates) ssh's to the router every 5s, keeps a rolling history, serves the
@@ -220,6 +230,84 @@ Guidance for AI agents working in this repository. Read this before making chang
 - The DB is reachable from the box:
   `docker exec authentik-postgresql-1 psql -U authentik -d authentik`
 
+## Monster (Proxmox hypervisor, 10.3.1.11)
+
+- `monster1` runs **Proxmox VE 9.x** and hosts the off-flake VMs (apps1,
+  authentik, web1, mercury, the GOAD/k8s lab, …) — these are *not* managed by
+  this flake; nothing here is declarative. Web UI:
+  `https://monster.int.leighhack.org` (services1 nginx →
+  `https://10.3.1.11:8006`, see `machines/services1/http.nix`).
+- Unlike the flake machines, **root SSH is keyed** with the machine-hop-key:
+
+  ```bash
+  ssh -i ~/.ssh/agent-hop-key root@10.3.1.11   # monster1 (Proxmox)
+  ```
+
+  Convenience commands: `qm list`, `qm config <vmid>`, `qm start <vmid>`,
+  `ha-manager status`, `pvesm status`.
+- **VM disks live on the NAS**: storage `nas2-nfs` =
+  `10.3.1.6:/mnt/sas-10k/proxmox-monster-ds1` mounted at `/mnt/pve/nas2-nfs`
+  (`nas1-nfs` → 10.3.1.5 is disabled; `nas1`/10.3.1.5 does not answer ping).
+  If the NAS is still booting after a power cut, every VM start fails with
+  `TASK ERROR: storage 'nas2-nfs' is not online` (visible in
+  `ha-manager status` as `service vm:<id> (monster1, error)` and in
+  `/var/log/pve/tasks/active`). Fix is to wait for the export and retry —
+  check `pvesm status` / `mount | grep nas2-nfs` before blaming the VMs, and
+  do **not** treat the failed start tasks as a VM-level fault.
+- HA-managed VMs (must be started with `ha-manager set vm:<id> --state started`,
+  not `qm start`): `108` authentik, `109` apps1, `127` web1, `128` mercury.
+  `onboot: 1` (autostart) on `107` mx1, `108` authentik, `109` apps1, `127`
+  web1, `128` mercury and `132` Terraria; everything else is `onboot: 0` and
+  started by hand (GOAD lab at 192.168.10.0/24, rtsp, windows/AD labs, …).
+  Starting all six at once needs ~24 GB of the host's 32 GB RAM.
+
+### Runbook — bringing the VMs back after a power cut (verified 2026-09-30)
+
+Everything is slow right after a cold start because the NAS is still
+importing and all VM disks are `cache=direct` qcow2s on `nas2-nfs`: measured
+NFS READ RTT ~25 ms steady / up to 1.8 s during the start storm (a LAN NFS
+read should be <1 ms), NAS `aqu-sz` ~6.5 and `%util` 82–84 % on the 7200 rpm
+`sas-10k` disks. Expect guest boots to take many minutes and don't chase it as
+a VM fault.
+
+```bash
+ssh -i ~/.ssh/agent-hop-key root@10.3.1.11
+qm list                       # everything 'stopped'
+pvesm status                  # nas2-nfs must say 'active' BEFORE starting anything
+ha-manager status             # HA services may be in 'error' after 5 failed restarts
+systemd-analyze blame | head  # host boot: ~44 s, of which pve-guests ~8 s on NFS
+```
+
+1. **Wait for the NAS export.** `pvesm status` / `mount | grep nas2-nfs` must
+   show it online. NAS = `nas2` (10.3.1.6). `leigh-admin@10.3.1.6` is keyed
+   with the machine-hop-key but has **no passwordless sudo**, so only
+   `zpool list`, `lsblk`, `iostat`, `/proc/spl/kstat/zfs/...` work
+   (`zpool status`/SMART need root — use the TrueNAS UI). Its shell is zsh:
+   never `echo ===` (zsh reads `===` as command expansion).
+2. **Clear HA error state — disable, *wait*, then start.** Doing both back to
+   back in one loop races: the start is rejected with `service 'vm:127' in
+   error state, must be disabled and fixed first`.
+
+   ```bash
+   for i in 108 109 127 128; do ha-manager set vm:$i --state disabled; done
+   ha-manager status        # wait until all four report 'disabled'
+   for i in 108 109 127 128; do ha-manager set vm:$i --state started; sleep 3; done
+   ```
+
+   Use `ha-manager set … --state started`, **not** `qm start`, for
+   HA-managed VMs.
+3. **Start the non-HA autostart VMs by hand:** `qm start 107; qm start 132`.
+   During the storm `qm start` can fail with
+   ``start failed: … failed: got timeout`` (qemu can't daemonize before the
+   timeout while opening its qcow2). That is a pool-latency symptom, not a VM
+   problem — just retry; 132 then started fine on the second attempt.
+4. **Verify:** `qm list | grep -v stopped`, `ha-manager status` all `started`,
+   then `qm guest cmd <id> ping` (agents answer late — `mercury` came up
+   first while the rest were still booting).
+5. **Leave the `onboot: 0` lab VMs alone for a bit** and start them one at a
+   time (each is a burst of random reads against the slow pool); ~24 GB of
+   the host's 32 GB RAM is already committed by the six infra VMs.
+
 ## SSH between machines (machine-hop-key)
 
 - Every flake-managed machine shares the **machine-hop-key**: the same
@@ -236,6 +324,7 @@ Guidance for AI agents working in this repository. Read this before making chang
   ```bash
   ssh -i ~/.ssh/agent-hop-key leigh-admin@10.3.1.20   # services1
   ssh -i ~/.ssh/agent-hop-key leigh-admin@10.3.1.32   # aibox
+  ssh -i ~/.ssh/agent-hop-key root@10.3.1.11          # monster1 (Proxmox; root)
   ```
 
 - Gotcha: on aibox, `/etc/hosts` maps `aibox` to `127.0.0.2` (self

@@ -9,6 +9,7 @@ use std::sync::Arc;
 use tiny_http::{Header, Response, Server};
 
 use crate::auth;
+use crate::db;
 use crate::sync;
 use crate::Shared;
 
@@ -288,13 +289,66 @@ fn route(
                     );
                 }
             }
-            let handle = shared.rt.handle();
-            handle.spawn(sync::run_sync_owned(shared.clone()));
+            shared.rt.spawn(sync::run_sync_owned(shared.clone()));
             return (
                 202,
                 json_headers(),
                 json_body(&serde_json::json!({"status": "started"})),
             );
+        }
+        if path == "/api/authentik-sync" && method == "GET" {
+            // The latest run (action="run") plus the most recent log rows.
+            return match shared.rt.block_on(db::read_ak_log(&shared.pool, 500)) {
+                Ok(rows) => {
+                    let last_run = rows.iter().find(|r| r.action == "run").cloned();
+                    (
+                        200,
+                        json_headers(),
+                        json_body(&serde_json::json!({
+                            "last_run": last_run,
+                            "rows": rows,
+                        })),
+                    )
+                }
+                Err(e) => (
+                    500,
+                    json_headers(),
+                    json_body(&serde_json::json!({"error": e})),
+                ),
+            };
+        }
+        if path == "/api/authentik-sync" && method == "POST" {
+            // On-demand run (daily timer is the normal path).  The handler
+            // thread is a plain std thread, so block_on is fine here.
+            let opts = match shared.cfg.authentik_token.clone() {
+                Some(token) => crate::authentik::AkOpts {
+                    token,
+                    base_url: shared.cfg.authentik_url.clone(),
+                    group_name: shared.cfg.authentik_group.clone(),
+                },
+                None => {
+                    return (
+                        500,
+                        json_headers(),
+                        json_body(&serde_json::json!({"error": "AUTHENTIK_TOKEN not configured"})),
+                    );
+                }
+            };
+            return match shared
+                .rt
+                .block_on(crate::authentik::run(&shared.pool, &shared.http, &opts))
+            {
+                Ok(summary) => (
+                    200,
+                    json_headers(),
+                    json_body(&serde_json::json!({"status": "ok", "summary": summary})),
+                ),
+                Err(e) => (
+                    500,
+                    json_headers(),
+                    json_body(&serde_json::json!({"error": e})),
+                ),
+            };
         }
         return (
             404,
