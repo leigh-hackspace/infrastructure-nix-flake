@@ -368,6 +368,7 @@ fn CustomerTable(selected: Signal<Option<String>>) -> Element {
                             let mandate_ids = c.mandate_ids.join(", ");
                             let desc = c.sub_description.clone();
                             let charge = charge_str(c.sub_charge, c.sub_currency.clone());
+                            let has_charge = charge != "—";
                             let count = c.payment_count;
                             let last_at = date(&c.last_payment_at);
                             let last_amt = c.last_payment_amount.map(gbp);
@@ -410,11 +411,13 @@ fn CustomerTable(selected: Signal<Option<String>>) -> Element {
                                     td {
                                         if let Some(d) = desc {
                                             "{d}"
+                                            if has_charge {
+                                                div { class: "sub", "{charge}" }
+                                            }
                                         } else {
                                             div { class: "sub", "none" }
                                         }
                                     }
-                                    td { class: "num", "{charge}" }
                                     td { class: "num", "{count}" }
                                     td {
                                         if let Some(a) = last_amt {

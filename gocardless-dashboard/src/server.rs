@@ -368,6 +368,23 @@ fn route(
             a.data.to_vec(),
         );
     }
+    // SPA fallback: paths that don't look like file requests (no extension in
+    // the final segment) are client-side routes (e.g. /customers/<id>).  Serve
+    // index.html for GETs so a refresh or direct load lands on the SPA and the
+    // router restores the view, instead of a 404.
+    let is_file_path = path
+        .rsplit('/')
+        .next()
+        .is_some_and(|seg| seg.contains('.'));
+    if method == "GET" && !is_file_path {
+        if let Some(a) = crate::find_asset("index.html") {
+            return (
+                200,
+                vec![("content-type".to_string(), a.mime.to_string())],
+                a.data.to_vec(),
+            );
+        }
+    }
     (
         404,
         html_headers(),
