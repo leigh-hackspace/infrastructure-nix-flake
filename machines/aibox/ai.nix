@@ -17,8 +17,15 @@ let
 
     [Ornith-1.5-35B-A3B-GGUF]
     spec-type = draft-mtp
+    ctx-size = ${toString (256 * 1024)}
     [Tiel-Coder-35B-A3B-GGUF-MTP]
     spec-type = draft-mtp
+    ctx-size = ${toString (256 * 1024)}
+    [Dirk-Qwen3.8-27B-UD-Q6_K]
+    spec-type = draft-mtp
+    ctx-size = ${toString (256 * 1024)}
+    [K2-Horizon-MoVA-36B-A4B-Q8_0]
+    ctx-size = ${toString (128 * 1024)}
   '';
 
   # Tiel-Coder-35B-A3B-GGUF-MTP
@@ -46,29 +53,28 @@ in
     wants = [ "wait-for-network.service" ];
     wantedBy = [ "multi-user.target" ];
 
-    serviceConfig =
-      {
-        ExecStart = ''
-          ${llamaServer} \
-            --host 10.3.1.32 \
-            --port 8081 \
-            --models-dir ${modelsPath} \
-            --models-preset ${mtpPresets} \
-            --models-max 1 \
-            -t 12 \
-            -dev Vulkan0 \
-            -ngl all \
-            --ctx-size 262144 \
-            --flash-attn on \
-            --reasoning-preserve
-        '';
-        WorkingDirectory = "/home/leigh-admin/Projects/infrastructure-nix-flake";
-        # Defence in depth: index-based filter so no code path can stray from
-        # the iGPU — the only Vulkan device since the GTX 1060 was removed
-        # (2026-09-02).
-        Environment = [ "GGML_VK_VISIBLE_DEVICES=0" ];
-        Restart = "always";
-      };
+    serviceConfig = {
+      ExecStart = ''
+        ${llamaServer} \
+          --host 10.3.1.32 \
+          --port 8081 \
+          --models-dir ${modelsPath} \
+          --models-preset ${mtpPresets} \
+          --models-max 1 \
+          -t 12 \
+          -dev Vulkan0 \
+          -ngl all \
+          -ctk q8_0 -ctv q8_0 \
+          --flash-attn on \
+          --reasoning-preserve
+      '';
+      WorkingDirectory = "/home/leigh-admin/Projects/infrastructure-nix-flake";
+      # Defence in depth: index-based filter so no code path can stray from
+      # the iGPU — the only Vulkan device since the GTX 1060 was removed
+      # (2026-09-02).
+      Environment = [ "GGML_VK_VISIBLE_DEVICES=0" ];
+      Restart = "always";
+    };
   };
 
   # sudo podman build .

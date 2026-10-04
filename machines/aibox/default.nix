@@ -16,7 +16,7 @@ flakeInputs:
     ./monitoring.nix
     ./netboot.nix
     ./networking.nix
-    ./nvidia.nix
+    # ./nvidia.nix
     ./nfs-client.nix
     ./sso.nix
     ./status-dashboard.nix
