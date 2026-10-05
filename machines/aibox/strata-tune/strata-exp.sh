@@ -19,7 +19,7 @@ EXTRA_ARGS="${4:-}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 BENCH="${5:-$HERE/strata-bench.py}"
 PORT=8123
-UNIT=/etc/systemd/system/strata.service/strata.service
+UNIT=$(systemctl show strata -p FragmentPath --value)   # a symlink into the store
 
 [ "$(id -u)" = 0 ] || { echo "run as root (it stops/starts strata.service)"; exit 1; }
 CFG_STORE=$(grep -o '/nix/store/[a-z0-9]*-strata-iq2xs.json' "$UNIT" | head -1)

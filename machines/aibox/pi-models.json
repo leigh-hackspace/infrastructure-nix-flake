@@ -1,0 +1,84 @@
+{
+  "providers": {
+    "strata": {
+      "name": "Strata (aibox)",
+      "baseUrl": "http://10.3.1.32:8080/v1",
+      "api": "openai-completions",
+      "apiKey": "strata",
+      "models": [
+        {
+          "id": "qwen3.8-flash-next-iq2xs",
+          "name": "Qwen3.8-Flash-Next IQ2_XS (Strata on aibox)",
+          "reasoning": true,
+          "thinkingLevelMap": {
+            "off": "off",
+            "minimal": null,
+            "low": "low",
+            "medium": "medium",
+            "high": "high",
+            "xhigh": null,
+            "max": null
+          },
+          "input": ["text"],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "contextWindow": 131072,
+          "maxTokens": 16384,
+          "compat": {
+            "supportsStore": false,
+            "supportsDeveloperRole": false,
+            "supportsReasoningEffort": false,
+            "supportsUsageInStreaming": true,
+            "supportsStrictMode": false,
+            "maxTokensField": "max_tokens",
+            "thinkingFormat": "qwen-chat-template"
+          }
+        }
+      ]
+    },
+    "strata-zen3": {
+      "name": "Strata (zen3, R9700 - faster, bigger context)",
+      "baseUrl": "https://llm.ai.chrisdell.info/v1",
+      "api": "openai-completions",
+      "apiKey": "strata",
+      "models": [
+        {
+          "id": "qwen3.8-flash-next-iq3xxs",
+          "name": "Qwen3.8-Flash-Next IQ3_XXS (Strata on zen3-nixos)",
+          "reasoning": true,
+          "thinkingLevelMap": {
+            "off": "off",
+            "minimal": null,
+            "low": "low",
+            "medium": "medium",
+            "high": "high",
+            "xhigh": null,
+            "max": null
+          },
+          "input": ["text"],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "contextWindow": 262144,
+          "maxTokens": 32768,
+          "compat": {
+            "supportsStore": false,
+            "supportsDeveloperRole": false,
+            "supportsReasoningEffort": false,
+            "supportsUsageInStreaming": true,
+            "supportsStrictMode": false,
+            "maxTokensField": "max_tokens",
+            "thinkingFormat": "qwen-chat-template"
+          }
+        }
+      ]
+    }
+  }
+}

@@ -14,16 +14,17 @@ decodes at **~2 tok/s** here — a 200-token completion timed out at 145 s.
 |---|---|---|---|---|---|---|
 | 2048 (was deployed) | 2 132 (2.88 GiB) | 8.66 GB | 13 GiB | 60–66 % | 8.2 / 8.7 / 8.0 / 10.2 | ~40 (`auto`→4096 chunk) |
 | 2048 + `--prefill 8192` | 2 132 | 8.66 GB | 13 GiB | 58–66 % | 8.7 / 8.0 / 10.2 | 44.6 / 44.7 |
+| **4096 (deployed)** | 4 292 (5.76 GiB) | 11.75 GB | 10 GiB | 73–85 % | 9.7 / 7.8 / 8.9 | 46.1 / 46.0 |
 | 8192 | 8 607 (11.52 GiB) | 17.94 GB | **4.7 GiB** | 86–91 % | 9.7 / 9.2 / 11.2 | 46.0 / 46.1 |
 | 0 (engine auto-fills) | 12 167 (16.31 GiB) | 23.08 GB | **0.6 GiB** | 91 % | 10.1 | — |
 
 Each expert blob is **1 382,400 B**, so slots ≈ GiB / 1.317. Model load is
 "experts loaded: 33.02 GiB at ~4.9 GiB/s" ≈ 12 s, plus the cache fill.
 
-**Deployed now: `--expert-cache 4096` (~5.7 GiB GTT, ~50 GiB RAM used, ~10 GiB
-headroom) and `--prefill 8192`.** 8192 measured the fastest decode but left
-4.7 GiB on a box that also runs frigate, immich, whisper and the containers —
-that is not a margin worth having.
+**Deployed now: `--expert-cache 4096` and `--prefill 8192`** — measured 9.7 tok/s
+decode, 46 tok/s prefill, 11.75 GB of GTT, 10 GiB RAM left. 8192 slots measured
+the fastest decode but left 4.7 GiB on a box that also runs frigate, immich,
+whisper and the containers — that is not a margin worth having.
 
 ## Why more GTT barely helps (the answer to "we only use 8 GB of the GTT")
 
@@ -121,6 +122,24 @@ grouped-GEMM throughput, not a cache or chunk-size problem.
 - `machines/aibox/configuration.nix` sets `system.autoRollback.enable = true`:
   every `nixos-rebuild switch` here must be followed by `sudo nixos-confirm`.
 - New files must be `git add`ed — the flake reads its own directory through git.
+
+## Pi clients
+
+`~/.pi/agent/models.json` on **aibox** and **services1** (10.3.1.20) was written
+from `pi-models.json` in this directory (the canonical copy, kept here because
+`~/.pi` is per-user state and not in the flake):
+
+- `strata` → `http://10.3.1.32:8080/v1`, model `qwen3.8-flash-next-iq2xs`,
+  context 131 072, maxTokens 16 384.
+- `strata-zen3` → `https://llm.ai.chrisdell.info/v1`, model
+  `qwen3.8-flash-next-iq3xxs`, context 262 144 — the fast fallback (51 tok/s
+  decode, 1184 tok/s prefill), worth using for anything with a big context until
+  aibox's prefill gets better.
+
+To make either the default, set in `~/.pi/agent/settings.json`:
+`"defaultProvider": "strata"`, `"defaultModel": "qwen3.8-flash-next-iq2xs"`
+(and drop `llamaServerUrl` / the `pi-llama-cpp` package if llama-server stays
+displaced — it talks to llama.cpp's own endpoints, not Strata's).
 
 ## Re-measuring
 
