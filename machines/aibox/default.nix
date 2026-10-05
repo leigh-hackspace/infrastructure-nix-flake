@@ -20,8 +20,13 @@ flakeInputs: {
     # ./nvidia.nix
     ./sso.nix
     ./status-dashboard.nix
+    ./strata.nix
     ./whisper.nix
 
     flakeInputs.sops-nix.nixosModules.sops
   ];
+
+  # Strata (Qwen3.8-Flash-Next on the iGPU) replaces llama-server as this box's
+  # coding model; see machines/aibox/strata.nix for why the two cannot coexist.
+  services.strata.enable = true;
 }

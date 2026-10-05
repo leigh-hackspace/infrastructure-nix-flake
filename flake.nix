@@ -128,6 +128,19 @@
       };
     };
 
+    # `nix build .#strata` - the Strata engine (HIP/gfx1030) plus its Python
+    # serve layer and the one-time model-prep tools: the same derivation
+    # machines/aibox/strata.nix installs as a service. That file documents the
+    # hand-run model download/pack/MTP steps this package deliberately keeps
+    # out of the store.
+    packages.${system}.strata = let
+      pkgs = import nixpkgs {
+        inherit system;
+        config = {allowUnfree = true;};
+      };
+    in
+      pkgs.callPackage ./machines/aibox/strata-package.nix {};
+
     # `nix develop`
     #
     # Toolchain for building the frigate-monitor web UI locally, mirroring
