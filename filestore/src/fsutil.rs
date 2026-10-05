@@ -177,16 +177,18 @@ impl Store {
         if !deep {
             if let Ok(entries) = self.list(abs) {
                 for e in entries {
+                    scanned += 1;
                     let p = abs.join(&e.name);
                     if try_hit(&p, &e, &mut hits) {
+                        truncated = true;
                         break;
                     }
                 }
             }
             return Ok(SearchOutcome {
                 hits,
-                truncated: false,
-                scanned: 0,
+                truncated,
+                scanned,
             });
         }
 

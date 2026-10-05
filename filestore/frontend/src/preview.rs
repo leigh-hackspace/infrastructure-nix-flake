@@ -33,7 +33,7 @@ pub fn open_preview(mut st: AppState, path: &str, name: &str) {
         state: PreviewState::Loading,
     }));
     let path = path.to_string();
-    spawn(async move {
+    spawn_task(async move {
         let state = match get_json::<Prev>(&preview_url(&path)).await {
             Ok(p) if p.kind == "text" => PreviewState::Text(p.text, p.truncated),
             Ok(_) => PreviewState::Error("not previewable".into()),
@@ -77,6 +77,7 @@ pub fn PreviewBox(st: AppState, preview: Preview) -> Element {
 
     rsx! {
         div {
+            id: "fs-preview",
             style: "position:fixed;inset:0;z-index:800;background:rgba(0,0,0,0.45);display:flex;align-items:center;justify-content:center",
             onmousedown: move |_| st.preview.set(None),
             div {

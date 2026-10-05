@@ -140,6 +140,24 @@ update-gocardless-input:
 update-pkgs:
     nix flake update nixpkgs
 
+# --- filestore headless-browser test suite ---
+
+# Start an unauthenticated filestore on 127.0.0.1 for poking at the API/UI by
+# hand. --no-auth is only honoured on a loopback bind, so this can never expose
+# the store on a routable interface; the deployed service never uses it.
+filestore-dev:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    nix develop --command bash -c 'cd filestore && cargo build --release --offline && exec ./target/release/filestore --root "${FS_TEST_ROOT:-/tmp/filestore-test-root}" --no-auth --port "${FS_TEST_PORT:-18097}"'
+
+# Builds the SPA + binary, starts filestore with --no-auth on 127.0.0.1 against
+# a scratch fixture, and drives the UI with headless Chromium (Playwright).
+# See filestore/tests/README.md.
+filestore-test:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    nix develop --command bash -c 'exec filestore/tests/run.sh'
+
 # Install the shared age key (used to edit secrets) so sops-nix can
 # decrypt at runtime and build time on this machine. Run after a fresh
 # 'nixos-rebuild'. The nixbld group ownership is what lets nix builds

@@ -5,6 +5,10 @@
 //! as filestore.int.leighhack.org (LAN-only).  Login is OIDC against
 //! authentik restricted to the `Infra` group — the same recipe as
 //! gocardless-dashboard.
+//!
+//! Testing: `--no-auth` serves the API without any session check, but only on a
+//! loopback bind (see `is_loopback`), so it can never expose the store.  This is
+//! what `filestore/tests/` (the headless-browser suite) runs against.
 
 mod auth;
 mod fsutil;
@@ -39,6 +43,10 @@ pub struct Config {
     /// When set (testing only — never passed in production), GET
     /// /auth/dev-login mints a session for this username without OIDC.
     pub dev_user: Option<String>,
+    /// When true (testing only), the API is served without any session check.
+    /// Only allowed on a loopback bind — see `is_loopback` — so an unauthenticated
+    /// filestore can never be exposed on a routable interface.
+    pub no_auth: bool,
 }
 
 pub struct Shared {
@@ -49,9 +57,13 @@ pub struct Shared {
     pub pending: Mutex<HashMap<String, auth::Pending>>,
 }
 
-fn parse_env_file(path: &str) -> HashMap<String, String> {
+fn parse_env_file(path: &str, optional: bool) -> HashMap<String, String> {
     let mut map = HashMap::new();
     let content = std::fs::read_to_string(path).unwrap_or_else(|e| {
+        if optional {
+            // --no-auth: OIDC is never used, so a missing env file is fine.
+            return String::new();
+        }
         eprintln!("cannot read env file {path}: {e}");
         std::process::exit(1);
     });
@@ -86,6 +98,10 @@ fn arg_opt(args: &[String], name: &str) -> Option<String> {
     None
 }
 
+fn is_loopback(bind: &str) -> bool {
+    bind == "localhost" || bind.starts_with("127.") || bind.starts_with("::1")
+}
+
 fn arg<'a>(args: &'a [String], name: &str, default: Option<&'a str>) -> String {
     let mut i = 0;
     while i < args.len() {
@@ -113,44 +129,49 @@ fn arg<'a>(args: &'a [String], name: &str, default: Option<&'a str>) -> String {
 async fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
-    let env_file = arg(&args, "--env-file", None);
-    let env = parse_env_file(&env_file);
+    let no_auth = args.iter().any(|a| a == "--no-auth");
+    let env_file = arg(&args, "--env-file", Some(""));
+    let env = parse_env_file(&env_file, no_auth);
+
+    // With --no-auth the OIDC settings are unused, so fall back to empty
+    // strings instead of requiring the sops env file.  Only the client id and
+    // secret are mandatory when auth is on; the endpoint URLs have defaults.
+    let need = |key: &str| -> String {
+        if no_auth {
+            return env.get(key).cloned().unwrap_or_default();
+        }
+        env.get(key).cloned().unwrap_or_else(|| {
+            eprintln!("{key} not set in env file");
+            std::process::exit(1);
+        })
+    };
+    let opt = |key: &str, d: String| -> String { env.get(key).cloned().unwrap_or(d) };
 
     let id = "https://id.leighhack.org";
     let cfg = Arc::new(Config {
         root: PathBuf::from(arg(&args, "--root", Some("/mnt/filestore"))),
         bind: arg(&args, "--bind", Some("127.0.0.1")),
         port: arg(&args, "--port", Some("8096")).parse().expect("--port"),
-        oidc_client_id: env
-            .get("FILESTORE_OIDC_CLIENT_ID")
-            .cloned()
-            .expect("FILESTORE_OIDC_CLIENT_ID not set in env file"),
-        oidc_client_secret: env
-            .get("FILESTORE_OIDC_CLIENT_SECRET")
-            .cloned()
-            .expect("FILESTORE_OIDC_CLIENT_SECRET not set in env file"),
-        oidc_authorize: env
-            .get("FILESTORE_OIDC_AUTHORIZE")
-            .cloned()
-            .unwrap_or_else(|| format!("{id}/application/o/authorize/")),
-        oidc_token: env
-            .get("FILESTORE_OIDC_TOKEN")
-            .cloned()
-            .unwrap_or_else(|| format!("{id}/application/o/token/")),
-        oidc_introspect: env
-            .get("FILESTORE_OIDC_INTROSPECT")
-            .cloned()
-            .unwrap_or_else(|| format!("{id}/application/o/introspect/")),
-        redirect_uri: env
-            .get("FILESTORE_REDIRECT_URI")
-            .cloned()
-            .unwrap_or_else(|| "https://filestore.int.leighhack.org/auth/callback".into()),
-        required_group: env
-            .get("FILESTORE_REQUIRED_GROUP")
-            .cloned()
-            .unwrap_or_else(|| "Infra".into()),
+        oidc_client_id: need("FILESTORE_OIDC_CLIENT_ID"),
+        oidc_client_secret: need("FILESTORE_OIDC_CLIENT_SECRET"),
+        oidc_authorize: opt("FILESTORE_OIDC_AUTHORIZE", format!("{id}/application/o/authorize/")),
+        oidc_token: opt("FILESTORE_OIDC_TOKEN", format!("{id}/application/o/token/")),
+        oidc_introspect: opt("FILESTORE_OIDC_INTROSPECT", format!("{id}/application/o/introspect/")),
+        redirect_uri: opt(
+            "FILESTORE_REDIRECT_URI",
+            "https://filestore.int.leighhack.org/auth/callback".into(),
+        ),
+        required_group: opt("FILESTORE_REQUIRED_GROUP", "Infra".into()),
         dev_user: arg_opt(&args, "--dev-user"),
+        no_auth,
     });
+
+    // --no-auth is a testing escape hatch: it must never be reachable from
+    // outside the machine, so it is only honoured on a loopback bind.
+    if cfg.no_auth && !is_loopback(&cfg.bind) {
+        eprintln!("--no-auth is only allowed on a loopback bind (got {})", cfg.bind);
+        std::process::exit(1);
+    }
 
     let store = fsutil::Store::open(cfg.root.as_path()).unwrap_or_else(|e| {
         eprintln!("filestore root error: {e}");
@@ -167,7 +188,14 @@ async fn main() {
     });
 
     let addr = format!("{}:{}", shared.cfg.bind, shared.cfg.port);
-    eprintln!("filestore serving {root_display} on {addr}");
+    eprintln!(
+        "filestore serving {root_display} on {addr}{}",
+        if shared.cfg.no_auth {
+            " (no auth — testing only)"
+        } else {
+            ""
+        }
+    );
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .unwrap_or_else(|e| {

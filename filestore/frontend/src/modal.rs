@@ -11,7 +11,7 @@ fn submit_modal(st: AppState, modal: Modal, name: &str) {
     let dir = st.path.read().clone();
     let modal = modal.clone();
     let name = name.to_string();
-    spawn(async move {
+    spawn_task(async move {
         let (url, body) = match &modal {
             Modal::NewFolder => (
                 "/api/mkdir",
@@ -43,6 +43,7 @@ fn submit_modal(st: AppState, modal: Modal, name: &str) {
 #[component]
 pub fn ModalBox(st: AppState, modal: Modal) -> Element {
     let is_delete = matches!(modal, Modal::Delete(_));
+    let dir = st.path.read().clone();
     let initial: String = match &modal {
         Modal::Rename(old) => old.clone(),
         _ => String::new(),
@@ -95,6 +96,7 @@ pub fn ModalBox(st: AppState, modal: Modal) -> Element {
 
     rsx! {
         div {
+            id: "fs-modal",
             style: "position:fixed;inset:0;z-index:900;background:rgba(0,0,0,0.25);display:flex;align-items:center;justify-content:center",
             onmousedown: move |_| st.modal.set(None),
             div {
@@ -158,10 +160,17 @@ pub fn ModalBox(st: AppState, modal: Modal) -> Element {
                                     return;
                                 }
                                 let items = del_list.clone();
+                                let d = dir.clone();
                                 st.modal.set(None);
-                                spawn(async move {
+                                spawn_task(async move {
                                     let n = items.len();
-                                    match post_json("/api/delete", &serde_json::json!({ "paths": items })).await {
+                                    // The API takes store-root-relative paths, but the
+                                    // modal is handed names relative to the current dir.
+                                    let paths: Vec<String> = items
+                                        .iter()
+                                        .map(|x| join_rel(&d, x))
+                                        .collect();
+                                    match post_json("/api/delete", &serde_json::json!({ "paths": paths })).await {
                                         Ok(()) => {
                                             toast(st, &format!("deleted {n} item(s)"), false);
                                             load_dir(st);

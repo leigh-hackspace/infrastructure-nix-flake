@@ -123,6 +123,7 @@ pub fn ContextMenu(st: AppState, menu: CtxMenu) -> Element {
 
     rsx! {
         div {
+            id: "fs-menu",
             style: "position:fixed;z-index:1000;min-width:190px;background:#fff;border:1px solid #999;box-shadow:2px 2px 8px rgba(0,0,0,0.25);padding:3px 0;left:{menu.x as i32}px;top:{menu.y as i32}px",
             onmousedown: move |e| e.stop_propagation(),
             oncontextmenu: move |e| e.prevent_default(),

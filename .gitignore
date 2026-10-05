@@ -13,6 +13,7 @@ result-fd
 filestore/target/
 filestore/frontend/target/
 filestore/frontend/dist/
+filestore/tests/node_modules/
 
 !.env.sample
 *.ignore

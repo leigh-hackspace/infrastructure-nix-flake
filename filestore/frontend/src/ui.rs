@@ -133,7 +133,7 @@ pub fn App() -> Element {
             }
 
             div {
-                id: "main",
+                id: "fs-content",
                 style: "flex:1;display:flex;min-height:0;background:#fff",
                 if let Some(sv) = search {
                     ResultsView { st, sv }
@@ -167,6 +167,7 @@ pub fn App() -> Element {
             }
 
             div {
+                id: "fs-status",
                 style: "display:flex;gap:16px;padding:3px 10px;background:#f0f0f0;border-top:1px solid #d0d0d0;color:#555;font-size:12px",
                 "{entries.len()} item(s){sel_note}"
                 "· /mnt/filestore"
@@ -213,7 +214,9 @@ pub fn NavButtons(st: AppState) -> Element {
         button {
             style: TBTN,
             onclick: move |_| {
-                let binding = st.path.read();
+                // Clone first: holding a read guard on st.path while navigate()
+                // writes the same signal panics (re-entrant signal borrow).
+                let binding = st.path.read().clone();
                 let p = binding.split('/').collect::<Vec<_>>();
                 let parent = if p.len() > 1 { p[..p.len() - 1].join("/") } else { String::new() };
                 navigate(st, &parent);
@@ -378,6 +381,7 @@ pub fn SearchBar(st: AppState) -> Element {
         div {
             style: "display:flex;align-items:center;gap:4px",
             input {
+                id: "fs-search",
                 value: q,
                 placeholder: "Search in this folder…",
                 style: "width:190px;padding:3px 6px;border:1px solid #ccc;border-radius:3px",

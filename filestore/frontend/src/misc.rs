@@ -35,6 +35,7 @@ pub fn UploadBar(st: AppState) -> Element {
 
     rsx! {
         div {
+            id: "fs-uploads",
             style: "position:fixed;right:12px;bottom:34px;z-index:700;width:300px;background:#fff;border:1px solid #888;border-radius:6px;box-shadow:0 3px 12px rgba(0,0,0,0.3);padding:10px",
             div {
                 style: "font-weight:bold;margin-bottom:6px",
@@ -91,6 +92,7 @@ pub fn Toasts(st: AppState, list: Vec<Toast>) -> Element {
 
     rsx! {
         div {
+            id: "fs-toasts",
             style: "position:fixed;left:12px;bottom:34px;z-index:1100;display:flex;flex-direction:column;gap:6px",
             for (id, msg, bg) in rows.iter() {
                 div {

@@ -39,6 +39,12 @@ impl FromRequestParts<Shared> for Authed {
         state: &Shared,
     ) -> Result<Self, Self::Rejection> {
         let shared: &crate::Shared = state.as_ref();
+        // Testing escape hatch (--no-auth, loopback only): every request is
+        // treated as an authenticated local session so the API can be driven
+        // directly from the machine without the OIDC dance.
+        if shared.cfg.no_auth {
+            return Ok(Authed(auth::session_for_dev("local")));
+        }
         let cookie = parts
             .headers
             .get(header::COOKIE)
@@ -303,6 +309,10 @@ async fn list(
 ) -> ApiResult<Json<Value>> {
     let rel = q.path.unwrap_or_default();
     let abs = shared.store.resolve(&rel)?;
+    // download/preview/zip already answer 404 for missing paths; keep list consistent
+    if !abs.is_dir() {
+        return Err(ApiError::not_found("no such directory"));
+    }
     let root = shared.store.root.clone();
     let entries = tokio::task::spawn_blocking(move || Store { root }.list(&abs))
         .await

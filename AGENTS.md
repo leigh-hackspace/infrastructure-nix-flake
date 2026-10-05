@@ -84,9 +84,16 @@ Guidance for AI agents working in this repository. Read this before making chang
   the shared env-file sops secret as `FILESTORE_OIDC_CLIENT_ID` /
   `FILESTORE_OIDC_CLIENT_SECRET` (authentik provider pk 34, app slug `filestore`,
   `Infra` group gate). `--dev-user <name>` is a testing-only escape hatch and is
-  never passed in production. `frontend/dist/` and `target/` are git-ignored.
+  never passed in production. `--no-auth` is a second testing-only escape hatch
+  (treats every request as a local session) and is **only honoured on a loopback
+  bind** — `main.rs` exits if it is combined with a non-loopback `--bind`.
+  `frontend/dist/` and `target/` are git-ignored.
   The SPA was originally written against the dioxus 0.6 API and had to be ported
   to the pinned 0.7.10 — see the filestore gotchas below.
+  There is a permanent headless-browser test suite in `filestore/tests/` (Node +
+  Playwright, run with `just filestore-test`); see `filestore/tests/README.md`
+  for the test hooks the SPA carries (`data-fs-name`, `#fs-menu`, `#fs-modal`, …)
+  and the bugs it has already caught.
 - `machines/services1/` — the services box:
   - `hardware-configuration.nix` — NFS mounts for the NAS and their explicit
     automount units (see gotcha below).

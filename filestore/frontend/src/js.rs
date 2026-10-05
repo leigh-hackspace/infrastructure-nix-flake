@@ -123,7 +123,7 @@ pub fn ensure_js_glue(mut st: AppState) {
 
     // Keep window.__fs_current_dir in sync, mirror upload progress into the
     // signal, and refresh the dir once a batch finishes.
-    spawn(async move {
+    spawn_task(async move {
         let mut prev = 0usize;
         loop {
             let dir = st.path.read().clone();
@@ -146,7 +146,7 @@ pub fn ensure_js_glue(mut st: AppState) {
 
 /// Move (default) or copy (ctrl) internal paths into `dest_dir`.
 pub fn move_or_copy(st: AppState, srcs: Vec<String>, dest_dir: String, copy: bool) {
-    spawn(async move {
+    spawn_task(async move {
         let dir = st.path.read().clone();
         let mut errors = Vec::new();
         for s in &srcs {

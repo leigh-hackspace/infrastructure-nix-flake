@@ -9,6 +9,18 @@ use serde::Deserialize;
 
 use crate::api::*;
 
+/// Fire-and-forget task on the ROOT scope.
+///
+/// Plain `spawn` attaches the task to the *current component's* scope, and dioxus
+/// cancels a task when its component is dropped.  These handlers change state that
+/// unmounts the very component that handled the event (IconGrid -> "loading…", the
+/// context menu closing, the modal closing), which silently killed the request.
+/// One-shot API calls must not be tied to a view's lifetime, so they go on the root
+/// scope instead.
+pub fn spawn_task(fut: impl std::future::Future<Output = ()> + 'static) {
+    dioxus::core::spawn_forever(fut);
+}
+
 // ---------------------------------------------------------------------------
 // value types
 
@@ -188,7 +200,7 @@ struct ListResp {
 pub fn load_dir(mut st: AppState) {
     st.loading.set(true);
     let path = st.path.read().clone();
-    spawn(async move {
+    spawn_task(async move {
         match get_json::<ListResp>(&format!("/api/list?path={}", enc_path(&path))).await {
             Ok(r) => st.entries.set(r.entries),
             Err(e) => {
@@ -215,7 +227,7 @@ pub fn run_search(mut st: AppState, scope: String, q: String, deep: bool) {
         truncated: false,
         scanned: 0,
     }));
-    spawn(async move {
+    spawn_task(async move {
         let url = format!(
             "/api/search?path={}&q={}&deep={}",
             enc_path(&scope),
@@ -255,7 +267,7 @@ pub fn toast(mut st: AppState, msg: &str, is_err: bool) {
     let mut list = st.toasts.read().clone();
     list.push(Toast { id, msg: msg.to_string(), is_err });
     st.toasts.set(list);
-    spawn(async move {
+    spawn_task(async move {
         sleep(Duration::from_millis(4500)).await;
         let mut list = st.toasts.read().clone();
         list.retain(|x| x.id != id);
@@ -312,12 +324,15 @@ pub fn icon_for(name: &str, is_dir: bool) -> &'static str {
 
 pub fn is_previewable(name: &str) -> bool {
     let ext = name.rsplit_once('.').map(|(_, e)| e.to_lowercase()).unwrap_or_default();
+    // Must match the server's preview allow-list: /api/preview refuses svg (an
+    // inline SVG can carry script, and it would be served same-origin), so the
+    // UI must not advertise it as previewable.
     matches!(
         ext.as_str(),
         "jpg" | "jpeg" | "png" | "gif" | "webp" | "bmp"
             | "txt" | "md" | "log" | "csv" | "tsv" | "json" | "yaml" | "yml"
             | "toml" | "ini" | "conf" | "xml" | "html" | "css" | "js" | "ts"
-            | "sh" | "py" | "rs" | "c" | "h" | "cpp" | "go" | "nix" | "svg"
+            | "sh" | "py" | "rs" | "c" | "h" | "cpp" | "go" | "nix"
     )
 }
 

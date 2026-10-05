@@ -130,7 +130,12 @@ pub fn row_drop_internal(st: AppState, dt: &dioxus::html::DataTransfer, row_name
                 let srcs: Vec<String> =
                     paths.iter().filter_map(|p| p.as_str().map(|s| s.to_string())).collect();
                 if !srcs.is_empty() {
-                    let copy = dt.get_data("application/x-filestore-copy").is_some();
+                    // dioxus's DataTransfer::get_data returns Some("") for formats
+                    // that were never set, so is_some() is always true — an internal
+                    // drag would then always copy instead of move.
+                    let copy = dt
+                        .get_data("application/x-filestore-copy")
+                        .is_some_and(|s| !s.is_empty());
                     let dest = api::join_rel(&st.path.read(), row_name);
                     move_or_copy(st, srcs, dest, copy);
                 }
@@ -169,10 +174,15 @@ pub fn IconGrid(st: AppState) -> Element {
         div {
             id: "file-area",
             style: "flex:1;overflow:auto;padding:10px;display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:6px;align-content:start",
+            oncontextmenu: move |ce| {
+                ce.prevent_default();
+                bg_menu(st, &ce);
+            },
             for r in rows.iter() {
                 div {
                     key: "{r.name}",
                     "data-fs-path": r.dpath.clone(),
+                    "data-fs-name": r.name.clone(),
                     style: "display:flex;flex-direction:column;align-items:center;gap:3px;padding:8px 4px;border:1px solid {r.border_c};background:{r.bg_c};border-radius:4px;cursor:default;user-select:none",
                     draggable: "true",
                     ondragstart: {
@@ -217,6 +227,7 @@ pub fn IconGrid(st: AppState) -> Element {
                         let name = r.name.clone();
                         move |ce| {
                             ce.prevent_default();
+                            ce.stop_propagation();
                             let mut s = st.sel.read().clone();
                             if !s.contains(&name) {
                                 s.insert(name.clone());
@@ -240,20 +251,19 @@ pub fn IconGrid(st: AppState) -> Element {
                     }
                 }
             }
-            // background context menu on the empty area
-            div {
-                style: "position:absolute;inset:0;z-index:-1",
-                oncontextmenu: move |ce| {
-                    ce.prevent_default();
-                    st.ctx.set(Some(CtxMenu {
-                        x: ce.coordinates().client().x,
-                        y: ce.coordinates().client().y,
-                        target: None,
-                    }));
-                },
-            }
+            // background context menu: the container itself handles clicks that
+            // are not on a row (row handlers stop propagation).
         }
     }
+}
+
+/// Open the context menu for a background (non-row) right-click.
+fn bg_menu(mut st: AppState, ce: &MouseEvent) {
+    st.ctx.set(Some(CtxMenu {
+        x: ce.coordinates().client().x,
+        y: ce.coordinates().client().y,
+        target: None,
+    }));
 }
 
 // ---------------------------------------------------------------------------
@@ -294,6 +304,10 @@ pub fn DetailsView(st: AppState) -> Element {
         div {
             id: "file-area",
             style: "flex:1;overflow:auto",
+            oncontextmenu: move |ce| {
+                ce.prevent_default();
+                bg_menu(st, &ce);
+            },
             table {
                 style: "border-collapse:collapse;width:100%",
                 thead {
@@ -308,6 +322,7 @@ pub fn DetailsView(st: AppState) -> Element {
                         tr {
                             key: "{r.name}",
                             "data-fs-path": r.dpath.clone(),
+                            "data-fs-name": r.name.clone(),
                             style: "cursor:default;user-select:none;background:{r.bg_c}",
                             draggable: "true",
                             ondragstart: {
@@ -352,6 +367,7 @@ pub fn DetailsView(st: AppState) -> Element {
                                 let name = r.name.clone();
                                 move |ce| {
                                     ce.prevent_default();
+                                    ce.stop_propagation();
                                     let mut s = st.sel.read().clone();
                                     if !s.contains(&name) {
                                         s.insert(name.clone());

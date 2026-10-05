@@ -156,6 +156,8 @@
             pkgs.lld
             pkgs.just
             pkgs.git
+            # node is needed by the headless-browser test suite (filestore/tests)
+            pkgs.nodejs
             # handy for debugging (zip/struct inspection of generated archives, etc.)
             pkgs.python3
           ];
