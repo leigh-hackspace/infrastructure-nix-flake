@@ -156,6 +156,8 @@
             pkgs.lld
             pkgs.just
             pkgs.git
+            # handy for debugging (zip/struct inspection of generated archives, etc.)
+            pkgs.python3
           ];
           shellHook = ''
             if [ "$(wasm-bindgen --version 2>/dev/null)" != "wasm-bindgen 0.2.128" ]; then

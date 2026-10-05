@@ -17,8 +17,10 @@
 //! ```
 //!
 //! `BASE_URL` is the Moonraker origin, e.g. `http://10.3.14.62:7125`. The
-//! targets are fixed IPs on purpose: the `3d-lime.int.leighhack.org` DNS name
-//! also advertises 3d-blue's IPv6 addresses, so hostnames must not be used.
+//! targets are fixed IPs on purpose so the exporter never depends on DNS: the
+//! two Pis were cloned from one SD card, giving them a shared
+//! `/etc/machine-id` and DHCPv6 DUID, so the `3d-*` names advertised each
+//! other's IPv6 addresses (lime's identity was regenerated 2026-10-03).
 //!
 //! State enums (numeric value carries the label; dashboards map number ->
 //! text, keep these tables in sync with monitoring-dashboards.nix):
@@ -255,7 +257,7 @@ fn scrape(printer: &Printer, out: &mut Vec<String>) {
 
     // /printer/objects/query — temps + current print state. Works even when
     // klippy is in its error state (returns last-known object values).
-    if let Some(query) = api(printer, "/printer/objects/query?extruder&heater_bed&print_stats") {
+    if let Some(query) = api(printer, "/printer/objects/query?extruder&heater_bed&print_stats&mcu") {
         let status = query.at(&["result", "status"]);
         if let Some(status) = status {
             for heater in ["extruder", "heater_bed"] {
@@ -305,6 +307,56 @@ fn scrape(printer: &Printer, out: &mut Vec<String>) {
                 if let Some(total) = ps.at(&["info", "total_layer"]).and_then(Json::as_f64) {
                     emit(out, p, "moonraker_print_total_layers", "", total);
                 }
+            }
+
+            // MCU link health. `mcu.last_stats` holds the counters for the
+            // running Klipper session. bytes_retransmit / bytes_invalid are
+            // the early-warning signal for the flaky CH340 USB-serial link
+            // (docs/3d-blue-klipper-log-review-2026-10-03.md); exported as
+            // cumulative counters so Prometheus can rate() them and alert
+            // before a print is aborted with "Lost communication with MCU".
+            match status.get("mcu") {
+                Some(mcu) => {
+                    if let Some(baud) = mcu
+                        .at(&["mcu_constants", "SERIAL_BAUD"])
+                        .and_then(Json::as_u64)
+                    {
+                        emit(
+                            out,
+                            p,
+                            "moonraker_mcu_info",
+                            &format!("baud=\"{baud}\""),
+                            1,
+                        );
+                    }
+                    match mcu.get("last_stats") {
+                        Some(ls) => {
+                            emit(out, p, "moonraker_mcu_connected", "", 1);
+                            for (field, name) in [
+                                ("bytes_write", "moonraker_mcu_bytes_write_total"),
+                                ("bytes_read", "moonraker_mcu_bytes_read_total"),
+                                ("bytes_retransmit", "moonraker_mcu_bytes_retransmit_total"),
+                                ("bytes_invalid", "moonraker_mcu_bytes_invalid_total"),
+                                ("send_seq", "moonraker_mcu_send_seq_total"),
+                                ("receive_seq", "moonraker_mcu_receive_seq_total"),
+                            ] {
+                                if let Some(v) = ls.get(field).and_then(Json::as_f64) {
+                                    emit(out, p, name, "", v);
+                                }
+                            }
+                            for (field, name) in [
+                                ("srtt", "moonraker_mcu_srtt_seconds"),
+                                ("rto", "moonraker_mcu_rto_seconds"),
+                            ] {
+                                if let Some(v) = ls.get(field).and_then(Json::as_f64) {
+                                    emit(out, p, name, "", v);
+                                }
+                            }
+                        }
+                        None => emit(out, p, "moonraker_mcu_connected", "", 0),
+                    }
+                }
+                None => emit(out, p, "moonraker_mcu_connected", "", 0),
             }
         }
     }

@@ -1,0 +1,34 @@
+[package]
+name = "filestore"
+version = "0.1.0"
+edition = "2021"
+build = "build.rs"
+
+[[bin]]
+name = "filestore"
+path = "src/main.rs"
+
+# Filestore web UI: a full-stack Rust file browser for /mnt/filestore.
+# axum serves the JSON API + the embedded Dioxus SPA (frontend/, compiled to
+# wasm by the flake — see machines/services1/services/filestore.nix).  Login
+# is OIDC against authentik restricted to the `Infra` group (same recipe as
+# gocardless-dashboard).  zip provides streaming ZIP downloads; reqwest does
+# the OIDC token dance.
+[dependencies]
+axum = "0.8"
+bytes = "1"
+futures-util = "0.3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util", "time", "sync"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+sha2 = "0.10"
+base64ct = "1"
+getrandom = "0.2"
+urlencoding = "2"
+# deflate only — the default feature set pulls in zstd/lzma/bzip2 C deps we
+# never use.  async_zip (not `zip`) because it can stream the archive to a
+# writer that cannot Seek, which is what a network response body is.
+mime_guess = "2"
+flate2 = "1.1.10"
+crc32fast = "1.5.2"

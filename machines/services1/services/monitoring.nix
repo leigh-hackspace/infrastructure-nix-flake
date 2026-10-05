@@ -124,6 +124,37 @@ let
                 labels.severity = "warning";
                 annotations.summary = "Klipper is in error state on {{ $labels.printer }}";
               }
+              {
+                alert = "KlipperShutdown";
+                expr = "moonraker_klippy_state{state=\"shutdown\"} == 3";
+                for = "5m";
+                labels.severity = "critical";
+                annotations.summary = "Klipper is in shutdown state on {{ $labels.printer }}";
+                annotations.description = "A print was aborted (e.g. MCU communication lost). Check the Klipper log on {{ $labels.printer }}.";
+              }
+              {
+                alert = "PrinterMcuDisconnected";
+                expr = "moonraker_mcu_connected == 0";
+                for = "5m";
+                labels.severity = "warning";
+                annotations.summary = "Klipper is not attached to the MCU on {{ $labels.printer }}";
+                annotations.description = "No MCU stats for 5 minutes - the CH340/USB-serial link or the printer's power is down.";
+              }
+              {
+                alert = "PrinterMcuRetransmits";
+                expr = "rate(moonraker_mcu_bytes_retransmit_total[10m]) > 1";
+                for = "10m";
+                labels.severity = "warning";
+                annotations.summary = "Klipper serial retransmits are high on {{ $labels.printer }}";
+                annotations.description = "The USB-serial link to the MCU is erroring ({{ $value | humanize }} B/s retransmitted); a print may be aborted soon.";
+              }
+              {
+                alert = "PrinterMcuInvalidBytes";
+                expr = "rate(moonraker_mcu_bytes_invalid_total[5m]) > 1";
+                for = "5m";
+                labels.severity = "warning";
+                annotations.summary = "Invalid bytes on the Klipper MCU link on {{ $labels.printer }}";
+              }
             ];
           }
         ];
@@ -181,7 +212,7 @@ in
       }
       # Klipper/Moonraker on the hackspace 3D-print servers (blue/lime),
       # re-exported by moonraker-exporter (printer-monitoring.nix). Targets
-      # are fixed IPs: 3d-lime's DNS name also advertises 3d-blue's IPv6.
+      # are fixed IPs so the exporter never depends on the 3d-* DNS records.
       {
         job_name = "moonraker";
         scrape_interval = "30s";

@@ -72,6 +72,21 @@ Guidance for AI agents working in this repository. Read this before making chang
   npm deps aren't nixpkgs-cached, so the SPA is not rebuilt in Nix): after
   editing the SPA, run `npm install && npm run build` in `frontend/` and commit
   the result.
+- `filestore/` — top-level Rust tool (axum + reqwest) on services1: a web file
+  browser over the NAS `filestore` share. Serves the JSON API (`/api/list`,
+  `/api/search`, `/api/mkdir|create|rename|copy|delete|upload|download|zip|preview`,
+  `/api/whoami`) on 127.0.0.1:8096 plus a Dioxus SPA (frontend/, wasm-built by
+  the flake as `frontendDist` and embedded by `build.rs` — no bundle is
+  committed) at `filestore.int.leighhack.org` (LAN-only vhost, see
+  `machines/services1/services/filestore.nix`; it replaces the old apps1:8001
+  deployment). Login is OIDC against authentik gated on the `Infra` group
+  (same client contract as gocardless-dashboard); the client id/secret live in
+  the shared env-file sops secret as `FILESTORE_OIDC_CLIENT_ID` /
+  `FILESTORE_OIDC_CLIENT_SECRET` (authentik provider pk 34, app slug `filestore`,
+  `Infra` group gate). `--dev-user <name>` is a testing-only escape hatch and is
+  never passed in production. `frontend/dist/` and `target/` are git-ignored.
+  The SPA was originally written against the dioxus 0.6 API and had to be ported
+  to the pinned 0.7.10 — see the filestore gotchas below.
 - `machines/services1/` — the services box:
   - `hardware-configuration.nix` — NFS mounts for the NAS and their explicit
     automount units (see gotcha below).
@@ -113,6 +128,35 @@ Guidance for AI agents working in this repository. Read this before making chang
   `status.int`-style vhosts with `CONFIG.LOCAL_NETWORK` ACLs. The ACME cert
   covers `*.leighhack.org` / `*.int.leighhack.org` (DNS challenge).
 
+### 3D print servers (hackspace LAN, 10.3.14.0/24)
+
+`3d-blue` (10.3.14.62) and `3d-lime` (10.3.14.61) are Raspberry Pi 3 print
+servers running **Klipper + Moonraker** (Mainsail on nginx `:80`, Moonraker API
+on `:7125`). The `moonraker-exporter` tool in
+`machines/services1/services/printer-monitoring.nix` polls their APIs (these
+are the "blue"/"lime" targets). Targets are fixed IPs on purpose so the
+exporter never depends on DNS — historically needed because the two Pis were
+cloned from one SD card, which gave them the same `/etc/machine-id` and hence
+the same NetworkManager DHCPv6 DUID, so the `3d-*` names advertised each
+other's IPv6 addresses. Lime's machine-id and SSH host keys were regenerated
+on 2026-10-03 (blue still carries the old identity), but fixed IPv4 is
+deliberately kept.
+
+**SSH access (permanent):** the Pi's user is `hackspace` (not `pi`/`root`) and
+the host is keyed with the **machine-hop-key**:
+
+```bash
+ssh -i ~/.ssh/agent-hop-key hackspace@10.3.14.62   # 3d-blue
+ssh -i ~/.ssh/agent-hop-key hackspace@10.3.14.61   # 3d-lime
+```
+
+Klipper config/logs live under `/home/hackspace/printer_data/`
+(`config/printer.cfg`, `logs/klippy.log`, `logs/moonraker.log`). The MCU is an
+Arduino Mega 2560 clone on a **CH340** USB-serial adapter
+(`/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0`). Logs can also be read
+unauthenticated via Moonraker on the trusted LAN
+(`http://10.3.14.62:7125/server/files/logs/klippy.log`).
+
 ## Router (gw) & DigitalOcean DNS
 
 - The router (OPNsense 26.7, FreeBSD) is managed out-of-band — no flake
@@ -130,9 +174,10 @@ Guidance for AI agents working in this repository. Read this before making chang
   `ssh root@10.3.1.1 'grep <name> /var/etc/dnsmasq-hosts'`.
 - Reading `dns-sync check` output: `aibox.int` → 10.3.1.32 (own record) and
   `authentik.int` → 10.3.1.36 (own override; nginx also serves it as an alias
-  of `id.int`) legitimately resolve elsewhere and are left as-is; `filestore`,
-  `gitlab`, `ldap`, `mqtt`, `nginx`, `tailscale` predate dns-sync and are
-  reported "never expected" / left as-is.
+  of `id.int`) legitimately resolve elsewhere and are left as-is; `gitlab`,
+  `ldap`, `mqtt`, `nginx`, `tailscale` predate dns-sync and are reported "never
+  expected" / left as-is. `filestore.int` is expected by the flake vhost and
+  resolves to 10.3.1.20 in both the router and DigitalOcean.
 - DHCP reservations live in the same dnsmasq config: services1 (10.3.1.20,
   MACs `c8:d3:ff:a5:b2:25`/`c8:d3:ff:a5:be:7c`), aibox (10.3.1.32),
   nas1/nas2 (10.3.1.5/10.3.1.6), apps1 (10.3.1.30), yunohost (10.3.1.15).
@@ -482,3 +527,16 @@ The grid is infinitely scrollable — there is **no "load more" button**; the
   (explicit automounts + `_netdev` + `wait-for-network` ordering +
   `wait-for-nas`). Evaluating aibox locally still requires the `pi-room-sys`
   git input to exist at `/home/leigh-admin/Projects/pi-room-sys`.
+
+- **3D-print servers: cloned SD identity (lime fixed, blue pending)** — the
+  two Pis were cloned from one SD card, so they shared `/etc/machine-id`
+  (⇒ the same NetworkManager DHCPv6 DUID) and the same SSH host keys, and the
+  `3d-*` names advertised each other's IPv6 addresses. Lime's identity was
+  regenerated on 2026-10-03 (`sudo rm /etc/machine-id &&
+  sudo systemd-machine-id-setup`, `sudo rm /etc/ssh/ssh_host_* &&
+  sudo ssh-keygen -A`, reboot); it now has its own DUID and `…::135b` lease,
+  and `3d-lime.int` no longer answers as blue. Blue was off-network at the
+  time and still carries the original cloned identity — harmless now that
+  lime changed, but regenerate it too if blue is ever re-imaged. The
+  `hackspace` user's password and `authorized_keys` are also shared by the
+  clone; rotate them if the two boxes shouldn't be interchangeable.

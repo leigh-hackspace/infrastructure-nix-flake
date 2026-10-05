@@ -9,6 +9,11 @@ result-fd
 # Rust build output for the status dashboard
 **/status-dashboard/target/
 
+# filestore: cargo output and the wasm SPA bundle (built by the flake, never committed)
+filestore/target/
+filestore/frontend/target/
+filestore/frontend/dist/
+
 !.env.sample
 *.ignore
 ai-resources

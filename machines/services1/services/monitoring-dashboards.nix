@@ -658,6 +658,44 @@ in
         legendFormat = "{{printer}}";
         targets = [ "moonraker_process_memory_bytes" ];
       })
+
+      # --- MCU USB-serial link health ---------------------------------
+      (ts {
+        id = 21;
+        x = 0;
+        y = 40;
+        w = 12;
+        title = "MCU link errors";
+        unit = "Bps";
+        targets = [
+          {
+            expr = "rate(moonraker_mcu_bytes_retransmit_total[5m])";
+            legendFormat = "{{printer}} retransmit";
+          }
+          {
+            expr = "rate(moonraker_mcu_bytes_invalid_total[5m])";
+            legendFormat = "{{printer}} invalid";
+          }
+        ];
+      })
+      (ts {
+        id = 22;
+        x = 12;
+        y = 40;
+        w = 12;
+        title = "MCU link latency";
+        unit = "s";
+        targets = [
+          {
+            expr = "moonraker_mcu_srtt_seconds";
+            legendFormat = "{{printer}} srtt";
+          }
+          {
+            expr = "moonraker_mcu_rto_seconds";
+            legendFormat = "{{printer}} rto";
+          }
+        ];
+      })
     ];
   };
 

@@ -7,8 +7,12 @@
 # Moonraker API on :7125 and re-exports the metrics for the local Prometheus
 # (scrape job "moonraker", configured in monitoring.nix) to scrape.
 #
-# Targets are fixed IPs on purpose: the 3d-lime.int.leighhack.org DNS name
-# also advertises 3d-blue's IPv6 addresses, so hostnames must not be used.
+# Targets are fixed IPs on purpose so the exporter never depends on DNS.
+# Historically this was required because the two Pis were cloned from one SD
+# card, so they shared a /etc/machine-id and therefore a NetworkManager
+# DHCPv6 DUID, and the 3d-* records advertised each other's IPv6 addresses.
+# Lime's machine-id and SSH host keys were regenerated on 2026-10-03 (blue
+# still carries the old identity); fixed IPv4 is deliberately kept.
 {
   pkgs,
   lib,

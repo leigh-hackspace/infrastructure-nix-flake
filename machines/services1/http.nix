@@ -261,16 +261,9 @@ in
         };
       };
 
-      # "filestore.int.leighhack.org" = {
-      #   useACMEHost = "leighhack.org";
-      #   forceSSL = true;
-
-      #   locations."/" = {
-      #     proxyPass = "http://10.3.1.30:8001";
-      #     recommendedProxySettings = true;
-      #     extraConfig = CONFIG.LOCAL_NETWORK;
-      #   };
-      # };
+      # filestore.int.leighhack.org moved to services/filestore.nix (the
+      # Rust filestore binary on this box, 127.0.0.1:8096 — replacing the
+      # old apps1:8001 deployment).
 
       "id.int.leighhack.org" = {
         serverAliases = [
