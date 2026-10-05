@@ -173,7 +173,9 @@ let
   );
 
   strataLocation = {
-    proxyPass = "http://127.0.0.1:8080";
+    # The engine binds 10.3.1.32 (its --host), NOT loopback: proxy_pass to
+    # 127.0.0.1:8080 gives a silent 502 from nginx.
+    proxyPass = "http://10.3.1.32:8080";
     proxyWebsockets = true;
     extraConfig = ''
       # First token can take minutes (the engine loads ~40 GB and fills its

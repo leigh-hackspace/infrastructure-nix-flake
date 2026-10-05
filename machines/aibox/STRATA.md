@@ -98,6 +98,16 @@ grouped-GEMM throughput, not a cache or chunk-size problem.
 - **Ports:** 8080 strata, 8100/8081 llama-server, **8090 is frigate-monitor** (a
   bench client hitting it gets `HTTP 405: Method Not Allowed` and looks like a
   Strata failure). The harness uses 8123.
+- **The engine binds `10.3.1.32` (its `--host`), not loopback.** nginx's `/llm/`
+  must therefore `proxy_pass http://10.3.1.32:8080`; `127.0.0.1:8080` returns a
+  silent 502.
+- **`ai.int.leighhack.org` is now broken by this module.** On services1
+  (`machines/services1/ai.nix:28`) it proxies to `10.3.1.32:8081`, i.e. aibox's
+  llama-server, which `displaceLlamaServer` stops → the vhost answers 502, and
+  both Pi hosts still have it as their default (`llamaServerUrl` and
+  `defaultProvider` in `~/.pi/agent/settings.json`). Either repoint that vhost to
+  `10.3.1.32:8080` (Strata) or point pi at the `strata` provider in
+  `~/.pi/agent/models.json`.
 - **A killed engine keeps its GTT.** If an experiment engine is SIGKILLed, the
   next `strata.service` start fails with
   `cudaMalloc(1538035200) for the weight arena failed (out of memory): 60 MiB of 53393 MiB VRAM free on this GPU`.
