@@ -107,7 +107,10 @@ Guidance for AI agents working in this repository. Read this before making chang
   Rows publish `text/uri-list` on `dragstart` (the download URL, or the ZIP URL
   for a folder) as well as `application/x-filestore`, because the internal format
   is only understood by this page and an external drop target would refuse the
-  drag.
+  drag. A page can only hand an OS target a URL or bytes it already holds, so
+  Finder turns such a drop into a `.webloc`; the drag also carries `text/html`
+  with the file name as the link text because Finder names the shortcut from the
+  link text (otherwise every drop is called `filestore.int.leighhack.org:.webloc`).
   Uploads are raw request bodies, so axum's `DefaultBodyLimit` does not apply to
   them: the server enforces `--max-upload` (2G in production) and the vhost's
   `client_max_body_size` must match it, otherwise nginx 413s the request and the

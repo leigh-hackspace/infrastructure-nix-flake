@@ -570,7 +570,9 @@ test('drag: internal copy with ctrl', async () => {
 
 test('drag out: dragstart publishes text/uri-list for targets outside the page', async () => {
   // Playwright cannot drop onto the OS, so drive dragstart with a real
-  // DataTransfer and read back what the row put on it.
+  // DataTransfer and read back what the row put on it.  A page can only hand an
+  // OS target a URL or bytes it already holds, so this is the whole observable
+  // half of the drag-out path.
   const grab = (name) =>
     page.evaluate((n) => {
       const r = document.querySelector(`[data-fs-name=${JSON.stringify(n)}]`);
@@ -579,6 +581,7 @@ test('drag out: dragstart publishes text/uri-list for targets outside the page',
       return {
         types: [...dt.types],
         uri: dt.getData('text/uri-list'),
+        html: dt.getData('text/html'),
         internal: dt.getData('application/x-filestore'),
       };
     }, name);
@@ -590,6 +593,14 @@ test('drag out: dragstart publishes text/uri-list for targets outside the page',
   );
   assert.match(f.uri, /\/api\/download\?path=notes\.txt$/, `a file drag publishes its download URL (got ${f.uri})`);
   assert.match(f.internal, /notes\.txt/, 'the internal format is still there for internal drops');
+
+  // Finder names the .webloc from the link text, so the anchor has to be there
+  assert.ok(f.types.includes('text/html'), 'the drag also carries an anchor for Finder');
+  assert.match(
+    f.html,
+    /<a href="[^"]*\/api\/download\?path=notes\.txt">notes\.txt<\/a>/,
+    `the link text is the file name, not the host (got ${f.html})`,
+  );
 
   // a folder has no single file, so it publishes its streaming ZIP instead
   const d = await grab('docs');

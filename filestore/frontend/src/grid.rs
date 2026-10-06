@@ -233,6 +233,13 @@ pub fn external_uri(dir: &str, name: &str, is_dir: bool) -> String {
     }
 }
 
+fn esc_attr(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
 fn row_dragstart(de: &DragEvent, st: &AppState, name: &str, is_sel: bool, is_dir: bool) {
     let dt = de.data_transfer();
     let dir = st.path.read().clone();
@@ -272,6 +279,21 @@ fn row_dragstart(de: &DragEvent, st: &AppState, name: &str, is_sel: bool, is_dir
     let list = uris.join("\n");
     let _ = dt.set_data("text/uri-list", &list);
     let _ = dt.set_data("text/plain", &list);
+
+    // Finder names the shortcut it writes from the *link text*, not the URL, so
+    // the anchor has to be published as well: without text/html every drop lands
+    // as "filestore.int.leighhack.org:.webloc" whatever the file was.
+    //
+    // A web page can only hand an OS drop target either a URL (which Finder turns
+    // into a .webloc) or bytes it already holds in memory — there is no way to
+    // stream a server file into a drag — so a link is the best available here.
+    // Getting the actual file still means downloading it (Enter / context menu).
+    let html: Vec<String> = items
+        .iter()
+        .zip(uris.iter())
+        .map(|((n, _), u)| format!(r#"<a href="{u}">{}</a>"#, esc_attr(n)))
+        .collect();
+    let _ = dt.set_data("text/html", &html.join(" "));
 }
 
 // ---------------------------------------------------------------------------

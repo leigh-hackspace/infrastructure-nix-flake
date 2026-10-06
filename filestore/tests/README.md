@@ -96,7 +96,11 @@ All of these were found by running the suite and are covered by tests.
     `application/x-filestore` was set, which nothing outside the page understands,
     so the target refused the drop. Rows now also publish `text/uri-list` (and
     `text/plain`) with the download URL — the ZIP URL for a folder, since a
-    folder has no single file.
+    folder has no single file. A page can only hand an OS target a URL or bytes it
+    already holds, so Finder turns that into a `.webloc`; the drag also carries
+    `text/html` with the file name as the link text, because Finder names the
+    shortcut from the link text and was calling every one
+    `filestore.int.leighhack.org:.webloc`.
 13. **Uploads over the limit showed "HTTP 413".** The upload route streams the
     raw body, so axum's `DefaultBodyLimit` never applied to it, and nginx's
     default `client_max_body_size` (10m) rejected anything bigger with an HTML
