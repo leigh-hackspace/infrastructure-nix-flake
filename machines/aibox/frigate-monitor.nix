@@ -17,88 +17,39 @@
 # aibox has no nginx of its own; services1 reverse-proxies
 # frigate-monitor.int.leighhack.org to 10.3.1.32:8090 (see
 # machines/services1/services/frigate-monitor.nix).
-{ config, lib, pkgs, ... }:
+{ config, lib, pkgs, crane, ... }:
 
 let
   cfg = config.services.frigate-monitor;
+  CRANE = import ../../common/crane.nix { inherit pkgs crane; };
 
-  # crates.io refuses the python-requests default user agent that nixpkgs'
-  # cargo vendor fetcher uses (403 from our network); source the patch
-  # script in the vendor derivation's preBuild so it downloads with a
-  # cargo-style UA.  Only affects first-time vendor fetches (they are
-  # cached as fixed-output derivations afterwards).
-  cargoVendor = { pname, version, src, hash }:
-    pkgs.rustPlatform.fetchCargoVendor {
-      inherit pname version src hash;
-      preBuild = "source ${../../frigate-monitor/cargo-vendor-ua-patch.sh}";
-    };
-
-  # wasm-bindgen-cli pinned to 0.2.128 — the exact wasm-bindgen version the
-  # SPA is compiled against (frontend/Cargo.lock); the cli and the wasm-bindgen
-  # runtime lib in the wasm must match or the generated JS glue is
-  # incompatible.  nixpkgs only ships older versions, so build this one here.
-  wasmBindgenCliSrc = pkgs.fetchurl {
-    name = "wasm-bindgen-cli-0.2.128.tar.gz";
-    # crates.io's API download endpoint is blocked from our network; static
-    # is fine.
-    url = "https://static.crates.io/crates/wasm-bindgen-cli/wasm-bindgen-cli-0.2.128.crate";
-    hash = "sha256-LikUDAToGDKQK3Dl03uc4b+oEcj+RWO+oI9234OIzyA=";
-  };
-  wasmBindgenCli = pkgs.buildWasmBindgenCli {
-    version = "0.2.128";
-    src = wasmBindgenCliSrc;
-    cargoDeps = cargoVendor {
-      pname = "wasm-bindgen-cli";
-      version = "0.2.128";
-      src = wasmBindgenCliSrc;
-      hash = "sha256-R1Tas33Ursy8kqsxguAkG0ZhNed2n5uFTAhw1l2qlLY=";
-    };
-  };
-
-  # The Dioxus SPA compiled to wasm (this replaces the frontend/dist that
-  # used to be committed to the git tree).  Unlike network-status's npm
-  # bundle it is pure cargo, so it builds hermetically here under cargoDeps.
+  # The Dioxus SPA compiled to wasm (this replaces the frontend/dist that used to
+  # be committed to the git tree).  The pinned wasm-bindgen-cli and the wasm build
+  # recipe live in common/crane.nix.
   frontendSrc = ../../frigate-monitor/frontend;
-  frontendDist = pkgs.rustPlatform.buildRustPackage {
+  frontendDist = CRANE.wasmSpa {
     pname = "frigate-monitor-web";
     version = "0.1.0";
     src = frontendSrc;
-    cargoDeps = cargoVendor {
-      pname = "frigate-monitor-web";
-      version = "0.1.0";
-      src = frontendSrc;
-      hash = "sha256-hRkS6WOLLeezK4dddHxShuQG2BGkvbpNxWPf4VVSfRA=";
-    };
-    nativeBuildInputs = [ wasmBindgenCli pkgs.lld ];
-    doCheck = false;
-    # Wasm-only build.  Override the default phase because cargoBuildHook
-    # always adds the host target as well.  nixpkgs' rustc ships no wasm
-    # linker (rustup's does), so use wasm-ld from pkgs.lld.
-    buildPhase = ''
-      runHook preBuild
-      export CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_LINKER=wasm-ld
-      cargo build --release --target wasm32-unknown-unknown --offline
-      runHook postBuild
-    '';
-    installPhase = ''
-      runHook preInstall
-      wasm-bindgen --target web --out-dir $out --no-typescript \
-        target/wasm32-unknown-unknown/release/frigate_monitor_web.wasm
-      cp index.html $out/index.html
-      runHook postInstall
-    '';
+    cargoLock = CRANE.lockFile ../../frigate-monitor/frontend/Cargo.lock;
+    wasmName = "frigate_monitor_web";
   };
 
-  frigateMonitor = pkgs.rustPlatform.buildRustPackage {
+  # The binary.  Its build.rs embeds the SPA, so the SPA is a build-hook input
+  # rather than a cargo dependency: the args used for the cached deps are kept
+  # clean so a SPA-only change does not rebuild the binary's dependency tree.
+  frigateMonitorArgs = {
     pname = "frigate-monitor";
     version = "0.2.0";
     src = ../../frigate-monitor;
-    cargoLock.lockFile = ../../frigate-monitor/Cargo.lock;
-    doCheck = false;
-    # build.rs embeds the SPA; point it at the nix-built bundle instead of
-    # the (uncommitted) frontend/dist in the source tree.
-    preBuild = "export FRIGATE_MONITOR_DIST=${frontendDist}";
+    cargoLock = CRANE.lockFile ../../frigate-monitor/Cargo.lock;
   };
+  frigateMonitor = CRANE.cached (frigateMonitorArgs // {
+    cargoArtifacts = CRANE.deps frigateMonitorArgs;
+    # Point build.rs at the nix-built bundle instead of the (uncommitted)
+    # frontend/dist in the source tree.
+    preBuild = "export FRIGATE_MONITOR_DIST=${frontendDist}";
+  });
 in
 {
   options.services.frigate-monitor = {

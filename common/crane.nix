@@ -15,7 +15,7 @@
 #     pname = "dns-sync";
 #     version = "0.1.0";
 #     src = ../../dns-sync;
-#     cargoLock = ../../dns-sync/Cargo.lock;
+#     cargoLock = CRANE.lockFile ../../dns-sync/Cargo.lock;
 #   };
 #
 # Two differences from the old call style worth remembering:
@@ -24,22 +24,31 @@
 #   attrset;
 # - crane vendors the crates itself (per crate, fixed-output, cached) instead of
 #   using `cargoDeps`, so no `fetchCargoVendor` hash needs maintaining.
-{ pkgs, crane }:
-
-let
+{
+  pkgs,
+  crane,
+}: let
   craneLib = crane.mkLib pkgs;
+
+  # Read a Cargo.lock at evaluation time and re-emit it as a content-keyed store
+  # file. Handing crane a lock file that lives inside the crate's own source
+  # directory makes the vendor and dummy-source derivations depend on the whole
+  # source tree, so *any* edit (even a comment in a .rs file) invalidates the
+  # dependency cache — exactly the rebuild we are trying to avoid. Keyed on the
+  # lock contents, only a dependency change forces a rebuild.
+  lockFile = p: pkgs.writeText "Cargo.lock" (builtins.readFile p);
 
   # The cached dependency derivation on its own. Only Cargo.toml, Cargo.lock and
   # any .cargo/config.toml feed it (the sources are stubbed), so it survives
   # every edit to the crate itself.
-  deps = args: craneLib.buildDepsOnly (args // { doCheck = false; });
+  deps = args: craneLib.buildDepsOnly (args // {doCheck = false;});
 
   # A crate built against cached deps. Pass `cargoArtifacts` explicitly when the
   # crate's own build has hooks that reference another derivation (e.g. a preBuild
   # pointing build.rs at a sibling SPA): those would otherwise become inputs of
   # the dependency build and invalidate the cache whenever that derivation
   # changes, even though cargo never sees them as dependencies.
-  cached = args: craneLib.buildPackage (args // { doCheck = false; });
+  cached = args: craneLib.buildPackage (args // {doCheck = false;});
 
   # wasm-bindgen-cli pinned to 0.2.128 — the exact wasm-bindgen version every SPA
   # is compiled against (see the frontend Cargo.locks). The CLI and the
@@ -70,30 +79,25 @@ let
   # no wasm linker, so wasm-ld comes from pkgs.lld) and the output is
   # post-processed by wasm-bindgen. Both the cached deps and the crate are built
   # for the wasm target, otherwise the cache would be for the wrong target.
-  wasmSpa =
-    {
-      pname,
-      version,
-      src,
-      cargoLock,
-      # cargo's underscored package name, i.e. the .wasm file cargo emits
-      wasmName,
-    }:
+  wasmSpa = {
+    pname,
+    version,
+    src,
+    cargoLock,
+    # cargo's underscored package name, i.e. the .wasm file cargo emits
+    wasmName,
+  }:
     cached {
       inherit pname version src cargoLock;
-      nativeBuildInputs = [ wasmBindgenCli pkgs.lld ];
+      nativeBuildInputs = [wasmBindgenCli pkgs.lld];
       cargoBuildCommand = "cargoWithProfile build --target wasm32-unknown-unknown";
-      cargoCheckCommand = "cargoWithProfile check --target wasm32-unknown-unknown";
       preBuild = "export CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_LINKER=wasm-ld";
       installPhaseCommand = ''
-        runHook preInstall
         wasm-bindgen --target web --out-dir $out --no-typescript \
           target/wasm32-unknown-unknown/release/${wasmName}.wasm
         cp index.html $out/index.html
-        runHook postInstall
       '';
     };
-in
-{
-  inherit craneLib cached wasmBindgenCli wasmSpa;
+in {
+  inherit craneLib cached deps lockFile wasmBindgenCli wasmSpa;
 }

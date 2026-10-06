@@ -32,16 +32,18 @@
   config,
   lib,
   pkgs,
+  crane,
   ...
 }:
 
 let
-  dnsSync = pkgs.rustPlatform.buildRustPackage {
+  CRANE = import ../../common/crane.nix { inherit pkgs crane; };
+
+  dnsSync = CRANE.cached {
     pname = "dns-sync";
     version = "0.1.0";
     src = ../../dns-sync;
-    cargoLock.lockFile = ../../dns-sync/Cargo.lock;
-    doCheck = false;
+    cargoLock = CRANE.lockFile ../../dns-sync/Cargo.lock;
   };
 
   # Every *.int.leighhack.org name this nginx serves (vhost names + aliases).

@@ -20,18 +20,19 @@
   config,
   lib,
   pkgs,
+  crane,
   ...
 }:
 
 let
   cfg = config.services.status-dashboard;
+  CRANE = import ./crane.nix { inherit pkgs crane; };
 
-  statusDashboard = pkgs.rustPlatform.buildRustPackage {
+  statusDashboard = CRANE.cached {
     pname = "status-dashboard";
     version = "0.1.0";
     src = ../status-dashboard;
-    cargoLock.lockFile = ../status-dashboard/Cargo.lock;
-    doCheck = false;
+    cargoLock = CRANE.lockFile ../status-dashboard/Cargo.lock;
   };
 in
 {

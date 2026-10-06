@@ -7,11 +7,13 @@
 # (a plain-text python script) into the current directory, rewrites it to
 # use such a UA, and puts the copy first on PATH.
 #
-# This file is *sourced* from the preBuild of every fetchCargoVendor call in
-# machines/aibox/frigate-monitor.nix (the SPA and wasm-bindgen-cli vendors)
-# so the PATH export survives into the build phase.  The fixed-output result
-# is cached in the store afterwards, so this only runs when a vendor
-# derivation is fetched for the first time.
+# This file is *sourced* from the preBuild of the one fetchCargoVendor call that
+# still needs it — the wasm-bindgen-cli vendor in common/crane.nix — so the PATH
+# export survives into the build phase.  The fixed-output result is cached in the
+# store afterwards, so this only runs when a vendor derivation is fetched for the
+# first time.  Crane's own crate fetcher (used for everything else) downloads
+# from static.crates.io with curl, which our network allows, so it does not need
+# this patch.
 
 util="$(command -v fetch-cargo-vendor-util)"
 cp "$util" ./fetch-cargo-vendor-util

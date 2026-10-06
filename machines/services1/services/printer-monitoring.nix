@@ -16,16 +16,18 @@
 {
   pkgs,
   lib,
+  crane,
   ...
 }:
 
 let
-  exporter = pkgs.rustPlatform.buildRustPackage {
+  CRANE = import ../../../common/crane.nix { inherit pkgs crane; };
+
+  exporter = CRANE.cached {
     pname = "moonraker-exporter";
     version = "0.1.0";
     src = ../../../moonraker-exporter;
-    cargoLock.lockFile = ../../../moonraker-exporter/Cargo.lock;
-    doCheck = false;
+    cargoLock = CRANE.lockFile ../../../moonraker-exporter/Cargo.lock;
   };
 
   printers = [

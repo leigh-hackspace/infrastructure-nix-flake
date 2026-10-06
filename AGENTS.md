@@ -18,7 +18,8 @@ Guidance for AI agents working in this repository. Read this before making chang
   `git+file:///home/leigh-admin/Projects/...` (gocardless-tools, pi-room-sys).
   Machines: `services1` (the main services box, 10.3.1.20) and `aibox`.
 - `common/` — shared modules imported by both machines (`tools.nix`,
-  `users.nix`, `sops.nix`).
+  `users.nix`, `sops.nix`, plus `crane.nix` — the shared crane build helpers,
+  see the Rust builds section).
 - `dns-sync/` — top-level Rust tool (zero external crates) that keeps the
   router's dnsmasq and DigitalOcean DNS in step with the `*.int.leighhack.org`
   nginx vhosts. Wired in via `machines/services1/dns-sync.nix`, which also
@@ -94,6 +95,12 @@ Guidance for AI agents working in this repository. Read this before making chang
   Playwright, run with `just filestore-test`); see `filestore/tests/README.md`
   for the test hooks the SPA carries (`data-fs-name`, `#fs-menu`, `#fs-modal`, …)
   and the bugs it has already caught.
+  Selection is keyboard-driven as well: the arrow keys move it and shift+arrow
+  extends the range from the anchor (`AppState::focus`, shared with shift-click),
+  with the column count read from the rendered grid so up/down matches what the
+  user sees. The context menu is clamped to the viewport (it can only be measured
+  after the first paint, so `menu.rs` caches the size between opens) and closes on
+  any click outside it.
 - `machines/services1/` — the services box:
   - `hardware-configuration.nix` — NFS mounts for the NAS and their explicit
     automount units (see gotcha below).
@@ -490,6 +497,36 @@ nix flake metadata           # locked inputs / rev
   and read back the rendered unit — NixOS normalises quoting and expands
   `${...}` and `
 ` line-continuations differently from what you typed.
+
+## Rust builds (crane)
+
+The Rust crates are packaged through **crane** (`github:ipetkov/crane`, shared
+helper in `common/crane.nix`) rather than `pkgs.rustPlatform.buildRustPackage`, so
+the dependency tree is compiled once into a cached derivation and a source-only
+edit recompiles just the crate: measured on filestore, ~4 min cold vs ~50 s for a
+one-line change.
+
+Call style is `CRANE.cached { pname; version; src; cargoLock; }` — crane takes
+`cargoLock` as a path, not nixpkgs' `cargoLock.lockFile` attrset, and vendors the
+crates itself, so there is no `cargoDeps` hash to maintain. `crane` reaches modules
+through the flake's `specialArgs`.
+
+Two things decide whether the cache actually holds:
+
+- Pass the lock file through `CRANE.lockFile` (a `writeText` keyed on the file's
+  **contents**). Handing crane a lock file that lives inside the crate's own source
+  directory makes the vendor and dummy-src derivations depend on the whole source
+  tree, so any edit — even a comment in a `.rs` file — invalidates the dependency
+  build.
+- Keep anything that references another derivation out of the args used for
+  `CRANE.deps`. A `preBuild` that points `build.rs` at the wasm bundle becomes an
+  input of the dependency derivation, so a SPA-only change would rebuild the
+  binary's deps. The service files therefore build a clean `args` set for the deps
+  and add the hook only on the crate build.
+
+The pinned `wasm-bindgen-cli` (0.2.128, which must match the wasm-bindgen crate in
+each frontend's Cargo.lock exactly) and the wasm build recipe live in
+`common/crane.nix` as `CRANE.wasmSpa` instead of being duplicated per machine.
 
 ## frigate-monitor web UI — local development
 

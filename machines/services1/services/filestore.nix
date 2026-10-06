@@ -13,70 +13,37 @@
 # env-file sops secret.  LAN-only, fronted by nginx as
 # filestore.int.leighhack.org (the int record is synced by dns-sync from the
 # vhost list — it replaces the old commented-out vhost in http.nix).
-{ config, lib, pkgs, ... }:
+{ config, lib, pkgs, crane, ... }:
 
 let
   CONFIG = import ../config.nix;
+  CRANE = import ../../../common/crane.nix { inherit pkgs crane; };
 
-  # wasm-bindgen-cli pinned to 0.2.128 — the exact wasm-bindgen version the
-  # SPA is compiled against (frontend/Cargo.lock); the cli and the
-  # wasm-bindgen runtime lib in the wasm must match or the generated JS glue
-  # is incompatible.  nixpkgs only ships older versions, so build it here
-  # (same recipe as gocardless-dashboard.nix).
-  wasmBindgenCliSrc = pkgs.fetchurl {
-    name = "wasm-bindgen-cli-0.2.128.tar.gz";
-    # crates.io's API download endpoint is blocked from our network; static
-    # is fine.
-    url = "https://static.crates.io/crates/wasm-bindgen-cli/wasm-bindgen-cli-0.2.128.crate";
-    hash = "sha256-LikUDAToGDKQK3Dl03uc4b+oEcj+RWO+oI9234OIzyA=";
-  };
-  wasmBindgenCli = pkgs.buildWasmBindgenCli {
-    version = "0.2.128";
-    src = wasmBindgenCliSrc;
-    cargoDeps = pkgs.rustPlatform.fetchCargoVendor {
-      pname = "wasm-bindgen-cli";
-      version = "0.2.128";
-      src = wasmBindgenCliSrc;
-      hash = "sha256-R1Tas33Ursy8kqsxguAkG0ZhNed2n5uFTAhw1l2qlLY=";
-    };
-  };
-
-  # The Dioxus SPA compiled to wasm.
-  frontendDist = pkgs.rustPlatform.buildRustPackage {
+  # The Dioxus SPA compiled to wasm (pinned wasm-bindgen-cli and the wasm build
+  # recipe live in common/crane.nix).
+  frontendDist = CRANE.wasmSpa {
     pname = "filestore-web";
     version = "0.1.0";
     src = ../../../filestore/frontend;
-    cargoLock.lockFile = ../../../filestore/frontend/Cargo.lock;
-    nativeBuildInputs = [ wasmBindgenCli pkgs.lld ];
-    doCheck = false;
-    # Wasm-only build.  Override the default phase because cargoBuildHook
-    # always adds the host target as well.  nixpkgs' rustc ships no wasm
-    # linker (rustup's does), so use wasm-ld from pkgs.lld.
-    buildPhase = ''
-      runHook preBuild
-      export CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_LINKER=wasm-ld
-      cargo build --release --target wasm32-unknown-unknown --offline
-      runHook postBuild
-    '';
-    installPhase = ''
-      runHook preInstall
-      wasm-bindgen --target web --out-dir $out --no-typescript \
-        target/wasm32-unknown-unknown/release/filestore_web.wasm
-      cp index.html $out/index.html
-      runHook postInstall
-    '';
+    cargoLock = CRANE.lockFile ../../../filestore/frontend/Cargo.lock;
+    wasmName = "filestore_web";
   };
 
-  filestore = pkgs.rustPlatform.buildRustPackage {
+  # The binary.  Its build.rs embeds the SPA, so the SPA is a build-hook input
+  # rather than a cargo dependency: the args used for the cached deps are kept
+  # clean so a SPA-only change does not rebuild the binary's dependency tree.
+  filestoreArgs = {
     pname = "filestore";
     version = "0.1.0";
     src = ../../../filestore;
-    cargoLock.lockFile = ../../../filestore/Cargo.lock;
-    doCheck = false;
-    # build.rs embeds the SPA; point it at the nix-built bundle instead of
-    # the (uncommitted) frontend/dist in the source tree.
-    preBuild = "export FILESTORE_DIST=${frontendDist}";
+    cargoLock = CRANE.lockFile ../../../filestore/Cargo.lock;
   };
+  filestore = CRANE.cached (filestoreArgs // {
+    cargoArtifacts = CRANE.deps filestoreArgs;
+    # Point build.rs at the nix-built bundle instead of the (uncommitted)
+    # frontend/dist in the source tree.
+    preBuild = "export FILESTORE_DIST=${frontendDist}";
+  });
 in
 {
   # The backing store is the /mnt/filestore NFS share on the NAS, so the

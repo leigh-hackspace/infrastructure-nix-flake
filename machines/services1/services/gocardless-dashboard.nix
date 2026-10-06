@@ -12,35 +12,14 @@
 # client id/secret live in the shared env-file sops secret.  LAN-only,
 # fronted by nginx as gocardless.int.leighhack.org (int record synced by
 # dns-sync from the vhost list).
-{ config, lib, pkgs, ... }:
+{ config, lib, pkgs, crane, ... }:
 
 let
   CONFIG = import ../config.nix;
+  CRANE = import ../../../common/crane.nix { inherit pkgs crane; };
 
-  # wasm-bindgen-cli pinned to 0.2.128 — the exact wasm-bindgen version the
-  # SPA is compiled against (frontend/Cargo.lock); the cli and the
-  # wasm-bindgen runtime lib in the wasm must match or the generated JS glue
-  # is incompatible.  nixpkgs only ships older versions, so build this one
-  # here (same recipe as machines/aibox/frigate-monitor.nix).
-  wasmBindgenCliSrc = pkgs.fetchurl {
-    name = "wasm-bindgen-cli-0.2.128.tar.gz";
-    # crates.io's API download endpoint is blocked from our network; static
-    # is fine.
-    url = "https://static.crates.io/crates/wasm-bindgen-cli/wasm-bindgen-cli-0.2.128.crate";
-    hash = "sha256-LikUDAToGDKQK3Dl03uc4b+oEcj+RWO+oI9234OIzyA=";
-  };
-  wasmBindgenCli = pkgs.buildWasmBindgenCli {
-    version = "0.2.128";
-    src = wasmBindgenCliSrc;
-    cargoDeps = pkgs.rustPlatform.fetchCargoVendor {
-      pname = "wasm-bindgen-cli";
-      version = "0.2.128";
-      src = wasmBindgenCliSrc;
-      hash = "sha256-R1Tas33Ursy8kqsxguAkG0ZhNed2n5uFTAhw1l2qlLY=";
-    };
-  };
-
-  # The Dioxus SPA compiled to wasm.  Its gdash-dto path dependency is a
+  # The Dioxus SPA compiled to wasm (pinned wasm-bindgen-cli and the wasm build
+  # recipe live in common/crane.nix).  Its gdash-dto path dependency is a
   # symlink in the source tree, so materialise a real copy for the sandbox.
   frontendSrc = pkgs.runCommand "gocardless-dashboard-frontend-src" { } ''
     cp -r ${../../../gocardless-dashboard/frontend} $out
@@ -51,41 +30,29 @@ let
     rm -rf $out/dto
     cp -r ${../../../gocardless-dashboard/dto} $out/dto
   '';
-  frontendDist = pkgs.rustPlatform.buildRustPackage {
+  frontendDist = CRANE.wasmSpa {
     pname = "gocardless-dashboard-web";
     version = "0.1.0";
     src = frontendSrc;
-    cargoLock.lockFile = ../../../gocardless-dashboard/frontend/Cargo.lock;
-    nativeBuildInputs = [ wasmBindgenCli pkgs.lld ];
-    doCheck = false;
-    # Wasm-only build.  Override the default phase because cargoBuildHook
-    # always adds the host target as well.  nixpkgs' rustc ships no wasm
-    # linker (rustup's does), so use wasm-ld from pkgs.lld.
-    buildPhase = ''
-      runHook preBuild
-      export CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_LINKER=wasm-ld
-      cargo build --release --target wasm32-unknown-unknown --offline
-      runHook postBuild
-    '';
-    installPhase = ''
-      runHook preInstall
-      wasm-bindgen --target web --out-dir $out --no-typescript \
-        target/wasm32-unknown-unknown/release/gocardless_dashboard_web.wasm
-      cp index.html $out/index.html
-      runHook postInstall
-    '';
+    cargoLock = CRANE.lockFile ../../../gocardless-dashboard/frontend/Cargo.lock;
+    wasmName = "gocardless_dashboard_web";
   };
 
-  dashboard = pkgs.rustPlatform.buildRustPackage {
+  # The binary.  Its build.rs embeds the SPA, so the SPA is a build-hook input
+  # rather than a cargo dependency: the args used for the cached deps are kept
+  # clean so a SPA-only change does not rebuild the binary's dependency tree.
+  dashboardArgs = {
     pname = "gocardless-dashboard";
     version = "0.1.0";
     src = ../../../gocardless-dashboard;
-    cargoLock.lockFile = ../../../gocardless-dashboard/Cargo.lock;
-    doCheck = false;
-    # build.rs embeds the SPA; point it at the nix-built bundle instead of
-    # the (uncommitted) frontend/dist in the source tree.
-    preBuild = "export GOCARDLESS_DASHBOARD_DIST=${frontendDist}";
+    cargoLock = CRANE.lockFile ../../../gocardless-dashboard/Cargo.lock;
   };
+  dashboard = CRANE.cached (dashboardArgs // {
+    cargoArtifacts = CRANE.deps dashboardArgs;
+    # Point build.rs at the nix-built bundle instead of the (uncommitted)
+    # frontend/dist in the source tree.
+    preBuild = "export GOCARDLESS_DASHBOARD_DIST=${frontendDist}";
+  });
 in
 {
   # Runs as root (like the other CONFIG.ENV_FILE consumers): /run/secrets is

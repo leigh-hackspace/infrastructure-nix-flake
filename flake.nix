@@ -2,6 +2,8 @@
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-26.05";
     nixos-hardware.url = "github:NixOS/nixos-hardware/master";
+    # Rust build helpers (cached dependency derivations); see common/crane.nix.
+    crane.url = "github:ipetkov/crane";
 
     nixos-utils = {
       url = "github:cjdell/nixos-utils";

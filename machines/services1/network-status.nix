@@ -23,10 +23,12 @@
   config,
   lib,
   pkgs,
+  crane,
   ...
 }:
 
 let
+  CRANE = import ../../common/crane.nix { inherit pkgs crane; };
   # Prebuilt SolidJS/TypeScript SPA. The bundle (dist/) is committed to the
   # git tree and copied into the store here, so the build is fully hermetic:
   # Nix builds run offline and the npm deps (esbuild, babel, ...) are not in
@@ -45,12 +47,11 @@ let
     '';
   };
 
-  networkStatus = pkgs.rustPlatform.buildRustPackage {
+  networkStatus = CRANE.cached {
     pname = "network-status";
     version = "0.1.0";
     src = ../../network-status;
-    cargoLock.lockFile = ../../network-status/Cargo.lock;
-    doCheck = false;
+    cargoLock = CRANE.lockFile ../../network-status/Cargo.lock;
   };
 in
 {
