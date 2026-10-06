@@ -80,17 +80,14 @@ pub fn build_rows(st: &AppState) -> Vec<Row> {
 }
 
 /// Selection: click / ctrl+click toggle / shift+click range.
-fn row_select(
-    mut st: AppState,
-    name: &str,
-    i: usize,
-    names: &[String],
-    me: &MouseEvent,
-    mut last: Signal<Option<usize>>,
-) {
+///
+/// `st.focus` is the shared anchor (also driven by the arrow keys), so a
+/// shift-click extends from the row the last plain click — or the last arrow —
+/// landed on.
+fn row_select(mut st: AppState, name: &str, i: usize, names: &[String], me: &MouseEvent) {
     let mut s = st.sel.read().clone();
     if me.modifiers().shift() {
-        if let Some(li) = *last.read() {
+        if let Some(li) = *st.focus.read() {
             let (lo, hi) = if li < i { (li, i) } else { (i, li) };
             for j in lo..=hi {
                 s.insert(names[j].clone());
@@ -107,7 +104,58 @@ fn row_select(
         s.insert(name.to_string());
     }
     st.sel.set(s);
-    last.set(Some(i));
+    st.focus.set(Some(i));
+}
+
+/// Move the selection with an arrow key (`delta` is in row units: one column in
+/// the icon grid, one row in the details table).
+///
+/// A plain arrow jumps to the next row and replaces the selection; shift+arrow
+/// extends the range from the anchor, matching shift+click (union semantics, so
+/// ctrl-clicked stragglers survive).
+pub fn move_selection(mut st: AppState, delta: i64, shift: bool) {
+    let names: Vec<String> = sorted(&st).iter().map(|e| e.name.clone()).collect();
+    if names.is_empty() {
+        return;
+    }
+    let n = names.len() as i64;
+    let anchor = *st.focus.read();
+    let i = match anchor {
+        Some(a) => (a as i64 + delta).clamp(0, n - 1),
+        None => 0,
+    };
+
+    let mut s = st.sel.read().clone();
+    if shift {
+        if let Some(a) = anchor {
+            let (lo, hi) = if (a as i64) < i { (a as i64, i) } else { (i, a as i64) };
+            for j in lo..=hi {
+                s.insert(names[j as usize].clone());
+            }
+        } else {
+            s.insert(names[i as usize].clone());
+        }
+    } else {
+        s.clear();
+        s.insert(names[i as usize].clone());
+    }
+    st.sel.set(s);
+    st.focus.set(Some(i as usize));
+    scroll_row_into_view(&names[i as usize]);
+}
+
+/// Number of grid columns currently painted (1 for the details table), read from
+/// the rendered `auto-fill` track list so arrow up/down matches what the user sees.
+pub fn grid_columns(st: &AppState) -> usize {
+    if *st.view.read() == View::Details {
+        return 1;
+    }
+    // js_eval_string only sees string results, so the count is returned as text.
+    js_eval_string(
+        r#"(function(){var a=document.getElementById('file-area');if(!a)return '1';var t=getComputedStyle(a).gridTemplateColumns;if(!t||t==='none')return '1';return ''+t.split(' ').length;})()"#,
+    )
+    .and_then(|s| s.parse::<usize>().ok())
+    .unwrap_or(1)
 }
 
 /// Open: dirs navigate, previewable files preview, others download.
@@ -168,7 +216,6 @@ fn row_dragstart(de: &DragEvent, st: &AppState, name: &str, is_sel: bool) {
 pub fn IconGrid(st: AppState) -> Element {
     let rows = build_rows(&st);
     let names: Vec<String> = rows.iter().map(|r| r.name.clone()).collect();
-    let last = use_signal(|| Option::<usize>::None);
 
     rsx! {
         div {
@@ -183,6 +230,7 @@ pub fn IconGrid(st: AppState) -> Element {
                     key: "{r.name}",
                     "data-fs-path": r.dpath.clone(),
                     "data-fs-name": r.name.clone(),
+                    "data-fs-sel": if r.is_sel { "1" } else { "0" },
                     style: "display:flex;flex-direction:column;align-items:center;gap:3px;padding:8px 4px;border:1px solid {r.border_c};background:{r.bg_c};border-radius:4px;cursor:default;user-select:none",
                     draggable: "true",
                     ondragstart: {
@@ -214,7 +262,7 @@ pub fn IconGrid(st: AppState) -> Element {
                         let i = r.i;
                         move |me| {
                             if is_left_click(&me) {
-                                row_select(st, &name, i, &names, &me, last);
+                                row_select(st, &name, i, &names, &me);
                             }
                         }
                     },
@@ -273,7 +321,6 @@ fn bg_menu(mut st: AppState, ce: &MouseEvent) {
 pub fn DetailsView(st: AppState) -> Element {
     let rows = build_rows(&st);
     let names: Vec<String> = rows.iter().map(|r| r.name.clone()).collect();
-    let last = use_signal(|| Option::<usize>::None);
     let sf = *st.sort_field.read();
     let asc = *st.sort_asc.read();
 
@@ -323,6 +370,7 @@ pub fn DetailsView(st: AppState) -> Element {
                             key: "{r.name}",
                             "data-fs-path": r.dpath.clone(),
                             "data-fs-name": r.name.clone(),
+                            "data-fs-sel": if r.is_sel { "1" } else { "0" },
                             style: "cursor:default;user-select:none;background:{r.bg_c}",
                             draggable: "true",
                             ondragstart: {
@@ -354,7 +402,7 @@ pub fn DetailsView(st: AppState) -> Element {
                                 let i = r.i;
                                 move |me| {
                                     if is_left_click(&me) {
-                                        row_select(st, &name, i, &names, &me, last);
+                                        row_select(st, &name, i, &names, &me);
                                     }
                                 }
                             },

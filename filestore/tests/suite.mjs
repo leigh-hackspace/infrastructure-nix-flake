@@ -108,6 +108,12 @@ const sel = (name) => `[data-fs-name=${JSON.stringify(name)}]`;
 const row = (name) => page.locator(sel(name));
 const rowNames = () =>
   page.evaluate(() => [...document.querySelectorAll('[data-fs-name]')].map((e) => e.getAttribute('data-fs-name')));
+const selectedNames = () =>
+  page.evaluate(() =>
+    [...document.querySelectorAll('[data-fs-name]')]
+      .filter((e) => e.getAttribute('data-fs-sel') === '1')
+      .map((e) => e.getAttribute('data-fs-name')),
+  );
 const statusText = () => page.evaluate(() => document.getElementById('fs-status').innerText);
 const toastTexts = () =>
   page.evaluate(() => [...document.querySelectorAll('#fs-toasts > div')].map((e) => e.innerText.trim()));
@@ -257,6 +263,54 @@ test('selection: click, ctrl-click, shift-click, select all', async () => {
   assert.match(await statusText(), new RegExp(`${names.length} selected`));
 });
 
+test('selection: arrow keys move the selection, shift+arrow extends', async () => {
+  // Details view keeps one row per arrow; in the icon grid an arrow spans a
+  // whole row of columns, which depends on the viewport width.
+  await clickButton('Details');
+  const names = await rowNames();
+
+  await row(names[0]).click();
+  assert.deepEqual(await selectedNames(), [names[0]], 'the click seeds the anchor');
+
+  await page.keyboard.press('ArrowDown');
+  assert.deepEqual(await selectedNames(), [names[1]], 'ArrowDown moves to the next row');
+
+  await page.keyboard.down('Shift');
+  await page.keyboard.press('ArrowDown');
+  await page.keyboard.up('Shift');
+  assert.deepEqual(await selectedNames(), [names[1], names[2]], 'shift+ArrowDown extends from the anchor');
+
+  // the anchor is where the arrow last landed, so a shift-click ranges from
+  // there rather than from the row that was clicked first (and, as with
+  // shift+click everywhere in the app, it adds to the existing selection)
+  await page.keyboard.down('Shift');
+  await row(names[4]).click();
+  await page.keyboard.up('Shift');
+  assert.deepEqual(await selectedNames(), names.slice(1, 5), 'shift-click ranges from the arrow anchor');
+
+  await page.keyboard.press('ArrowUp');
+  assert.deepEqual(await selectedNames(), [names[3]], 'a plain arrow replaces the range');
+
+  // the search box must keep its own arrow keys
+  await page.fill('#fs-search', 'notes');
+  await page.keyboard.press('ArrowDown');
+  assert.deepEqual(await selectedNames(), [names[3]], 'arrows in the search box do not move the selection');
+});
+
+test('selection: arrow keys in the icon grid move by the visible column count', async () => {
+  const names = await rowNames();
+  const cols = await page.evaluate(() => {
+    const a = document.getElementById('file-area');
+    const t = getComputedStyle(a).gridTemplateColumns;
+    return t === 'none' ? 1 : t.split(' ').length;
+  });
+  assert.ok(names.length > cols, 'the fixture spans more than one grid row');
+
+  await row(names[0]).click();
+  await page.keyboard.press('ArrowDown');
+  assert.deepEqual(await selectedNames(), [names[cols]], `ArrowDown steps a whole row (${cols} columns)`);
+});
+
 test('context menu: row', async () => {
   await row('notes.txt').click({ button: 'right' });
   const items = await menuItems();
@@ -272,6 +326,58 @@ test('context menu: background (empty area)', async () => {
   const items = await menuItems();
   assert.ok(items.length > 0, 'background right-click opens the menu');
   assert.ok(items.some((i) => i.includes('New folder')), 'background menu offers New folder');
+});
+
+test('context menu: clamped inside the viewport near the edges', async () => {
+  const vp = await page.evaluate(() => ({ w: window.innerWidth, h: window.innerHeight }));
+  const area = await page.locator('#file-area').boundingBox();
+
+  // Bottom-right: painted at the click point the menu would hang off both edges.
+  await page.mouse.click(area.x + area.width - 10, area.y + area.height - 40, { button: 'right' });
+  // The menu can only be measured after the first paint, so the position is
+  // corrected on the following render.
+  await page.waitForTimeout(300);
+  let box = await page.locator('#fs-menu').boundingBox();
+  assert.ok(box, 'the menu is open');
+  assert.ok(
+    box.x + box.width <= vp.w + 1,
+    `menu fits horizontally (x=${Math.round(box.x)}, w=${Math.round(box.width)}, viewport=${vp.w})`,
+  );
+  assert.ok(
+    box.y + box.height <= vp.h + 1,
+    `menu fits vertically (y=${Math.round(box.y)}, h=${Math.round(box.height)}, viewport=${vp.h})`,
+  );
+
+  // Top-left: clamping must not push it off the opposite edge either.
+  await page.mouse.click(area.x + 4, area.y + 4, { button: 'right' });
+  await page.waitForTimeout(300);
+  box = await page.locator('#fs-menu').boundingBox();
+  assert.ok(box, 'the menu is open');
+  assert.ok(box.x >= 0 && box.y >= 0, `menu stays on screen from the top-left (x=${Math.round(box.x)}, y=${Math.round(box.y)})`);
+});
+
+test('context menu: closes when clicking whitespace', async () => {
+  const gone = () => page.waitForFunction(() => !document.getElementById('fs-menu'), null, { timeout: 5000 });
+  const area = await page.locator('#file-area').boundingBox();
+  // open it in the far corner so the menu never covers the thing we click next
+  const openFar = async () => {
+    await page.mouse.click(area.x + area.width - 10, area.y + area.height - 40, { button: 'right' });
+    assert.ok((await menuItems()).length > 0, 'the menu is open');
+  };
+
+  await openFar();
+  await page.mouse.click(area.x + 40, area.y + 40);
+  await gone();
+
+  // a click on a row closes it too, so it cannot linger over the grid
+  await openFar();
+  await row('notes.txt').click();
+  await gone();
+
+  // Escape still works
+  await openFar();
+  await page.keyboard.press('Escape');
+  await gone();
 });
 
 test('new folder / new file via modal', async () => {

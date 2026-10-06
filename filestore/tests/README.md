@@ -37,7 +37,9 @@ driver, and its Rust bindings are not usable offline in this repo.
 The SPA is otherwise hard to drive from a browser, so the UI carries stable
 test hooks (harmless in production):
 
-- every grid/table row has `data-fs-path` and `data-fs-name`
+- every grid/table row has `data-fs-path`, `data-fs-name` and `data-fs-sel`
+  (`1` when the row is selected, so a test can check *which* rows are selected,
+  not just how many)
 - stable ids: `#fs-content`, `#fs-status`, `#fs-menu`, `#fs-modal`,
   `#fs-modal-input`, `#fs-preview`, `#fs-search`, `#fs-toasts`, `#fs-uploads`
 - `index.html` uses an empty `data:` icon so Chromium does not request
@@ -71,3 +73,11 @@ All of these were found by running the suite and are covered by tests.
    results header always claimed nothing had been scanned.
 8. **`/api/list` returned 400 for a missing directory** while every other
    endpoint returns 404.
+9. **Arrow-key navigation in the icon grid moved one item per press.**
+   `state.rs::js_eval_string` only sees *string* results, so the JS expression
+   that reads the rendered `auto-fill` column count returned `None` (it returned a
+   number) and the grid fell back to 1 column. The expression now returns text.
+10. **The context menu could be painted partly off screen.** It was positioned at
+    the click point, so a click near the bottom or right edge pushed it past the
+    viewport. It is now clamped, which can only be measured after the first paint
+    (the test waits for the corrected position).

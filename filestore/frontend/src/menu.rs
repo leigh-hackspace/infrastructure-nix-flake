@@ -8,8 +8,83 @@ use crate::api::{download_url, join_rel};
 use crate::grid::row_open;
 use crate::state::*;
 
+// The menu can only be measured after it has been painted, so the first paint
+// clamps with the size cached from the previous open (this estimate for the very
+// first one) and the effect in the component corrects it on the next pass.
+const EST_W: f64 = 190.0;
+const EST_H: f64 = 240.0;
+const EDGE_PAD: f64 = 4.0;
+
+thread_local! {
+    static MENU_SIZE: std::cell::Cell<(f64, f64)> = const { std::cell::Cell::new((EST_W, EST_H)) };
+}
+
+fn viewport_size() -> (f64, f64) {
+    let s = match js_eval_string("(function(){return window.innerWidth+'x'+window.innerHeight;})()") {
+        Some(s) => s,
+        None => return (0.0, 0.0),
+    };
+    match s.split_once('x') {
+        Some((w, h)) => (w.parse::<f64>().unwrap_or(0.0), h.parse::<f64>().unwrap_or(0.0)),
+        None => (0.0, 0.0),
+    }
+}
+
+/// Clamp an anchor point so a `w x h` menu stays fully inside the viewport.
+fn clamp_pos(x: f64, y: f64, w: f64, h: f64) -> (f64, f64) {
+    let (vw, vh) = viewport_size();
+    if vw <= 0.0 || vh <= 0.0 {
+        return (x, y);
+    }
+    let ax = if vw <= w + 2.0 * EDGE_PAD {
+        EDGE_PAD
+    } else {
+        x.clamp(EDGE_PAD, vw - w - EDGE_PAD)
+    };
+    let ay = if vh <= h + 2.0 * EDGE_PAD {
+        EDGE_PAD
+    } else {
+        y.clamp(EDGE_PAD, vh - h - EDGE_PAD)
+    };
+    (ax, ay)
+}
+
+fn measure_menu() -> Option<(f64, f64)> {
+    let s = js_eval_string(
+        r#"(function(){var m=document.getElementById('fs-menu');if(!m)return '';return m.offsetWidth+'x'+m.offsetHeight;})()"#,
+    )?;
+    let (w, h) = s.split_once('x')?;
+    let (w, h) = (w.parse::<f64>().ok()?, h.parse::<f64>().ok()?);
+    if w <= 0.0 || h <= 0.0 {
+        return None;
+    }
+    Some((w, h))
+}
+
 #[component]
 pub fn ContextMenu(st: AppState, menu: CtxMenu) -> Element {
+    // Paint position: the requested anchor, clamped to the viewport using the
+    // size cached from the previous open (so the first paint is already right in
+    // the common case).
+    let mut pos = use_signal(|| clamp_pos(menu.x, menu.y, MENU_SIZE.with(|c| c.get()).0, MENU_SIZE.with(|c| c.get()).1));
+
+    // Effects run after the DOM has been patched, so the menu is measurable
+    // here. It re-runs whenever the menu is reopened (st.ctx), its contents
+    // change (st.sel) or the position it computed changes (pos).
+    use_effect(move || {
+        let req = st.ctx.read().clone();
+        let Some(m) = req else { return };
+        let _ = st.sel.read();
+        let Some((w, h)) = measure_menu() else { return };
+        MENU_SIZE.with(|c| c.set((w, h)));
+        let (x, y) = clamp_pos(m.x, m.y, w, h);
+        if (x, y) != *pos.read() {
+            pos.set((x, y));
+        }
+    });
+
+    let (mx, my) = *pos.read();
+
     let sel: HashSet<String> = st.sel.read().clone();
     let target = menu.target.clone();
     let path = st.path.read().clone();
@@ -124,7 +199,7 @@ pub fn ContextMenu(st: AppState, menu: CtxMenu) -> Element {
     rsx! {
         div {
             id: "fs-menu",
-            style: "position:fixed;z-index:1000;min-width:190px;background:#fff;border:1px solid #999;box-shadow:2px 2px 8px rgba(0,0,0,0.25);padding:3px 0;left:{menu.x as i32}px;top:{menu.y as i32}px",
+            style: "position:fixed;z-index:1000;min-width:190px;background:#fff;border:1px solid #999;box-shadow:2px 2px 8px rgba(0,0,0,0.25);padding:3px 0;left:{mx as i32}px;top:{my as i32}px",
             onmousedown: move |e| e.stop_propagation(),
             oncontextmenu: move |e| e.prevent_default(),
 

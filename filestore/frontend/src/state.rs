@@ -107,6 +107,9 @@ pub struct AppState {
     pub entries: Signal<Vec<Entry>>,
     pub loading: Signal<bool>,
     pub sel: Signal<HashSet<String>>,
+    /// Index (into `grid::sorted()`) of the row the last click/arrow landed on.
+    /// Doubles as the anchor for shift-click / shift-arrow ranges.
+    pub focus: Signal<Option<usize>>,
     pub sort_field: Signal<SortField>,
     pub sort_asc: Signal<bool>,
     pub view: Signal<View>,
@@ -132,6 +135,7 @@ impl AppState {
             entries: Signal::new(Vec::new()),
             loading: Signal::new(true),
             sel: Signal::new(HashSet::new()),
+            focus: Signal::new(None),
             sort_field: Signal::new(SortField::Name),
             sort_asc: Signal::new(true),
             view: Signal::new(View::Icons),
@@ -167,6 +171,7 @@ pub fn navigate(mut st: AppState, path: &str) {
     st.hist.set(hist);
     st.hidx.set(new_idx);
     st.sel.set(HashSet::new());
+    st.focus.set(None);
     st.search.set(None);
     st.ctx.set(None);
     st.path.set(path);
@@ -182,6 +187,7 @@ pub fn go(mut st: AppState, delta: i64) {
     let path = hist[hidx as usize].clone();
     st.hidx.set(hidx as usize);
     st.sel.set(HashSet::new());
+    st.focus.set(None);
     st.search.set(None);
     st.ctx.set(None);
     st.path.set(path);
@@ -290,6 +296,16 @@ pub fn zip_selected(st: AppState, paths: Vec<String>) {
     }
     download(&zip_url(&paths));
     toast(st, &format!("zipping {} item(s)…", paths.len()), false);
+}
+
+/// Scroll the row with this name into view (arrow-key navigation should not
+/// move the selection somewhere the user cannot see).
+pub fn scroll_row_into_view(name: &str) {
+    let js = format!(
+        "(function(){{var r=document.querySelector('[data-fs-name=' + JSON.stringify({n}) + ']');if (r) r.scrollIntoView({{block:'nearest',inline:'nearest'}});}})()",
+        n = serde_json::json!(name)
+    );
+    let _ = js_eval(&js);
 }
 
 pub fn redirect(url: &str) {

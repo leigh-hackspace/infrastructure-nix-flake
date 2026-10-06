@@ -5,7 +5,7 @@ use dioxus::prelude::*;
 use wasm_bindgen::JsCast;
 
 use crate::api::*;
-use crate::grid::{DetailsView, IconGrid};
+use crate::grid::{DetailsView, grid_columns, IconGrid, move_selection};
 use crate::js::ensure_js_glue;
 use crate::menu::ContextMenu;
 use crate::modal::ModalBox;
@@ -87,6 +87,37 @@ pub fn App() -> Element {
                             st.entries.read().iter().map(|x| x.name.clone()).collect();
                         st.sel.set(all);
                     }
+                    "ArrowUp" | "ArrowDown" | "ArrowLeft" | "ArrowRight" => {
+                        // Do not steal the arrows from a text field (search box,
+                        // modal input), and the search results view has no
+                        // selection model to move.
+                        let tag = e
+                            .target()
+                            .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+                            .map(|el| el.tag_name())
+                            .unwrap_or_default();
+                        if matches!(tag.as_str(), "INPUT" | "TEXTAREA") || st.modal.read().is_some() {
+                            return;
+                        }
+                        if st.search.read().is_some() {
+                            return;
+                        }
+                        // In the icon grid up/down moves a whole row (one column
+                        // per step); in the details table every arrow is one row.
+                        let cols = grid_columns(&st) as i64;
+                        let delta = match e.key().as_str() {
+                            "ArrowUp" => -cols,
+                            "ArrowDown" => cols,
+                            "ArrowLeft" => -1,
+                            "ArrowRight" => 1,
+                            _ => 0,
+                        };
+                        if delta == 0 {
+                            return;
+                        }
+                        e.prevent_default();
+                        move_selection(st, delta, e.shift_key());
+                    }
                     "f" if ctrl => {
                         e.prevent_default();
                         load_dir(st);
@@ -123,6 +154,14 @@ pub fn App() -> Element {
 
     rsx! {
         div { id: "root", style: "height:100vh;display:flex;flex-direction:column",
+            onmousedown: move |_| {
+                // Any click outside the context menu closes it. The menu itself
+                // stops propagation, so clicks on its items (and on its padding)
+                // never reach here.
+                if st.ctx.read().is_some() {
+                    st.ctx.set(None);
+                }
+            },
             Toolbar { st }
 
             div {
