@@ -98,9 +98,20 @@ Guidance for AI agents working in this repository. Read this before making chang
   Selection is keyboard-driven as well: the arrow keys move it and shift+arrow
   extends the range from the anchor (`AppState::focus`, shared with shift-click),
   with the column count read from the rendered grid so up/down matches what the
-  user sees. The context menu is clamped to the viewport (it can only be measured
+  user sees. Enter opens the focused row (folder → navigate, previewable file →
+  preview, otherwise download) and is left to the focused control when a text
+  field or button has focus, so the search box and the modal input still work.
+  The context menu is clamped to the viewport (it can only be measured
   after the first paint, so `menu.rs` caches the size between opens) and closes on
   any click outside it.
+  Rows publish `text/uri-list` on `dragstart` (the download URL, or the ZIP URL
+  for a folder) as well as `application/x-filestore`, because the internal format
+  is only understood by this page and an external drop target would refuse the
+  drag.
+  Uploads are raw request bodies, so axum's `DefaultBodyLimit` does not apply to
+  them: the server enforces `--max-upload` (2G in production) and the vhost's
+  `client_max_body_size` must match it, otherwise nginx 413s the request and the
+  upload popup prints its HTML error page.
 - `machines/services1/` — the services box:
   - `hardware-configuration.nix` — NFS mounts for the NAS and their explicit
     automount units (see gotcha below).

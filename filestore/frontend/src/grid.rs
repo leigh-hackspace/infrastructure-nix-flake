@@ -158,6 +158,34 @@ pub fn grid_columns(st: &AppState) -> usize {
     .unwrap_or(1)
 }
 
+/// Open the row the keyboard focus is on (Enter).
+///
+/// `st.focus` is the arrow-key anchor; when the selection was made with the
+/// mouse only, a single selected row is used instead.  Multiple selections have
+/// no single "open" meaning, so Enter does nothing for them.
+pub fn open_focused(mut st: AppState) {
+    let entries = sorted(&st);
+    if entries.is_empty() {
+        return;
+    }
+    let idx = match *st.focus.read() {
+        Some(i) => i,
+        None => {
+            let sel = st.sel.read().clone();
+            if sel.len() != 1 {
+                return;
+            }
+            match entries.iter().position(|e| sel.contains(&e.name)) {
+                Some(i) => i,
+                None => return,
+            }
+        }
+    };
+    // Clone before calling: row_open writes signals.
+    let (name, is_dir) = (entries[idx].name.clone(), entries[idx].is_dir);
+    row_open(st, &name, is_dir);
+}
+
 /// Open: dirs navigate, previewable files preview, others download.
 pub fn row_open(st: AppState, name: &str, is_dir: bool) {
     let full = api::join_rel(&st.path.read(), name);
@@ -192,21 +220,58 @@ pub fn row_drop_internal(st: AppState, dt: &dioxus::html::DataTransfer, row_name
     }
 }
 
-fn row_dragstart(de: &DragEvent, st: &AppState, name: &str, is_sel: bool) {
+/// The URL an external drop target should be given for one row.
+///
+/// Files have a download URL; directories have no single file, so they point at
+/// their streaming ZIP.
+pub fn external_uri(dir: &str, name: &str, is_dir: bool) -> String {
+    let full = api::join_rel(dir, name);
+    if is_dir {
+        api::zip_url(&[full])
+    } else {
+        api::download_url(&full)
+    }
+}
+
+fn row_dragstart(de: &DragEvent, st: &AppState, name: &str, is_sel: bool, is_dir: bool) {
     let dt = de.data_transfer();
-    let paths: Vec<String> = {
-        let s: std::collections::HashSet<String> = st.sel.read().clone();
-        if is_sel && s.contains(name) {
-            s.iter().cloned().collect()
-        } else {
-            vec![name.to_string()]
-        }
+    let dir = st.path.read().clone();
+    let sel: std::collections::HashSet<String> = st.sel.read().clone();
+    let entries = st.entries.read().clone();
+
+    // The whole selection when the dragged row is part of it, otherwise just
+    // that row.
+    let items: Vec<(String, bool)> = if is_sel && sel.contains(name) {
+        entries
+            .iter()
+            .filter(|e| sel.contains(&e.name))
+            .map(|e| (e.name.clone(), e.is_dir))
+            .collect()
+    } else {
+        vec![(name.to_string(), is_dir)]
     };
+    let paths: Vec<String> = items.iter().map(|(n, _)| n.clone()).collect();
+
     let json = serde_json::json!({ "paths": paths }).to_string();
     let _ = dt.set_data("application/x-filestore", &json);
     if ctrl_held(de.modifiers()) {
         let _ = dt.set_data("application/x-filestore-copy", "1");
     }
+
+    // `application/x-filestore` is only understood by this page, so a drag that
+    // leaves the browser (file manager, desktop, an editor) had no payload the
+    // target could accept and the drop was simply refused.  text/uri-list is the
+    // format OS drag-and-drop actually speaks, so publish the download URLs as
+    // well: file managers fetch them, and targets that cannot fetch write a
+    // shortcut/link instead.  Without this, dragging a row out does nothing.
+    let origin = js_eval_string("(location.origin)").unwrap_or_default();
+    let uris: Vec<String> = items
+        .iter()
+        .map(|(n, d)| format!("{origin}{}", external_uri(&dir, n, *d)))
+        .collect();
+    let list = uris.join("\n");
+    let _ = dt.set_data("text/uri-list", &list);
+    let _ = dt.set_data("text/plain", &list);
 }
 
 // ---------------------------------------------------------------------------
@@ -236,7 +301,8 @@ pub fn IconGrid(st: AppState) -> Element {
                     ondragstart: {
                         let name = r.name.clone();
                         let is_sel = r.is_sel;
-                        move |de| row_dragstart(&de, &st, &name, is_sel)
+                        let is_dir = r.is_dir;
+                        move |de| row_dragstart(&de, &st, &name, is_sel, is_dir)
                     },
                     ondragover: {
                         let is_dir = r.is_dir;
@@ -376,7 +442,8 @@ pub fn DetailsView(st: AppState) -> Element {
                             ondragstart: {
                                 let name = r.name.clone();
                                 let is_sel = r.is_sel;
-                                move |de| row_dragstart(&de, &st, &name, is_sel)
+                                let is_dir = r.is_dir;
+                                move |de| row_dragstart(&de, &st, &name, is_sel, is_dir)
                             },
                             ondragover: {
                                 let is_dir = r.is_dir;

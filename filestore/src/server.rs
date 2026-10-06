@@ -71,6 +71,13 @@ fn cookie_value(header: &str) -> Option<String> {
     None
 }
 
+fn content_length(headers: &axum::http::HeaderMap) -> Option<u64> {
+    headers
+        .get(header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<u64>().ok())
+}
+
 // ---------------------------------------------------------------------------
 // errors
 
@@ -85,6 +92,9 @@ impl ApiError {
     }
     fn not_found(msg: impl Into<String>) -> Self {
         Self { status: StatusCode::NOT_FOUND, msg: msg.into() }
+    }
+    fn too_large(limit: u64) -> Self {
+        Self { status: StatusCode::PAYLOAD_TOO_LARGE, msg: format!("upload exceeds the {} limit", fmt_limit(limit)) }
     }
 }
 
@@ -111,6 +121,21 @@ impl From<io::Error> for ApiError {
 }
 
 type ApiResult<T> = Result<T, ApiError>;
+
+fn fmt_limit(n: u64) -> String {
+    const U: [&str; 6] = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
+    let mut v = n as f64;
+    let mut i = 0;
+    while v >= 1024.0 && i < U.len() - 1 {
+        v /= 1024.0;
+        i += 1;
+    }
+    if i == 0 {
+        format!("{n} B")
+    } else {
+        format!("{v:.1} {}", U[i])
+    }
+}
 
 // ---------------------------------------------------------------------------
 // query / body types
@@ -454,9 +479,18 @@ async fn delete(
 async fn upload(
     State(shared): State<Shared>,
     Authed(_): Authed,
+    headers: axum::http::HeaderMap,
     Query(q): Query<UploadQ>,
     body: Body,
 ) -> ApiResult<Json<Value>> {
+    let limit = shared.cfg.max_upload;
+    // Check Content-Length first so an oversized upload is refused before any
+    // bytes are written, then guard the stream as well (chunked bodies have no
+    // Content-Length).
+    if content_length(&headers) > Some(limit) {
+        return Err(ApiError::too_large(limit));
+    }
+
     let abs = shared.store.resolve(&join_rel(&q.path, &q.name))?;
     if abs.exists() {
         return Err(ApiError::bad("a file with that name already exists"));
@@ -475,8 +509,13 @@ async fn upload(
     let mut stream = body.into_data_stream();
     let mut file = tokio::fs::File::create(&tmp).await?;
     use tokio::io::AsyncWriteExt;
+    let mut written: u64 = 0;
     while let Some(chunk) = stream.next().await {
         let bytes = chunk.map_err(|_| ApiError::bad("upload stream error"))?;
+        written += bytes.len() as u64;
+        if written > limit {
+            return Err(ApiError::too_large(limit));
+        }
         file.write_all(&bytes).await?;
     }
     file.flush().await?;

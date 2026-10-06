@@ -5,7 +5,7 @@ use dioxus::prelude::*;
 use wasm_bindgen::JsCast;
 
 use crate::api::*;
-use crate::grid::{DetailsView, grid_columns, IconGrid, move_selection};
+use crate::grid::{DetailsView, grid_columns, IconGrid, move_selection, open_focused};
 use crate::js::ensure_js_glue;
 use crate::menu::ContextMenu;
 use crate::modal::ModalBox;
@@ -61,6 +61,11 @@ pub fn App() -> Element {
                     return;
                 };
                 let ctrl = e.ctrl_key() || e.meta_key();
+                let tag = e
+                    .target()
+                    .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+                    .map(|el| el.tag_name())
+                    .unwrap_or_default();
                 match e.key().as_str() {
                     "Escape" => {
                         st.ctx.set(None);
@@ -71,6 +76,20 @@ pub fn App() -> Element {
                         } else {
                             st.sel.set(std::collections::HashSet::new());
                         }
+                    }
+                    "Enter" => {
+                        // The search box and the modal input handle their own
+                        // Enter, and a focused button/link should activate as it
+                        // does natively, so only a bare Enter (target = the page)
+                        // opens the focused row.
+                        if matches!(tag.as_str(), "INPUT" | "TEXTAREA" | "BUTTON" | "A") {
+                            return;
+                        }
+                        if st.modal.read().is_some() || st.search.read().is_some() {
+                            return;
+                        }
+                        e.prevent_default();
+                        open_focused(st);
                     }
                     "Delete" => {
                         if st.modal.read().is_some() {
@@ -91,11 +110,6 @@ pub fn App() -> Element {
                         // Do not steal the arrows from a text field (search box,
                         // modal input), and the search results view has no
                         // selection model to move.
-                        let tag = e
-                            .target()
-                            .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
-                            .map(|el| el.tag_name())
-                            .unwrap_or_default();
                         if matches!(tag.as_str(), "INPUT" | "TEXTAREA") || st.modal.read().is_some() {
                             return;
                         }

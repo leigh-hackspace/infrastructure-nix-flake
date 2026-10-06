@@ -47,6 +47,13 @@ pub struct Config {
     /// Only allowed on a loopback bind — see `is_loopback` — so an unauthenticated
     /// filestore can never be exposed on a routable interface.
     pub no_auth: bool,
+    /// Largest upload body the API will accept (`--max-upload`).
+    ///
+    /// The upload route streams the raw body, so axum's `DefaultBodyLimit` does
+    /// not apply to it; this is the only limit on the server side.  nginx must be
+    /// configured to match (see machines/services1/services/filestore.nix) — its
+    /// default is far smaller, which is what produced the "HTTP 413" popups.
+    pub max_upload: u64,
 }
 
 pub struct Shared {
@@ -100,6 +107,22 @@ fn arg_opt(args: &[String], name: &str) -> Option<String> {
 
 fn is_loopback(bind: &str) -> bool {
     bind == "localhost" || bind.starts_with("127.") || bind.starts_with("::1")
+}
+
+/// Parse a size: a plain byte count, or a binary-suffixed one (512K, 2048M, 2G).
+fn parse_size(s: &str) -> u64 {
+    let s = s.trim();
+    let mult = match s.chars().last().unwrap_or_default() {
+        'k' | 'K' => 1024,
+        'm' | 'M' => 1024 * 1024,
+        'g' | 'G' => 1024 * 1024 * 1024,
+        _ => 1,
+    };
+    let num = if mult == 1 { s } else { &s[..s.len() - 1] };
+    num.parse::<u64>().unwrap_or_else(|_| {
+        eprintln!("bad size {s}");
+        std::process::exit(1);
+    }) * mult
 }
 
 fn arg<'a>(args: &'a [String], name: &str, default: Option<&'a str>) -> String {
@@ -164,6 +187,7 @@ async fn main() {
         required_group: opt("FILESTORE_REQUIRED_GROUP", "Infra".into()),
         dev_user: arg_opt(&args, "--dev-user"),
         no_auth,
+        max_upload: parse_size(&arg(&args, "--max-upload", Some("2G"))),
     });
 
     // --no-auth is a testing escape hatch: it must never be reachable from

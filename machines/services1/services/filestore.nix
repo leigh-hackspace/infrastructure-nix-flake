@@ -61,6 +61,7 @@ in
         "--root" "/mnt/filestore"
         "--env-file" CONFIG.ENV_FILE
         "--port" "8096"
+        "--max-upload" "2G"
       ];
       # Never give up.
       Restart = "always";
@@ -77,7 +78,15 @@ in
     locations."/" = {
       proxyPass = "http://127.0.0.1:8096";
       recommendedProxySettings = true;
-      extraConfig = CONFIG.LOCAL_NETWORK;
+      extraConfig = ''
+        # Uploads are raw request bodies.  nginx's default here is 10m, which
+        # 413'd every drag-in upload bigger than that (the popup the UI shows is
+        # nginx's error page, not the app's), so raise it to the limit the
+        # backend enforces with --max-upload 2G.
+        client_max_body_size 2048M;
+
+        ${CONFIG.LOCAL_NETWORK}
+      '';
     };
   };
 }

@@ -44,6 +44,12 @@ test hooks (harmless in production):
   `#fs-modal-input`, `#fs-preview`, `#fs-search`, `#fs-toasts`, `#fs-uploads`
 - `index.html` uses an empty `data:` icon so Chromium does not request
   `/favicon.ico` (which would show up as a console error)
+- drag-out is checked by dispatching a synthetic `dragstart` with a real
+  `DataTransfer` and reading the formats back off it — Playwright cannot drop
+  onto the OS, so the payload is the only observable half of that path
+- rows are not focusable, so Enter goes to whatever control still has focus;
+  tests that press Enter on a row must `blur()` first if they clicked a button
+  just before
 
 ## Bugs this suite found
 
@@ -81,3 +87,19 @@ All of these were found by running the suite and are covered by tests.
     the click point, so a click near the bottom or right edge pushed it past the
     viewport. It is now clamped, which can only be measured after the first paint
     (the test waits for the corrected position).
+11. **Enter did nothing.** The global key handler had no Enter branch, so the
+    keyboard could move the selection but not open it. It now opens the focused
+    row (folder → navigate, previewable file → preview, anything else →
+    download), and leaves Enter alone when a text field or button has focus so
+    the search box and the modal input keep working.
+12. **Dragging a row out of the browser dropped nothing.** Only
+    `application/x-filestore` was set, which nothing outside the page understands,
+    so the target refused the drop. Rows now also publish `text/uri-list` (and
+    `text/plain`) with the download URL — the ZIP URL for a folder, since a
+    folder has no single file.
+13. **Uploads over the limit showed "HTTP 413".** The upload route streams the
+    raw body, so axum's `DefaultBodyLimit` never applied to it, and nginx's
+    default `client_max_body_size` (10m) rejected anything bigger with an HTML
+    error page that the upload popup then printed verbatim. The server now
+    enforces `--max-upload` (2G in production) and answers with the JSON error
+    the popup expects, and the vhost raises nginx's limit to match.

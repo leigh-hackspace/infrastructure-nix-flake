@@ -148,6 +148,14 @@ async function closePreview() {
   await page.waitForFunction(() => !document.getElementById('fs-preview'), null, { timeout: 8000 });
 }
 
+// Rows are not focusable, so Enter goes to whatever control still has focus.
+// After clicking a toolbar button (or the preview's ✕) that control is the
+// focused one, and Enter must activate it rather than open a row — so the row
+// tests have to clear focus first.
+async function blur() {
+  await page.evaluate(() => document.activeElement.blur());
+}
+
 // In search mode the toolbar is replaced by the search bar, so the shallow/deep
 // toggle lives inside #root as well.
 
@@ -560,6 +568,34 @@ test('drag: internal copy with ctrl', async () => {
   assert.ok(exists('move-me.txt'), 'the source is still there (copy, not move)');
 });
 
+test('drag out: dragstart publishes text/uri-list for targets outside the page', async () => {
+  // Playwright cannot drop onto the OS, so drive dragstart with a real
+  // DataTransfer and read back what the row put on it.
+  const grab = (name) =>
+    page.evaluate((n) => {
+      const r = document.querySelector(`[data-fs-name=${JSON.stringify(n)}]`);
+      const dt = new DataTransfer();
+      r.dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer: dt }));
+      return {
+        types: [...dt.types],
+        uri: dt.getData('text/uri-list'),
+        internal: dt.getData('application/x-filestore'),
+      };
+    }, name);
+
+  const f = await grab('notes.txt');
+  assert.ok(
+    f.types.includes('text/uri-list'),
+    `the drag carries a format an external drop target can read (got ${JSON.stringify(f.types)})`,
+  );
+  assert.match(f.uri, /\/api\/download\?path=notes\.txt$/, `a file drag publishes its download URL (got ${f.uri})`);
+  assert.match(f.internal, /notes\.txt/, 'the internal format is still there for internal drops');
+
+  // a folder has no single file, so it publishes its streaming ZIP instead
+  const d = await grab('docs');
+  assert.match(d.uri, /\/api\/zip\?path=docs$/, `a folder drag publishes its ZIP (got ${d.uri})`);
+});
+
 test('keyboard: Escape closes menu, modal and preview', async () => {
   await row('notes.txt').click({ button: 'right' });
   await page.waitForSelector('#fs-menu', { timeout: 8000 });
@@ -575,6 +611,48 @@ test('keyboard: Escape closes menu, modal and preview', async () => {
   await page.waitForSelector('#fs-preview pre', { timeout: 8000 });
   await page.keyboard.press('Escape');
   await page.waitForFunction(() => !document.getElementById('fs-preview'), null, { timeout: 8000 });
+});
+
+test('keyboard: Enter opens the focused row', async () => {
+  // a file that cannot be previewed falls back to a download
+  const w = page.waitForEvent('download', { timeout: 8000 });
+  await row('binary.bin').click();
+  await page.keyboard.press('Enter');
+  assert.equal((await w).suggestedFilename(), 'binary.bin', 'Enter downloads a file it cannot preview');
+
+  await row('notes.txt').click();
+  await page.keyboard.press('Enter');
+  await page.waitForSelector('#fs-preview pre', { timeout: 8000 });
+  await closePreview();
+  await blur();
+
+  await row('docs').click();
+  await page.keyboard.press('Enter');
+  await waitLoaded();
+  assert.ok((await rowNames()).includes('readme.md'), 'Enter opens the selected folder');
+
+  // the arrow-key anchor is what Enter opens, not only the row clicked
+  await clickButton('/');
+  await blur();
+  await clickButton('Details');
+  await blur();
+  const names = await rowNames();
+  await row(names[0]).click();
+  await page.keyboard.press('ArrowDown');
+  await page.keyboard.press('Enter');
+  await waitLoaded();
+  const bc = await page.evaluate(() => [...document.querySelectorAll('#root button')].map((b) => b.innerText));
+  assert.ok(bc.some((b) => b.includes(names[1])), `Enter opened the row the arrow moved to (${names[1]})`);
+
+  // Enter in a text field belongs to that field (the search box runs the search)
+  await clickButton('/');
+  await page.fill('#fs-search', 'needle');
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(() => document.body.innerText.includes('needle-found-me'), null, { timeout: 10000 });
+  assert.ok(
+    await page.evaluate(() => document.body.innerText.includes('result(s) for "needle"')),
+    'Enter in the search box still runs the search',
+  );
 });
 
 test('search result double-click jumps to the containing folder', async () => {
@@ -597,6 +675,33 @@ test('delete through the context menu', async () => {
   await modalButton('Delete').click();
   await waitToast('deleted 1 item(s)');
   assert.ok(!exists('notes.txt'));
+});
+
+test('upload: oversized body is refused with a JSON 413 that names the limit', async () => {
+  // The default limit is 2G, which the suite cannot exercise; the limit is a
+  // flag, so start a second server with a tiny one.  The upload route takes the
+  // raw body, so axum's DefaultBodyLimit does not apply to it — this is the only
+  // server-side limit (nginx has its own, see machines/services1/services/filestore.nix).
+  const port = 18099;
+  const p = await startServer(['--root', ROOT, '--no-auth', '--port', String(port), '--max-upload', '1024'], port);
+  try {
+    const r = await fetch(`http://127.0.0.1:${port}/api/upload?path=&name=too-big.bin`, {
+      method: 'POST',
+      body: 'x'.repeat(2048),
+    });
+    assert.equal(r.status, 413, 'over the limit is refused');
+    const j = await r.json();
+    assert.match(j.error, /exceeds the 1\.0 KiB limit/, `the error names the limit (got ${JSON.stringify(j)})`);
+    assert.ok(!exists('too-big.bin'), 'nothing was written');
+
+    const ok = await fetch(`http://127.0.0.1:${port}/api/upload?path=&name=small.bin`, {
+      method: 'POST',
+      body: 'x'.repeat(512),
+    });
+    assert.equal(ok.status, 200, 'under the limit still uploads');
+  } finally {
+    p.kill();
+  }
 });
 
 test('path traversal is rejected', async () => {
