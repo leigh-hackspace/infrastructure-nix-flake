@@ -36,6 +36,81 @@ and bought only **+11–17 % decode, +3 % prefill**, while eating the RAM the
 arena needs. `--expert-cache auto` is worse still: it reads `hipMemGetInfo`'s
 ~52 GiB of "free" GTT and fills the machine.
 
+## UMA reality check: GTT, "VRAM" and "PCIe" are all the same DDR5 (2026-10-07)
+
+Measured on the deployed engine (0.1.40.2, `--expert-cache 4096` which the
+engine rounds to 4292 slots, 262144 context):
+
+```
+mem_info_gtt_total   56.00 GiB    the driver's cap on DDR5 the GPU may map
+mem_info_gtt_used    15.11 GiB
+MemTotal             59.6 GiB
+```
+
+GTT is not a second memory pool; it is the GPU's mapping of the same DDR5 the
+CPU expert pool reads. Two things follow that are easy to get backwards.
+
+### "Put the whole model in the GTT" is a compute change, not a bandwidth one
+
+- All **24 576 experts ≈ 33-36 GiB** as IQ2_XS, so a full GPU copy *does* fit
+  under the 56 GiB cap (a full cache ~34 GiB + dense/KV/MTP ~8 GiB ≈ 42 GiB).
+- **But the engine defaults to a resident expert arena *plus* the GPU cache**:
+  the same experts as CPU-readable memory (~33 GiB, `cudaHostRegister`ed, read
+  through the file cache) *and* the hot ones copied into GTT. Both plus a full
+  GPU copy is ~33 + 34 + 8 ≈ **75 GiB** — impossible. The only way it fits is
+  `--mmap-experts` (drops the resident arena; single file-backed copy), a cache
+  sized for all 24 576 experts and `--no-pool`.
+- **The payoff is small, because the routing is very skewed.** 8192 slots (33 %
+  of experts) already covers ~90 % of routing; `--expert-cache auto` (12 167
+  experts, 16.3 GiB) covers 91 %. The last ~9 % is ~12 000 experts (~17 GiB)
+  for a projected single-digit percent of decode — and it moves cold-expert
+  work onto the same 6 CUs that are already the dense-compute bottleneck,
+  instead of the idle CPU cores.
+- **The ceilings do not move either way.** Decode is DRAM-bandwidth-bound
+  (~2.7 GB/token at ~50 GB/s → ~18 tok/s theoretical; we sit at 9-12) and
+  prefill is 6-CU compute-bound (~45 tok/s). Moving experts between CPU and GPU
+  changes *who computes*, not the DRAM traffic.
+
+`--gpu-only-full` (replay all 48 layers + the LM head, no pool) measures the
+true per-token GPU floor; a full-cache `--no-pool` arm gives the
+all-experts-on-GPU number. Neither is a serve config — upstream documents
+`--no-pool` as a measurement mode.
+
+### The "PCIe" numbers are RAM→RAM copies
+
+The engine's own startup log:
+
+```
+strata generate: PCIe probe: 31.4 GB/s host->device -> pcie_frac 0.55 (default 0.55)
+```
+
+31.4 GB/s is a memcpy inside the same DDR5, not a link: there is no PCIe path
+between the 660M and the CPU. What the per-request line reports
+(`… more read by the GPU over PCIe … (16.1 % of all routed)`) is `--pcie-frac`,
+the share of experts **missing from the GPU cache that are handed to the GPU
+instead of computed by the CPU pool**. On this box that is 12-22 % of routed
+experts (typically ~16 %), and the GPU reaches them through a **mapped alias**
+into the pinned host arena — `--pcie-frac 0` is documented as "the GPUs get no
+mapped alias".
+
+- The profile shows it as `PCIe grp` (~14.9 ms of the 234 ms verify window on
+  the GDN side, ~3.7 ms QSA), plus host-side `PCIe 5.51`/layer-window.
+- It is not a bus traversal, but it is real DRAM traffic on a bandwidth-bound
+  box, and the 31.4 GB/s probe is below this box's ~50 GB/s peak, so the mapped
+  host path is slower per byte than a native GTT allocation.
+- It is intentional: CPU expert compute is the biggest single cost here
+  (~95 ms/window), so the engine offloads a share of the misses to the GPU.
+
+**Open tuning lever.** `pcie_frac 0.55` is the fallback default (measured
+upstream on a Ryzen 7600 + RTX 5070); the probe found no real link here. On UMA
+the trade is "6 CPU cores vs. GPU + extra DRAM traffic", so the optimum is not
+obviously 0.55. Upstream's `--calibrate` sweeps exactly this. Worth A/B-ing
+`--pcie-frac 0 / 0.25 / 0.55 / 1.0` with the `strata-tune` short bench: if a
+lower value wins or ties, it also cuts the RAM→RAM traffic and the copy path (a
+small reliability bonus next to the #884 copy bug). Also worth checking whether
+the mapped alias is a true zero-copy read or a staged copy into a GTT buffer —
+if it stages, UMA pays 2x DRAM traffic for bytes already in RAM.
+
 ## Where a decode token actually goes (`STRATA_DECODE_TIMING=1 STRATA_VERIFY_PROFILE=1`)
 
 ```
