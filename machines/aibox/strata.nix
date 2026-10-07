@@ -110,7 +110,7 @@ let
   # frigate/immich/whisper). 4096 lands at ~50 GiB used, ~10 GiB headroom.
   # Raise --max-context only with the RAM for it: 262144 costs ~3.6 GiB of KV,
   # 524288 ~7.2 GiB + YaRN 2.
-  context = 131072;
+  context = 262144;
   expertCache = 4096;
 
   # Explicit chunk, not "auto": auto picks the largest chunk the expert cache can
@@ -168,6 +168,23 @@ let
         # the 660M and rocBLAS/Tensile kernels are selected for gfx1030.
         HSA_OVERRIDE_GFX_VERSION = "10.3.0";
         HIP_VISIBLE_DEVICES = "0";
+
+        # Reliability workarounds for the open gfx1030 `verify: timed out at
+        # layer N (#267)` stall. Upstream #884 traces it to a ROCm barrier
+        # packet that is never passed when the MMQ prompt path, the adaptive
+        # expert swaps and SDMA copies are used together - exactly our stock
+        # config. This does the adaptive swaps' H2D copies with a kernel
+        # instead of SDMA, so it keeps the MMQ prompt speed (unlike
+        # HSA_ENABLE_SDMA=0, which costs 10-24% prompt) and 3-11% decode
+        # (unlike disabling swaps with --adapt-every). See STRATA.md.
+        STRATA_HIP_ADAPT_KERNEL_COPY = "1";
+        # Second, independent mechanism (upstream #750/#920): on this iGPU
+        # every GPU allocation is a KFD userptr over the same DDR5 the expert
+        # arena uses, and when the kernel reclaims a pinned page the GPU's
+        # queues are suspended until the page is restored - which shows up as
+        # the same verify timeout. Keeping ROCr off USERPTR for paged host
+        # allocations avoids it (measured as the same median upstream).
+        HSA_USERPTR_FOR_PAGED_MEM = "0";
       };
     }
   );
@@ -207,27 +224,33 @@ in
 
   config = lib.mkIf cfg.enable {
     systemd.services.strata = {
-    description = "Strata (Qwen3.8-Flash-Next across the Radeon iGPU, RAM and NVMe)";
-    after = [ "network-online.target" ];
-    wants = [ "network-online.target" ];
-    wantedBy = [ "multi-user.target" ];
+      description = "Strata (Qwen3.8-Flash-Next across the Radeon iGPU, RAM and NVMe)";
+      after = [ "network-online.target" ];
+      wants = [ "network-online.target" ];
+      wantedBy = [ "multi-user.target" ];
 
-    # Don't crash-loop before the hand-run model prep has produced a pack.
-    unitConfig.ConditionPathExists = "${packDir}/index.txt";
+      # Never rate-limit restarts: a startup that fails because a leftover
+      # engine still holds the GTT must keep retrying until it can come up,
+      # rather than parking in `failed` (the "killed engine keeps its GTT"
+      # crash-loop). RestartSec below paces each attempt.
+      startLimitIntervalSec = 0;
 
-    serviceConfig = {
-      ExecStart = "${strata}/bin/strata-server --engine strata --config ${configFile} --host 10.3.1.32 --port 8080";
-      # The engine log (config "log") is written here; StateDirectory creates it.
-      StateDirectory = "strata";
-      Restart = "on-failure";
-      RestartSec = 10;
-      # Loading the model is a multi-minute, tens-of-GB operation.
-      TimeoutStartSec = "infinity";
-      TimeoutStopSec = 120;
-      # The resident expert arena is page-locked where it can be.
-      LimitMEMLOCK = "infinity";
+      # Don't crash-loop before the hand-run model prep has produced a pack.
+      unitConfig.ConditionPathExists = "${packDir}/index.txt";
+
+      serviceConfig = {
+        ExecStart = "${strata}/bin/strata-server --engine strata --config ${configFile} --host 10.3.1.32 --port 8080";
+        # The engine log (config "log") is written here; StateDirectory creates it.
+        StateDirectory = "strata";
+        Restart = "on-failure";
+        RestartSec = 10;
+        # Loading the model is a multi-minute, tens-of-GB operation.
+        TimeoutStartSec = "infinity";
+        TimeoutStopSec = 120;
+        # The resident expert arena is page-locked where it can be.
+        LimitMEMLOCK = "infinity";
+      };
     };
-  };
 
     # The two cannot be resident at once (see the header).
     systemd.services.llama-server.wantedBy = lib.mkForce (

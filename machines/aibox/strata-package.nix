@@ -73,13 +73,13 @@ let
 in
 stdenv.mkDerivation (finalAttrs: {
   pname = "strata";
-  version = "0.1.39";
+  version = "0.1.40.2";
 
   src = fetchFromGitHub {
     owner = "Niko1221";
     repo = "Strata";
-    rev = "6f32ec070f23ced9f50e704d854d775da52591ab";
-    hash = "sha256-9jqmV+AbGKiOqW1DvKjqBLVXmJCI9o6WI85QoHj5vBI=";
+    rev = "e8ca9afd03d839d4f8dbbe82dffce7f8a3bafd7a";
+    hash = "sha256-NCOHJF8L32g67h8S4XY9uOABAKEoqapGqYLUEoiVHME=";
   };
 
   nativeBuildInputs = [

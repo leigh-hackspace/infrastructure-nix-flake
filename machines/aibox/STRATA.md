@@ -123,6 +123,135 @@ grouped-GEMM throughput, not a cache or chunk-size problem.
   every `nixos-rebuild switch` here must be followed by `sudo nixos-confirm`.
 - New files must be `git add`ed — the flake reads its own directory through git.
 
+## Crash: verify-window timeout (#267) — 2026-10-06
+
+At **2026-10-06 13:04:57** a decode request died with:
+
+```
+[strata] the engine reported an error: verify: timed out at layer 23; its GPU waits were released
+         but the GPU did not finish within 5 s (#267)
+[strata] done: 1171 tokens in 173 s (7.4 tok/s) (error, cancel=False)
+```
+
+The stream had been healthy (8.8-8.9 tok/s at ~1100 tokens, context ~90k) and
+then decayed 8.8 -> 8.2 -> 7.7 tok/s and stalled; the watchdog fired ~16 s
+later. **It was not a process crash:** `NRestarts=0`, the engine PID was
+unchanged from the previous boot, and the next request (a 92,594-token prompt)
+was already being served. Since 0.1.31 the engine treats a verify-window
+stall as a *bounded* wait: after 5 s it releases every GPU wait, aborts only
+that request and keeps serving. That is the #267 containment working, not a
+fault — the alternative (pre-0.1.31) is the host waiting forever, and on
+Windows a GPU wedged into an unrecoverable "device lost" until a power cycle.
+
+This is a known open **gfx1030/RDNA2 HIP** problem, and our box is an exact
+match for upstream's "stock" repro (engine 0.1.39 @ `6f32ec0`, built with
+`-DSTRATA_PREFILL_MMQ=ON`, running for gfx1030):
+
+- **#884** (open) — stock `6f32ec0`, 2x RX 6900 XT: `verify: timed out at
+  layer N … (#267)` after a long prompt, after ~7 earlier requests. Needs
+  **MMQ prompt path + adaptive expert swaps + SDMA copies** together; removing
+  any one avoids it: `HSA_ENABLE_SDMA=0` (0/4), `--adapt-every 100000` (0/7),
+  `STRATA_PREFILL_MMQ=0` (0/4). Root cause traced to a ROCm barrier packet
+  whose dependency signal has already completed but the command processor never
+  passes it. Costs: `HSA_ENABLE_SDMA=0` slows prompt reads 10-24% (decode
+  unchanged), `--adapt-every` costs 3-11% decode, `MMQ=0` costs 28-42% prompt.
+- **#1103** (open, filed 2026-10-06) — gfx1030 intermittent timeouts, stable
+  for the reporter with `HSA_ENABLE_SDMA=0`.
+- **#649** (open) — same message, different trigger: a pinned resident budget
+  on a low-RAM box starves the CPU expert pool so it misses the verify
+  handshake. Keep an eye on memory pressure here (51/59 GiB used, 3.3 GiB
+  swap, 12 GB GTT at the time).
+- Upstream 0.1.40 ships **`STRATA_HIP_ADAPT_KERNEL_COPY=1`**, which does the
+  adaptive swaps' H2D copies with a kernel instead of SDMA — the intended
+  gfx1030 workaround, without the prompt penalty of `HSA_ENABLE_SDMA=0`.
+
+Only one #267-class event has been seen in a 1.5-day run; it is intermittent.
+If it recurs, set `STRATA_VERIFY_TRACE=1` (0.1.39+) to capture the upstream
+trace block, then try `STRATA_HIP_ADAPT_KERNEL_COPY=1` (0.1.40+) before the
+blunter `HSA_ENABLE_SDMA=0`. (The Oct 05 failures were the separate, documented
+"a killed engine keeps its GTT" crash-loop, not this.)
+
+**Deployed 2026-10-06:** engine bumped to **0.1.40.1**
+(`strata-package.nix`, rev `82f46a8`, same pinned llama.cpp `3cf03257`). The
+new engine came up clean in ~15 s (`/health`, `/v1/models`, 11.2 GiB of GTT)
+and the request in flight during the restart was the only casualty. The
+`STRATA_HIP_ADAPT_KERNEL_COPY=1` workaround was not enabled at that point; it
+went on with the 0.1.40.2 update below.
+
+## Update: engine 0.1.40.2 — 2026-10-07
+
+Reviewed the crash record before bumping. All of it is in the two sections
+above; summarised:
+
+- **2026-10-05 01:33** — a crash-loop of `cudaMalloc(...) for the weight arena
+  failed`: a SIGKILLed experiment engine had not released its GTT. Not an
+  engine fault ("a killed engine keeps its GTT" above); the manual recovery
+  fixed it.
+- **2026-10-06 13:04:57** — one `verify: timed out at layer 23 … (#267)`,
+  contained by the engine: the request was aborted and the service kept
+  serving. The only #267-class event in a 1.5-day run.
+- **2026-10-06 13:18** — `exit code -15` + `done: 0 tokens in 809 s`: the
+  in-flight request when the 0.1.40.1 unit was restarted, not a fault.
+- Since that restart: `NRestarts=0`, up 1 day 2 h, no further timeouts.
+
+0.1.40.2 is a fixes-and-speed release (byte-identical default answers to
+0.1.40). What it changes for our two open gfx1030 problems:
+
+- **The gfx103x build now defaults to PR #540's attention kernel** (8 cells per
+  step, DPP lane exchanges, bit-exact) instead of the LDS-pipe-bound default —
+  a change to the kernels around the #267 stall trigger. `STRATA_ATTN_PRE75=0`
+  restores the old one.
+- **New diagnostics for exactly this class of timeout:** the engine prints the
+  free VRAM before each verify-window capture (#1275), and
+  `STRATA_DBG_GDN=1` checks the commit kernel's window count (#937).
+- **Restart robustness:** the server's read of the engine's `READY` line is now
+  bounded (#1317), and a request the engine refuses with an `ERR` answers at
+  once instead of waiting 300 s for a `DONE` (#1059) — so a future restart
+  should not strand requests the way the 13:18 one was.
+- Upstream `docs/AMD_HIP.md` now documents the gfx1030 verify-timeout
+  workarounds: `HSA_USERPTR_FOR_PAGED_MEM=0` (two R9700, ROCm 7.2) and
+  `GPU_PINNED_MIN_XFER_SIZE=1048576` (RX 6800, `--mmap-experts`, which we do
+  **not** use). `STRATA_HIP_ADAPT_KERNEL_COPY=1` (#884) remains the intended
+  fix for the MMQ-prompt + adaptive-swap case we are an exact match for.
+- `setup.py`'s per-GPU ROCm-wheel pin for #1103 (gfx103X) does **not** apply:
+  we build against nixpkgs' `rocmPackages` (ROCm 7.2.3), not a setup.py wheel.
+- **No confirmed upstream fix for #267 / #884**, so the env workarounds are
+  still the only mitigations. Both are now **enabled** (see below).
+
+### Reliability workarounds now enabled (2026-10-07)
+
+The unit's run-config `env` sets two independent mitigations for the two
+identified mechanisms of the gfx1030 verify timeout. They are env-only and
+removable; if the timeout still recurs, the next steps are `--adapt-every`
+(a larger number / disabling swaps, 3-11% decode) and then `HSA_ENABLE_SDMA=0`
+(10-24% prompt).
+
+- `STRATA_HIP_ADAPT_KERNEL_COPY=1` — does the adaptive expert tier's H2D
+  swaps with a kernel instead of SDMA. This is upstream's intended fix for
+  **#884** (MMQ prompt + adaptive swaps + SDMA copies, our exact config), and
+  unlike `HSA_ENABLE_SDMA=0` it does not cost prompt speed.
+- `HSA_USERPTR_FOR_PAGED_MEM=0` — keeps ROCr off USERPTR for paged host
+  allocations. This is the documented **#750/#920** mechanism: on this iGPU
+  every GPU allocation is a KFD userptr over the same DDR5 as the expert
+  arena, and when the kernel reclaims a pinned page the GPU queues are
+  suspended, which presents as the same verify timeout. Upstream measured the
+  same median with it (solo requests a little slower), so it is a reliability
+  for speed trade, not a free win.
+
+The unit also has `startLimitIntervalSec = 0` so a startup that fails while a
+leftover engine holds the GTT keeps retrying instead of parking in `failed`.
+
+**Watch on recurrence:** the 0.1.40.2 engine now logs the free VRAM before
+each verify-window capture (#1275); if a timeout appears again, capture that
+line, plus `STRATA_VERIFY_TRACE=1` if needed. Memory is the other lever
+(#649): at 262144 context the box sits at ~51 GiB used / ~8 GiB available with
+2.6 GiB of swap in use, and the expert cache is the dial to turn down
+(`expertCache = 2048` frees ~2.9 GiB for ~10% decode).
+
+Pinned llama.cpp is unchanged (`3cf03257`), so the ggml side is identical.
+Built for gfx1030 and device-checked clean (`strata-device --list-devices`
+with `HSA_OVERRIDE_GFX_VERSION=10.3.0` reports `arch gfx1030`).
+
 ## Pi clients
 
 `~/.pi/agent/models.json` on **aibox** and **services1** (10.3.1.20) was written
