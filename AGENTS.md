@@ -63,6 +63,10 @@ Guidance for AI agents working in this repository. Read this before making chang
   `POST /api/authentik-sync`). The old script's bugs (only read the first 20
   users; user creation always failed on username collision) are fixed —
   username collisions are now logged as `skipped_existing_username`.
+  The “Members sync” page re-fetches the audit log every 15 s and shows the
+  error on failure; it used to be a single fire-and-forget fetch with the error
+  swallowed, so one failed request left it stuck on “loading…” until the page
+  was reloaded.
 - `network-status/` — the router network dashboard (served at
   `network-info.int.leighhack.org`). The Rust binary (`src/`, zero external
   crates) ssh's to the router every 5s, keeps a rolling history, serves the

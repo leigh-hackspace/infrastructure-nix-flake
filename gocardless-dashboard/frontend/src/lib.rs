@@ -678,11 +678,24 @@ fn AkSyncView(mut back: Signal<bool>) -> Element {
     let err = use_signal(|| None::<String>);
     let status = use_signal(|| None::<AkSyncStatus>);
 
+    // Load the audit log. It used to be a single fire-and-forget fetch with the
+    // error swallowed, so one failed request left the view stuck on "loading…"
+    // until the page was reloaded. Errors are shown now and the view keeps
+    // refreshing while it is open, so a transient failure recovers on its own.
+    // The task is tied to this component, so the loop stops when the view is left.
     use_effect(move || {
         let mut s = status.clone();
+        let mut e = err.clone();
         spawn(async move {
-            if let Ok(v) = get_json::<AkSyncStatus>("/api/authentik-sync").await {
-                s.set(Some(v));
+            loop {
+                match get_json::<AkSyncStatus>("/api/authentik-sync").await {
+                    Ok(v) => {
+                        e.set(None);
+                        s.set(Some(v));
+                    }
+                    Err(x) => e.set(Some(x)),
+                }
+                gloo_timers::future::sleep(std::time::Duration::from_secs(15)).await;
             }
         });
     });
@@ -718,7 +731,7 @@ fn AkSyncView(mut back: Signal<bool>) -> Element {
             }
 
             div { class: "subhead", "Members group sync (daily, 01:00)" }
-            if let Some(s) = &st {
+            if st.is_some() {
                 if let Some((ts, detail)) = &last_run_line {
                     div { class: "note",
                         span { class: "id", "{ts}" }
@@ -727,31 +740,37 @@ fn AkSyncView(mut back: Signal<bool>) -> Element {
                 } else {
                     div { class: "note", "No runs recorded yet — the daily timer (or the button below) will create the audit log." }
                 }
+            } else {
+                div { class: "note", "Could not read the latest run — retrying…" }
+            }
 
-                div { class: "filters",
-                    button {
-                        class: "action primary",
-                        disabled: *running.read(),
-                        onclick: move |_| {
-                            run_btn.set(true);
-                            err_sig.set(None);
-                            spawn(async move {
-                                match post("/api/authentik-sync").await {
-                                    Ok(()) => {
-                                        if let Ok(v) = get_json::<AkSyncStatus>("/api/authentik-sync").await {
-                                            status_sig.set(Some(v));
-                                        }
+            // The button stays available even when the log has not loaded, so a
+            // failed first fetch does not leave the view dead.
+            div { class: "filters",
+                button {
+                    class: "action primary",
+                    disabled: *running.read(),
+                    onclick: move |_| {
+                        run_btn.set(true);
+                        err_sig.set(None);
+                        spawn(async move {
+                            match post("/api/authentik-sync").await {
+                                Ok(()) => {
+                                    if let Ok(v) = get_json::<AkSyncStatus>("/api/authentik-sync").await {
+                                        status_sig.set(Some(v));
                                     }
-                                    Err(e) => err_sig.set(Some(e)),
                                 }
-                                run_btn.set(false);
-                            });
-                        },
-                        "{run_label}"
-                    }
+                                Err(e) => err_sig.set(Some(e)),
+                            }
+                            run_btn.set(false);
+                        });
+                    },
+                    "{run_label}"
                 }
+            }
 
-                div { class: "subhead", "Audit log (newest first)" }
+            div { class: "subhead", "Audit log (newest first)" }
+            if let Some(s) = &st {
                 table {
                     thead { tr { th { "Time" } th { "Action" } th { "User" } th { "Email" } th { "GC customer" } th { "Detail" } } }
                     tbody {
