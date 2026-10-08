@@ -21,12 +21,10 @@
     fwupd
     lm_sensors
     libva-utils
-    intel-gpu-tools
     vim
     clinfo
     redis
     nginx-sso
-    amdgpu_top
     nushell
     # Networking Tools
     openldap
@@ -38,7 +36,8 @@
     git
     direnv
     deno
-    nixfmt
+    # The repo's formatter is alejandra (see .zed/settings.json and `just fmt`);
+    # nixfmt is deliberately not installed so the two cannot drift.
     nil
     nixd
     alejandra
@@ -49,6 +48,10 @@
     smem
     memray
   ];
+
+  # GPU diagnostics are per-machine on purpose: services1 is the Intel/i915 box
+  # (it installs intel-gpu-tools) and aibox is the AMD/ROCm box (amdgpu_top).
+  # Keeping them here put both vendors' tools on both machines.
 
   # Ping the NAS and only exit once a successful ping comes back. Prevents services starting before the network is truely ready.
   systemd.services.wait-for-network = {

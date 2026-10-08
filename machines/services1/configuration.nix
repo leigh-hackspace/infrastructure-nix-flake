@@ -13,6 +13,11 @@
   # (see common/sops.nix for the build-time secret decryption).
   nix.settings.sandbox = "relaxed";
 
+  # GPU diagnostics for this box's GPU only (services1 is Intel/i915 — see
+  # boot.initrd.kernelModules in ./hardware-configuration.nix).  The AMD tools
+  # live on aibox; common/tools.nix used to install both on both machines.
+  environment.systemPackages = [pkgs.intel-gpu-tools];
+
   # The gasket driver (Coral TPU) is not in the running kernel's package set,
   # so pull it from the matching kernel's package set explicitly.
   boot.extraModulePackages = [pkgs.linuxKernel.packages.linux_6_18.gasket];

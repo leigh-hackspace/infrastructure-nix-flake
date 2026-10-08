@@ -1,7 +1,6 @@
 {
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-26.05";
-    nixos-hardware.url = "github:NixOS/nixos-hardware/master";
     # Rust build helpers (cached dependency derivations); see common/crane.nix.
     crane.url = "github:ipetkov/crane";
 
@@ -64,9 +63,6 @@
           inherit system;
           config = {
             allowUnfree = true;
-            permittedInsecurePackages = [
-              "jitsi-meet-1.0.8792"
-            ];
           };
         };
         specialArgs = flakeInputs // extraArgs;
