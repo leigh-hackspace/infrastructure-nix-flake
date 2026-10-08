@@ -345,9 +345,24 @@ inherited.
 - ~~`just reboot` is a sysrq hard reboot listed second in the recipe list.
   Rename to `hard-reboot` so it is less likely to be hit by tab completion.~~
   Done 2026-10-08.
-- `machines/services1/lib/config-to-gitlab.nix` is a hand-rolled Nix→GitLab
-  config serializer; if it is still used, it needs tests, otherwise delete it.
-  (It **is** used — `machines/services1/services/gitlab.nix:6` — so: tests.)
+- ~~`machines/services1/lib/config-to-gitlab.nix` is a hand-rolled Nix→GitLab
+  config serializer; if it is still used, it needs tests, otherwise delete it.~~
+  Investigated 2026-10-08: it is imported by `services/gitlab.nix`, but that
+  module is **commented out** of `services/default.nix`, so nothing in the
+  evaluated system uses it — it is not dead code exactly (the module is meant to
+  be re-enabled) but it is not deployed either.  Kept, and now tested:
+  `lib/check-config-to-gitlab.nix` asserts over the serializer (top-level
+  string/bool/number, `parent['child']` nesting, list rendering, the Ruby `{...}`
+  form for attrs, key sort order) and over the real attrset, which is mirrored in
+  `lib/gitlab-config-example.nix` so the assertions cover it while the module is
+  off.  It also pins the serializer's one real limitation — string values are
+  emitted inside `'...'` with **no escaping**, so a value containing a `'`
+  produces broken Ruby — and asserts the deployed config contains no such value.
+  Run with `nix eval --impure --raw -f machines/services1/lib/check-config-to-gitlab.nix`
+  or via the new `just check`.
+  Gotcha found on the way: `builtins.match` is POSIX ERE, where `\[` is an
+  *invalid escape* and `(?s)` is not a thing (`.` already spans newlines) — the
+  assertions use literal substring tests instead.
 
 ---
 
@@ -364,7 +379,11 @@ inherited.
 4. ~~Create a shared in-repo Rust crate for `oidc`, `json`, and the asset
    embedding `build.rs` — ~700 lines deduped across five crates.~~ Done
    2026-10-08: `common-rs/{json,oidc,build-spa}` (see §2.2).
-5. Add `just check` (alejandra + `nix flake check` + dry-run both machines +
-   clippy) and fix the 30 unformatted files in one commit.
+5. ~~Add `just check`~~ — done 2026-10-08, but narrower than proposed: it runs
+   `nix flake check` plus the nix-level assertion files (fast, no compilation).
+   Alejandra is not in the devshell and the ~30 unformatted files are still
+   unfixed, so formatting is deliberately **not** part of it; `just test`,
+   `just clippy` and `just filestore-test` cover the Rust side.  Remaining from
+   this item: the dry-run-both-machines step and the formatting commit.
 6. Move the restart token out of `ExecStart` into an `EnvironmentFile`.
 7. Shrink `AGENTS.md` and move the narrative notes into `docs/`.

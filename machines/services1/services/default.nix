@@ -8,6 +8,10 @@
     ./frigate-monitor.nix
     ./frigate.nix
     ./gatus.nix
+    # Disabled: the GitLab container is not deployed.  Its config is still
+    # rendered by lib/config-to-gitlab.nix, which lib/check-config-to-gitlab.nix
+    # keeps tested against the attrset in ./gitlab.nix — re-enable this line and
+    # the check together.
     # ./gitlab.nix
     ./gocardless-dashboard.nix
     ./headscale.nix

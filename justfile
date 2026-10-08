@@ -193,6 +193,18 @@ update-pkgs:
 
 # --- filestore headless-browser test suite ---
 
+# Nix-level checks: the flake evaluates, both machines' option assertions hold,
+# and the hand-rolled config serializers match their expectations.  Fast (no
+# compilation).  The rest lives in `just test` (cargo tests), `just clippy`
+# (lints) and `just filestore-test` (headless-browser suite).
+check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "=== nix flake check"
+    nix flake check
+    echo "=== config-to-gitlab assertions"
+    nix eval --impure --raw -f machines/services1/lib/check-config-to-gitlab.nix
+
 # Start an unauthenticated filestore on 127.0.0.1 for poking at the API/UI by
 # hand. --no-auth is only honoured on a loopback bind, so this can never expose
 # the store on a routable interface; the deployed service never uses it.
