@@ -20,6 +20,9 @@ import zlib from 'node:zlib';
 
 const PORT = Number(process.env.FS_TEST_PORT || 18097);
 const ROOT = process.env.FS_TEST_ROOT || '/tmp/filestore-test-root';
+// Scratch directory handed down by run.sh (logs, throwaway fixtures).  Falls
+// back to a fresh one so `node suite.mjs` on its own still works.
+const WORKDIR = process.env.FS_TEST_WORKDIR || fs.mkdtempSync(path.join(os.tmpdir(), 'filestore-suite.'));
 const BASE = `http://127.0.0.1:${PORT}`;
 
 // ---------------------------------------------------------------------------
@@ -728,7 +731,7 @@ test('auth guard: --no-auth is refused on a non-loopback bind', async () => {
 });
 
 test('auth guard: without --no-auth the API is still session-gated', async () => {
-  const env = '/tmp/filestore-test-fake.env';
+  const env = path.join(WORKDIR, 'fake.env');
   fs.writeFileSync(env, 'FILESTORE_OIDC_CLIENT_ID=x\nFILESTORE_OIDC_CLIENT_SECRET=y\n');
   const port = 18098;
   const p = await startServer(['--root', ROOT, '--env-file', env, '--port', String(port)], port);

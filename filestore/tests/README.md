@@ -8,9 +8,15 @@ just filestore-test
 ```
 
 `run.sh` builds the SPA (`frontend/build.sh`) and the binary, starts
-`filestore --no-auth` on `127.0.0.1` against `/tmp/filestore-test-root`, and
-runs `suite.mjs`. Every test rebuilds the fixture and reloads the page, so
-tests are order-independent.
+`filestore --no-auth` on `127.0.0.1` against a scratch fixture, and runs
+`suite.mjs`. Every test rebuilds the fixture and reloads the page, so tests are
+order-independent.
+
+The fixture and the run's logs live in a fresh `mktemp -d` directory that is
+removed when the suite finishes (`FS_TEST_KEEP=1` keeps it for poking around;
+`FS_TEST_ROOT` overrides the fixture location if you want it on another
+filesystem). Nothing is written to a fixed `/tmp` name, so two runs — or a
+leftover from a crashed one — cannot clobber each other.
 
 ## Why `--no-auth` exists
 

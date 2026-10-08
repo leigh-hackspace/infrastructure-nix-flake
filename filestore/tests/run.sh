@@ -10,14 +10,30 @@ set -euo pipefail
 cd "$(dirname "$0")"          # filestore/tests
 cd ..                          # filestore
 
+# Everything this script writes lives under one scratch directory, so two runs
+# (or a leftover from a crashed one) cannot clobber each other's logs, fixture
+# or browser choice.  Override the base with FS_TEST_TMPDIR.
+WORKDIR="${FS_TEST_TMPDIR:-$(mktemp -d "${TMPDIR:-/tmp}/filestore-test.XXXXXX")}"
+mkdir -p "$WORKDIR"
+LOG_FRONTEND="$WORKDIR/frontend.log"
+LOG_SERVER="$WORKDIR/server.log"
+
+cleanup() {
+  [ -n "${FS_TEST_KEEP:-}" ] && return
+  rm -rf "$WORKDIR"
+}
+trap cleanup EXIT
+
 PORT="${FS_TEST_PORT:-18097}"
-ROOT="${FS_TEST_ROOT:-/tmp/filestore-test-root}"
+# The fixture is inside WORKDIR by default; an explicit FS_TEST_ROOT (e.g. on a
+# filesystem with room for the big fixture) still wins.
+ROOT="${FS_TEST_ROOT:-$WORKDIR/root}"
 BIN="target/release/filestore"
 
 # 1. build the SPA bundle and the binary (offline; build.rs embeds the bundle)
-(cd frontend && ./build.sh) > /tmp/filestore-test-frontend.log 2>&1 || {
+(cd frontend && ./build.sh) > "$LOG_FRONTEND" 2>&1 || {
   echo "frontend build failed:" >&2
-  cat /tmp/filestore-test-frontend.log >&2
+  cat "$LOG_FRONTEND" >&2
   exit 1
 }
 cargo build --release --offline
@@ -39,9 +55,9 @@ if ss -ltn 2>/dev/null | grep -q ":${PORT}[[:space:]]"; then
   echo "port ${PORT} is already in use — another filestore is running (kill it first)" >&2
   exit 1
 fi
-"$BIN" --root "$ROOT" --no-auth --port "$PORT" > /tmp/filestore-test-server.log 2>&1 &
+"$BIN" --root "$ROOT" --no-auth --port "$PORT" > "$LOG_SERVER" 2>&1 &
 SRV=$!
-trap 'kill $SRV 2>/dev/null || true' EXIT
+trap 'kill $SRV 2>/dev/null || true; cleanup' EXIT
 
 for _ in $(seq 1 60); do
   curl -sf "http://127.0.0.1:${PORT}/api/whoami" > /dev/null && break
@@ -49,12 +65,12 @@ for _ in $(seq 1 60); do
 done
 if ! curl -sf "http://127.0.0.1:${PORT}/api/whoami" > /dev/null; then
   echo "server did not come up on ${PORT}:" >&2
-  cat /tmp/filestore-test-server.log >&2
+  cat "$LOG_SERVER" >&2
   exit 1
 fi
 
 # 4. run the suite
 cd tests
-export FS_TEST_BIN
+export FS_TEST_BIN FS_TEST_ROOT="$ROOT" FS_TEST_PORT="$PORT" FS_TEST_WORKDIR="$WORKDIR"
 [ -d node_modules ] || npm install --no-audit --no-fund
 FS_TEST_BROWSER="${FS_TEST_BROWSER:-}" node suite.mjs

@@ -227,7 +227,14 @@ checked to contain no `accept-new`.
 
 ### 3.5 `filestore/tests/run.sh` writes to fixed `/tmp/filestore-test-*.log`
 
-Two concurrent runs clobber each other. Use `mktemp`.
+~~Two concurrent runs clobber each other. Use `mktemp`.~~
+
+Done 2026-10-08: the runner creates one `mktemp -d` scratch directory (logs and
+fixture inside), exports it to the suite as `FS_TEST_WORKDIR`, and removes it on
+exit (`FS_TEST_KEEP=1` keeps it for poking around; `FS_TEST_ROOT` still
+overrides the fixture location). The suite's throwaway env file moved into the
+same directory. Verified: `just filestore-test` → 43 tests, 0 failures, and no
+`/tmp/filestore-test-*` files left behind.
 
 ### 3.6 Printer state enums are duplicated by convention
 
