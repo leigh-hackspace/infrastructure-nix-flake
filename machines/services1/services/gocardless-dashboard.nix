@@ -16,13 +16,12 @@
   config,
   lib,
   pkgs,
-  crane,
+  CRANE,
   INFRA,
   ...
 }: let
   CONFIG = import ../config.nix;
   mkIntVhost = import ../lib/nginx-int-vhost-helper.nix { inherit lib; };
-  CRANE = import ../../../common/crane.nix {inherit pkgs crane;};
 
   # The Dioxus SPA compiled to wasm (pinned wasm-bindgen-cli and the wasm build
   # recipe live in common/crane.nix).  Its gdash-dto path dependency is a

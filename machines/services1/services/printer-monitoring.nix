@@ -16,11 +16,10 @@
 {
   pkgs,
   lib,
-  crane,
+  CRANE,
   INFRA,
   ...
 }: let
-  CRANE = import ../../../common/crane.nix {inherit pkgs crane;};
 
   exporter = CRANE.cached {
     pname = "moonraker-exporter";

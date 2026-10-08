@@ -13,11 +13,10 @@
 # env-file sops secret.  LAN-only, fronted by nginx as
 # filestore.int.leighhack.org (the int record is synced by dns-sync from the
 # vhost list — it replaces the old commented-out vhost in http.nix).
-{ config, lib, pkgs, crane, INFRA, ... }:
+{ config, lib, pkgs, CRANE, INFRA, ... }:
 
 let
   CONFIG = import ../config.nix;
-  CRANE = import ../../../common/crane.nix { inherit pkgs crane; };
   mkIntVhost = import ../lib/nginx-int-vhost-helper.nix { inherit lib; };
 
   # The upload limit, in the two places it has to agree: the backend's

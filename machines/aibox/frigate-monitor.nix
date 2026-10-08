@@ -21,12 +21,11 @@
   config,
   lib,
   pkgs,
-  crane,
+  CRANE,
   INFRA,
   ...
 }: let
   cfg = config.services.frigate-monitor;
-  CRANE = import ../../common/crane.nix {inherit pkgs crane;};
 
   # The Dioxus SPA compiled to wasm (this replaces the frontend/dist that used to
   # be committed to the git tree).  The pinned wasm-bindgen-cli and the wasm build

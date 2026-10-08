@@ -20,14 +20,13 @@
   config,
   lib,
   pkgs,
-  crane,
+  CRANE,
   INFRA,
   ...
 }:
 
 let
   cfg = config.services.status-dashboard;
-  CRANE = import ./crane.nix { inherit pkgs crane; };
 
   statusDashboard = CRANE.cached {
     pname = "status-dashboard";

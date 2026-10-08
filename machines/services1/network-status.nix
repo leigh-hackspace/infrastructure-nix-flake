@@ -23,11 +23,10 @@
   config,
   lib,
   pkgs,
-  crane,
+  CRANE,
   INFRA,
   ...
 }: let
-  CRANE = import ../../common/crane.nix {inherit pkgs crane;};
   # Prebuilt SolidJS/TypeScript SPA. The bundle (dist/) is committed to the
   # git tree and copied into the store here, so the build is fully hermetic:
   # Nix builds run offline and the npm deps (esbuild, babel, ...) are not in

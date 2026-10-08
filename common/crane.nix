@@ -7,10 +7,10 @@
 # plus the crate itself, so editing one .rs file only recompiles that crate
 # against the cached artifacts.
 #
-# `crane` reaches modules through the flake's `specialArgs`, and this file is a
-# plain function, not a module:
+# `crane` and the helpers in this file reach modules through the flake's
+# `specialArgs` as `CRANE` (imported once in flake.nix) — modules do not
+# re-import it themselves:
 #
-#   let CRANE = import ../common/crane.nix { inherit pkgs crane; };
 #   CRANE.cached {
 #     pname = "dns-sync";
 #     version = "0.1.0";

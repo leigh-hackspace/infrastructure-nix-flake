@@ -32,10 +32,9 @@
   config,
   lib,
   pkgs,
-  crane,
+  CRANE,
   ...
 }: let
-  CRANE = import ../../common/crane.nix {inherit pkgs crane;};
 
   dnsSync = CRANE.cached {
     pname = "dns-sync";
