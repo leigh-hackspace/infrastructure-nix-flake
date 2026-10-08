@@ -2,8 +2,10 @@
 
 A read-through of the whole flake (both machines, `common/`, and all seven Rust
 crates) looking for duplication, correctness gaps, and things that could be
-organised better. Nothing here is deployed or fixed yet — this is a findings
-list with a prioritised action order at the end.
+organised better. This is a findings list with a prioritised action order at the
+end; it is a **living document** — items are struck through as they are done,
+with what was actually done and how it was verified. Two passes have landed so
+far (2026-10-08 and 2026-10-08b, see §7 for the second one's summary).
 
 Method: `alejandra --check` over all `.nix`, `diff` between the per-machine
 modules, line counts per crate, and a read of the rendered systemd units in the
@@ -40,6 +42,14 @@ covering `nix flake check`, `nixos-rebuild dry-run --flake .#services1` and
 `#aibox`, `cargo clippy`/`cargo test` per crate, and the formatting check below
 is the single highest-leverage addition.
 
+Done 2026-10-08, extended 2026-10-08b. `just check` = `nix flake check` + the
+assertion files (`lib/check-config-to-gitlab.nix`, `lib/check-printer-states.nix`)
++ `just fmt-check`. `just check-build` = `nixos-rebuild dry-build` for both
+machines — the piece `flake check` cannot do, because it only *evaluates*: a
+module that evaluates but fails to build used to reach `just switch` (that is
+exactly how a wrong relative import in `dns-sync.nix` got committed). The Rust
+side stays separate: `just test`, `just clippy`, `just filestore-test`.
+
 ### 1.3 Formatting is inconsistent (30 files)
 
 `alejandra --check` reports 30 files needing formatting — **all** of
@@ -51,26 +61,55 @@ Also: `.zed/settings.json` says alejandra, `.vscode/settings.json` says nixfmt.
 Pick one. Reformat once in a single commit (so future diffs are not polluted)
 and add `just fmt`.
 
+Done 2026-10-08b. It had grown to **42** files. Reformatted in one sweep, and
+made it stick: alejandra is in the devshell (the locked nixpkgs version, 4.0.0,
+is the same one already on the running system), `just fmt` formats every tracked
+`.nix`, `just fmt-check` fails on any that is not clean and runs as part of
+`just check`, `.vscode/settings.json` now runs alejandra too, and `nixfmt` was
+dropped from `common/tools.nix` so the two cannot drift. Verified behaviour-free:
+built the services1 toplevel at HEAD and in the working tree and diffed the
+rendered `/etc` — the only differences were the `nginx.conf` derivation hash and
+trailing whitespace inside nginx comment lines.
+
 ### 1.4 Dead config and dead inputs
 
-- `flake.nix:4` — `nixos-hardware` is an input and is used nowhere.
-- `flake.nix:68` — `permittedInsecurePackages = [ "jitsi-meet-1.0.8792" ]`, but
-  no jitsi service exists anywhere in the repo.
-- `machines/services1/services/default.nix` — three commented-out imports
+- ~~`flake.nix:4` — `nixos-hardware` is an input and is used nowhere.~~
+- ~~`flake.nix:68` — `permittedInsecurePackages = [ "jitsi-meet-1.0.8792" ]`, but
+  no jitsi service exists anywhere in the repo.~~
+- ~~`machines/services1/services/default.nix` — three commented-out imports
   (affine, gitlab, samba); `machines/aibox/default.nix` has `# ./nvidia.nix`.
-  Fine as parked config, but it should be labelled as parked.
-- `common/tools.nix` — `intel-gpu-tools` and `amdgpu_top` are installed on both
-  machines (aibox is AMD, services1 is Intel).
+  Fine as parked config, but it should be labelled as parked.~~
+- ~~`common/tools.nix` — `intel-gpu-tools` and `amdgpu_top` are installed on both
+  machines (aibox is AMD, services1 is Intel).~~
+
+Done 2026-10-08b. Input removed (`nix flake lock` prunes it without moving any
+other pin); the jitsi exemption removed (`flake check` still passes, so nothing
+else needs an insecure-package exemption); the parked imports are labelled
+parked, with the caveat that a commented-out module is never evaluated and can
+rot silently (gitlab and nvidia were already labelled); the GPU tools are now
+per-machine — `intel-gpu-tools` on services1 (i915), `amdgpu_top` on aibox
+(amdgpu/ROCm). Verified by evaluating `environment.systemPackages` on both
+machines.
 
 ### 1.5 Repo hygiene / doc sprawl
 
-`junk/`, `notes.txt`, `tmp/`, the `result` symlink,
-`machines/aibox/gtx1060-*.md` (three files), `machines/services1/sso-redesign.md`,
-`machines/services1/streams.ignore`, `machines/services1/README.md`.
+~~`machines/aibox/gtx1060-*.md` (three files), `machines/services1/sso-redesign.md`,
+`machines/services1/streams.ignore`, `machines/services1/README.md`.~~
 
-`AGENTS.md` is 34 KB and duplicates `docs/`. Shrink `AGENTS.md` to facts +
-gotchas + the workflow rules, and link out to `docs/` for narrative notes and
-runbooks.
+`junk/`, `notes.txt`, `tmp/` and the `result` symlink are **git-ignored** (and
+`streams.ignore` matches the `*.ignore` pattern), so they were never in the flake
+source — checked, not a problem.
+
+Done 2026-10-08b for the rest: the four narrative files moved to `docs/` (the
+three gtx1060 write-ups and `sso-redesign.md`; the `ai.nix`/`whisper.nix`/
+`nvidia.nix` comments that referenced them were updated), and `AGENTS.md` went
+36.4 KB → 32.7 KB by moving detail out rather than deleting it — the Monster
+power-cut runbook to `docs/monster-powercut-runbook.md`, the authentik OIDC
+provider-creation detail to `docs/authentik-oidc-notes.md`, the filestore SPA
+narrative to `docs/filestore-gotchas-2026-10-05.md` — keeping the landmines
+inline with a pointer to the procedure. `machines/services1/README.md` had a
+stale service list and a pre-sops "Required Secrets" listing; it now keeps only
+what is not in the flake.
 
 ---
 
@@ -199,6 +238,12 @@ it means the committed bundle can silently drift from `src/`. Either add a check
 that `dist/` matches a fresh local build, or state the exception once instead of
 in three separate files.
 
+Done 2026-10-08b: `just network-status-dist-check` rebuilds the bundle with npm
+and fails if `dist/` has drifted (naming the changed files); `just
+network-status-frontend` is the rebuild. The exception is stated once, in the
+justfile comment, and `AGENTS.md` points at it. Ran it: the committed `dist/`
+currently matches a fresh build.
+
 ### 3.4 Hardcoded key paths and TOFU host keys
 
 - ~~`machines/services1/network-status.nix:80` hardcodes
@@ -242,6 +287,19 @@ same directory. Verified: `just filestore-test` → 43 tests, 0 failures, and no
 and says "keep these tables in sync with monitoring-dashboards.nix". Emit string
 labels, or generate the mapping from one source, so the dashboards can't drift.
 
+Done 2026-10-08b. One source of truth: the two `const KLIPPY_STATES` /
+`PRINT_STATES` arrays in the exporter (`state_code` returns the index; the label
+is already a `state=` tag). `machines/services1/lib/printer-states.nix` reads
+those arrays out of the Rust source at eval time and exposes `.labels`,
+`.mapping` (the Grafana value mappings) and `.code` (the Prometheus alert
+numbers, which were hardcoded `== 2` / `== 3`). A reorder or a new state in Rust
+follows through on the next switch; a shape change throws at eval time.
+`lib/check-printer-states.nix` (in `just check`) pins the current numbering, checks
+mapping/code round-trip and label hygiene, and greps both consumers to make sure
+they still go through the generated tables. Negative-tested both ways; and built
+services1 before/after: the alert rules and dashboard JSON are byte-identical
+(same store path).
+
 ### 3.7 Three overlapping monitoring systems
 
 Gatus (uptime checks), Prometheus alert rules, and the status dashboard all
@@ -250,19 +308,43 @@ data `dns-sync` already derives from `config.services.nginx.virtualHosts`
 (`machines/services1/dns-sync.nix`). Generating gatus endpoints from the same
 attrset would keep them in step for free.
 
+Addressed 2026-10-08b, **not** as proposed — generating the endpoint list is the
+wrong fix and the reason is now written in the module: the list mixes
+nginx-served apps with ICMP/TCP targets that are dnsmasq hosts rather than vhosts
+(cameras, switches, printers, the NAS), it watches public names too, and every
+entry carries its own group and status condition, so auto-generating would invent
+checks for things that are not meant to be watched and silently change what
+alerts fire. What *is* cheap to prevent is the drift that actually bites: an
+https `*.int.leighhack.org` endpoint left behind when its vhost is renamed or
+removed, alerting forever on a name that no longer exists. That is now a module
+assertion, with the offending hosts named (negative-tested). The `*.int` name
+derivation itself is shared: `lib/int-vhost-names.nix`, used by both dns-sync and
+gatus, so the two cannot disagree about what "an internal app on this box" means.
+
+Consolidating the three monitoring *systems* is still open and is a judgement
+call, not a refactor.
+
 ### 3.8 Test coverage
 
 Only `filestore` has tests (the Playwright suite). The highest-value untested
 targets are `frigate-monitor/src/detect.rs` (682 lines of CV logic),
 `filestore/src/fsutil.rs` (the `..` component guard) and the shared JSON parser.
 
-Partly addressed 2026-10-08: `common-rs/json` has 12 unit tests (the
+Done 2026-10-08 / 2026-10-08b: `common-rs/json` has 12 unit tests (the
 DigitalOcean and Moonraker response shapes, escapes, number grammar, malformed
 input, control characters in strings) and `common-rs/oidc` has 11 (the RFC 7636
 PKCE vector, the unpadded-challenge invariant, the authorize-URL contract,
 state single-use, the group gate failing closed, session expiry/purge, the
-Basic-credential alphabet). Run them with `just test`. `detect.rs` and
-`fsutil.rs` are still untested.
+Basic-credential alphabet). `detect.rs` gained 12 (shadow heuristic, `min_area`,
+`connected_regions`, and the detector's promises: seeds on the first frame,
+static change fires once with a tight box, moving object never fires,
+whole-frame change reseeds, replaced/removed recorded objects fire again) and
+`fsutil.rs` 13 (the nine `..` spellings, ordinary names that merely *look* like
+traversal, list ordering, shallow vs deep search, both caps). `just test` now
+runs 71 tests, 0 failures (was 46). Two behaviours are pinned rather than
+"fixed" because they are deliberate: the search scan cap is checked per
+directory, and `fsutil` follows symlinks that live inside the share — its module
+doc used to claim otherwise and now says what is actually guaranteed.
 
 ---
 
@@ -332,9 +414,11 @@ inherited.
 ## 5. Smaller nice-to-haves
 
 - ~~`just build-frontend` only builds frigate-monitor's SPA. Generalise to
-  `just build-frontend <crate>`.~~ Still open, but the three SPA build recipes
-  are now one script (`common/frontend-build-spa.sh`), so the recipe only needs
-  an argument.
+  `just build-frontend <crate>`.~~ Done 2026-10-08b: `just build-frontend
+  [crate]` builds any of the three Dioxus SPAs (no argument = all three). The
+  parameter goes in through just's `quote()` — just 1.51 has no `positional-args`
+  attribute and does not export parameters into shebang recipes, so interpolation
+  is the only safe way to pass it.
 - ~~The devshell runs `cargo install -f wasm-bindgen-cli` on **every** `nix
   develop` entry (network + ~1 min).~~ Done 2026-10-08 (see the devshell note
   above).
@@ -379,11 +463,56 @@ inherited.
 4. ~~Create a shared in-repo Rust crate for `oidc`, `json`, and the asset
    embedding `build.rs` — ~700 lines deduped across five crates.~~ Done
    2026-10-08: `common-rs/{json,oidc,build-spa}` (see §2.2).
-5. ~~Add `just check`~~ — done 2026-10-08, but narrower than proposed: it runs
-   `nix flake check` plus the nix-level assertion files (fast, no compilation).
-   Alejandra is not in the devshell and the ~30 unformatted files are still
-   unfixed, so formatting is deliberately **not** part of it; `just test`,
-   `just clippy` and `just filestore-test` cover the Rust side.  Remaining from
-   this item: the dry-run-both-machines step and the formatting commit.
-6. Move the restart token out of `ExecStart` into an `EnvironmentFile`.
-7. Shrink `AGENTS.md` and move the narrative notes into `docs/`.
+5. ~~Add `just check`~~ — done 2026-10-08, completed 2026-10-08b: it runs
+   `nix flake check`, the nix-level assertion files and `just fmt-check`; the
+   whole tree is alejandra-clean and the devshell ships alejandra (§1.3). The
+   dry-build-both-machines step is `just check-build`, deliberately separate
+   because it compiles.
+6. ~~Move the restart token out of `ExecStart` into an `EnvironmentFile`.~~
+   **Contradicts §4.1, which decided to keep it** — the code matches that
+   decision (`common/status-dashboard.nix` still passes `--restart-token`).
+   Strike this item; the fix is recorded in §4.1 in case the decision changes.
+7. ~~Shrink `AGENTS.md` and move the narrative notes into `docs/`.~~ Done
+   2026-10-08b (§1.5).
+
+---
+
+## 7. Second pass (2026-10-08b) — what landed, what is still open
+
+Order taken: formatting first (it touches every file and would otherwise
+conflict with everything after it), then the dead-config sweep, then the tooling
+(`just fmt`/`fmt-check`/`check-build`/`build-frontend`/dist check), then the
+three correctness items that needed new machinery (printer enums, gatus, tests),
+then the doc moves. Each item is its own commit, and each was verified by
+building rather than by reading: for the Nix changes, the services1 toplevel was
+built at the previous commit and in the working tree and the rendered `/etc`
+diffed (the printer-state and gatus changes produce a **byte-identical** system,
+same store path).
+
+Landed: §1.2, §1.3, §1.4, §1.5, §3.3, §3.6, §3.7 (as an assertion, not
+generation — see the item), §3.8, §5's `build-frontend`, and §6 items 5–7.
+
+Still open, deliberately:
+
+- **Consolidating the three monitoring systems** (§3.7). The endpoint list is
+  now guarded against the one drift that bites, but Gatus / Prometheus / the
+  status dashboard remain three models of the same facts. That is a product
+  decision about which one is authoritative, not a refactor.
+- **Secrets baked into the store at build time.** §4.1 decided to keep the
+  restart token in `ExecStart`, but the wider pattern is untouched and is worth
+  quantifying before anyone decides: 13 `builtins.readFile (config.sopsSecretText
+  ...)` calls across 10 modules (postgres, mattermost, outline, monitoring,
+  gatus, unifi, backup, status, http/nginx-sso, containers) put secret *values*
+  into world-readable store paths. Verified example: the gatus config is
+  `/nix/store/1i89wjnpr47szvq0q2jx2jmvq1922nnv-gatus.yaml`, `-r--r--r--`, and
+  contains the Slack webhook. Fixing it is per-consumer work (`sops.secrets` +
+  `EnvironmentFile=`/`LoadCredential=`, dynamic users that cannot read the
+  store, or a runtime-rendered config), each needing a deploy to prove the
+  service still starts — so it is not a change to make blind.
+- **`common-rs/build-spa`'s `mime_of` vs network-status' content-type table**
+  (§2.2) — two lists, deliberately unshared until there is a JSON/API decision.
+- **`nix flake check` does not force everything.** It evaluates options but does
+  not force e.g. `systemd.services.*.serviceConfig.ExecStart` or generated etc
+  texts, so a bad path inside those only surfaces in a real build. `just
+  check-build` is the mitigation; a stricter check would force the whole config
+  and cost evaluation time.
