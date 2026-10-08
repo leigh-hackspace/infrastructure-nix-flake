@@ -264,9 +264,11 @@ update-pkgs:
 # --- filestore headless-browser test suite ---
 
 # Nix-level checks: the flake evaluates, both machines' option assertions hold,
-# and the hand-rolled config serializers match their expectations.  Fast (no
-# compilation).  The rest lives in `just test` (cargo tests), `just clippy`
-# (lints) and `just filestore-test` (headless-browser suite).
+# the hand-rolled config serializers match their expectations, and every tracked
+# .nix file is alejandra-clean.  Fast (evaluation only, no compilation).  The
+# rest of the test surface: `just test` (cargo tests), `just clippy` (lints),
+# `just filestore-test` (headless-browser suite) and `just check-build` (the
+# deploy-readiness build).
 check:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -274,6 +276,25 @@ check:
     nix flake check
     echo "=== config-to-gitlab assertions"
     nix eval --impure --raw -f machines/services1/lib/check-config-to-gitlab.nix
+    echo "=== alejandra --check"
+    just fmt-check
+
+# Deploy-readiness: build both machines' system derivations without touching the
+# running system.  `nix flake check` only *evaluates*, so a module that evaluates
+# but fails to build (bad package, bad derivation arg, broken SPA bundle) still
+# reaches `just switch`.  dry-build does the whole build and stops before
+# activating anything — deliberately not `switch`/`boot`.
+#
+# Slower than `just check` (it compiles what changed), so run it before a deploy
+# rather than on every edit.
+check-build:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for m in services1 aibox; do
+        echo "=== nixos-rebuild dry-build $m"
+        nixos-rebuild dry-build --flake ".#$m"
+    done
+    echo "both systems build"
 
 # Start an unauthenticated filestore on 127.0.0.1 for poking at the API/UI by
 # hand. --no-auth is only honoured on a loopback bind, so this can never expose
