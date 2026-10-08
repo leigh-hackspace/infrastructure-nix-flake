@@ -49,6 +49,11 @@
     let
       system = "x86_64-linux";
 
+      # Make "nix-shell" use the flake version.  A plain module, not part of
+      # extraArgs: specialArgs is what modules read as arguments, so the module
+      # list refers to it by name here rather than repeating it per machine.
+      nix-shell-registry = { nix.registry.nixpkgs.flake = nixpkgs; };
+
       # Helper sets handed to every module through specialArgs (modules read them
       # as `INFRA`), so shared helpers are not re-imported in each file.
       extraArgs = {
@@ -71,8 +76,7 @@
             };
             specialArgs = flakeInputs // extraArgs;
             modules = [
-              # Make "nix-shell" use the flake version
-              { nix.registry.nixpkgs.flake = nixpkgs; }
+              nix-shell-registry
 
               nixos-utils.nixosModules.rollback
               nixos-utils.nixosModules.containers
@@ -98,8 +102,7 @@
             };
             specialArgs = flakeInputs // extraArgs;
             modules = [
-              # Make "nix-shell" use the flake version
-              { nix.registry.nixpkgs.flake = nixpkgs; }
+              nix-shell-registry
 
               nixos-utils.nixosModules.rollback
               nixos-utils.nixosModules.containers
