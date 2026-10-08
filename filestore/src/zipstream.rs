@@ -150,7 +150,11 @@ struct ZipWriter<'a, W: Write> {
 
 impl<'a, W: Write> ZipWriter<'a, W> {
     fn new(w: &'a mut W) -> Self {
-        Self { w, offset: 0, entries: Vec::new() }
+        Self {
+            w,
+            offset: 0,
+            entries: Vec::new(),
+        }
     }
 
     fn write_all(&mut self, buf: &[u8]) -> io::Result<()> {
@@ -284,7 +288,10 @@ impl<'a, W: Write> ZipWriter<'a, W> {
         let mut hasher = Hasher::new();
         // `tracked` wraps self.w so the deflate output is counted toward
         // self.offset; it borrows self.w/self.offset until dropped below.
-        let tracked = Tracked { w: &mut *self.w, off: &mut self.offset };
+        let tracked = Tracked {
+            w: &mut *self.w,
+            off: &mut self.offset,
+        };
         let mut enc = flate2::write::DeflateEncoder::new(tracked, Compression::fast());
         let mut inb = vec![0u8; BUF];
         let mut uncomp_size: u64 = 0;
@@ -355,8 +362,16 @@ impl<'a, W: Write> ZipWriter<'a, W> {
             self.u16(e.mod_time)?;
             self.u16(e.mod_date)?;
             self.u32(e.crc)?;
-            self.u32(if e.comp_size > U32MAX as u64 { U32MAX } else { e.comp_size as u32 })?;
-            self.u32(if e.uncomp_size > U32MAX as u64 { U32MAX } else { e.uncomp_size as u32 })?;
+            self.u32(if e.comp_size > U32MAX as u64 {
+                U32MAX
+            } else {
+                e.comp_size as u32
+            })?;
+            self.u32(if e.uncomp_size > U32MAX as u64 {
+                U32MAX
+            } else {
+                e.uncomp_size as u32
+            })?;
             self.u16(e.name.len() as u16)?;
             // extra: ZIP64 extra field when needed.  The declared length
             // covers the subfield header (type 2 + size 2) plus the three
@@ -367,7 +382,11 @@ impl<'a, W: Write> ZipWriter<'a, W> {
             self.u16(0)?; // disk start
             self.u16(0)?; // internal attrs
             self.u32(e.external_attr)?;
-            self.u32(if e.offset > U32MAX as u64 { U32MAX } else { e.offset as u32 })?;
+            self.u32(if e.offset > U32MAX as u64 {
+                U32MAX
+            } else {
+                e.offset as u32
+            })?;
             self.write_all(&e.name)?;
             if z64 {
                 self.u16(0x0001)?; // ZIP64 extra
@@ -401,10 +420,26 @@ impl<'a, W: Write> ZipWriter<'a, W> {
         self.u32(0x06054b50)?; // EOCD
         self.u16(0)?;
         self.u16(0)?;
-        self.u16(if entries.len() > U32MAX as usize { U32MAX as u16 } else { entries.len() as u16 })?;
-        self.u16(if entries.len() > U32MAX as usize { U32MAX as u16 } else { entries.len() as u16 })?;
-        self.u32(if cd_end - cd_start > U32MAX as u64 { U32MAX } else { (cd_end - cd_start) as u32 })?;
-        self.u32(if cd_start > U32MAX as u64 { U32MAX } else { cd_start as u32 })?;
+        self.u16(if entries.len() > U32MAX as usize {
+            U32MAX as u16
+        } else {
+            entries.len() as u16
+        })?;
+        self.u16(if entries.len() > U32MAX as usize {
+            U32MAX as u16
+        } else {
+            entries.len() as u16
+        })?;
+        self.u32(if cd_end - cd_start > U32MAX as u64 {
+            U32MAX
+        } else {
+            (cd_end - cd_start) as u32
+        })?;
+        self.u32(if cd_start > U32MAX as u64 {
+            U32MAX
+        } else {
+            cd_start as u32
+        })?;
         self.u16(0)?; // comment length
         self.w.flush()
     }
@@ -465,5 +500,3 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32; // month [1, 12]
     (if m <= 2 { y + 1 } else { y }, m, d)
 }
-
-

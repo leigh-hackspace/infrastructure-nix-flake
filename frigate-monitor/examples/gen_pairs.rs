@@ -41,7 +41,12 @@ fn main() {
         let f = std::fs::File::create(p).unwrap();
         let mut w = std::io::BufWriter::new(f);
         image::codecs::jpeg::JpegEncoder::new_with_quality(&mut w, 82)
-            .encode(img.as_raw(), img.width(), img.height(), image::ExtendedColorType::Rgb8)
+            .encode(
+                img.as_raw(),
+                img.width(),
+                img.height(),
+                image::ExtendedColorType::Rgb8,
+            )
             .unwrap();
     };
     enc(&before_path, &base(80));

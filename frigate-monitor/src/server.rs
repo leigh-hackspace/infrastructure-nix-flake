@@ -89,7 +89,12 @@ fn handle_client(mut stream: TcpStream, shared: Arc<RwLock<Shared>>) {
         None => return,
     };
     if method != "GET" {
-        send(&mut stream, "405 Method Not Allowed", "text/plain", b"get only".to_vec());
+        send(
+            &mut stream,
+            "405 Method Not Allowed",
+            "text/plain",
+            b"get only".to_vec(),
+        );
         return;
     }
     let (path, query) = match target.split_once('?') {
@@ -128,7 +133,12 @@ fn handle_client(mut stream: TcpStream, shared: Arc<RwLock<Shared>>) {
         }
         "/api/live" => match &s.latest {
             Some(bytes) => send(&mut stream, "200 OK", "image/jpeg", bytes.clone()),
-            None => send(&mut stream, "503 Service Unavailable", "text/plain", b"no frame yet".to_vec()),
+            None => send(
+                &mut stream,
+                "503 Service Unavailable",
+                "text/plain",
+                b"no frame yet".to_vec(),
+            ),
         },
         "/api/events/" => not_found(&mut stream),
         _ => {
@@ -180,5 +190,3 @@ fn serve_asset(stream: &mut TcpStream, name: &str) {
         None => not_found(stream),
     }
 }
-
-

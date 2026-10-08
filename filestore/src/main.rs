@@ -92,15 +92,10 @@ fn arg_opt(args: &[String], name: &str) -> Option<String> {
     let mut i = 0;
     while i < args.len() {
         if args[i] == name {
-            return Some(
-                args
-                    .get(i + 1)
-                    .cloned()
-                    .unwrap_or_else(|| {
-                        eprintln!("missing value for {name}");
-                        std::process::exit(1);
-                    }),
-            );
+            return Some(args.get(i + 1).cloned().unwrap_or_else(|| {
+                eprintln!("missing value for {name}");
+                std::process::exit(1);
+            }));
         }
         i += 1;
     }
@@ -131,13 +126,10 @@ fn arg<'a>(args: &'a [String], name: &str, default: Option<&'a str>) -> String {
     let mut i = 0;
     while i < args.len() {
         if args[i] == name {
-            return args
-                .get(i + 1)
-                .cloned()
-                .unwrap_or_else(|| {
-                    eprintln!("missing value for {name}");
-                    std::process::exit(1);
-                });
+            return args.get(i + 1).cloned().unwrap_or_else(|| {
+                eprintln!("missing value for {name}");
+                std::process::exit(1);
+            });
         }
         i += 1;
     }
@@ -179,9 +171,15 @@ async fn main() {
         port: arg(&args, "--port", Some("8096")).parse().expect("--port"),
         oidc_client_id: need("FILESTORE_OIDC_CLIENT_ID"),
         oidc_client_secret: need("FILESTORE_OIDC_CLIENT_SECRET"),
-        oidc_authorize: opt("FILESTORE_OIDC_AUTHORIZE", format!("{id}/application/o/authorize/")),
+        oidc_authorize: opt(
+            "FILESTORE_OIDC_AUTHORIZE",
+            format!("{id}/application/o/authorize/"),
+        ),
         oidc_token: opt("FILESTORE_OIDC_TOKEN", format!("{id}/application/o/token/")),
-        oidc_introspect: opt("FILESTORE_OIDC_INTROSPECT", format!("{id}/application/o/introspect/")),
+        oidc_introspect: opt(
+            "FILESTORE_OIDC_INTROSPECT",
+            format!("{id}/application/o/introspect/"),
+        ),
         redirect_uri: opt(
             "FILESTORE_REDIRECT_URI",
             "https://filestore.int.leighhack.org/auth/callback".into(),
@@ -195,7 +193,10 @@ async fn main() {
     // --no-auth is a testing escape hatch: it must never be reachable from
     // outside the machine, so it is only honoured on a loopback bind.
     if cfg.no_auth && !is_loopback(&cfg.bind) {
-        eprintln!("--no-auth is only allowed on a loopback bind (got {})", cfg.bind);
+        eprintln!(
+            "--no-auth is only allowed on a loopback bind (got {})",
+            cfg.bind
+        );
         std::process::exit(1);
     }
 
@@ -220,11 +221,7 @@ async fn main() {
         reqwest::Client::new(),
     );
 
-    let shared = Arc::new(Shared {
-        cfg,
-        store,
-        oidc,
-    });
+    let shared = Arc::new(Shared { cfg, store, oidc });
 
     let addr = format!("{}:{}", shared.cfg.bind, shared.cfg.port);
     eprintln!(

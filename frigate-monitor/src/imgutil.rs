@@ -15,8 +15,13 @@ pub fn encode_jpeg(img: &RgbImage, quality: u8) -> Vec<u8> {
         use image::codecs::jpeg::JpegEncoder;
         use image::ExtendedColorType;
         let mut enc = JpegEncoder::new_with_quality(&mut buf, quality);
-        enc.encode(img.as_raw(), img.width(), img.height(), ExtendedColorType::Rgb8)
-            .expect("jpeg encode");
+        enc.encode(
+            img.as_raw(),
+            img.width(),
+            img.height(),
+            ExtendedColorType::Rgb8,
+        )
+        .expect("jpeg encode");
     }
     buf
 }
@@ -111,7 +116,15 @@ pub fn diff_mask(a: &RgbImage, b: &RgbImage, threshold: u32) -> Vec<bool> {
 }
 
 /// Draw the border of one rectangle in a bright colour.
-pub fn draw_rect(img: &mut RgbImage, x0: u32, y0: u32, x1: u32, y1: u32, stroke: u32, c: image::Rgb<u8>) {
+pub fn draw_rect(
+    img: &mut RgbImage,
+    x0: u32,
+    y0: u32,
+    x1: u32,
+    y1: u32,
+    stroke: u32,
+    c: image::Rgb<u8>,
+) {
     let (w, h) = (img.width(), img.height());
     for s in 0..stroke {
         for x in x0.saturating_sub(s)..=(x1 + s).min(w - 1) {
@@ -122,7 +135,10 @@ pub fn draw_rect(img: &mut RgbImage, x0: u32, y0: u32, x1: u32, y1: u32, stroke:
             }
         }
         for y in y0.saturating_sub(s)..=(y1 + s).min(h - 1) {
-            for (x, in_col) in [((x0.saturating_sub(s)).min(w - 1), true), ((x1 + s).min(w - 1), true)] {
+            for (x, in_col) in [
+                ((x0.saturating_sub(s)).min(w - 1), true),
+                ((x1 + s).min(w - 1), true),
+            ] {
                 if in_col && x < w && y < h {
                     *img.get_pixel_mut(x, y) = c;
                 }
@@ -206,11 +222,11 @@ mod tests {
     #[test]
     fn solid_frames_are_blank() {
         for c in [
-            [0, 0, 0],        // black
-            [255, 255, 255],  // white
-            [90, 90, 90],     // mid grey
-            [16, 16, 16],     // near-black
-            [0, 255, 0],      // tinted glitch
+            [0, 0, 0],       // black
+            [255, 255, 255], // white
+            [90, 90, 90],    // mid grey
+            [16, 16, 16],    // near-black
+            [0, 255, 0],     // tinted glitch
             [255, 0, 0],
         ] {
             assert!(
@@ -225,10 +241,17 @@ mod tests {
     fn structured_grey_is_not_blank() {
         let mut img = RgbImage::new(3840, 2160);
         for (x, y, p) in img.enumerate_pixels_mut() {
-            let v = if ((x / 256 + y / 256) % 2) == 0 { 30u8 } else { 200u8 };
+            let v = if ((x / 256 + y / 256) % 2) == 0 {
+                30u8
+            } else {
+                200u8
+            };
             *p = image::Rgb([v, v, v]);
         }
-        assert!(blank_reason(&img).is_none(), "structured grey must not be blank");
+        assert!(
+            blank_reason(&img).is_none(),
+            "structured grey must not be blank"
+        );
     }
 
     /// A dark room with one bright region (a lit screen/window at night)
@@ -241,7 +264,10 @@ mod tests {
                 *img.get_pixel_mut(x, y) = image::Rgb([235, 235, 235]);
             }
         }
-        assert!(blank_reason(&img).is_none(), "dark scene with content must not be blank");
+        assert!(
+            blank_reason(&img).is_none(),
+            "dark scene with content must not be blank"
+        );
     }
 
     /// A normal lit scene (structure + colour) must pass.
@@ -250,11 +276,7 @@ mod tests {
         let mut img = solid(3840, 2160, [120, 118, 110]);
         for (x, y, p) in img.enumerate_pixels_mut() {
             let band = ((x / 128 + y / 128) % 3) as u8;
-            *p = image::Rgb([
-                (120 + band * 40),
-                (100 + band * 30),
-                (90 + band * 10),
-            ]);
+            *p = image::Rgb([(120 + band * 40), (100 + band * 30), (90 + band * 10)]);
         }
         assert!(blank_reason(&img).is_none(), "lit scene must not be blank");
     }

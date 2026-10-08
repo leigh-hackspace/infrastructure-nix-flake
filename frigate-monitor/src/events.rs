@@ -4,8 +4,8 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::imgutil;
 use crate::detect::DetRect;
+use crate::imgutil;
 
 pub const EVENT_FILES: [&str; 6] = [
     "thumb.jpg",
@@ -26,7 +26,13 @@ pub struct Box {
 }
 
 /// Scale detection-resolution boxes up to full resolution.
-pub fn scale_boxes(regions: &[DetRect], full_w: u32, det_w: u32, full_h: u32, det_h: u32) -> Vec<Box> {
+pub fn scale_boxes(
+    regions: &[DetRect],
+    full_w: u32,
+    det_w: u32,
+    full_h: u32,
+    det_h: u32,
+) -> Vec<Box> {
     let sx = full_w as f64 / det_w.max(1) as f64;
     let sy = full_h as f64 / det_h.max(1) as f64;
     regions
@@ -36,7 +42,12 @@ pub fn scale_boxes(regions: &[DetRect], full_w: u32, det_w: u32, full_h: u32, de
             let y = (r.y as f64 * sy).round() as u32;
             let w = ((r.x + r.w) as f64 * sx).round() as u32 - x;
             let h = ((r.y + r.h) as f64 * sy).round() as u32 - y;
-            Box { x, y, w: w.max(1), h: h.max(1) }
+            Box {
+                x,
+                y,
+                w: w.max(1),
+                h: h.max(1),
+            }
         })
         .collect()
 }
@@ -102,7 +113,8 @@ pub fn record_event(
     }
     std::fs::create_dir_all(&dir)?;
 
-    let box_tuples: Vec<(u32, u32, u32, u32)> = boxes.iter().map(|b| (b.x, b.y, b.w, b.h)).collect();
+    let box_tuples: Vec<(u32, u32, u32, u32)> =
+        boxes.iter().map(|b| (b.x, b.y, b.w, b.h)).collect();
 
     let mut before_marked = before.clone();
     let mut after_marked = after.clone();
@@ -116,10 +128,19 @@ pub fn record_event(
     let after_z = imgutil::zoom_crop(&after_marked, zx, zy, zw, zh);
 
     std::fs::write(dir.join("thumb.jpg"), imgutil::encode_jpeg(&thumb, 82))?;
-    std::fs::write(dir.join("before.jpg"), imgutil::encode_jpeg(&before_marked, 82))?;
-    std::fs::write(dir.join("after.jpg"), imgutil::encode_jpeg(&after_marked, 82))?;
+    std::fs::write(
+        dir.join("before.jpg"),
+        imgutil::encode_jpeg(&before_marked, 82),
+    )?;
+    std::fs::write(
+        dir.join("after.jpg"),
+        imgutil::encode_jpeg(&after_marked, 82),
+    )?;
     std::fs::write(dir.join("diff.jpg"), imgutil::encode_jpeg(&diff, 85))?;
-    std::fs::write(dir.join("before_z.jpg"), imgutil::encode_jpeg(&before_z, 88))?;
+    std::fs::write(
+        dir.join("before_z.jpg"),
+        imgutil::encode_jpeg(&before_z, 88),
+    )?;
     std::fs::write(dir.join("after_z.jpg"), imgutil::encode_jpeg(&after_z, 88))?;
 
     let regions_json: Vec<String> = boxes
@@ -185,7 +206,11 @@ pub fn read_meta(path: &Path) -> Option<String> {
 /// Page of event metas, newest first.  `before` (optional) excludes events
 /// with id >= before, i.e. returns strictly older events — the infinite
 /// scroll cursor.  `limit` caps the page size.
-pub fn list_events_paged(data_dir: &Path, before: Option<u64>, limit: usize) -> (Vec<String>, bool) {
+pub fn list_events_paged(
+    data_dir: &Path,
+    before: Option<u64>,
+    limit: usize,
+) -> (Vec<String>, bool) {
     let mut ids = event_ids(data_dir);
     if let Some(b) = before {
         ids.retain(|&i| i < b);

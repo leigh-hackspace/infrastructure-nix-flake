@@ -119,10 +119,17 @@ fn grab_frame(ffmpeg: &str, rtsp: &str, out: &Path) -> Result<(), String> {
     let _ = std::fs::remove_file(out);
     let mut child = Command::new(ffmpeg)
         .args([
-            "-hide_banner", "-loglevel", "error",
-            "-rtsp_transport", "tcp",
-            "-i", rtsp,
-            "-frames:v", "1", "-q:v", "3",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-rtsp_transport",
+            "tcp",
+            "-i",
+            rtsp,
+            "-frames:v",
+            "1",
+            "-q:v",
+            "3",
             "-y",
         ])
         .arg(out)
@@ -176,9 +183,8 @@ fn run_capture(cfg: Arc<Config>, shared: Arc<RwLock<server::Shared>>) {
     loop {
         let t0 = Instant::now();
         let ts = events::now_secs();
-        let res = grab_frame(&cfg.ffmpeg, &cfg.rtsp, &tmp).and_then(|()| {
-            std::fs::read(&tmp).map_err(|e| e.to_string())
-        });
+        let res = grab_frame(&cfg.ffmpeg, &cfg.rtsp, &tmp)
+            .and_then(|()| std::fs::read(&tmp).map_err(|e| e.to_string()));
         match res {
             Ok(jpeg) => match imgutil::decode_rgb(&jpeg) {
                 Ok(full) => {
@@ -198,7 +204,10 @@ fn run_capture(cfg: Arc<Config>, shared: Arc<RwLock<server::Shared>>) {
                             // restarts so "before" images are never from
                             // before a reset.
                             ring.clear();
-                            ring.push_back(RingEntry { idx: detector.frame, jpeg: jpeg.clone() });
+                            ring.push_back(RingEntry {
+                                idx: detector.frame,
+                                jpeg: jpeg.clone(),
+                            });
                             let mut s = shared.write().unwrap();
                             s.frames += 1;
                             s.last_frame_ts = ts;
@@ -209,7 +218,10 @@ fn run_capture(cfg: Arc<Config>, shared: Arc<RwLock<server::Shared>>) {
                             for fired in step.fired {
                                 record(&cfg, &detector, &ring, &shared, &full, fired, ts);
                             }
-                            ring.push_back(RingEntry { idx: detector.frame, jpeg: jpeg.clone() });
+                            ring.push_back(RingEntry {
+                                idx: detector.frame,
+                                jpeg: jpeg.clone(),
+                            });
                             while ring.len() > RING_MAX {
                                 ring.pop_front();
                             }
@@ -321,13 +333,25 @@ fn selftest(before_path: &str, after_path: &str, data_dir: &str) {
     }
     let mask = imgutil::diff_mask(&before, &after, 32);
     let (fw, fh) = (after.width(), after.height());
-    let regions = detect::connected_regions(&mask, fw, fh, detect::min_area(fw as usize, fh as usize));
+    let regions =
+        detect::connected_regions(&mask, fw, fh, detect::min_area(fw as usize, fh as usize));
     let boxes: Vec<Box> = regions
         .iter()
-        .map(|r| Box { x: r.x, y: r.y, w: r.w, h: r.h })
+        .map(|r| Box {
+            x: r.x,
+            y: r.y,
+            w: r.w,
+            h: r.h,
+        })
         .collect();
     let dir = PathBuf::from(data_dir);
-    match events::record_event(&dir, Some(&before_bytes), &after, &boxes, events::now_secs()) {
+    match events::record_event(
+        &dir,
+        Some(&before_bytes),
+        &after,
+        &boxes,
+        events::now_secs(),
+    ) {
         Ok(Some(id)) => println!("selftest event: {id}"),
         Ok(None) => {
             eprintln!("selftest: no regions found");
@@ -552,7 +576,10 @@ mod tests {
             assert!(!s.reset);
             for f in s.fired {
                 fires_remove += 1;
-                assert!(f.before_idx >= 60, "removal before must be near the removal (step {i})");
+                assert!(
+                    f.before_idx >= 60,
+                    "removal before must be near the removal (step {i})"
+                );
             }
         }
         assert_eq!(fires_remove, 1, "removal of a recorded object fires once");
@@ -570,7 +597,11 @@ mod tests {
         let mut fired = 0;
         for i in 0..20 {
             let mut frame = scene(64, 48, 128);
-            let c = if i % 2 == 0 { image::Rgb([255, 0, 0]) } else { image::Rgb([0, 0, 255]) };
+            let c = if i % 2 == 0 {
+                image::Rgb([255, 0, 0])
+            } else {
+                image::Rgb([0, 0, 255])
+            };
             stamp(&mut frame, 16, 16, 16, 16, c); // same place, alternating colour
             let s = det.step(&frame);
             assert!(!s.reset);
@@ -622,7 +653,10 @@ mod tests {
             fired.extend(s.fired);
         }
         assert_eq!(fired.len(), 1, "exactly one event once everything settled");
-        assert_eq!(fired[0].before_idx, 3, "before = frame just before the object appeared");
+        assert_eq!(
+            fired[0].before_idx, 3,
+            "before = frame just before the object appeared"
+        );
     }
 
     /// A huge global change (lights on/off) re-seeds instead of triggering.

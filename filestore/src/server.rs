@@ -22,8 +22,8 @@ use futures_util::{Stream, StreamExt};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use common_oidc as oidc;
 use crate::fsutil::Store;
+use common_oidc as oidc;
 
 type Shared = Arc<crate::Shared>;
 
@@ -52,10 +52,11 @@ impl FromRequestParts<Shared> for Authed {
             .and_then(|h| cookie_value(h, shared.oidc.cookie_name()));
         match cookie.and_then(|c| shared.oidc.session_for_cookie(&c)) {
             Some(s) => Ok(Authed(s)),
-            None => Err(
-                (StatusCode::UNAUTHORIZED, Json(json!({"error": "unauthenticated"})))
-                    .into_response(),
-            ),
+            None => Err((
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"error": "unauthenticated"})),
+            )
+                .into_response()),
         }
     }
 }
@@ -96,13 +97,22 @@ pub struct ApiError {
 
 impl ApiError {
     fn bad(msg: impl Into<String>) -> Self {
-        Self { status: StatusCode::BAD_REQUEST, msg: msg.into() }
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            msg: msg.into(),
+        }
     }
     fn not_found(msg: impl Into<String>) -> Self {
-        Self { status: StatusCode::NOT_FOUND, msg: msg.into() }
+        Self {
+            status: StatusCode::NOT_FOUND,
+            msg: msg.into(),
+        }
     }
     fn too_large(limit: u64) -> Self {
-        Self { status: StatusCode::PAYLOAD_TOO_LARGE, msg: format!("upload exceeds the {} limit", fmt_limit(limit)) }
+        Self {
+            status: StatusCode::PAYLOAD_TOO_LARGE,
+            msg: format!("upload exceeds the {} limit", fmt_limit(limit)),
+        }
     }
 }
 
@@ -123,7 +133,10 @@ impl From<io::Error> for ApiError {
         match e.kind() {
             io::ErrorKind::NotFound => Self::not_found("no such file or directory"),
             io::ErrorKind::PermissionDenied => Self::bad("permission denied"),
-            _ => Self { status: StatusCode::INTERNAL_SERVER_ERROR, msg: e.to_string() },
+            _ => Self {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                msg: e.to_string(),
+            },
         }
     }
 }
@@ -259,10 +272,7 @@ async fn login(State(shared): State<Shared>) -> Response {
     (StatusCode::SEE_OTHER, [(header::LOCATION, url)]).into_response()
 }
 
-async fn logout(
-    State(shared): State<Shared>,
-    headers: axum::http::HeaderMap,
-) -> Response {
+async fn logout(State(shared): State<Shared>, headers: axum::http::HeaderMap) -> Response {
     if let Some(cookie) = headers
         .get(header::COOKIE)
         .and_then(|v| v.to_str().ok())
@@ -290,17 +300,15 @@ async fn callback(
     State(shared): State<Shared>,
     Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> Response {
-    let err = q.get("error").cloned().or_else(|| {
-        q.get("error_description")
-            .map(|d| format!("error: {d}"))
-    });
+    let err = q
+        .get("error")
+        .cloned()
+        .or_else(|| q.get("error_description").map(|d| format!("error: {d}")));
     let code = q.get("code").cloned();
     let state = q.get("state").cloned();
 
     match (err, code, state) {
-        (Some(e), _, _) => {
-            (StatusCode::FORBIDDEN, format!("login failed: {e}")).into_response()
-        }
+        (Some(e), _, _) => (StatusCode::FORBIDDEN, format!("login failed: {e}")).into_response(),
         (None, Some(c), Some(s)) => match shared.oidc.finish_login(&c, &s).await {
             Ok((cookie, _session)) => (
                 StatusCode::SEE_OTHER,
@@ -316,11 +324,7 @@ async fn callback(
                 ],
             )
                 .into_response(),
-            Err(e) => (
-                StatusCode::FORBIDDEN,
-                format!("login failed: {}", e.0),
-            )
-                .into_response(),
+            Err(e) => (StatusCode::FORBIDDEN, format!("login failed: {}", e.0)).into_response(),
         },
         _ => (
             StatusCode::BAD_REQUEST,
@@ -420,7 +424,9 @@ async fn rename(
     if from == to {
         return Ok(Json(json!({"ok": true})));
     }
-    tokio::fs::rename(&from, &to).await.map_err(|_| ApiError::bad("cannot move (source missing?)"))?;
+    tokio::fs::rename(&from, &to)
+        .await
+        .map_err(|_| ApiError::bad("cannot move (source missing?)"))?;
     Ok(Json(json!({"ok": true})))
 }
 
@@ -513,7 +519,10 @@ async fn upload(
 
     let token = random_hex(8);
     let tmp = parent.join(format!(".filestore-uploading-{token}"));
-    let mut guard = UploadGuard { tmp: tmp.clone(), done: false };
+    let mut guard = UploadGuard {
+        tmp: tmp.clone(),
+        done: false,
+    };
 
     let mut stream = body.into_data_stream();
     let mut file = tokio::fs::File::create(&tmp).await?;
@@ -573,7 +582,10 @@ fn content_disposition(name: &str) -> String {
     )
 }
 
-async fn file_path(shared: &Shared, q: &PathQ) -> ApiResult<(std::path::PathBuf, std::fs::Metadata)> {
+async fn file_path(
+    shared: &Shared,
+    q: &PathQ,
+) -> ApiResult<(std::path::PathBuf, std::fs::Metadata)> {
     let rel = q.path.clone().unwrap_or_default();
     let abs = shared.store.resolve(&rel)?;
     let meta = match tokio::fs::metadata(&abs).await {
@@ -598,25 +610,19 @@ async fn download(
         .unwrap_or_else(|| "file".to_string());
     let mime = mime_guess::from_path(&abs).first_or_octet_stream();
     let stream = FileStream::spawn(abs, 1 << 20)?;
-    Ok(
-        (
-            StatusCode::OK,
-            [
-                (header::CONTENT_TYPE, mime.to_string()),
-                (header::CONTENT_LENGTH, meta.len().to_string()),
-                (header::CONTENT_DISPOSITION, content_disposition(&name)),
-            ],
-            Body::from_stream(stream),
-        )
-            .into_response(),
+    Ok((
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, mime.to_string()),
+            (header::CONTENT_LENGTH, meta.len().to_string()),
+            (header::CONTENT_DISPOSITION, content_disposition(&name)),
+        ],
+        Body::from_stream(stream),
     )
+        .into_response())
 }
 
-async fn zip(
-    State(shared): State<Shared>,
-    Authed(_): Authed,
-    uri: Uri,
-) -> ApiResult<Response> {
+async fn zip(State(shared): State<Shared>, Authed(_): Authed, uri: Uri) -> ApiResult<Response> {
     let paths = query_paths(uri.query().unwrap_or(""));
     if paths.is_empty() {
         return Err(ApiError::bad("no paths"));
@@ -637,26 +643,21 @@ async fn zip(
         _ => "archive".to_string(),
     };
     let stream = crate::zipstream::zip(&targets);
-    Ok(
-        (
-            StatusCode::OK,
-            [
-                (
-                    header::CONTENT_TYPE,
-                    "application/zip".to_string(),
-                ),
-                (
-                    header::CONTENT_DISPOSITION,
-                    content_disposition(&format!("{name}.zip")),
-                ),
-            ],
-            Body::from_stream(stream.map(|r| match r {
-                Ok(b) => Ok::<Bytes, io::Error>(b),
-                Err(e) => Err(io::Error::other(e)),
-            })),
-        )
-            .into_response(),
+    Ok((
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "application/zip".to_string()),
+            (
+                header::CONTENT_DISPOSITION,
+                content_disposition(&format!("{name}.zip")),
+            ),
+        ],
+        Body::from_stream(stream.map(|r| match r {
+            Ok(b) => Ok::<Bytes, io::Error>(b),
+            Err(e) => Err(io::Error::other(e)),
+        })),
     )
+        .into_response())
 }
 
 /// Preview: text files are returned truncated (first 512 KiB, lossy UTF-8);
@@ -686,18 +687,16 @@ async fn preview(
 
     if kind == "image" {
         let stream = FileStream::spawn(abs, 1 << 20)?;
-        return Ok(
-            (
-                StatusCode::OK,
-                [
-                    (header::CONTENT_TYPE, mime.to_string()),
-                    (header::CONTENT_LENGTH, meta.len().to_string()),
-                    (header::CACHE_CONTROL, "private, max-age=60".to_string()),
-                ],
-                Body::from_stream(stream),
-            )
-                .into_response(),
-        );
+        return Ok((
+            StatusCode::OK,
+            [
+                (header::CONTENT_TYPE, mime.to_string()),
+                (header::CONTENT_LENGTH, meta.len().to_string()),
+                (header::CACHE_CONTROL, "private, max-age=60".to_string()),
+            ],
+            Body::from_stream(stream),
+        )
+            .into_response());
     }
 
     // text: read the head synchronously in a blocking task (bounded size).
@@ -747,7 +746,10 @@ impl FileStream {
                 match f.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
-                        if tx.blocking_send(Ok(Bytes::copy_from_slice(&buf[..n]))).is_err() {
+                        if tx
+                            .blocking_send(Ok(Bytes::copy_from_slice(&buf[..n])))
+                            .is_err()
+                        {
                             break; // client went away
                         }
                     }
@@ -775,7 +777,11 @@ impl Stream for FileStream {
 
 async fn spa(uri: Uri) -> Response {
     let path = uri.path();
-    let asset = if path == "/" { "index.html" } else { path.trim_start_matches('/') };
+    let asset = if path == "/" {
+        "index.html"
+    } else {
+        path.trim_start_matches('/')
+    };
     if let Some(a) = crate::find_asset(asset) {
         return (
             StatusCode::OK,

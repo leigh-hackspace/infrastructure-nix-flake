@@ -2,8 +2,17 @@
 //!
 //! Every user-supplied path is a "/"-separated relative path (it may start
 //! with "/"); `Store::resolve` maps it to an absolute path that cannot
-//! escape the root.  No symlinks are followed out of the root (the root
-//! itself is canonicalised at startup).
+//! escape the root: it rejects any `..` component and the root itself is
+//! canonicalised at startup.
+//!
+//! What that does *not* cover is symlinks.  A link inside the share is
+//! followed wherever it points — deliberately for listings (`list` shows the
+//! target's size/mtime because the NAS uses links), and unavoidably for reads,
+//! since the OS follows the last component when the file is opened.  So the
+//! guarantee is "no path traversal from the API", not "nothing outside the
+//! share is reachable": creating the link needs write access to the share
+//! itself, which is not something this service offers (there is no symlink
+//! endpoint).  Pinned by `list_follows_symlinks_that_resolve_even_outside_the_root`.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -52,8 +61,8 @@ fn mtime_of(meta: &fs::Metadata) -> i64 {
 
 impl Store {
     pub fn open(root: &Path) -> Result<Self, String> {
-        let root =
-            fs::canonicalize(root).map_err(|e| format!("cannot resolve root {}: {e}", root.display()))?;
+        let root = fs::canonicalize(root)
+            .map_err(|e| format!("cannot resolve root {}: {e}", root.display()))?;
         if !root.is_dir() {
             return Err(format!("{} is not a directory", root.display()));
         }
@@ -230,5 +239,248 @@ fn err_no(e: std::io::Error, p: &Path) -> String {
         std::io::ErrorKind::NotFound => "no such file or directory".to_string(),
         std::io::ErrorKind::PermissionDenied => format!("permission denied: {}", p.display()),
         _ => format!("{}: {e}", p.display()),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+
+    /// A fresh empty directory under the temp dir (no external dep; these
+    /// tests are the only thing that needs one).
+    fn tmp_store() -> PathBuf {
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "filestore-fsutil-test-{}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+            n
+        ));
+        fs::create_dir_all(&dir).expect("create temp store");
+        dir
+    }
+
+    /// root/
+    ///   photos/            2024/{cat.jpg, dog.PNG}, note.txt
+    ///   top.txt
+    ///   Zebra/
+    fn fixture() -> Store {
+        let root = tmp_store();
+        fs::create_dir_all(root.join("photos/2024")).unwrap();
+        fs::create_dir_all(root.join("Zebra")).unwrap();
+        fs::write(root.join("photos/2024/cat.jpg"), b"cat").unwrap();
+        fs::write(root.join("photos/2024/dog.PNG"), b"dog").unwrap();
+        fs::write(root.join("photos/note.txt"), b"note").unwrap();
+        fs::write(root.join("top.txt"), b"top").unwrap();
+        Store::open(&root).unwrap()
+    }
+
+    // ---- resolve: the containment guard -----------------------------------
+
+    #[test]
+    fn resolve_maps_relative_paths_under_the_root() {
+        let s = fixture();
+        assert_eq!(s.resolve("").unwrap(), s.root);
+        assert_eq!(s.resolve("/").unwrap(), s.root);
+        assert_eq!(s.resolve("photos").unwrap(), s.root.join("photos"));
+        // leading, trailing and doubled separators, and "." components, are
+        // all ignored -- the frontend sends "/photos/2024".
+        assert_eq!(
+            s.resolve("/photos//2024/").unwrap(),
+            s.root.join("photos/2024")
+        );
+        assert_eq!(
+            s.resolve("photos/./2024").unwrap(),
+            s.root.join("photos/2024")
+        );
+        // dots inside a name are not a parent directory
+        assert_eq!(s.resolve("..hidden").unwrap(), s.root.join("..hidden"));
+        assert_eq!(s.resolve("a...b").unwrap(), s.root.join("a...b"));
+        assert_eq!(s.resolve("...").unwrap(), s.root.join("..."));
+    }
+
+    #[test]
+    fn resolve_rejects_every_parent_directory_component() {
+        let s = fixture();
+        for bad in [
+            "..",
+            "../",
+            "/..",
+            "./..",
+            "photos/..",
+            "photos/../top.txt",
+            "photos/../..",
+            "/photos/2024/../../..",
+            "a/b/c/..",
+        ] {
+            assert_eq!(
+                s.resolve(bad).err(),
+                Some("invalid path".to_string()),
+                "accepted {bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rel_of_round_trips_relative_paths() {
+        let s = fixture();
+        assert_eq!(s.rel_of(&s.root), "");
+        assert_eq!(s.rel_of(&s.resolve("photos/2024").unwrap()), "photos/2024");
+        // outside the root there is no relative path
+        assert_eq!(s.rel_of(Path::new("/")), "");
+    }
+
+    // ---- entry / list ------------------------------------------------------
+
+    #[test]
+    fn entry_reports_directories_and_missing_files() {
+        let s = fixture();
+        let dir = s.entry(&s.resolve("photos").unwrap()).unwrap();
+        assert_eq!(dir.name, "photos");
+        assert!(dir.is_dir);
+        let file = s.entry(&s.resolve("top.txt").unwrap()).unwrap();
+        assert_eq!(file.name, "top.txt");
+        assert!(!file.is_dir);
+        assert_eq!(file.size, 3);
+        assert_eq!(
+            s.entry(&s.resolve("nope.txt").unwrap()).err(),
+            Some("no such file or directory".to_string())
+        );
+    }
+
+    #[test]
+    fn list_puts_directories_first_then_case_insensitive_names() {
+        let s = fixture();
+        let names: Vec<String> = s
+            .list(&s.root)
+            .unwrap()
+            .into_iter()
+            .map(|e| e.name)
+            .collect();
+        assert_eq!(names, vec!["photos", "Zebra", "top.txt"]);
+    }
+
+    #[test]
+    fn list_skips_a_dangling_symlink() {
+        let s = fixture();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(s.root.join("gone"), s.root.join("broken")).unwrap();
+            let names: Vec<String> = s
+                .list(&s.root)
+                .unwrap()
+                .into_iter()
+                .map(|e| e.name)
+                .collect();
+            assert!(!names.contains(&"broken".to_string()), "listed: {names:?}");
+        }
+    }
+
+    /// What the containment guard does *not* do: a symlink that resolves is
+    /// followed for display wherever it points (the NAS uses them), so its
+    /// size/mtime come from outside the root.  Pinned deliberately -- the
+    /// module doc used to claim symlinks were never followed out of the root,
+    /// which is only true of `resolve`, not of the filesystem calls.
+    #[test]
+    fn list_follows_symlinks_that_resolve_even_outside_the_root() {
+        let s = fixture();
+        #[cfg(unix)]
+        {
+            let outside = tmp_store();
+            fs::write(outside.join("secret"), b"1234567890").unwrap();
+            std::os::unix::fs::symlink(outside.join("secret"), s.root.join("link")).unwrap();
+            let entries = s.list(&s.root).unwrap();
+            let link = entries
+                .iter()
+                .find(|e| e.name == "link")
+                .expect("link listed");
+            assert!(!link.is_dir);
+            assert_eq!(link.size, 10, "size came from the target outside the root");
+        }
+    }
+
+    // ---- search ------------------------------------------------------------
+
+    #[test]
+    fn search_is_case_insensitive_on_the_name() {
+        let s = fixture();
+        let out = s
+            .search(&s.resolve("photos/2024").unwrap(), "CAT", false, 20, 1000)
+            .unwrap();
+        assert_eq!(out.hits.len(), 1);
+        assert_eq!(out.hits[0].name, "cat.jpg");
+        assert_eq!(out.hits[0].rel, "photos/2024/cat.jpg");
+        assert_eq!(out.hits[0].parent, "photos/2024");
+        assert!(!out.truncated);
+    }
+
+    #[test]
+    fn shallow_search_only_matches_immediate_children() {
+        let s = fixture();
+        let out = s
+            .search(&s.resolve("photos").unwrap(), "cat", false, 20, 1000)
+            .unwrap();
+        assert!(out.hits.is_empty(), "shallow search found {:?}", out.hits);
+        let deep = s
+            .search(&s.resolve("photos").unwrap(), "cat", true, 20, 1000)
+            .unwrap();
+        assert_eq!(deep.hits.len(), 1);
+        assert_eq!(deep.hits[0].rel, "photos/2024/cat.jpg");
+    }
+
+    #[test]
+    fn deep_search_matches_directories_too() {
+        let s = fixture();
+        let out = s.search(&s.root, "zebra", true, 20, 1000).unwrap();
+        assert_eq!(out.hits.len(), 1);
+        assert!(out.hits[0].is_dir);
+        assert_eq!(out.hits[0].rel, "Zebra");
+    }
+
+    #[test]
+    fn search_hit_cap_marks_the_result_truncated() {
+        let s = fixture();
+        let out = s.search(&s.root, "", true, 2, 1000).unwrap();
+        assert_eq!(out.hits.len(), 2);
+        assert!(out.truncated);
+    }
+
+    #[test]
+    fn search_scan_cap_marks_the_result_truncated() {
+        let s = fixture();
+        let out = s.search(&s.root, "cat", true, 20, 1).unwrap();
+        assert!(out.truncated);
+        // The cap is checked once per directory, not per entry: the root's 3
+        // entries are all counted, then the walk stops -- it does not descend
+        // into photos/ looking for "cat".
+        assert_eq!(
+            out.scanned, 3,
+            "walk did not stop after the first directory"
+        );
+        assert!(
+            out.hits.is_empty(),
+            "descended past the cap: {:?}",
+            out.hits
+        );
+    }
+
+    #[test]
+    fn search_in_a_missing_directory_is_not_an_error() {
+        let s = fixture();
+        let out = s
+            .search(&s.resolve("nope").unwrap(), "cat", true, 20, 1000)
+            .unwrap();
+        assert!(out.hits.is_empty());
+        assert_eq!(out.scanned, 0);
     }
 }
