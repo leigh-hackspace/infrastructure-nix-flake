@@ -3,14 +3,11 @@
   lib,
   config,
   ...
-}:
-
-let
+}: let
   CONFIG = import ../config.nix;
-in
-{
+in {
   # Necessary for secret access
-  users.groups.secrets.members = [ "mattermost" ];
+  users.groups.secrets.members = ["mattermost"];
 
   environment.systemPackages = with pkgs; [
     mattermost
@@ -29,8 +26,7 @@ in
         "AuthEndpoint" = "https://${CONFIG.AUTHENTIK_DOMAIN}/application/o/authorize/";
         "TokenEndpoint" = "https://${CONFIG.AUTHENTIK_DOMAIN}/application/o/token/";
         "UserAPIEndpoint" = "https://${CONFIG.AUTHENTIK_DOMAIN}/application/o/userinfo/";
-        "DiscoveryEndpoint" =
-          "https://${CONFIG.AUTHENTIK_DOMAIN}/application/o/mattermost/.well-known/openid-configuration";
+        "DiscoveryEndpoint" = "https://${CONFIG.AUTHENTIK_DOMAIN}/application/o/mattermost/.well-known/openid-configuration";
         "ButtonText" = "Log in with Leigh Hackspace <- CLICK HERE";
         "ButtonColor" = "#000000";
       };

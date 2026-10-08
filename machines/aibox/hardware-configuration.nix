@@ -4,9 +4,7 @@
   pkgs,
   modulesPath,
   ...
-}:
-
-{
+}: {
   imports = [
     (modulesPath + "/installer/scan/not-detected.nix")
   ];
@@ -19,14 +17,14 @@
     "usb_storage"
     "sd_mod"
   ];
-  boot.initrd.kernelModules = [ ];
+  boot.initrd.kernelModules = [];
   boot.initrd.supportedFilesystems.zfs = false;
 
   boot.supportedFilesystems.zfs = false;
   boot.supportedFilesystems.nfs = true;
 
-  boot.kernelModules = [ "kvm-amd" ];
-  boot.extraModulePackages = [ ];
+  boot.kernelModules = ["kvm-amd"];
+  boot.extraModulePackages = [];
 
   boot.kernelPackages = pkgs.linuxPackages_latest;
 
@@ -70,16 +68,16 @@
       what = "10.3.1.6:/mnt/sas-10k/filestore";
       type = "nfs";
       options = "nfsvers=4.2,_netdev,x-systemd.automount,retry=5,timeo=5,x-systemd.mount-timeout=30";
-      after = [ "wait-for-network.service" ];
-      requires = [ "wait-for-network.service" ];
+      after = ["wait-for-network.service"];
+      requires = ["wait-for-network.service"];
     }
     {
       where = "/mnt/ds-photos";
       what = "10.3.1.6:/mnt/sas-10k/ds-photos";
       type = "nfs";
       options = "nfsvers=4.2,_netdev,x-systemd.automount,retry=5,timeo=5,x-systemd.mount-timeout=30";
-      after = [ "wait-for-network.service" ];
-      requires = [ "wait-for-network.service" ];
+      after = ["wait-for-network.service"];
+      requires = ["wait-for-network.service"];
     }
   ];
 
@@ -92,16 +90,16 @@
   systemd.automounts = [
     {
       where = "/mnt/filestore";
-      wantedBy = [ "multi-user.target" ];
+      wantedBy = ["multi-user.target"];
     }
     {
       where = "/mnt/ds-photos";
-      wantedBy = [ "multi-user.target" ];
+      wantedBy = ["multi-user.target"];
     }
   ];
 
   swapDevices = [
-    { device = "/dev/disk/by-uuid/b44042ef-cd03-49b9-aa18-b923c243cba8"; }
+    {device = "/dev/disk/by-uuid/b44042ef-cd03-49b9-aa18-b923c243cba8";}
   ];
 
   nixpkgs.hostPlatform = lib.mkDefault "x86_64-linux";

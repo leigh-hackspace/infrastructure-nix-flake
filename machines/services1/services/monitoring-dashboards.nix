@@ -1,5 +1,4 @@
-{ lib }:
-
+{lib}:
 # Declarative Grafana dashboards for the services1 monitoring stack.
 #
 # Each top-level attribute is one dashboard (attribute name = dashboard
@@ -8,75 +7,110 @@
 #
 # Panel helpers below keep the individual dashboards compact; everything
 # else is plain Grafana dashboard JSON.
-
 let
-  DS = { type = "prometheus"; uid = "prometheus"; };
+  DS = {
+    type = "prometheus";
+    uid = "prometheus";
+  };
 
   # Timeseries panel in the Prometheus datasource.
-  ts =
-    { id, x, y, w ? 12, h ? 8, title, unit ? "short", legendFormat ? "auto", targets }:
-    {
-      inherit id x y w h title;
-      type = "timeseries";
-      datasource = DS;
-      gridPos = { inherit x y w h; };
-      # Targets are expressions, or { expr, legendFormat } pairs for
-      # panels where each line needs its own legend.
-      targets = lib.map (
+  ts = {
+    id,
+    x,
+    y,
+    w ? 12,
+    h ? 8,
+    title,
+    unit ? "short",
+    legendFormat ? "auto",
+    targets,
+  }: {
+    inherit id x y w h title;
+    type = "timeseries";
+    datasource = DS;
+    gridPos = {inherit x y w h;};
+    # Targets are expressions, or { expr, legendFormat } pairs for
+    # panels where each line needs its own legend.
+    targets =
+      lib.map (
         t:
-        if builtins.isAttrs t then
-          t // { range = true; }
-        else
-          { expr = t; legendFormat = legendFormat; range = true; }
-      ) targets;
-      fieldConfig = {
-        defaults = {
-          inherit unit;
-          custom = {
-            drawStyle = "line";
-            lineWidth = 2;
-            pointSize = 5;
-            spanNulls = true;
-            fillOpacity = 10;
-          };
+          if builtins.isAttrs t
+          then t // {range = true;}
+          else {
+            expr = t;
+            legendFormat = legendFormat;
+            range = true;
+          }
+      )
+      targets;
+    fieldConfig = {
+      defaults = {
+        inherit unit;
+        custom = {
+          drawStyle = "line";
+          lineWidth = 2;
+          pointSize = 5;
+          spanNulls = true;
+          fillOpacity = 10;
         };
-        overrides = [ ];
       };
-      options = {
-        legend = { displayMode = "list"; placement = "bottom"; calcs = [ ]; };
-        tooltip = { mode = "multi"; sort = "none"; };
+      overrides = [];
+    };
+    options = {
+      legend = {
+        displayMode = "list";
+        placement = "bottom";
+        calcs = [];
+      };
+      tooltip = {
+        mode = "multi";
+        sort = "none";
       };
     };
+  };
 
   # Single-value stat panel.
-  st =
-    { id, x, y, w ? 4, h ? 4, title, unit ? "short", thresholds, targets, legendFormat ? "auto" }:
-    {
-      inherit id x y w h title;
-      type = "stat";
-      datasource = DS;
-      gridPos = { inherit x y w h; };
-      targets = lib.map (
-        expr:
-        {
+  st = {
+    id,
+    x,
+    y,
+    w ? 4,
+    h ? 4,
+    title,
+    unit ? "short",
+    thresholds,
+    targets,
+    legendFormat ? "auto",
+  }: {
+    inherit id x y w h title;
+    type = "stat";
+    datasource = DS;
+    gridPos = {inherit x y w h;};
+    targets =
+      lib.map (
+        expr: {
           inherit expr;
           legendFormat = legendFormat;
           instant = true;
         }
-      ) targets;
-      fieldConfig = {
-        defaults = {
-          inherit unit;
-          thresholds = { mode = "absolute"; steps = thresholds; };
+      )
+      targets;
+    fieldConfig = {
+      defaults = {
+        inherit unit;
+        thresholds = {
+          mode = "absolute";
+          steps = thresholds;
         };
-        overrides = [ ];
       };
-      options = {
-        colorMode = "background";
-        graphMode = "area";
-        reduceOptions = { calcs = [ "lastNotNull" ]; };
-      };
+      overrides = [];
     };
+    options = {
+      colorMode = "background";
+      graphMode = "area";
+      reduceOptions = {calcs = ["lastNotNull"];};
+    };
+  };
 
   green = "green";
   orange = "orange";
@@ -85,51 +119,77 @@ let
   # Stat tile that renders a numeric state code as text. `mapping` is
   # { code = "label" } — keep the tables in sync with the exporter
   # (moonraker-exporter/src/main.rs).
-  stateStat =
-    { id, x, y, w ? 4, h ? 4, title, mapping, target, thresholds ? [ { color = green; value = null; } ] }:
-    let
-      options = lib.listToAttrs (
-        lib.imap0 (i: code: {
-          name = code;
-          # `index` selects the threshold step that colours this mapping
-          # (Grafana value-mapping schema); with the default single-step
-          # thresholds every state lands on step 0.
-          value = { index = i; text = mapping.${code}; };
-        }) (lib.attrNames mapping)
-      );
-    in
-    {
-      inherit id x y w h title;
-      type = "stat";
-      datasource = DS;
-      gridPos = { inherit x y w h; };
-      targets = [
-        { inherit target; instant = true; legendFormat = "auto"; }
-      ];
-      fieldConfig.defaults = {
-        mappings = [ { type = "value"; inherit options; } ];
-        thresholds = {
-          mode = "absolute";
-          steps = thresholds;
+  stateStat = {
+    id,
+    x,
+    y,
+    w ? 4,
+    h ? 4,
+    title,
+    mapping,
+    target,
+    thresholds ? [
+      {
+        color = green;
+        value = null;
+      }
+    ],
+  }: let
+    options = lib.listToAttrs (
+      lib.imap0 (i: code: {
+        name = code;
+        # `index` selects the threshold step that colours this mapping
+        # (Grafana value-mapping schema); with the default single-step
+        # thresholds every state lands on step 0.
+        value = {
+          index = i;
+          text = mapping.${code};
         };
-      };
-      options = {
-        colorMode = "background";
-        graphMode = "area";
-        reduceOptions = { calcs = [ "lastNotNull" ]; };
-        textMode = "value";
+      }) (lib.attrNames mapping)
+    );
+  in {
+    inherit id x y w h title;
+    type = "stat";
+    datasource = DS;
+    gridPos = {inherit x y w h;};
+    targets = [
+      {
+        inherit target;
+        instant = true;
+        legendFormat = "auto";
+      }
+    ];
+    fieldConfig.defaults = {
+      mappings = [
+        {
+          type = "value";
+          inherit options;
+        }
+      ];
+      thresholds = {
+        mode = "absolute";
+        steps = thresholds;
       };
     };
-in
-{
+    options = {
+      colorMode = "background";
+      graphMode = "area";
+      reduceOptions = {calcs = ["lastNotNull"];};
+      textMode = "value";
+    };
+  };
+in {
   # ------------------------------------------------------------------
   # CPU, RAM, disk, network, TCP — the essential host vitals.
   # ------------------------------------------------------------------
   "services1-system" = {
     uid = "services1-system";
     title = "services1 · System";
-    time = { from = "now-6h"; to = "now"; };
-    tags = [ "services1" "node-exporter" ];
+    time = {
+      from = "now-6h";
+      to = "now";
+    };
+    tags = ["services1" "node-exporter"];
     timezone = "browser";
     schemaVersion = 39;
     version = 1;
@@ -143,9 +203,18 @@ in
         title = "CPU usage";
         unit = "percent";
         thresholds = [
-          { color = green; value = null; }
-          { color = orange; value = 70; }
-          { color = red; value = 90; }
+          {
+            color = green;
+            value = null;
+          }
+          {
+            color = orange;
+            value = 70;
+          }
+          {
+            color = red;
+            value = 90;
+          }
         ];
         targets = [
           "100 * (1 - avg(rate(node_cpu_seconds_total{mode=\"idle\"}[5m])))"
@@ -158,9 +227,18 @@ in
         title = "RAM available";
         unit = "percent";
         thresholds = [
-          { color = red; value = null; }
-          { color = orange; value = 10; }
-          { color = green; value = 20; }
+          {
+            color = red;
+            value = null;
+          }
+          {
+            color = orange;
+            value = 10;
+          }
+          {
+            color = green;
+            value = 20;
+          }
         ];
         targets = [
           "(node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100"
@@ -173,9 +251,18 @@ in
         title = "Root disk free";
         unit = "percent";
         thresholds = [
-          { color = red; value = null; }
-          { color = orange; value = 10; }
-          { color = green; value = 20; }
+          {
+            color = red;
+            value = null;
+          }
+          {
+            color = orange;
+            value = 10;
+          }
+          {
+            color = green;
+            value = 20;
+          }
         ];
         targets = [
           "(node_filesystem_avail_bytes{mountpoint=\"/\"} / node_filesystem_size_bytes{mountpoint=\"/\"}) * 100"
@@ -187,11 +274,20 @@ in
         y = 0;
         title = "Load (5m)";
         thresholds = [
-          { color = green; value = null; }
-          { color = orange; value = 8; }
-          { color = red; value = 16; }
+          {
+            color = green;
+            value = null;
+          }
+          {
+            color = orange;
+            value = 8;
+          }
+          {
+            color = red;
+            value = 16;
+          }
         ];
-        targets = [ "node_load5" ];
+        targets = ["node_load5"];
       })
       (st {
         id = 5;
@@ -199,8 +295,13 @@ in
         y = 0;
         title = "Uptime";
         unit = "s";
-        thresholds = [ { color = green; value = null; } ];
-        targets = [ "time() - node_boot_time_seconds" ];
+        thresholds = [
+          {
+            color = green;
+            value = null;
+          }
+        ];
+        targets = ["time() - node_boot_time_seconds"];
       })
       (st {
         id = 6;
@@ -209,9 +310,18 @@ in
         title = "Swap used";
         unit = "percent";
         thresholds = [
-          { color = green; value = null; }
-          { color = orange; value = 50; }
-          { color = red; value = 80; }
+          {
+            color = green;
+            value = null;
+          }
+          {
+            color = orange;
+            value = 50;
+          }
+          {
+            color = red;
+            value = 80;
+          }
         ];
         targets = [
           "100 * (1 - (node_memory_SwapFree_bytes / node_memory_SwapTotal_bytes))"
@@ -237,9 +347,18 @@ in
         title = "Memory";
         unit = "bytes";
         targets = [
-          { expr = "node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes"; legendFormat = "used"; }
-          { expr = "node_memory_Cached_bytes"; legendFormat = "cached"; }
-          { expr = "node_memory_MemAvailable_bytes"; legendFormat = "available"; }
+          {
+            expr = "node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes";
+            legendFormat = "used";
+          }
+          {
+            expr = "node_memory_Cached_bytes";
+            legendFormat = "cached";
+          }
+          {
+            expr = "node_memory_MemAvailable_bytes";
+            legendFormat = "available";
+          }
         ];
       })
 
@@ -304,12 +423,15 @@ in
   "services1-services" = {
     uid = "services1-services";
     title = "services1 · Services";
-    tags = [ "services1" "systemd" ];
+    tags = ["services1" "systemd"];
     timezone = "browser";
     schemaVersion = 39;
     version = 1;
     refresh = "1m";
-    time = { from = "now-6h"; to = "now"; };
+    time = {
+      from = "now-6h";
+      to = "now";
+    };
     panels = [
       (st {
         id = 1;
@@ -318,10 +440,16 @@ in
         w = 6;
         title = "Failed units";
         thresholds = [
-          { color = green; value = null; }
-          { color = red; value = 1; }
+          {
+            color = green;
+            value = null;
+          }
+          {
+            color = red;
+            value = 1;
+          }
         ];
-        targets = [ "sum(systemd_unit_state{state=\"failed\"})" ];
+        targets = ["sum(systemd_unit_state{state=\"failed\"})"];
       })
       (st {
         id = 2;
@@ -329,8 +457,13 @@ in
         y = 0;
         w = 6;
         title = "Active units";
-        thresholds = [ { color = green; value = null; } ];
-        targets = [ "sum(systemd_unit_state{state=\"active\"})" ];
+        thresholds = [
+          {
+            color = green;
+            value = null;
+          }
+        ];
+        targets = ["sum(systemd_unit_state{state=\"active\"})"];
       })
       (st {
         id = 3;
@@ -339,10 +472,16 @@ in
         w = 6;
         title = "Activating units";
         thresholds = [
-          { color = green; value = null; }
-          { color = orange; value = 5; }
+          {
+            color = green;
+            value = null;
+          }
+          {
+            color = orange;
+            value = 5;
+          }
         ];
-        targets = [ "sum(systemd_unit_state{state=\"activating\"})" ];
+        targets = ["sum(systemd_unit_state{state=\"activating\"})"];
       })
       (st {
         id = 4;
@@ -350,8 +489,13 @@ in
         y = 0;
         w = 6;
         title = "Dead units";
-        thresholds = [ { color = green; value = null; } ];
-        targets = [ "sum(systemd_unit_state{state=~\"dead|inactive\"})" ];
+        thresholds = [
+          {
+            color = green;
+            value = null;
+          }
+        ];
+        targets = ["sum(systemd_unit_state{state=~\"dead|inactive\"})"];
       })
       (ts {
         id = 5;
@@ -359,7 +503,7 @@ in
         y = 4;
         title = "Units by state";
         legendFormat = "{{state}}";
-        targets = [ "sum by (state) (systemd_unit_state)" ];
+        targets = ["sum by (state) (systemd_unit_state)"];
       })
       (ts {
         id = 6;
@@ -382,12 +526,15 @@ in
   "3d-printers" = {
     uid = "3d-printers";
     title = "3D Printers";
-    tags = [ "printers" "moonraker" "klipper" ];
+    tags = ["printers" "moonraker" "klipper"];
     timezone = "browser";
     schemaVersion = 39;
     version = 1;
     refresh = "30s";
-    time = { from = "now-6h"; to = "now"; };
+    time = {
+      from = "now-6h";
+      to = "now";
+    };
     panels = [
       # --- blue: state row -------------------------------------------
       (stateStat {
@@ -426,11 +573,20 @@ in
         title = "blue · Progress";
         unit = "percent";
         thresholds = [
-          { color = green; value = null; }
-          { color = orange; value = 50; }
-          { color = red; value = 90; }
+          {
+            color = green;
+            value = null;
+          }
+          {
+            color = orange;
+            value = 50;
+          }
+          {
+            color = red;
+            value = 90;
+          }
         ];
-        targets = [ "moonraker_print_progress{printer=\"blue\"} * 100" ];
+        targets = ["moonraker_print_progress{printer=\"blue\"} * 100"];
       })
       (st {
         id = 4;
@@ -438,8 +594,13 @@ in
         y = 0;
         title = "blue · Nozzle";
         unit = "celsius";
-        thresholds = [ { color = green; value = null; } ];
-        targets = [ "moonraker_heater_temperature{printer=\"blue\",heater=\"extruder\"}" ];
+        thresholds = [
+          {
+            color = green;
+            value = null;
+          }
+        ];
+        targets = ["moonraker_heater_temperature{printer=\"blue\",heater=\"extruder\"}"];
       })
       (st {
         id = 5;
@@ -447,8 +608,13 @@ in
         y = 0;
         title = "blue · Bed";
         unit = "celsius";
-        thresholds = [ { color = green; value = null; } ];
-        targets = [ "moonraker_heater_temperature{printer=\"blue\",heater=\"heater_bed\"}" ];
+        thresholds = [
+          {
+            color = green;
+            value = null;
+          }
+        ];
+        targets = ["moonraker_heater_temperature{printer=\"blue\",heater=\"heater_bed\"}"];
       })
       (stateStat {
         id = 6;
@@ -499,11 +665,20 @@ in
         title = "lime · Progress";
         unit = "percent";
         thresholds = [
-          { color = green; value = null; }
-          { color = orange; value = 50; }
-          { color = red; value = 90; }
+          {
+            color = green;
+            value = null;
+          }
+          {
+            color = orange;
+            value = 50;
+          }
+          {
+            color = red;
+            value = 90;
+          }
         ];
-        targets = [ "moonraker_print_progress{printer=\"lime\"} * 100" ];
+        targets = ["moonraker_print_progress{printer=\"lime\"} * 100"];
       })
       (st {
         id = 10;
@@ -511,8 +686,13 @@ in
         y = 4;
         title = "lime · Nozzle";
         unit = "celsius";
-        thresholds = [ { color = green; value = null; } ];
-        targets = [ "moonraker_heater_temperature{printer=\"lime\",heater=\"extruder\"}" ];
+        thresholds = [
+          {
+            color = green;
+            value = null;
+          }
+        ];
+        targets = ["moonraker_heater_temperature{printer=\"lime\",heater=\"extruder\"}"];
       })
       (st {
         id = 11;
@@ -520,8 +700,13 @@ in
         y = 4;
         title = "lime · Bed";
         unit = "celsius";
-        thresholds = [ { color = green; value = null; } ];
-        targets = [ "moonraker_heater_temperature{printer=\"lime\",heater=\"heater_bed\"}" ];
+        thresholds = [
+          {
+            color = green;
+            value = null;
+          }
+        ];
+        targets = ["moonraker_heater_temperature{printer=\"lime\",heater=\"heater_bed\"}"];
       })
       (stateStat {
         id = 12;
@@ -582,7 +767,7 @@ in
         title = "Print progress";
         unit = "percent";
         legendFormat = "{{printer}}";
-        targets = [ "moonraker_print_progress * 100" ];
+        targets = ["moonraker_print_progress * 100"];
       })
       (ts {
         id = 16;
@@ -592,7 +777,7 @@ in
         title = "Filament used";
         unit = "lengthmm";
         legendFormat = "{{printer}}";
-        targets = [ "moonraker_print_filament_used_mm" ];
+        targets = ["moonraker_print_filament_used_mm"];
       })
 
       # --- whole-Pi system -------------------------------------------
@@ -646,7 +831,7 @@ in
         title = "Pi SoC temperature";
         unit = "celsius";
         legendFormat = "{{printer}}";
-        targets = [ "moonraker_cpu_temperature_celsius" ];
+        targets = ["moonraker_cpu_temperature_celsius"];
       })
       (ts {
         id = 20;
@@ -656,7 +841,7 @@ in
         title = "Moonraker process memory";
         unit = "bytes";
         legendFormat = "{{printer}}";
-        targets = [ "moonraker_process_memory_bytes" ];
+        targets = ["moonraker_process_memory_bytes"];
       })
 
       # --- MCU USB-serial link health ---------------------------------
@@ -709,8 +894,11 @@ in
   "router" = {
     uid = "router";
     title = "Router (network-info)";
-    time = { from = "now-6h"; to = "now"; };
-    tags = [ "services1" "router" "opnsense" ];
+    time = {
+      from = "now-6h";
+      to = "now";
+    };
+    tags = ["services1" "router" "opnsense"];
     timezone = "browser";
     schemaVersion = 39;
     version = 1;
@@ -727,8 +915,14 @@ in
           "1" = "up";
         };
         thresholds = [
-          { color = red; value = null; }
-          { color = green; value = 1; }
+          {
+            color = red;
+            value = null;
+          }
+          {
+            color = green;
+            value = 1;
+          }
         ];
         target = "router_up";
       })
@@ -738,10 +932,16 @@ in
         y = 0;
         title = "Issues (bad)";
         thresholds = [
-          { color = green; value = null; }
-          { color = red; value = 1; }
+          {
+            color = green;
+            value = null;
+          }
+          {
+            color = red;
+            value = 1;
+          }
         ];
-        targets = [ "sum(router_issue{level=\"bad\"}) or vector(0)" ];
+        targets = ["sum(router_issue{level=\"bad\"}) or vector(0)"];
       })
       (st {
         id = 3;
@@ -749,10 +949,16 @@ in
         y = 0;
         title = "Warnings";
         thresholds = [
-          { color = green; value = null; }
-          { color = orange; value = 1; }
+          {
+            color = green;
+            value = null;
+          }
+          {
+            color = orange;
+            value = 1;
+          }
         ];
-        targets = [ "sum(router_issue{level=\"warn\"}) or vector(0)" ];
+        targets = ["sum(router_issue{level=\"warn\"}) or vector(0)"];
       })
       (st {
         id = 4;
@@ -760,8 +966,13 @@ in
         y = 0;
         title = "Uptime";
         unit = "s";
-        thresholds = [ { color = green; value = null; } ];
-        targets = [ "router_uptime_seconds" ];
+        thresholds = [
+          {
+            color = green;
+            value = null;
+          }
+        ];
+        targets = ["router_uptime_seconds"];
       })
       (st {
         id = 5;
@@ -770,11 +981,20 @@ in
         title = "CPU usage";
         unit = "percent";
         thresholds = [
-          { color = green; value = null; }
-          { color = orange; value = 70; }
-          { color = red; value = 90; }
+          {
+            color = green;
+            value = null;
+          }
+          {
+            color = orange;
+            value = 70;
+          }
+          {
+            color = red;
+            value = 90;
+          }
         ];
-        targets = [ "100 - router_cpu_percent{mode=\"idle\"}" ];
+        targets = ["100 - router_cpu_percent{mode=\"idle\"}"];
       })
       (st {
         id = 6;
@@ -783,11 +1003,20 @@ in
         title = "Memory free";
         unit = "bytes";
         thresholds = [
-          { color = green; value = null; }
-          { color = red; value = 52428800; }    # < 50 MiB free
-          { color = orange; value = 104857600; } # < 100 MiB free
+          {
+            color = green;
+            value = null;
+          }
+          {
+            color = red;
+            value = 52428800;
+          } # < 50 MiB free
+          {
+            color = orange;
+            value = 104857600;
+          } # < 100 MiB free
         ];
-        targets = [ "router_mem_bytes{state=\"free\"}" ];
+        targets = ["router_mem_bytes{state=\"free\"}"];
       })
 
       # --- bandwidth (BwCard) ------------------------------------------
@@ -828,7 +1057,7 @@ in
         w = 8;
         title = "Firewall state table";
         legendFormat = "states";
-        targets = [ "router_pf_states" ];
+        targets = ["router_pf_states"];
       })
       (ts {
         id = 10;
@@ -837,7 +1066,7 @@ in
         w = 8;
         title = "Router TCP sockets";
         legendFormat = "sockets";
-        targets = [ "router_tcp_sockets" ];
+        targets = ["router_tcp_sockets"];
       })
       (ts {
         id = 11;
@@ -847,7 +1076,7 @@ in
         title = "TCP retransmits";
         unit = "ops";
         legendFormat = "retrans/s (reported)";
-        targets = [ "router_retransmissions_rate_per_second" ];
+        targets = ["router_retransmissions_rate_per_second"];
       })
       (ts {
         id = 12;
@@ -856,9 +1085,18 @@ in
         w = 12;
         title = "Load average";
         targets = [
-          { expr = "router_load1"; legendFormat = "1m"; }
-          { expr = "router_load5"; legendFormat = "5m"; }
-          { expr = "router_load15"; legendFormat = "15m"; }
+          {
+            expr = "router_load1";
+            legendFormat = "1m";
+          }
+          {
+            expr = "router_load5";
+            legendFormat = "5m";
+          }
+          {
+            expr = "router_load15";
+            legendFormat = "15m";
+          }
         ];
       })
 
@@ -874,9 +1112,18 @@ in
         title = "Interfaces";
         type = "table";
         datasource = DS;
-        gridPos = { x = 12; y = 16; w = 12; h = 5; };
+        gridPos = {
+          x = 12;
+          y = 16;
+          w = 12;
+          h = 5;
+        };
         targets = [
-          { expr = "router_interface_up"; legendFormat = "link"; instant = true; }
+          {
+            expr = "router_interface_up";
+            legendFormat = "link";
+            instant = true;
+          }
           {
             expr = "sum by (interface) (rate(router_interface_bytes_total{direction=\"down\"}[1m]))";
             legendFormat = "down";
@@ -889,13 +1136,46 @@ in
           }
         ];
         fieldConfig = {
-          defaults = { custom = { align = "auto"; }; };
+          defaults = {custom = {align = "auto";};};
           overrides = [
-            { matcher = { id = "byName"; options = "down"; }; properties = [ { id = "unit"; value = "Bps"; } { id = "decimals"; value = 1; } ]; }
-            { matcher = { id = "byName"; options = "up"; }; properties = [ { id = "unit"; value = "Bps"; } { id = "decimals"; value = 1; } ]; }
+            {
+              matcher = {
+                id = "byName";
+                options = "down";
+              };
+              properties = [
+                {
+                  id = "unit";
+                  value = "Bps";
+                }
+                {
+                  id = "decimals";
+                  value = 1;
+                }
+              ];
+            }
+            {
+              matcher = {
+                id = "byName";
+                options = "up";
+              };
+              properties = [
+                {
+                  id = "unit";
+                  value = "Bps";
+                }
+                {
+                  id = "decimals";
+                  value = 1;
+                }
+              ];
+            }
           ];
         };
-        options = { showHeader = true; footer = { show = false; }; };
+        options = {
+          showHeader = true;
+          footer = {show = false;};
+        };
       }
 
       # --- CPU / memory breakdown ----------------------------------------
@@ -907,7 +1187,7 @@ in
         title = "Router CPU";
         unit = "percent";
         legendFormat = "{{mode}}";
-        targets = [ "router_cpu_percent" ];
+        targets = ["router_cpu_percent"];
       })
       (ts {
         id = 15;
@@ -917,7 +1197,7 @@ in
         title = "Router memory";
         unit = "bytes";
         legendFormat = "{{state}}";
-        targets = [ "router_mem_bytes" ];
+        targets = ["router_mem_bytes"];
       })
 
       # --- potential issues (Issues panel) --------------------------------
@@ -930,7 +1210,12 @@ in
         title = "Potential issues";
         type = "table";
         datasource = DS;
-        gridPos = { x = 0; y = 26; w = 24; h = 6; };
+        gridPos = {
+          x = 0;
+          y = 26;
+          w = 24;
+          h = 6;
+        };
         targets = [
           {
             expr = "router_issue == 1";
@@ -938,7 +1223,10 @@ in
             instant = true;
           }
         ];
-        options = { showHeader = true; footer = { show = false; }; };
+        options = {
+          showHeader = true;
+          footer = {show = false;};
+        };
       }
     ];
   };

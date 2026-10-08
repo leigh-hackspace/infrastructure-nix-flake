@@ -2,12 +2,9 @@
   pkgs,
   specialArgs,
   ...
-}:
-
-let
+}: let
   CONFIG = import ../config.nix;
-in
-{
+in {
   nixpkgs.overlays = [
     (final: prev: {
       door-entry-management-system =
@@ -26,7 +23,7 @@ in
     ];
 
     # Ensure the service is started at boot
-    wantedBy = [ "multi-user.target" ];
+    wantedBy = ["multi-user.target"];
 
     environment = {
       DE_MODE = "production";
@@ -50,10 +47,10 @@ in
   # journalctl -u door-entry-management-system-frontend -f
   systemd.services.door-entry-management-system-frontend = {
     description = "Door Entry Management System Frontend";
-    requires = [ "door-entry-management-system-backend.service" ];
+    requires = ["door-entry-management-system-backend.service"];
 
     # Ensure the service is started at boot
-    wantedBy = [ "multi-user.target" ];
+    wantedBy = ["multi-user.target"];
 
     # Executable from your flake, running with systemd
     serviceConfig = {
@@ -89,7 +86,7 @@ in
 
   services.nginx.virtualHosts = {
     "api-doors.int.leighhack.org" = {
-      serverAliases = [ "api-doors.leighhack.org" ];
+      serverAliases = ["api-doors.leighhack.org"];
       useACMEHost = "leighhack.org";
       forceSSL = true;
       locations."/" = {
@@ -100,7 +97,7 @@ in
     };
 
     "doors.int.leighhack.org" = {
-      serverAliases = [ "doors.leighhack.org" ];
+      serverAliases = ["doors.leighhack.org"];
       useACMEHost = "leighhack.org";
       forceSSL = true;
       locations."/" = {

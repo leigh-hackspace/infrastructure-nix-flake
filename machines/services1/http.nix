@@ -5,20 +5,16 @@
   modulesPath,
   ...
 }:
-
 # Outside IPv4 (NATed by pfSense)   81.187.195.17
 # Outside/Inside IPv6               2001:8b0:1d14:225:d::1020
-
 # curl -X GET -H "Authorization: Bearer dop_v1_blah" "https://api.digitalocean.com/v2/domains/leighhack.org/records?name=gw.int.leighhack.org"
-
 let
   CONFIG = import ./config.nix;
   nginxSsoConfig = import ./lib/nginx-sso-config.nix;
   mkSSOVirtualHost = import ./lib/nginx-sso-helper.nix;
-in
-{
+in {
   # Necessary for secret access
-  users.groups.secrets.members = [ "nginx" ];
+  users.groups.secrets.members = ["nginx"];
 
   # Use DNS based challenge to acquire SSL certificates. Works even if NGINX is down.
   security.acme = {
@@ -56,12 +52,11 @@ in
           sopsSecretText = config.sopsSecretText;
         })
       );
-    in
-    {
+    in {
       description = "NGINX SSO";
 
       # Ensure the service is started at boot
-      wantedBy = [ "multi-user.target" ];
+      wantedBy = ["multi-user.target"];
 
       serviceConfig = {
         ExecStart = "${pkgs.nginx-sso}/bin/nginx-sso --frontend-dir=${pkgs.nginx-sso}/share/frontend -c ${configFilePath}";
@@ -150,7 +145,7 @@ in
       };
 
       "login.int.leighhack.org" = {
-        serverAliases = [ "login.leighhack.org" ];
+        serverAliases = ["login.leighhack.org"];
         useACMEHost = "leighhack.org";
         forceSSL = true;
 
@@ -251,7 +246,7 @@ in
       };
 
       "api.int.leighhack.org" = {
-        serverAliases = [ "api.leighhack.org" ];
+        serverAliases = ["api.leighhack.org"];
         useACMEHost = "leighhack.org";
         forceSSL = true;
 
@@ -296,7 +291,7 @@ in
       };
 
       "user-tweaker.int.leighhack.org" = {
-        serverAliases = [ "user-tweaker.leighhack.org" ];
+        serverAliases = ["user-tweaker.leighhack.org"];
         useACMEHost = "leighhack.org";
         forceSSL = true;
 

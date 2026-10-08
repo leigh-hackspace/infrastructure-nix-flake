@@ -1,6 +1,4 @@
-{ lib, ... }:
-
-{
+{lib, ...}: {
   security.pki.certificates = [
     # leighhack.org (Root CA)
     ''
@@ -48,7 +46,7 @@
 
   services.sssd = {
     enable = true;
-    config = lib.generators.toINI { } {
+    config = lib.generators.toINI {} {
       sssd = {
         config_file_version = "2";
         services = "nss, pam";
@@ -148,7 +146,7 @@
       commands = [
         {
           command = "ALL";
-          options = [ "NOPASSWD" ];
+          options = ["NOPASSWD"];
         }
       ];
     }

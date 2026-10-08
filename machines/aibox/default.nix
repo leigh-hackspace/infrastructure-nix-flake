@@ -1,8 +1,8 @@
-flakeInputs:
-
-{ config, pkgs, ... }:
-
-{
+flakeInputs: {
+  config,
+  pkgs,
+  ...
+}: {
   networking.hostName = "aibox"; # Define your hostname.
 
   imports = [

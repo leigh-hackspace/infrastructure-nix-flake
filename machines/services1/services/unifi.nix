@@ -2,14 +2,11 @@
   lib,
   config,
   ...
-}:
-
-let
+}: let
   CONFIG = import ../config.nix;
   UNIFI_UID = 8901;
   mongoPass = lib.strings.trim (builtins.readFile (config.sopsSecretText "unifi_db_password"));
-in
-{
+in {
   users.users.unifi = {
     uid = UNIFI_UID;
     group = "unifi";
@@ -29,8 +26,8 @@ in
       "/srv/unifi:/config"
     ];
     environment = {
-      PUID = (toString UNIFI_UID);
-      PGID = (toString UNIFI_UID);
+      PUID = toString UNIFI_UID;
+      PGID = toString UNIFI_UID;
       TZ = "Etc/UTC";
       MONGO_USER = "unifi";
       MONGO_PASS = mongoPass;

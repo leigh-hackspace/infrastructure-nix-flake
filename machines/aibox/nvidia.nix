@@ -5,12 +5,8 @@
 # On the next config pass, drop `./nvidia.nix` from default.nix and delete this
 # file together with ./nvidia-580-linux-7-strncpy.patch (this legacy_580
 # driver build is the patch's only remaining user).
-{
-  config,
-  ...
-}:
-{
-  services.xserver.videoDrivers = [ "nvidia" ];
+{config, ...}: {
+  services.xserver.videoDrivers = ["nvidia"];
 
   hardware.nvidia = {
     # legacy_580 (LTSB): the last branch supporting Maxwell/Pascal/Volta.
@@ -26,8 +22,8 @@
     # before the module build. Applied like nixpkgs' own legacy_470 patches:
     # -p1 with paths relative to the kernel/ dir of the extracted .run.
     package = config.boot.kernelPackages.nvidiaPackages.legacy_580.overrideAttrs (old: {
-      patches = (old.patches or [ ]) ++ [ ./nvidia-580-linux-7-strncpy.patch ];
-      patchFlags = [ "-p1" "--directory=kernel" ];
+      patches = (old.patches or []) ++ [./nvidia-580-linux-7-strncpy.patch];
+      patchFlags = ["-p1" "--directory=kernel"];
     });
 
     prime = {

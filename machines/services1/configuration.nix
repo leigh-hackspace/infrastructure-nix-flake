@@ -1,10 +1,11 @@
 # Edit this configuration file to define what should be installed on
 # your system.  Help is available in the configuration.nix(5) man page
 # and in the NixOS manual (accessible by running ‘nixos-help’).
-
-{ config, pkgs, ... }:
-
 {
+  config,
+  pkgs,
+  ...
+}: {
   nix.settings.sandbox = "relaxed";
 
   system.autoRollback.enable = true;
@@ -19,7 +20,7 @@
   boot.loader.efi.canTouchEfiVariables = true;
 
   # boot.kernelPackages = pkgs.linuxPackages_latest;
-  boot.extraModulePackages = [ pkgs.linuxKernel.packages.linux_6_18.gasket ];
+  boot.extraModulePackages = [pkgs.linuxKernel.packages.linux_6_18.gasket];
 
   # Set your time zone.
   time.timeZone = "Europe/London";
@@ -64,5 +65,4 @@
   # Before changing this value read the documentation for this option
   # (e.g. man configuration.nix or on https://nixos.org/nixos/options.html).
   system.stateVersion = "23.11"; # Did you read the comment?
-
 }

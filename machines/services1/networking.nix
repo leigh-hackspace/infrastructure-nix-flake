@@ -4,12 +4,9 @@
   pkgs,
   modulesPath,
   ...
-}:
-
-let
+}: let
   CONFIG = import ./config.nix;
-in
-{
+in {
   # # Enable networking
   # networking.networkmanager.enable = true;
 
@@ -80,8 +77,8 @@ in
             "2001:8b0:1d14:225:d::1020/64" # LEGACY TO BE DELETED
             "fd99:dead:beef:225d::20/64" # NATv6
           ];
-          Gateway = [ "10.3.1.1" ];
-          DNS = [ "10.3.1.1" ];
+          Gateway = ["10.3.1.1"];
+          DNS = ["10.3.1.1"];
           IPv6AcceptRA = true;
         };
         # Accept the RA for routing/gateway but don't autoconfigure addresses
@@ -114,13 +111,13 @@ in
   # Enable NAT
   networking.nat.enable = true;
   networking.nat.externalInterface = "vlan225";
-  networking.nat.internalInterfaces = [ "wg0" ];
+  networking.nat.internalInterfaces = ["wg0"];
 
   networking.wireguard.interfaces = {
     # "wg0" is the network interface name. You can name the interface arbitrarily.
     wg0 = {
       # Determines the IP address and subnet of the client's end of the tunnel interface.
-      ips = [ "10.47.3.20/16" ];
+      ips = ["10.47.3.20/16"];
       listenPort = 51820; # to match firewall allowedUDPPorts (without this wg uses random port numbers)
 
       # This allows the wireguard server to route your traffic to the internet and hence be like a VPN

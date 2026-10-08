@@ -1,6 +1,8 @@
-{ lib, pkgs, ... }:
-
-let
+{
+  lib,
+  pkgs,
+  ...
+}: let
   # Whisper.cpp with the Vulkan backend + ffmpeg so whisper-server's --convert
   # accepts non-WAV uploads. The Vulkan build was chosen for the GTX 1060
   # (gtx1060-followup.md §4); with that card removed (2026-09-02) it needs
@@ -9,9 +11,8 @@ let
     vulkanSupport = true;
     withFFmpegSupport = true;
   };
-in
-{
-  environment.systemPackages = [ whisperVulkan ];
+in {
+  environment.systemPackages = [whisperVulkan];
 
   # Whisper speech-to-text server.
   # NOTE (2026-09-02): the GTX 1060 (Vulkan1) is gone and the box now has a
@@ -23,27 +24,26 @@ in
   # journalctl -u whisper-server -f
   systemd.services.whisper-server = {
     description = "Whisper.cpp speech-to-text server (GTX 1060)";
-    after = [ "wait-for-network.service" ];
-    wants = [ "wait-for-network.service" ];
-    wantedBy = [ "multi-user.target" ];
+    after = ["wait-for-network.service"];
+    wants = ["wait-for-network.service"];
+    wantedBy = ["multi-user.target"];
 
-    serviceConfig =
-      {
-        ExecStart = ''
-          ${whisperVulkan}/bin/whisper-server \
-            --host 10.3.1.32 \
-            --port 8082 \
-            --model /home/leigh-admin/Models/whisper/ggml-medium.bin \
-            --device 1 \
-            --convert \
-            --tmp-dir /tmp \
-            -t 8
-        '';
-        # The 1060 rides on an M.2→USB3 adapter and has historically been
-        # intermittent; keep retrying rather than giving up on a GPU hiccup.
-        Restart = "always";
-        RestartSec = 5;
-      };
+    serviceConfig = {
+      ExecStart = ''
+        ${whisperVulkan}/bin/whisper-server \
+          --host 10.3.1.32 \
+          --port 8082 \
+          --model /home/leigh-admin/Models/whisper/ggml-medium.bin \
+          --device 1 \
+          --convert \
+          --tmp-dir /tmp \
+          -t 8
+      '';
+      # The 1060 rides on an M.2→USB3 adapter and has historically been
+      # intermittent; keep retrying rather than giving up on a GPU hiccup.
+      Restart = "always";
+      RestartSec = 5;
+    };
   };
 
   # OpenAI-Realtime-compatible WebSocket gateway in front of whisper-server
@@ -57,9 +57,9 @@ in
       "wait-for-network.service"
     ];
     # Useless without whisper-server; restart with it.
-    requires = [ "whisper-server.service" ];
-    wants = [ "wait-for-network.service" ];
-    wantedBy = [ "multi-user.target" ];
+    requires = ["whisper-server.service"];
+    wants = ["wait-for-network.service"];
+    wantedBy = ["multi-user.target"];
 
     serviceConfig = {
       ExecStart = ''

@@ -1,10 +1,7 @@
-{ lib, ... }:
-
-let
+{lib, ...}: let
   CONFIG = import ./config.nix;
   mkSSOVirtualHost = import ./lib/nginx-sso-helper.nix;
-in
-{
+in {
   services.nginx.virtualHosts = {
     "ai.leighhack.org" = lib.mkMerge [
       (mkSSOVirtualHost {

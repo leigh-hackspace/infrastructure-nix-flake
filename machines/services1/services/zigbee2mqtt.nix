@@ -1,18 +1,12 @@
-{
-  config,
-  ...
-}:
-
-let
+{config, ...}: let
   CONFIG = import ../config.nix;
   ZIGBEE2MQTT_UID = 8124;
   mkSSOVirtualHost = import ../lib/nginx-sso-helper.nix;
-in
-{
+in {
   users.users.zigbee2mqtt = {
     uid = ZIGBEE2MQTT_UID;
     group = "users";
-    extraGroups = [ "dialout" ];
+    extraGroups = ["dialout"];
     isNormalUser = true;
   };
 

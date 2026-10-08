@@ -1,6 +1,8 @@
-{ lib, pkgs, ... }:
-
-let
+{
+  lib,
+  pkgs,
+  ...
+}: let
   # Pin the main model to the iGPU — the only Vulkan device on this box since
   # the GTX 1060 (Vulkan1) was removed (2026-09-02; see gtx1060-followup.md).
   # GGML_VK_VISIBLE_DEVICES=0 is kept as defence in depth so no code path
@@ -27,10 +29,8 @@ let
     [K2-Horizon-MoVA-36B-A4B-Q8_0]
     ctx-size = ${toString (128 * 1024)}
   '';
-
   # Tiel-Coder-35B-A3B-GGUF-MTP
-in
-{
+in {
   environment.systemPackages = with pkgs; [
     rocmPackages.rocminfo
     python3Packages.huggingface-hub # provides the huggingface-cli model downloader
@@ -42,16 +42,16 @@ in
   ];
 
   # Stop crashes for large context sizes
-  boot.kernelParams = [ "amdgpu.lockup_timeout=10000" ];
+  boot.kernelParams = ["amdgpu.lockup_timeout=10000"];
 
   # Serve the single model directly (llama-swap's router was redundant with
   # only one model in the list).
   # journalctl -u llama-server -f
   systemd.services.llama-server = {
     description = "Llama.cpp server";
-    after = [ "wait-for-network.service" ];
-    wants = [ "wait-for-network.service" ];
-    wantedBy = [ "multi-user.target" ];
+    after = ["wait-for-network.service"];
+    wants = ["wait-for-network.service"];
+    wantedBy = ["multi-user.target"];
 
     serviceConfig = {
       ExecStart = ''
@@ -72,7 +72,7 @@ in
       # Defence in depth: index-based filter so no code path can stray from
       # the iGPU — the only Vulkan device since the GTX 1060 was removed
       # (2026-09-02).
-      Environment = [ "GGML_VK_VISIBLE_DEVICES=0" ];
+      Environment = ["GGML_VK_VISIBLE_DEVICES=0"];
       Restart = "always";
     };
   };
@@ -83,7 +83,7 @@ in
     hostname = "diamcp";
     image = "localhost/diamcp";
     autoStart = true;
-    ports = [ "8000:8000" ];
+    ports = ["8000:8000"];
     volumes = [
       # "/home/leigh-admin/workspace:/workspace"
       "/mnt/filestore/ai-workspace:/workspace"
@@ -94,8 +94,8 @@ in
   };
 
   systemd.services.podman-diamcp = {
-    requires = [ "wait-for-network.service" ];
-    after = [ "wait-for-network.service" ];
+    requires = ["wait-for-network.service"];
+    after = ["wait-for-network.service"];
   };
 
   # # View logs with: journalctl -u stable-diffusion -f

@@ -22,12 +22,7 @@
 #
 # journalctl -u podman-alexandria -f
 # sudo podman exec -ti alexandria sh
-{
-  pkgs,
-  ...
-}:
-
-let
+{pkgs, ...}: let
   dataDir = "/home/leigh-admin/Projects/alexandria-audiobook/data";
   dataSubdirs = [
     "config"
@@ -41,8 +36,7 @@ let
     "output"
     "hf-cache"
   ];
-in
-{
+in {
   virtualisation.oci-containers.containers.alexandria = {
     hostname = "alexandria";
     image = "localhost/alexandria:rocm";

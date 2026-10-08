@@ -85,7 +85,7 @@
         networkConfig = {
           DHCP = false; # Do not assign IP to vlan227 directly — use br227
         };
-        bridge = [ "br227" ]; # Attach vlan227 to bridge
+        bridge = ["br227"]; # Attach vlan227 to bridge
       };
 
       # Interface is disabled for now as server does not need an IP on VLAN 227. QEMU guests create their own interfaces i.e. "tap0"

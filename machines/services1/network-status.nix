@@ -25,10 +25,8 @@
   pkgs,
   crane,
   ...
-}:
-
-let
-  CRANE = import ../../common/crane.nix { inherit pkgs crane; };
+}: let
+  CRANE = import ../../common/crane.nix {inherit pkgs crane;};
   # Prebuilt SolidJS/TypeScript SPA. The bundle (dist/) is committed to the
   # git tree and copied into the store here, so the build is fully hermetic:
   # Nix builds run offline and the npm deps (esbuild, babel, ...) are not in
@@ -53,12 +51,11 @@ let
     src = ../../network-status;
     cargoLock = CRANE.lockFile ../../network-status/Cargo.lock;
   };
-in
-{
+in {
   systemd.services.network-status = {
     description = "Router network status dashboard (network-info.int.leighhack.org)";
-    wantedBy = [ "multi-user.target" ];
-    after = [ "network.target" ];
+    wantedBy = ["multi-user.target"];
+    after = ["network.target"];
     # Runs as leigh-admin so it can read the machine-hop key directly.
     serviceConfig = {
       Type = "simple";
@@ -71,13 +68,20 @@ in
       ];
       ExecStart = lib.concatStringsSep " " [
         "${networkStatus}/bin/network-status"
-        "--bind" "127.0.0.1"
-        "--port" "8091"
-        "--static-dir" "${frontend}/share/network-status/frontend"
-        "--router" "root@10.3.1.1"
-        "--ssh-key" "/home/leigh-admin/.ssh/agent-hop-key"
-        "--interval" "5"
-        "--wan" "em0"
+        "--bind"
+        "127.0.0.1"
+        "--port"
+        "8091"
+        "--static-dir"
+        "${frontend}/share/network-status/frontend"
+        "--router"
+        "root@10.3.1.1"
+        "--ssh-key"
+        "/home/leigh-admin/.ssh/agent-hop-key"
+        "--interval"
+        "5"
+        "--wan"
+        "em0"
         "--title"
         # Quoted: the em dash + spaces would otherwise split the argv.
         "\"Network — router\""

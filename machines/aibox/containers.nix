@@ -2,8 +2,7 @@
   lib,
   config,
   ...
-}:
-{
+}: {
   virtualisation.podman = {
     enable = true;
     autoPrune.enable = true;
@@ -23,11 +22,13 @@
   #
   # Mirrors machines/services1/containers.nix; the nixos-utils.containers
   # module is imported in flake.nix for the aibox flake output.
-  systemd.services = lib.mapAttrs' (name: _: lib.nameValuePair "podman-${name}" {
-    startLimitIntervalSec = 0;
-    serviceConfig = {
-      Restart = lib.mkForce "always";
-      RestartSec = "5s";
-    };
-  }) config.virtualisation.oci-containers.containers;
+  systemd.services = lib.mapAttrs' (name: _:
+    lib.nameValuePair "podman-${name}" {
+      startLimitIntervalSec = 0;
+      serviceConfig = {
+        Restart = lib.mkForce "always";
+        RestartSec = "5s";
+      };
+    })
+  config.virtualisation.oci-containers.containers;
 }

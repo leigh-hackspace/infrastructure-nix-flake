@@ -3,7 +3,6 @@
   config,
   ...
 }:
-
 # Gatus — the uptime/health status page. It replaces Uptime Kuma (which ran
 # out-of-band on apps1, 10.3.1.30) and now owns the whole monitoring list.
 #
@@ -35,15 +34,14 @@ let
 
   # HTTP check. `status` is the status-code condition (default: any 2xx).
   # `insecure` skips TLS verification (kuma "ignore TLS").
-  mkHttp =
-    {
-      name,
-      url,
-      status ? "[STATUS] >= 200 && [STATUS] < 300",
-      group ? null,
-      insecure ? false,
-    }:
-    (lib.optionalAttrs (group != null) { inherit group; })
+  mkHttp = {
+    name,
+    url,
+    status ? "[STATUS] >= 200 && [STATUS] < 300",
+    group ? null,
+    insecure ? false,
+  }:
+    (lib.optionalAttrs (group != null) {inherit group;})
     // {
       inherit name url;
       method = "GET";
@@ -53,7 +51,7 @@ let
         status
         "[RESPONSE_TIME] < 5000"
       ];
-      alerts = [ slackAlert ];
+      alerts = [slackAlert];
     }
     // (lib.optionalAttrs insecure {
       client."insecure-skip-verify" = true;
@@ -62,40 +60,41 @@ let
   # ICMP (ping) check. `url` is the host (name or IP) to ping; `max` is the
   # response-time ceiling in ms (LAN defaults to 1000, internet is looser).
   # The icmp:// scheme is required for gatus to treat it as a ping.
-  mkPing =
-    {
-      name,
-      url,
-      group ? null,
-      max ? "1000",
-    }:
-    (lib.optionalAttrs (group != null) { inherit group; })
+  mkPing = {
+    name,
+    url,
+    group ? null,
+    max ? "1000",
+  }:
+    (lib.optionalAttrs (group != null) {inherit group;})
     // {
       inherit name;
       url = "icmp://${url}";
-      icmp = { };
+      icmp = {};
       interval = "60s";
       timeout = "10s";
-      conditions = [ "[RESPONSE_TIME] < ${max}" ];
-      alerts = [ slackAlert ];
+      conditions = ["[RESPONSE_TIME] < ${max}"];
+      alerts = [slackAlert];
     };
 
   # TCP port check. `url` is host:port (the tcp:// scheme is required for
   # gatus to recognise the endpoint as a TCP check).
-  mkTcp =
-    { name, url, group ? null }:
-    (lib.optionalAttrs (group != null) { inherit group; })
+  mkTcp = {
+    name,
+    url,
+    group ? null,
+  }:
+    (lib.optionalAttrs (group != null) {inherit group;})
     // {
       inherit name;
       url = "tcp://${url}";
-      tcp = { };
+      tcp = {};
       interval = "60s";
       timeout = "10s";
-      conditions = [ "[RESPONSE_TIME] < 1000" ];
-      alerts = [ slackAlert ];
+      conditions = ["[RESPONSE_TIME] < 1000"];
+      alerts = [slackAlert];
     };
-in
-{
+in {
   services.gatus = {
     enable = true;
     settings = {

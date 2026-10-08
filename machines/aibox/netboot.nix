@@ -3,17 +3,14 @@
   pkgs,
   specialArgs,
   ...
-}:
-
-let
+}: let
   sys = specialArgs.pi-room-sys.nixosConfigurations.pi-room-sys;
   build = sys.config.system.build;
   nfsServer = "aibox.int.leighhack.org";
-in
-{
+in {
   environment = {
     etc = {
-      "tftp/ipxe.efi".source = "${pkgs.callPackage ../../common/overrides/ipxe.nix { }}/snponly.efi";
+      "tftp/ipxe.efi".source = "${pkgs.callPackage ../../common/overrides/ipxe.nix {}}/snponly.efi";
       "tftp/undionly.kpxe".source = "${pkgs.ipxe}/undionly.kpxe";
       "tftp/autoexec.ipxe".source = "${pkgs.writeText "autoexec.ipxe" ""}"; # Blank file to stop error message on boot
 
@@ -62,12 +59,12 @@ in
 
   virtualisation.libvirtd = {
     enable = true;
-    allowedBridges = [ "br227" ];
+    allowedBridges = ["br227"];
   };
 
   systemd.services = {
     tftpd = {
-      after = [ "nftables.service" ];
+      after = ["nftables.service"];
       description = "TFTP server";
       serviceConfig = {
         User = "root";
@@ -79,7 +76,7 @@ in
         TimeoutStopSec = 20;
         PIDFile = "/run/tftpd.pid";
       };
-      wantedBy = [ "multi-user.target" ];
+      wantedBy = ["multi-user.target"];
     };
   };
 
@@ -131,12 +128,12 @@ in
   fileSystems."/exports/nix-store" = {
     device = "/nix/store";
     fsType = "bind";
-    options = [ "bind" ];
+    options = ["bind"];
   };
 
   fileSystems."/exports/netboot-squashfs" = {
     device = "${build.squashfsStore}";
     fsType = "bind";
-    options = [ "bind" ];
+    options = ["bind"];
   };
 }

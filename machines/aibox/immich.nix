@@ -1,11 +1,14 @@
-{ config, utils, ... }:
-let
+{
+  config,
+  utils,
+  ...
+}: let
   IMMICH_UID = 2283;
   # Write compiled config file here...
   configFile = "/run/immich.json";
   # Config file which includes SOPS secrets...
   secretsReplacement = (
-    utils.genJqSecretsReplacement { } {
+    utils.genJqSecretsReplacement {} {
       newVersionCheck.enable = false;
       oauth = {
         autoLaunch = true;
@@ -26,17 +29,17 @@ let
         tokenEndpointAuthMethod = "client_secret_post";
       };
       machineLearning = {
-        urls = [ "http://10.88.0.51:3003" ];
+        urls = ["http://10.88.0.51:3003"];
       };
-    } configFile
+    }
+    configFile
   );
-in
-{
+in {
   # journalctl -u immich-secrets -f
   systemd.services.immich-secrets = {
     description = "Immich Secrets";
-    requiredBy = [ "podman-immich-server.service" ];
-    before = [ "podman-immich-server.service" ];
+    requiredBy = ["podman-immich-server.service"];
+    before = ["podman-immich-server.service"];
     script = secretsReplacement.script;
   };
 
@@ -143,17 +146,17 @@ in
   # The host PostgreSQL pg_hba `trust` rule (P0#4) is intentionally left
   # untouched per the request.
   systemd.services.podman-immich-server = {
-    requires = [ "wait-for-nas.service" ];
-    after = [ "wait-for-nas.service" ];
+    requires = ["wait-for-nas.service"];
+    after = ["wait-for-nas.service"];
   };
 
   systemd.services.podman-immich-machine-learning = {
-    requires = [ "wait-for-nas.service" ];
-    after = [ "wait-for-nas.service" ];
+    requires = ["wait-for-nas.service"];
+    after = ["wait-for-nas.service"];
   };
 
   systemd.services.podman-immich-postgres = {
-    requires = [ "wait-for-nas.service" ];
-    after = [ "wait-for-nas.service" ];
+    requires = ["wait-for-nas.service"];
+    after = ["wait-for-nas.service"];
   };
 }
