@@ -111,6 +111,12 @@ small reliability bonus next to the #884 copy bug). Also worth checking whether
 the mapped alias is a true zero-copy read or a staged copy into a GTT buffer —
 if it stages, UMA pays 2x DRAM traffic for bytes already in RAM.
 
+**Measured 2026-10-08** (see the "`--pcie-mode direct`" section further down): it
+stages, in the default `auto` mode, with a copy kernel inside the graph — and the
+copy costs 6.8 ms of the 230 ms window, not the 18 ms the `PCIe grp` line looks
+like. `--pcie-mode direct` (the grouped kernel reads the arena through its device
+alias) is deployed. Sweeping `--pcie-frac` says 0.55 is the right share after all.
+
 ## Where a decode token actually goes (`STRATA_DECODE_TIMING=1 STRATA_VERIFY_PROFILE=1`)
 
 ```
@@ -146,6 +152,9 @@ grouped-GEMM throughput, not a cache or chunk-size problem.
    are the single biggest line in the profile. Arms for 12 / 10 / 3 are in
    `strata-tune/run-arms.sh`; ~25 s each with the short bench. Upstream's RDNA2
    report saw *fewer* workers beat more on a 16-core box, so measure both ends.
+   **Measured 2026-10-08: 12 workers is worse — 7.7 vs 9.3 tok/s** (`waitCPU`
+   14.6 → 46.4 ms/window). The SMT siblings add no expert throughput; leave the
+   default.
 2. **The Coder family (`ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF/IQ1_M`).**
    It is the coding-tuned variant (256 of 512 experts kept) and its arena is
    **23.4 GiB instead of 35.5** — that frees ~12 GiB, which is exactly what a
@@ -156,6 +165,10 @@ grouped-GEMM throughput, not a cache or chunk-size problem.
 3. **`--spec` / `--spec-min-p`.** The MTP draft costs 26 ms/window and accepts
    2.14 of 2.62 offered. Try `--spec 6` and `--spec-min-p 0.35/0.65` with the
    short bench; this is a pure trade of draft cost against acceptance.
+   **Measured 2026-10-08: `--spec 4 --spec-min-p 0.5` is at the optimum** — 6
+   costs 7.3 % of the window for 3.7 % more accepted tokens, 0.35 costs 16 % for
+   12 %, 0.65 loses 18 % of the tokens to save 11 % of the window. See "The
+   plateau" below.
 4. **Do not chase the PLE table.** `--ple-io direct` (default) reads the 28.8 GB
    n-gram shard unbuffered from NVMe; `--ple-io mmap/ram` would need RAM the
    arena already owns. The stage list shows no I/O stall (`waitA` 0.24 ms).
@@ -327,6 +340,150 @@ Pinned llama.cpp is unchanged (`3cf03257`), so the ggml side is identical.
 Built for gfx1030 and device-checked clean (`strata-device --list-devices`
 with `HSA_OVERRIDE_GFX_VERSION=10.3.0` reports `arch gfx1030`).
 
+## UMA: `--pcie-mode direct` deployed, and what the copy actually costs (2026-10-08)
+
+`./strata-uma-2026-10-08.md` reads the engine's three delivery modes for the
+"PCIe" share and predicts ~10 % decode from removing the copy. The arms measured
+it the same day: the mechanism is real, the size is ~1 %, and one reading of the
+profile in that doc is wrong. Arms: `strata-tune/run-arms-uma.sh` (decode, the
+short bench) and `strata-tune/run-arms-prefill.sh` (prefill, the full bench);
+IQ2_XS, 4096 slots, every arm with `STRATA_DECODE_TIMING=1 STRATA_VERIFY_PROFILE=1`.
+
+| arm | ms/window | decode tok/s | `waitB` GDN | `PCIe grp` GDN / QSA | `waitCPU` GDN | GTT | cache hit |
+|---|---|---|---|---|---|---|---|
+| control (`auto` → mode 2, copy kernel in the graph) | 229.7 | 9.3 | **6.95** | 10.86 / 2.76 | 11.6 | 16.23 GB | 75.5 % (+16.1 %) |
+| **`--pcie-mode direct`** (deployed) | **227.0** | **9.4** | **0.14** | 12.49 / 3.17 | 14.6 | 16.23 GB | 75.5 % (+16.1 %) |
+| `--pcie-mode dma` (copy engine / SDMA) | 230.4 | 9.3 | 0.16 | 10.86 / 2.77 | 12.9 | 16.23 GB | 75.5 % (+16.1 %) |
+| direct + `--pcie-frac 0.25` | 265.1 | 8.1 | 0.14 | 5.98 / 1.53 | 48.7 | 16.23 GB | 67.6 % (+6.4 %) |
+| direct + `--pcie-frac 1.0` | 231.1 | 9.3 | 0.15 | 22.68 / 6.07 | 2.5 | 16.23 GB | 96.6 % (+33.6 %) |
+| direct + `--pcie-frac 0` | 284.8 | 7.5 | 0.13 | 0.66 / 0.22 | 73.0 | 16.23 GB | — (no GPU share) |
+| direct + `--pool-workers 12` | 278.5 | 7.7 | 0.14 | 12.46 / 3.16 | 46.4 | 16.23 GB | 75.5 % |
+| direct + `--no-prefill-borrow` | 226.7 | 9.5 | 0.14 | 12.47 / 3.17 | 14.2 | **21.03 GB** | 75.5 % |
+| direct + `STRATA_PREFILL_CPU_SHARE=auto` | 233.0 | 9.4 | 0.14 | 12.80 / 3.29 | 14.6 | 16.23 GB | 75.9 % |
+
+**1. `PCIe grp` is not the copy — `waitB` is.** In `VerifyWindow::pre`
+(`src/core/verify.cpp:1414-1424`) the stamps run: `grouped(p_ptr, …)` → stamp 20,
+then `wait_flag_ge(m_flagB_)` **and, only when `pcie_mode == 2`, `fetch_blobs` +
+`rebase_ptrs`** → stamp 21, then `grouped(p_ptr2, …)` → stamp 22. So the staging
+copy lives inside the `waitB` stage (6.95 → 0.14 ms/window = **6.8 ms, 3 % of the
+window**) and `PCIe grp` is the grouped kernel *computing* the PCIe share, which
+happens in every mode. The UMA doc's "14.9 + 3.7 ms/window of copy work" is that
+kernel, not the copy; the ~10 % it projected does not exist.
+
+**2. The alias is live on this box with `HSA_USERPTR_FOR_PAGED_MEM=0` set.** The
+request log keeps printing `+13…21 % of the routed experts over PCIe`, and that
+counter only moves when `pcie_layer()` is true, i.e. when
+`ArenaExpertSource::device_alias()` returned an address (`expert_source.cpp:3011,
+3062`). So the #750/#920 mitigation and the zero-copy read coexist. The direct
+check is `strata-tune/alias-check.sh`, which runs upstream's
+`tests/hip/mapped_alias.cpp` both ways — the package now installs it as
+`strata-alias-check` (upstream builds the HIP test targets whenever HIP is on,
+so it costs one install line). What it reports on this box:
+
+```
+  host  0x78949dea4000
+  alias 0x78949dea4000
+  -> the host pointer itself (unified addressing)
+  the alias is a distinct device address       DOES NOT HOLD
+  a kernel reads the alias correctly           holds
+```
+
+identically with `HSA_USERPTR_FOR_PAGED_MEM=0` and `=1`. There is no separate
+device address space for the arena here: `device_alias()` hands back the host
+pointer and a kernel reads it correctly — the strongest zero-copy the engine can
+do. It also explains item 3: the difference between an arena read and a cache
+read is not an address space, it is the page attributes ROCr gives a
+`cudaHostRegister`ed region versus one of its own allocations.
+
+**3. Reading through the alias is ~15 % slower per byte than reading a GTT copy.**
+At identical routing (16.1 % of the routed experts) `PCIe grp` is 10.86 ms in the
+staged modes and 12.49 ms in `direct`. Net still favours `direct` (the copy costs
+more than the slower read), but this is the number the "alias cache" idea — drop
+the 5.7 GiB cache and have the GPU read the arena everywhere — has to be weighed
+against: it would pay that penalty on *every* expert the GPU reads, and the cache
+is what keeps `waitCPU` at 14 ms instead of 73 (`--pcie-frac 0` measures the
+no-GPU-share end: 7.5 tok/s). The cache is not only about *where* the bytes are:
+it is what makes 75 % of the routing a GPU hit at all, so an alias cache has to
+keep that property while reading slower.
+
+**4. `--pcie-frac 0.55` is right for the wrong reason.** The probe's 31.4 GB/s is
+a RAM→RAM memcpy, so the value is not a link measurement — but sweeping it lands
+on the same answer: 0 → 7.5, 0.25 → 8.1, 0.55 → 9.4, 1.0 → 9.3 tok/s. PR #1548's
+cost fit would not change aibox's split; it would only stop the probe printing a
+silly number.
+
+**5. Prefill does not move.** Full bench, a 6 943-token prompt twice:
+control 50.4 / 50.5, `direct` 50.7 / 50.6, `direct --no-prefill-borrow` 50.9 /
+50.8 (and **+4.8 GiB of GTT**, 16.23 → 21.03 GB — the loan reserve, not a saving),
+`direct + STRATA_PREFILL_CPU_SHARE=auto` 50.4 / 50.3. Prefill is the 6-CU
+grouped-GEMM ceiling; none of the UMA levers touch it. The CPU share *does* help
+short prompts (70-token prompt: 16.0 → 20.7 prompt/s, +29 %) at the cost of bit
+changes (upstream: first-token KL mean 0.006) — not enabled, revisit if agent
+turns start being short-context.
+
+**Deployed:** `--pcie-mode direct` in `strata.nix` (live after the switch:
+9.6-9.7 tok/s, `+17.1 % of the routed experts over PCIe`). The reason is not the
+1 %: it removes the in-graph copy kernel and its 16 staging blobs from the decode
+loop, which is the same copy machinery the #884 gfx1030 timeouts are traced to.
+`--pcie-mode dma` measured the same speed but does the copies with SDMA — that is
+the #884/#1103 mechanism, so do not swap them.
+
+## The plateau: every knob is already at its optimum (2026-10-08)
+
+`strata-tune/run-arms-knobs.sh` — the flags the deployed engine already ships that
+could plausibly move decode: the cache admission policy, the MTP draft trade, the
+CPU-pool task batching, and the three overlap arms upstream documents. All with
+`--pcie-mode direct` deployed, 4096 slots, the short bench, profile on.
+
+| arm | ms/window | decode tok/s | what moved |
+|---|---|---|---|
+| control (deployed) | **226.95** | 9.4 / 9.6 | — |
+| `--expert-cache-per-layer` | 233.19 | 9.4 / 9.5 | hit 75.9 % (vs 75.5 %) — the profile fill already spreads slots across layers |
+| `--spec 6` | 243.57 | 9.1 / 9.2 | 2.22 tok/window (+3.7 %) for a 7.3 % longer window |
+| `--spec-min-p 0.35` | 263.42 | 9.1 / 9.2 | 2.40 tok/window (+12 %) for a 16 % longer window |
+| `--spec-min-p 0.65` | 201.22 | 8.8 / 8.9 | 1.76 tok/window (−18 %) for an 11 % shorter one |
+| `--pool-tasks 6` | 236.19 | 9.1 / 9.2 | `waitCPU` 14.0 → 22.0 |
+| `--pool-tasks 12` | 229.69 | 9.3 / 9.5 | `waitCPU` 14.0 → 16.8 |
+| `--no-host-worker` | 241.08 | 8.9 / 9.0 | the host thread joining the drain is worth 14 ms |
+| `--no-hit-poke` | 226.93 | 9.4 / 9.6 | **identical** — there is no overlap here to lose |
+| `--shared-late` | 227.26 | 9.4 / 9.6 | identical |
+| `--expert-cache 5500` (262144 ctx) | 225.06 | 9.4 / 9.5 | hit 82.0 %, GPU 128.5 / host 54.3, GTT 18.35 GB |
+| `--expert-cache 6500 --max-context 131072` | 227.03 | 9.6 / 9.7 | hit 84.5 %, GPU 135.0 / host 48.8, GTT 17.82 GB |
+
+**Nothing moves it, and now we know why.** `GPU-reach wait + per-layer host` — the
+part of the window that is actual work — is invariant to *where* experts are
+computed:
+
+| placement | GPU | host (CPU pool) | sum |
+|---|---|---|---|
+| `--pcie-frac 0` (all CPU) | 107 | 135 | 242 |
+| deployed (frac 0.55, 4096 slots) | 118 | 68 | 185 |
+| 5500 slots | 129 | 54 | 183 |
+| 6500 slots + 131k ctx | 135 | 49 | 184 |
+| `--pcie-frac 1.0` (all GPU) | 177 | 11 | 188 |
+
+The verify window is a **chain**: layer *L+1*'s dense work cannot start until
+layer *L*'s CPU-computed expert rows land, so moving an expert from the pool to
+the GPU trades ~13 ms of host time for ~11-17 ms of GPU time at 1:1. Decode is
+pinned at **225-231 ms/window = 9.4-9.6 tok/s** by every configuration tried —
+cache size, share, admission policy, draft depth, pool batching, overlap pokes.
+
+**Both halves are compute-bound, not bandwidth-bound**, which is what makes the
+plateau hard:
+
+- The CPU pool: upstream's reference is "663.6 MB of expert bytes per token at
+  ~40 GB/s" (`include/strata/core/expert_cache.hpp`). aibox spends 31.5 ms of
+  CPU expert time per token on the same bytes → **~21 GB/s**, about half the
+  reference, and the engine says why at startup: *"this CPU has no AVX-512: the
+  expert kernels run on AVX-2"*. That is a Zen 3 limitation, not a setting.
+- The GPU: 6 CUs, and the dense stages (`q8+qkv gemv` 21 ms, `hc-read1+router`
+  14.6 ms, `z` 12 ms, head 15 ms) are unchanged by everything tried.
+
+So the remaining paths are hardware and engine kernels, not config: an eGPU
+(upstream's RX 6900 XT, same engine: 38-42 tok/s decode, 330-339 prefill), or
+better AVX2 IQ2 dequant in the CPU expert kernels. **Nothing from this section
+was deployed** — the control is the deployed config.
+
 ## Pi clients
 
 `~/.pi/agent/models.json` on **aibox** and **services1** (10.3.1.20) was written
@@ -352,4 +509,14 @@ displaced — it talks to llama.cpp's own endpoints, not Strata's).
 run config from the installed unit, so it follows a rebuild) and
 `sudo ./run-arms.sh` for the full arm set. Benches: `strata-bench.py` (decode +
 two cold ~8k-token prefills) and `strata-bench-short.py` (one short decode, for
-reading the stage profile).
+reading the stage profile). The arm sets measured on 2026-10-08 are
+`./run-arms-uma.sh` (`--pcie-mode`, `--pcie-frac`, pool, prefill borrow),
+`./run-arms-prefill.sh` (the same arms against the full bench, for prefill) and
+`./run-arms-knobs.sh` (cache admission, draft depth, pool batching, overlap
+pokes); `./alias-check.sh` answers the device-alias question without loading a
+model. Pass the bench script to `strata-exp.sh` as an ABSOLUTE path —
+`strata-prep` chdirs into its own tools directory, so a relative one fails.
+Note the profile lines (`strata decode timing`, `decode GPU stages`) go to the
+*engine's* log — the run config's `log`, which `mkexp.py` points at
+`/tmp/exp-strata.log`, appended across arms — not to the server log the arm
+script tails.

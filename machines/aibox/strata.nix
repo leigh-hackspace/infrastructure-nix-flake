@@ -144,6 +144,23 @@ let
     "int8"
     "--kv-resident"
     "32768"
+    # Plan v0.3 P6 delivers the "PCIe" share (the cache misses handed to the GPU
+    # instead of the CPU pool) three ways: `dma` stages them with the copy engine,
+    # `direct` lets the grouped kernel read the pinned expert arena through its
+    # device alias, and `auto` resolves to a copy kernel inside the graph (mode 2,
+    # 16 staging blobs). aibox has no link - the arena and the cache are the same
+    # DDR5 - so `direct` is the mode that matches the hardware: it deletes the copy.
+    # Measured (strata-tune/run-arms-uma.sh, 2026-10-08): the copy stage (`waitB`)
+    # 6.95 -> 0.14 ms/window, the grouped read through the alias +2 ms/window, net
+    # 229.7 -> 227.0 ms/window (9.3 -> 9.4 tok/s). Small, and the reason is not the
+    # speed: it takes the in-graph copy path out of decode, which is the #884 class
+    # trigger. `--pcie-mode dma` measured the same speed (230.4 ms/window) but does
+    # its copies with SDMA, i.e. it keeps that trigger, so do not swap them.
+    # `--pcie-frac` is deliberately NOT set: the probe's 0.55 is not a link
+    # measurement here, yet sweeping it says it is the right answer anyway
+    # (0.25 -> 8.1 tok/s, 0 -> 7.5, 1.0 -> 9.3, default -> 9.4).
+    "--pcie-mode"
+    "direct"
   ];
 
   # The run config serve/server.py reads: the engine binary, its args, the

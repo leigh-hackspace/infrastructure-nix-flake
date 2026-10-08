@@ -128,6 +128,14 @@ stdenv.mkDerivation (finalAttrs: {
     # strata-device: the card check (--list-devices / --selftest), the thing to
     # run before downloading 68 GB of model.
     install -Dm755 strata-device $out/bin/strata-device
+    # strata-alias-check: upstream's tests/hip/mapped_alias.cpp, the check that a
+    # pinned host allocation's DEVICE ALIAS works on this stack. That is the gate
+    # for `--pcie-mode direct` (see ../strata-uma-2026-10-08.md): the PCIe share is
+    # delivered as device_alias(layer, expert), and if the alias is refused
+    # pcie_layer() is false and --pcie-frac is inert. Upstream builds the HIP test
+    # targets whenever HIP is on (they are not behind STRATA_BUILD_TESTS), so this
+    # is one install line - run it with ./strata-tune/alias-check.sh.
+    install -Dm755 hip_mapped_alias $out/bin/strata-alias-check
     cp -r ${finalAttrs.src}/serve ${finalAttrs.src}/tools ${finalAttrs.src}/data $out/share/strata/
     cp -r ${llama}/gguf-py $out/share/strata/gguf-py
 
