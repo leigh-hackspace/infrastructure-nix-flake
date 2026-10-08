@@ -326,7 +326,8 @@ removable; if the timeout still recurs, the next steps are `--adapt-every`
   same median with it (solo requests a little slower), so it is a reliability
   for speed trade, not a free win.
 
-The unit also has `startLimitIntervalSec = 0` so a startup that fails while a
+The unit is wrapped in `INFRA.mkNeverGiveUp` (`common/systemd.nix`) —
+`Restart = always` plus `startLimitIntervalSec = 0` — so a startup that fails while a
 leftover engine holds the GTT keeps retrying instead of parking in `failed`.
 
 **Watch on recurrence:** the 0.1.40.2 engine now logs the free VRAM before

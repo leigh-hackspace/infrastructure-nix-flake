@@ -2,9 +2,9 @@
   config,
   lib,
   pkgs,
+  INFRA,
   ...
 }:
-
 # Strata on aibox: Qwen3.8-Flash-Next (125B total / 6B active MoE) on the
 # Radeon 660M iGPU + system RAM + NVMe, replacing the dense 27B that decodes at
 # ~2 tok/s here.
@@ -75,11 +75,10 @@
 #         DRAM the CPU pool already reads, so 2048 -> 8192 slots (hit 63% -> 91%)
 #         bought only +11-17% decode and ate the RAM headroom. expertCache below
 #         is the middle point that keeps ~11 GiB free.
-
 let
   cfg = config.services.strata;
 
-  strata = pkgs.callPackage ./strata-package.nix { };
+  strata = pkgs.callPackage ./strata-package.nix {};
 
   # Model layout. The GGUFs stay under ~/Models with everything else there;
   # only the hand-prepared pack and MTP runtime live under modelDir.
@@ -221,8 +220,7 @@ let
       proxy_buffering off;
     '';
   };
-in
-{
+in {
   options = {
     services.strata = {
       enable = lib.mkEnableOption "Strata (Qwen3.8-Flash-Next) on aibox's Radeon iGPU";
@@ -240,17 +238,16 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    systemd.services.strata = {
+    # The house "never give up" policy (common/systemd.nix): Restart=always plus
+    # startLimitIntervalSec=0, so a startup that fails while a leftover engine
+    # still holds the GTT keeps retrying instead of parking in `failed` (the
+    # "killed engine keeps its GTT" crash-loop). RestartSec below paces each
+    # attempt; the helper leaves it alone.
+    systemd.services.strata = INFRA.mkNeverGiveUp {
       description = "Strata (Qwen3.8-Flash-Next across the Radeon iGPU, RAM and NVMe)";
-      after = [ "network-online.target" ];
-      wants = [ "network-online.target" ];
-      wantedBy = [ "multi-user.target" ];
-
-      # Never rate-limit restarts: a startup that fails because a leftover
-      # engine still holds the GTT must keep retrying until it can come up,
-      # rather than parking in `failed` (the "killed engine keeps its GTT"
-      # crash-loop). RestartSec below paces each attempt.
-      startLimitIntervalSec = 0;
+      after = ["network-online.target"];
+      wants = ["network-online.target"];
+      wantedBy = ["multi-user.target"];
 
       # Don't crash-loop before the hand-run model prep has produced a pack.
       unitConfig.ConditionPathExists = "${packDir}/index.txt";
@@ -259,7 +256,6 @@ in
         ExecStart = "${strata}/bin/strata-server --engine strata --config ${configFile} --host 10.3.1.32 --port 8080";
         # The engine log (config "log") is written here; StateDirectory creates it.
         StateDirectory = "strata";
-        Restart = "on-failure";
         RestartSec = 10;
         # Loading the model is a multi-minute, tens-of-GB operation.
         TimeoutStartSec = "infinity";
@@ -271,7 +267,9 @@ in
 
     # The two cannot be resident at once (see the header).
     systemd.services.llama-server.wantedBy = lib.mkForce (
-      if cfg.displaceLlamaServer then [ ] else [ "multi-user.target" ]
+      if cfg.displaceLlamaServer
+      then []
+      else ["multi-user.target"]
     );
 
     services.nginx.virtualHosts."aibox.int.leighhack.org".locations."/llm/" = strataLocation;

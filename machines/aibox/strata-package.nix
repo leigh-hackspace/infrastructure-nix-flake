@@ -16,7 +16,6 @@
   # same trick machines/aibox/alexandria-style ROCm setups use for this box.
   hipArch ? "gfx1030",
 }:
-
 # Strata (https://github.com/Niko1221/Strata) for aibox's integrated Radeon.
 #
 # Strata is NOT a llama.cpp wrapper: it is its own ggml-based engine for the
@@ -49,123 +48,121 @@ let
   # (WebP image parts) and psutil (Monitor) are optional.
   serverPython = python3.withPackages (
     ps:
-    with ps;
-    [
-      jinja2
-      regex
-      pillow
-      psutil
-    ]
+      with ps; [
+        jinja2
+        regex
+        pillow
+        psutil
+      ]
   );
 
   # The pack/MTP tools additionally need numpy + pyyaml + tqdm (they die with
   # ModuleNotFoundError: No module named 'yaml' otherwise).
   prepPython = python3.withPackages (
     ps:
-    with ps;
-    [
-      numpy
-      pyyaml
-      tqdm
-      regex
-    ]
+      with ps; [
+        numpy
+        pyyaml
+        tqdm
+        regex
+      ]
   );
 in
-stdenv.mkDerivation (finalAttrs: {
-  pname = "strata";
-  version = "0.1.40.2";
+  stdenv.mkDerivation (finalAttrs: {
+    pname = "strata";
+    version = "0.1.40.2";
 
-  src = fetchFromGitHub {
-    owner = "Niko1221";
-    repo = "Strata";
-    rev = "e8ca9afd03d839d4f8dbbe82dffce7f8a3bafd7a";
-    hash = "sha256-NCOHJF8L32g67h8S4XY9uOABAKEoqapGqYLUEoiVHME=";
-  };
+    src = fetchFromGitHub {
+      owner = "Niko1221";
+      repo = "Strata";
+      rev = "e8ca9afd03d839d4f8dbbe82dffce7f8a3bafd7a";
+      hash = "sha256-NCOHJF8L32g67h8S4XY9uOABAKEoqapGqYLUEoiVHME=";
+    };
 
-  nativeBuildInputs = [
-    cmake
-    pkg-config
-    makeWrapper
-  ];
+    nativeBuildInputs = [
+      cmake
+      pkg-config
+      makeWrapper
+    ];
 
-  # The default rocmPackages scope (all gfx targets, incl. gfx1030 in ROCm
-  # 7.2.3) so those derivations hit the binary cache; our own kernels are
-  # compiled for hipArch alone below. hipBLASLt ships no gfx1030 kernels, so the
-  # dense projections take the plain hipBLAS path (slower prompts, same answers).
-  buildInputs = [
-    rocmPackages.clr
-    rocmPackages.hipblas
-    rocmPackages.rocblas
-    rocmPackages.hipblaslt
-  ];
+    # The default rocmPackages scope (all gfx targets, incl. gfx1030 in ROCm
+    # 7.2.3) so those derivations hit the binary cache; our own kernels are
+    # compiled for hipArch alone below. hipBLASLt ships no gfx1030 kernels, so the
+    # dense projections take the plain hipBLAS path (slower prompts, same answers).
+    buildInputs = [
+      rocmPackages.clr
+      rocmPackages.hipblas
+      rocmPackages.rocblas
+      rocmPackages.hipblaslt
+    ];
 
-  cmakeFlags = [
-    "-DSTRATA_ENABLE_CUDA=OFF"
-    "-DSTRATA_ENABLE_HIP=ON"
-    "-DSTRATA_BUILD_TESTS=OFF"
-    # ggml's MMQ prompt kernels; setup.py builds every AMD engine with this on.
-    "-DSTRATA_PREFILL_MMQ=ON"
-    "-DSTRATA_GGML_DIR=${llama}"
-    "-DCMAKE_HIP_COMPILER=${rocmPackages.clr.hipClangPath}/clang++"
-    "-DCMAKE_HIP_ARCHITECTURES=${hipArch}"
-    "-DCMAKE_PREFIX_PATH=${
-      lib.makeSearchPath "lib/cmake" [
-        rocmPackages.clr
-        rocmPackages.hipblas
-        rocmPackages.rocblas
-        rocmPackages.hipblaslt
-      ]
-    }"
-  ];
+    cmakeFlags = [
+      "-DSTRATA_ENABLE_CUDA=OFF"
+      "-DSTRATA_ENABLE_HIP=ON"
+      "-DSTRATA_BUILD_TESTS=OFF"
+      # ggml's MMQ prompt kernels; setup.py builds every AMD engine with this on.
+      "-DSTRATA_PREFILL_MMQ=ON"
+      "-DSTRATA_GGML_DIR=${llama}"
+      "-DCMAKE_HIP_COMPILER=${rocmPackages.clr.hipClangPath}/clang++"
+      "-DCMAKE_HIP_ARCHITECTURES=${hipArch}"
+      "-DCMAKE_PREFIX_PATH=${
+        lib.makeSearchPath "lib/cmake" [
+          rocmPackages.clr
+          rocmPackages.hipblas
+          rocmPackages.rocblas
+          rocmPackages.hipblaslt
+        ]
+      }"
+    ];
 
-  # Upstream has no install() rules for `strata`; install the binary, the Python
-  # serve layer and the pack tools by hand, plus the pinned llama.cpp's gguf-py
-  # so the tools can run against it without hunting the store for the source.
-  installPhase = ''
-    runHook preInstall
-    mkdir -p $out/bin $out/share/strata
-    install -Dm755 strata $out/bin/strata
-    # strata-device: the card check (--list-devices / --selftest), the thing to
-    # run before downloading 68 GB of model.
-    install -Dm755 strata-device $out/bin/strata-device
-    # strata-alias-check: upstream's tests/hip/mapped_alias.cpp, the check that a
-    # pinned host allocation's DEVICE ALIAS works on this stack. That is the gate
-    # for `--pcie-mode direct` (see ../strata-uma-2026-10-08.md): the PCIe share is
-    # delivered as device_alias(layer, expert), and if the alias is refused
-    # pcie_layer() is false and --pcie-frac is inert. Upstream builds the HIP test
-    # targets whenever HIP is on (they are not behind STRATA_BUILD_TESTS), so this
-    # is one install line - run it with ./strata-tune/alias-check.sh.
-    install -Dm755 hip_mapped_alias $out/bin/strata-alias-check
-    cp -r ${finalAttrs.src}/serve ${finalAttrs.src}/tools ${finalAttrs.src}/data $out/share/strata/
-    cp -r ${llama}/gguf-py $out/share/strata/gguf-py
+    # Upstream has no install() rules for `strata`; install the binary, the Python
+    # serve layer and the pack tools by hand, plus the pinned llama.cpp's gguf-py
+    # so the tools can run against it without hunting the store for the source.
+    installPhase = ''
+      runHook preInstall
+      mkdir -p $out/bin $out/share/strata
+      install -Dm755 strata $out/bin/strata
+      # strata-device: the card check (--list-devices / --selftest), the thing to
+      # run before downloading 68 GB of model.
+      install -Dm755 strata-device $out/bin/strata-device
+      # strata-alias-check: upstream's tests/hip/mapped_alias.cpp, the check that a
+      # pinned host allocation's DEVICE ALIAS works on this stack. That is the gate
+      # for `--pcie-mode direct` (see ../strata-uma-2026-10-08.md): the PCIe share is
+      # delivered as device_alias(layer, expert), and if the alias is refused
+      # pcie_layer() is false and --pcie-frac is inert. Upstream builds the HIP test
+      # targets whenever HIP is on (they are not behind STRATA_BUILD_TESTS), so this
+      # is one install line - run it with ./strata-tune/alias-check.sh.
+      install -Dm755 hip_mapped_alias $out/bin/strata-alias-check
+      cp -r ${finalAttrs.src}/serve ${finalAttrs.src}/tools ${finalAttrs.src}/data $out/share/strata/
+      cp -r ${llama}/gguf-py $out/share/strata/gguf-py
 
-    # strata-server: what systemd runs (python -m serve.server).
-    makeWrapper ${serverPython}/bin/python3 $out/bin/strata-server \
-      --add-flags "-m serve.server" \
-      --set PYTHONPATH "$out/share/strata"
+      # strata-server: what systemd runs (python -m serve.server).
+      makeWrapper ${serverPython}/bin/python3 $out/bin/strata-server \
+        --add-flags "-m serve.server" \
+        --set PYTHONPATH "$out/share/strata"
 
-    # strata-prep: the one-time model-prep tools (iq_pack.py, mtp_fetch.py,
-    # mtp_pack.py, mtp_rt.py), run from their own directory with numpy/pyyaml/
-    # tqdm and STRATA_GGUF_PY already pointing at the pinned gguf-py.
-    makeWrapper ${prepPython}/bin/python3 $out/bin/strata-prep \
-      --chdir "$out/share/strata/tools" \
-      --set PYTHONPATH "$out/share/strata/tools" \
-      --set STRATA_GGUF_PY "$out/share/strata/gguf-py"
+      # strata-prep: the one-time model-prep tools (iq_pack.py, mtp_fetch.py,
+      # mtp_pack.py, mtp_rt.py), run from their own directory with numpy/pyyaml/
+      # tqdm and STRATA_GGUF_PY already pointing at the pinned gguf-py.
+      makeWrapper ${prepPython}/bin/python3 $out/bin/strata-prep \
+        --chdir "$out/share/strata/tools" \
+        --set PYTHONPATH "$out/share/strata/tools" \
+        --set STRATA_GGUF_PY "$out/share/strata/gguf-py"
 
-    runHook postInstall
-  '';
+      runHook postInstall
+    '';
 
-  # The HIP device check (src/core/device.cu) compares the card's gcnArchName
-  # with this list, so the runtime must report one of them.
-  passthru = {
-    inherit hipArch llama;
-  };
+    # The HIP device check (src/core/device.cu) compares the card's gcnArchName
+    # with this list, so the runtime must report one of them.
+    passthru = {
+      inherit hipArch llama;
+    };
 
-  meta = {
-    description = "Strata: run Qwen3.8-Flash-Next across GPU, RAM and CPU (HIP/${hipArch})";
-    homepage = "https://github.com/Niko1221/Strata";
-    license = lib.licenses.mit;
-    platforms = [ "x86_64-linux" ];
-    mainProgram = "strata-server";
-  };
-})
+    meta = {
+      description = "Strata: run Qwen3.8-Flash-Next across GPU, RAM and CPU (HIP/${hipArch})";
+      homepage = "https://github.com/Niko1221/Strata";
+      license = lib.licenses.mit;
+      platforms = ["x86_64-linux"];
+      mainProgram = "strata-server";
+    };
+  })
