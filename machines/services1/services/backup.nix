@@ -36,6 +36,12 @@ in
     # volumes whose secrets live elsewhere (CONFIG.ENV_FILE, Postgres).  If the
     # NAS ever stops being trusted — off-site copies, a share exposed beyond the
     # LAN — switch this to repokey-blake2 and keep the key off the NAS.
+    #
+    # Caveat before relying on "access-controlled": the NAS ssh host key is not
+    # pinned for this job (BORG_RSH below has no StrictHostKeyChecking/
+    # UserKnownHostsFile, unlike the dns-sync and network-status ssh calls), and
+    # the job runs as root, so the real boundary is the NAS plus root on
+    # services1.
     encryption.mode = "none";
     environment.BORG_RSH = "ssh -i ${CONFIG.BACKUP_KEY_FILE}";
     repo = "ssh://backups@nas2.int.leighhack.org:3022/backups/services1.int.leighhack.org/borg/srv";
