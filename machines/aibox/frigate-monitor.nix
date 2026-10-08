@@ -22,6 +22,7 @@
   lib,
   pkgs,
   crane,
+  INFRA,
   ...
 }: let
   cfg = config.services.frigate-monitor;
@@ -100,7 +101,7 @@ in {
     {services.frigate-monitor.enable = true;}
 
     (lib.mkIf cfg.enable {
-      systemd.services.frigate-monitor = {
+      systemd.services.frigate-monitor = INFRA.mkNeverGiveUp {
         description = "Frigate main_space scene-change monitor";
         wantedBy = ["multi-user.target"];
         after = ["network-online.target"];
@@ -127,11 +128,7 @@ in {
             "--ffmpeg"
             "${pkgs.ffmpeg}/bin/ffmpeg"
           ];
-          Restart = "always";
-          RestartSec = "5s";
         };
-        # Never give up.
-        startLimitIntervalSec = 0;
       };
     })
   ];

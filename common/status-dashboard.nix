@@ -21,6 +21,7 @@
   lib,
   pkgs,
   crane,
+  INFRA,
   ...
 }:
 
@@ -75,7 +76,7 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    systemd.services.status-dashboard = {
+    systemd.services.status-dashboard = INFRA.mkNeverGiveUp {
       description = "Systemd status dashboard";
       wantedBy = [ "multi-user.target" ];
       after = [ "network.target" ];
@@ -99,11 +100,7 @@ in
           ++ lib.optional (cfg.restartToken != "")
           ("--restart-token ${cfg.restartToken}")
         );
-        Restart = "always";
-        RestartSec = "5s";
       };
-      # Never give up.
-      startLimitIntervalSec = 0;
     };
   };
 }

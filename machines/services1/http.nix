@@ -3,6 +3,7 @@
   lib,
   pkgs,
   modulesPath,
+  INFRA,
   ...
 }:
 # Outside IPv4 (NATed by pfSense)   81.187.195.17
@@ -44,7 +45,7 @@ in {
   };
 
   # journalctl -u nginx-sso -f
-  systemd.services.nginx-sso = (
+  systemd.services.nginx-sso = INFRA.mkNeverGiveUp (
     let
       configFilePath = (
         pkgs.writeText "nginx-sso-config" (nginxSsoConfig {
@@ -60,8 +61,6 @@ in {
 
       serviceConfig = {
         ExecStart = "${pkgs.nginx-sso}/bin/nginx-sso --frontend-dir=${pkgs.nginx-sso}/share/frontend -c ${configFilePath}";
-        Restart = "always";
-        RestartSec = 5;
       };
     }
   );

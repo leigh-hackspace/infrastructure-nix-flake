@@ -1,6 +1,7 @@
 {
   lib,
   config,
+  INFRA,
   ...
 }: {
   virtualisation.podman = {
@@ -20,15 +21,9 @@
   # to come back after a power cut.  Force Restart=always and disable the
   # rate limit so containers retry forever.
   #
-  # Mirrors machines/services1/containers.nix; the nixos-utils.containers
-  # module is imported in flake.nix for the aibox flake output.
-  systemd.services = lib.mapAttrs' (name: _:
-    lib.nameValuePair "podman-${name}" {
-      startLimitIntervalSec = 0;
-      serviceConfig = {
-        Restart = lib.mkForce "always";
-        RestartSec = "5s";
-      };
-    })
-  config.virtualisation.oci-containers.containers;
+  # Shared with machines/services1/containers.nix; note that the
+  # nixos-utils.containers module imported in flake.nix is the *container
+  # update* timer, not this policy.
+  systemd.services = lib.mapAttrs' (name: _: lib.nameValuePair "podman-${name}" INFRA.mkNeverGiveUpOverride)
+    config.virtualisation.oci-containers.containers;
 }

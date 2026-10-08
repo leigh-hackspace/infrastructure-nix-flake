@@ -13,7 +13,7 @@
 # env-file sops secret.  LAN-only, fronted by nginx as
 # filestore.int.leighhack.org (the int record is synced by dns-sync from the
 # vhost list — it replaces the old commented-out vhost in http.nix).
-{ config, lib, pkgs, crane, ... }:
+{ config, lib, pkgs, crane, INFRA, ... }:
 
 let
   CONFIG = import ../config.nix;
@@ -52,7 +52,7 @@ in
   # The backing store is the /mnt/filestore NFS share on the NAS, so the
   # service must wait for the NAS (see nfs-client.nix) and keep restarting
   # forever (the "never give up" infra policy).
-  systemd.services.filestore = {
+  systemd.services.filestore = INFRA.mkNeverGiveUp {
     description = "filestore web file browser (/mnt/filestore)";
     wantedBy = [ "multi-user.target" ];
     after = [ "wait-for-nas.service" "network-online.target" ];
@@ -66,11 +66,7 @@ in
         "--port" "8096"
         "--max-upload" "2G"
       ];
-      # Never give up.
-      Restart = "always";
-      RestartSec = "5s";
     };
-    startLimitIntervalSec = 0;
   };
 
   # LAN-only vhost (the binary only listens on 127.0.0.1).

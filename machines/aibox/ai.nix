@@ -1,6 +1,7 @@
 {
   lib,
   pkgs,
+  INFRA,
   ...
 }: let
   # Pin the main model to the iGPU — the only Vulkan device on this box since
@@ -47,7 +48,7 @@ in {
   # Serve the single model directly (llama-swap's router was redundant with
   # only one model in the list).
   # journalctl -u llama-server -f
-  systemd.services.llama-server = {
+  systemd.services.llama-server = INFRA.mkNeverGiveUp {
     description = "Llama.cpp server";
     after = ["wait-for-network.service"];
     wants = ["wait-for-network.service"];
@@ -73,7 +74,6 @@ in {
       # the iGPU — the only Vulkan device since the GTX 1060 was removed
       # (2026-09-02).
       Environment = ["GGML_VK_VISIBLE_DEVICES=0"];
-      Restart = "always";
     };
   };
 

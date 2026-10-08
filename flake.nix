@@ -48,15 +48,15 @@
 
     let
       system = "x86_64-linux";
+
+      # Helper sets handed to every module through specialArgs (modules read them
+      # as `INFRA`), so shared helpers are not re-imported in each file.
+      extraArgs = {
+        INFRA = import ./common/systemd.nix { lib = nixpkgs.lib; };
+      };
     in
     {
       nixosConfigurations =
-        let
-          fix-nix-shell = {
-            # Make "nix-shell" use the flake version
-            nix.registry.nixpkgs.flake = nixpkgs;
-          };
-        in
         {
           services1 = nixpkgs.lib.nixosSystem {
             inherit system;
@@ -69,9 +69,10 @@
                 ];
               };
             };
-            specialArgs = flakeInputs;
+            specialArgs = flakeInputs // extraArgs;
             modules = [
-              fix-nix-shell
+              # Make "nix-shell" use the flake version
+              { nix.registry.nixpkgs.flake = nixpkgs; }
 
               nixos-utils.nixosModules.rollback
               nixos-utils.nixosModules.containers
@@ -92,9 +93,10 @@
                 allowUnfree = true;
               };
             };
-            specialArgs = flakeInputs;
+            specialArgs = flakeInputs // extraArgs;
             modules = [
-              fix-nix-shell
+              # Make "nix-shell" use the flake version
+              { nix.registry.nixpkgs.flake = nixpkgs; }
 
               nixos-utils.nixosModules.rollback
               nixos-utils.nixosModules.containers

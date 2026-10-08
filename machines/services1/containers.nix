@@ -3,6 +3,7 @@
   lib,
   pkgs,
   modulesPath,
+  INFRA,
   ...
 }:
 
@@ -31,11 +32,6 @@ in
   # failures — e.g. a container that keeps failing while waiting for the NAS
   # to come back after a power cut.  Force Restart=always and disable the
   # rate limit so containers retry forever.
-  systemd.services = lib.mapAttrs' (name: _: lib.nameValuePair "podman-${name}" {
-    startLimitIntervalSec = 0;
-    serviceConfig = {
-      Restart = lib.mkForce "always";
-      RestartSec = "5s";
-    };
-  }) config.virtualisation.oci-containers.containers;
+  systemd.services = lib.mapAttrs' (name: _: lib.nameValuePair "podman-${name}" INFRA.mkNeverGiveUpOverride)
+    config.virtualisation.oci-containers.containers;
 }

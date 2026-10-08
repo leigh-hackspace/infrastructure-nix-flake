@@ -1,6 +1,7 @@
 {
   lib,
   pkgs,
+  INFRA,
   ...
 }: let
   # Whisper.cpp with the Vulkan backend + ffmpeg so whisper-server's --convert
@@ -22,7 +23,10 @@ in {
   # (contends with llama-server) or drop the Vulkan override and run the CPU
   # backend. Config change pending.
   # journalctl -u whisper-server -f
-  systemd.services.whisper-server = {
+  # The 1060 rides on an M.2→USB3 adapter and has historically been
+  # intermittent, so this unit keeps retrying rather than giving up on a GPU
+  # hiccup (INFRA.mkNeverGiveUp).
+  systemd.services.whisper-server = INFRA.mkNeverGiveUp {
     description = "Whisper.cpp speech-to-text server (GTX 1060)";
     after = ["wait-for-network.service"];
     wants = ["wait-for-network.service"];
@@ -39,10 +43,6 @@ in {
           --tmp-dir /tmp \
           -t 8
       '';
-      # The 1060 rides on an M.2→USB3 adapter and has historically been
-      # intermittent; keep retrying rather than giving up on a GPU hiccup.
-      Restart = "always";
-      RestartSec = 5;
     };
   };
 
@@ -50,7 +50,7 @@ in {
   # (source: ~/Projects/whisper-ws, stdlib-only Rust). Clients speak the
   # Realtime transcription subset over ws://10.3.1.32:8083/v1/realtime
   # (input_audio_buffer.append/commit → transcription.completed).
-  systemd.services.whisper-ws = {
+  systemd.services.whisper-ws = INFRA.mkNeverGiveUp {
     description = "WebSocket gateway for whisper.cpp (OpenAI Realtime protocol)";
     after = [
       "whisper-server.service"
@@ -68,8 +68,6 @@ in {
           --port 8083 \
           --whisper-url http://10.3.1.32:8082
       '';
-      Restart = "always";
-      RestartSec = 5;
     };
   };
 }

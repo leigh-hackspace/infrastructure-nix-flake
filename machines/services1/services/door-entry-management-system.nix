@@ -1,6 +1,7 @@
 {
   pkgs,
   specialArgs,
+  INFRA,
   ...
 }: let
   CONFIG = import ../config.nix;
@@ -15,7 +16,7 @@ in {
   ];
 
   # journalctl -u door-entry-management-system-backend -f
-  systemd.services.door-entry-management-system-backend = {
+  systemd.services.door-entry-management-system-backend = INFRA.mkNeverGiveUp {
     description = "Door Entry Management System Backend";
     requires = [
       "network.target"
@@ -38,14 +39,12 @@ in {
     # Executable from your flake, running with systemd
     serviceConfig = {
       ExecStart = "${pkgs.door-entry-management-system}/bin/door-entry-management-system-backend";
-      Restart = "always";
-      RestartSec = 5;
       EnvironmentFile = CONFIG.ENV_FILE;
     };
   };
 
   # journalctl -u door-entry-management-system-frontend -f
-  systemd.services.door-entry-management-system-frontend = {
+  systemd.services.door-entry-management-system-frontend = INFRA.mkNeverGiveUp {
     description = "Door Entry Management System Frontend";
     requires = ["door-entry-management-system-backend.service"];
 
@@ -55,8 +54,6 @@ in {
     # Executable from your flake, running with systemd
     serviceConfig = {
       ExecStart = "${pkgs.door-entry-management-system}/bin/door-entry-management-system-frontend";
-      Restart = "always";
-      RestartSec = 5;
       WorkingDirectory = "${pkgs.door-entry-management-system}/lib/frontend";
       EnvironmentFile = pkgs.writeText "door-entry-management-system-frontend-env" ''
         DE_FRONTEND_PORT=8473

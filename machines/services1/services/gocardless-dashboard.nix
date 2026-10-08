@@ -17,6 +17,7 @@
   lib,
   pkgs,
   crane,
+  INFRA,
   ...
 }: let
   CONFIG = import ../config.nix;
@@ -64,7 +65,7 @@
 in {
   # Runs as root (like the other CONFIG.ENV_FILE consumers): /run/secrets is
   # root:keys 0710, so only root can reach the secret files inside it.
-  systemd.services.gocardless-dashboard = {
+  systemd.services.gocardless-dashboard = INFRA.mkNeverGiveUp {
     description = "GoCardless Pro sync + dashboard";
     wantedBy = ["multi-user.target"];
     after = ["postgresql.service" "network-online.target"];
@@ -79,11 +80,7 @@ in {
         "--port"
         "8095"
       ];
-      # Never give up.
-      Restart = "always";
-      RestartSec = "5s";
     };
-    startLimitIntervalSec = 0;
   };
 
   # Daily authentik `Members` group sync — the Rust replacement for the old

@@ -2,6 +2,7 @@
   lib,
   pkgs,
   specialArgs,
+  INFRA,
   ...
 }: let
   sys = specialArgs.pi-room-sys.nixosConfigurations.pi-room-sys;
@@ -63,14 +64,12 @@ in {
   };
 
   systemd.services = {
-    tftpd = {
+    tftpd = INFRA.mkNeverGiveUp {
       after = ["nftables.service"];
       description = "TFTP server";
       serviceConfig = {
         User = "root";
         Group = "root";
-        Restart = "always";
-        RestartSec = 5;
         Type = "exec";
         ExecStart = "${pkgs.tftp-hpa}/bin/in.tftpd -l -a 10.3.1.32:69 -P /run/tftpd.pid /etc/tftp";
         TimeoutStopSec = 20;

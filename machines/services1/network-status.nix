@@ -24,6 +24,7 @@
   lib,
   pkgs,
   crane,
+  INFRA,
   ...
 }: let
   CRANE = import ../../common/crane.nix {inherit pkgs crane;};
@@ -52,7 +53,7 @@
     cargoLock = CRANE.lockFile ../../network-status/Cargo.lock;
   };
 in {
-  systemd.services.network-status = {
+  systemd.services.network-status = INFRA.mkNeverGiveUp {
     description = "Router network status dashboard (network-info.int.leighhack.org)";
     wantedBy = ["multi-user.target"];
     after = ["network.target"];
@@ -86,10 +87,6 @@ in {
         # Quoted: the em dash + spaces would otherwise split the argv.
         "\"Network — router\""
       ];
-      Restart = "always";
-      RestartSec = "5s";
     };
-    # Never give up.
-    startLimitIntervalSec = 0;
   };
 }

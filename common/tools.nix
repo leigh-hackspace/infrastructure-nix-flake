@@ -1,4 +1,4 @@
-{ pkgs, ... }:
+{ config, lib, pkgs, INFRA, ... }:
 
 {
   environment.systemPackages = with pkgs; [
@@ -61,4 +61,10 @@
       TimeoutStartSec = 0;
     };
   };
+
+  # nginx is the reverse proxy for every app on both machines, so a crash loop
+  # must never end with systemd giving up permanently.  The nixpkgs module sets
+  # Restart=always but leaves the default 60s start rate limit in place (5 quick
+  # failures = dead forever), which is the trap common/systemd.nix exists for.
+  systemd.services.nginx = lib.mkIf config.services.nginx.enable INFRA.mkNeverGiveUpOverride;
 }

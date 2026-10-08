@@ -17,6 +17,7 @@
   pkgs,
   lib,
   crane,
+  INFRA,
   ...
 }: let
   CRANE = import ../../../common/crane.nix {inherit pkgs crane;};
@@ -45,7 +46,7 @@
     map (p: "--printer ${p.name}=${p.url}") printers
   );
 in {
-  systemd.services.moonraker-exporter = {
+  systemd.services.moonraker-exporter = INFRA.mkNeverGiveUp {
     description = "Prometheus exporter for the 3D-print servers' Moonraker APIs";
     wantedBy = ["multi-user.target"];
     after = ["network-online.target"];
@@ -53,8 +54,6 @@ in {
 
     serviceConfig = {
       ExecStart = "${exporter}/bin/moonraker-exporter --listen 127.0.0.1:9701 ${printerArgs}";
-      Restart = "always";
-      RestartSec = 5;
       DynamicUser = true;
       ProtectSystem = "strict";
       ProtectHome = true;

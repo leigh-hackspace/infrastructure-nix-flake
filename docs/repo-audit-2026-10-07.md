@@ -153,14 +153,29 @@ dependency *change* does.
 This is exactly the failure mode the "never give up" policy exists to prevent:
 systemd permanently stops a unit after 5 quick starts.
 
-- `machines/aibox/ai.nix`
-- `machines/aibox/whisper.nix`
-- `machines/aibox/netboot.nix`
-- `machines/services1/http.nix` (nginx-sso)
-- `machines/services1/services/door-entry-management-system.nix`
-- `machines/services1/services/printer-monitoring.nix`
+- ~~`machines/aibox/ai.nix`~~
+- ~~`machines/aibox/whisper.nix`~~
+- ~~`machines/aibox/netboot.nix`~~
+- ~~`machines/services1/http.nix` (nginx-sso)~~
+- ~~`machines/services1/services/door-entry-management-system.nix`~~
+- ~~`machines/services1/services/printer-monitoring.nix`~~
 
 Fix with a shared `mkNeverGiveUpService` helper so it cannot recur.
+
+Done 2026-10-08: `common/systemd.nix` (reached by every module as `INFRA`
+through the flake's `specialArgs`) provides `mkNeverGiveUp` (units written here)
+and `mkNeverGiveUpOverride` (units defined by nixpkgs modules, `mkForce` so the
+module's own policy loses). All six units above now use it, as do the units that
+already got it right by hand (`status-dashboard`, `network-status`, `filestore`,
+gocardless-dashboard, frigate-monitor, both `containers.nix` files) — the helper
+is now the only place the policy is written.
+
+A seventh case the audit missed: **nginx** on both machines. The nixpkgs module
+sets `Restart=always` but leaves `startLimitIntervalSec=60`, so five quick
+failures killed the reverse proxy for every app on the box. It is now forced to
+the same policy in `common/tools.nix` (guarded on `services.nginx.enable`).
+Checked by evaluating `systemd.services.<name>` for both machines: every unit
+with `Restart=always` now has `startLimitIntervalSec=0`.
 
 ### 3.2 `gocardless-dashboard/frontend/dto` is a symlink and is git-ignored
 
@@ -286,9 +301,11 @@ inherited.
 
 ## 6. Prioritised action order
 
-1. Chain `sudo nixos-confirm` into `just switch` and `just boot`.
-2. Add `startLimitIntervalSec = 0` to the six units missing it, via a shared
-   `mkNeverGiveUpService` helper.
+1. ~~Chain `sudo nixos-confirm` into `just switch` and `just boot`.~~ Done
+   2026-10-08.
+2. ~~Add `startLimitIntervalSec = 0` to the six units missing it, via a shared
+   `mkNeverGiveUpService` helper.~~ Done 2026-10-08 as `INFRA.mkNeverGiveUp` /
+   `INFRA.mkNeverGiveUpOverride` in `common/systemd.nix` (see §3.1).
 3. Extract `common/base.nix`, `common/containers.nix`, `mkWaitForNas`, and
    `mkIntVhost` — roughly 200 lines of copy-paste removed.
 4. ~~Create a shared in-repo Rust crate for `oidc`, `json`, and the asset
