@@ -139,12 +139,13 @@ in {
   # to be genuinely mounted (TrueNAS can ping before its exports are ready).
   # These containers bind data to /mnt/ds-photos, so without wait-for-nas they
   # start against a not-yet-mounted share and crash — and, without the
-  # never-give-up restart policy (P0#1), get permanently stopped.  wait-for-nas
-  # (machines/aibox/nfs-client.nix) only succeeds once the share is real.
+  # never-give-up restart policy (common/containers.nix), get permanently
+  # stopped.  wait-for-nas (common/nas.nix) only succeeds once the share is
+  # really mounted.
   #
-  # NOTE: PostgreSQL here is the immich OCI container (NAS ordering, P0#3).
-  # The host PostgreSQL pg_hba `trust` rule (P0#4) is intentionally left
-  # untouched per the request.
+  # NOTE: immich's database here is the immich-postgres OCI container below, not
+  # the host PostgreSQL (postgres.nix); the host pg_hba `trust` rule is
+  # deliberately left as it is.
   systemd.services.podman-immich-server = {
     requires = ["wait-for-nas.service"];
     after = ["wait-for-nas.service"];

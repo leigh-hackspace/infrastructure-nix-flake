@@ -56,7 +56,9 @@
     serviceConfig = {
       Type = "oneshot";
       RemainAfterExit = true;
-      ExecStart = "${pkgs.bash}/bin/bash -c 'until ${pkgs.iputils}/bin/ping -c1 -W2 10.3.1.6 >/dev/null 2>&1; do sleep 2; done; sleep 1'";
+      # The NAS address is an option (infra.nas.host, declared in common/nas.nix)
+      # rather than a second copy of the constant.
+      ExecStart = "${pkgs.bash}/bin/bash -c 'until ${pkgs.iputils}/bin/ping -c1 -W2 ${config.infra.nas.host} >/dev/null 2>&1; do sleep 2; done; sleep 1'";
       # Never give up: the NAS can take a long time to come back after a power cut.
       TimeoutStartSec = 0;
     };

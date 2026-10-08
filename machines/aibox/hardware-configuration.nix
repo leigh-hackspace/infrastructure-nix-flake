@@ -21,7 +21,6 @@
   boot.initrd.supportedFilesystems.zfs = false;
 
   boot.supportedFilesystems.zfs = false;
-  boot.supportedFilesystems.nfs = true;
 
   boot.kernelModules = ["kvm-amd"];
   boot.extraModulePackages = [];
@@ -57,45 +56,14 @@
     ];
   };
 
-  # NAS mounts mirror machines/services1/hardware-configuration.nix.  Both
-  # shares live on the slow TrueNAS (10.3.1.6); without _netdev, automount and
-  # ordering against wait-for-network a delayed NAS after a power cut can hang
-  # this host's boot.  See AGENTS.md (automount gotcha) for why the automount
-  # units are declared explicitly below rather than via the mount option.
-  systemd.mounts = [
-    {
-      where = "/mnt/filestore";
-      what = "10.3.1.6:/mnt/sas-10k/filestore";
-      type = "nfs";
-      options = "nfsvers=4.2,_netdev,x-systemd.automount,retry=5,timeo=5,x-systemd.mount-timeout=30";
-      after = ["wait-for-network.service"];
-      requires = ["wait-for-network.service"];
-    }
-    {
-      where = "/mnt/ds-photos";
-      what = "10.3.1.6:/mnt/sas-10k/ds-photos";
-      type = "nfs";
-      options = "nfsvers=4.2,_netdev,x-systemd.automount,retry=5,timeo=5,x-systemd.mount-timeout=30";
-      after = ["wait-for-network.service"];
-      requires = ["wait-for-network.service"];
-    }
-  ];
-
-  # x-systemd.automount in the mount options above is only honoured for
-  # /etc/fstab entries.  For unit-file mounts (what NixOS systemd.mounts
-  # generates) the automount unit must be defined explicitly, otherwise the
-  # shares would mount eagerly (or not at all) instead of lazily on first
-  # access.  wait-for-nas.service (machines/aibox/nfs-client.nix) triggers
-  # these automounts and waits until the shares are genuinely mounted.
-  systemd.automounts = [
-    {
-      where = "/mnt/filestore";
-      wantedBy = ["multi-user.target"];
-    }
-    {
-      where = "/mnt/ds-photos";
-      wantedBy = ["multi-user.target"];
-    }
+  # NAS shares (TrueNAS, infra.nas.host).  common/nas.nix generates the mount
+  # units, their automount units and wait-for-nas.service from this list.
+  # Without _netdev, the automounts and the ordering against wait-for-network
+  # (all added by common/nas.nix), a NAS that is still importing after a power
+  # cut can hang this host's boot — see AGENTS.md (automount gotcha).
+  infra.nas.exports = [
+    { where = "/mnt/filestore"; share = "/mnt/sas-10k/filestore"; }
+    { where = "/mnt/ds-photos"; share = "/mnt/sas-10k/ds-photos"; }
   ];
 
   swapDevices = [

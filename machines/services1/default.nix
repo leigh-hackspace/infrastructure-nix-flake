@@ -15,7 +15,6 @@ flakeInputs:
     ./http.nix
     ./network-status.nix
     ./networking.nix
-    ./nfs-client.nix
 
     flakeInputs.sops-nix.nixosModules.sops
   ];

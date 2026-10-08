@@ -79,6 +79,7 @@
 
               ./common/sops.nix
               ./common/containers.nix
+              ./common/nas.nix
               ./common/tools.nix
               ./common/users.nix
 
@@ -104,6 +105,7 @@
 
               ./common/sops.nix
               ./common/containers.nix
+              ./common/nas.nix
               ./common/tools.nix
               ./common/users.nix
 

@@ -50,8 +50,8 @@ let
 in
 {
   # The backing store is the /mnt/filestore NFS share on the NAS, so the
-  # service must wait for the NAS (see nfs-client.nix) and keep restarting
-  # forever (the "never give up" infra policy).
+  # service must wait for the NAS (common/nas.nix) and keep restarting forever
+  # (the "never give up" infra policy, common/systemd.nix).
   systemd.services.filestore = INFRA.mkNeverGiveUp {
     description = "filestore web file browser (/mnt/filestore)";
     wantedBy = [ "multi-user.target" ];

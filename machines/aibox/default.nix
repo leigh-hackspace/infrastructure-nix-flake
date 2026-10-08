@@ -15,8 +15,9 @@ flakeInputs: {
     ./monitoring.nix
     ./netboot.nix
     ./networking.nix
+    # PARKED (see docs/repo-audit-2026-10-07.md §1.4): the GTX 1060 was removed
+    # from this box on 2026-09-02, so ./nvidia.nix is kept for reference only.
     # ./nvidia.nix
-    ./nfs-client.nix
     ./sso.nix
     ./status-dashboard.nix
     ./whisper.nix

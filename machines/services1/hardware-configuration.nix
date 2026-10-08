@@ -23,8 +23,6 @@
   boot.kernelModules = [ "kvm-intel" ];
   boot.extraModulePackages = [ ];
 
-  boot.supportedFilesystems = [ "nfs" ];
-
   boot.kernelParams = [
     "i915.enable_guc=2"
     "mitigations=off"
@@ -60,53 +58,16 @@
     ];
   };
 
-  systemd.mounts = [
-    {
-      where = "/mnt/cameras";
-      what = "10.3.1.6:/mnt/sas-10k/cameras";
-      type = "nfs";
-      options = "nfsvers=4.2,_netdev,x-systemd.automount,retry=5,timeo=5,x-systemd.mount-timeout=30";
-      after = [ "wait-for-network.service" ];
-      requires = [ "wait-for-network.service" ];
-    }
-    {
-      where = "/mnt/filestore";
-      what = "10.3.1.6:/mnt/sas-10k/filestore";
-      type = "nfs";
-      options = "nfsvers=4.2,_netdev,x-systemd.automount,retry=5,timeo=5,x-systemd.mount-timeout=30";
-      after = [ "wait-for-network.service" ];
-      requires = [ "wait-for-network.service" ];
-    }
-    {
-      where = "/mnt/backups";
-      what = "10.3.1.6:/mnt/sas-10k/backups";
-      type = "nfs";
-      options = "nfsvers=4.2,_netdev,x-systemd.automount,retry=5,timeo=5,x-systemd.mount-timeout=30";
-      after = [ "wait-for-network.service" ];
-      requires = [ "wait-for-network.service" ];
-    }
-  ];
-
-  # NOTE: `x-systemd.automount` in the mount options above is only honoured
-  # for /etc/fstab entries.  For unit-file mounts (which is what NixOS
-  # `systemd.mounts` generates) the automount unit must be defined explicitly,
-  # otherwise the shares would be mounted eagerly (or not at all) instead of
-  # lazily on first access.  `wait-for-nas.service` (see nfs-client.nix)
-  # triggers these automounts and waits until the shares are genuinely mounted.
-  systemd.automounts = [
-    {
-      where = "/mnt/cameras";
-      # Enable at boot so the mount points exist and can be triggered lazily.
-      wantedBy = [ "multi-user.target" ];
-    }
-    {
-      where = "/mnt/filestore";
-      wantedBy = [ "multi-user.target" ];
-    }
-    {
-      where = "/mnt/backups";
-      wantedBy = [ "multi-user.target" ];
-    }
+  # NAS shares (TrueNAS, infra.nas.host).  common/nas.nix turns each of these
+  # into the mount unit *and* its automount unit, and builds wait-for-nas.service
+  # from the same list — see the header of that file for why the automount units
+  # have to exist explicitly (the `x-systemd.automount` mount option is dead
+  # config for unit-file mounts) and why NAS-dependent services must order
+  # themselves against wait-for-nas.service.
+  infra.nas.exports = [
+    { where = "/mnt/cameras"; share = "/mnt/sas-10k/cameras"; }
+    { where = "/mnt/filestore"; share = "/mnt/sas-10k/filestore"; }
+    { where = "/mnt/backups"; share = "/mnt/sas-10k/backups"; }
   ];
 
   swapDevices = [ ];
