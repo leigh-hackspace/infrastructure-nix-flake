@@ -126,13 +126,16 @@ work in a Nix build — see the comment there).
 - ~~**`cargo-vendor-ua-patch.sh` exists twice**~~ — one copy,
   `common/cargo-vendor-ua-patch.sh`; `common/crane.nix` no longer sources a
   file out of `frigate-monitor/`.
-- **Hand-rolled HTTP plumbing** in `status-dashboard/src/main.rs` and
+- ~~**Hand-rolled HTTP plumbing** in `status-dashboard/src/main.rs` and
   `network-status/src/main.rs` (`handle_client`, `route`, `json_str`,
-  content-type tables, percent-decode) — **not done**. The overlap is smaller
-  than the above and the two servers disagree on details, so a shared
-  `common-rs/web` crate needs a decision about which behaviour wins first.
-  `mime_of` in `common-rs/build-spa` and the content-type tables in the
-  zero-crate servers are still separate lists.
+  content-type tables, percent-decode)~~ — done 2026-10-08 as `common-rs/web`
+  (`common-web`): request-head parsing, `Request::path()` (query string
+  stripped), `respond`/`reason_phrase`, `percent_decode`.  The two copies had
+  drifted and the merged behaviour fixes both drifts — see the crate header.
+  **Not** shared on purpose: the routing tables and `json_str` (byte-identical,
+  but sharing it means deciding on a JSON API first).  `mime_of` in
+  `common-rs/build-spa` and network-status' content-type table are still
+  separate lists.
 
 How the path dependencies work (new, worth knowing before adding a crate):
 `path = "./common-rs/<name>"` in each `Cargo.toml`, plus a **git-ignored
@@ -198,12 +201,29 @@ in three separate files.
 
 ### 3.4 Hardcoded key paths and TOFU host keys
 
-- `machines/services1/network-status.nix:80` hardcodes
-  `/home/leigh-admin/.ssh/agent-hop-key`.
-- `dns-sync/src/main.rs:39` hardcodes the same path as a default.
-- Both use `StrictHostKeyChecking=accept-new`, so a router reinstall silently
+- ~~`machines/services1/network-status.nix:80` hardcodes
+  `/home/leigh-admin/.ssh/agent-hop-key`.~~
+- ~~`dns-sync/src/main.rs:39` hardcodes the same path as a default.~~
+- ~~Both use `StrictHostKeyChecking=accept-new`, so a router reinstall silently
   re-trusts a new host key. Consider a pinned `known_hosts` and a configurable
-  key path.
+  key path.~~
+
+Done 2026-10-08. Both router-ssh tools now connect with
+`StrictHostKeyChecking=yes` against a pinned list, and both take
+`--ssh-key`/`--known-hosts`:
+
+- the pinned list is generated in the flake as `/etc/dns-sync/known_hosts`
+  (all three key types the router offers) and network-status points at the same
+  file rather than keeping its own copy;
+- `just router-known-hosts` prints the current `ssh-keyscan` lines to paste in,
+  so accepting a re-installed router is a deliberate edit;
+- network-status' `--ssh-key` now comes from a `MACHINE_HOP_KEY` binding in the
+  module (the key `common/users.nix` installs) instead of a per-service literal.
+
+Verified end to end: `dns-sync check` against the pinned list resolves the
+router's dnsmasq table normally, and with an empty or wrong list it fails with
+"Host key verification failed" instead of connecting. Both binaries were
+checked to contain no `accept-new`.
 
 ### 3.5 `filestore/tests/run.sh` writes to fixed `/tmp/filestore-test-*.log`
 

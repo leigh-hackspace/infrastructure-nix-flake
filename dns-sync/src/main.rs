@@ -36,7 +36,16 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 
 const DEFAULT_EXPECTED: &str = "/etc/dns-sync/expected-int-names";
+/// The machine-hop key, installed by common/users.nix (the same private key on
+/// every flake-managed machine).  Override with --ssh-key; the flake passes the
+/// path explicitly, so this default is only the local-dev convenience.
 const DEFAULT_SSH_KEY: &str = "/home/leigh-admin/.ssh/agent-hop-key";
+/// Pinned router host keys.  dns-sync sshes to the router as **root** and edits
+/// its DNS config, so host identity is verified against this list rather than
+/// accepted on first contact (`accept-new` would silently re-trust a key after
+/// a router reinstall, or an on-path impersonation).  Regenerate with
+/// `just router-known-hosts`; missing file = no ssh, not an unverified one.
+const DEFAULT_KNOWN_HOSTS: &str = "/etc/dns-sync/known_hosts";
 const DEFAULT_ROUTER: &str = "root@10.3.1.1";
 const DEFAULT_ENV_FILE: &str = "/var/lib/secrets/.env";
 /// Names DNS was last brought in line with (written by `prune`). Used to
@@ -202,19 +211,20 @@ fn run_input(cmd: &str, args: &[&str], input: &str) -> Result<(bool, String, Str
     ))
 }
 
-fn ssh(ssh_key: &str, router: &str, remote_cmd: &str) -> Result<String, String> {
+fn ssh(ssh_key_file: &str, known_hosts: &str, router: &str, remote_cmd: &str) -> Result<String, String> {
     run_checked(
         "ssh",
         &[
             "-i",
-            ssh_key,
+            &ssh_key_file,
             "-o",
             "BatchMode=yes",
             "-o",
             "ConnectTimeout=10",
-            // TOFU on first connect (same policy as the documented dev flow).
             "-o",
-            "StrictHostKeyChecking=accept-new",
+            "StrictHostKeyChecking=yes",
+            "-o",
+            &format!("UserKnownHostsFile={known_hosts}"),
             router,
             remote_cmd,
         ],
@@ -276,8 +286,8 @@ fn write_last_expected(path: &str, names: &[String]) -> Result<(), String> {
 // ---------------------------------------------------------------------------
 
 /// name -> IPv4 it resolves to (first hit in /var/etc/dnsmasq-hosts).
-fn router_hosts(ssh_key: &str, router: &str) -> Result<BTreeMap<String, String>, String> {
-    let out = ssh(ssh_key, router, "cat /var/etc/dnsmasq-hosts")?;
+fn router_hosts(ssh_key_file: &str, known_hosts: &str, router: &str) -> Result<BTreeMap<String, String>, String> {
+    let out = ssh(ssh_key_file, known_hosts, router, "cat /var/etc/dnsmasq-hosts")?;
     let mut map = BTreeMap::new();
     for line in out.lines() {
         let mut it = line.split_whitespace();
@@ -292,29 +302,35 @@ fn router_hosts(ssh_key: &str, router: &str) -> Result<BTreeMap<String, String>,
     Ok(map)
 }
 
-/// Base ssh args to reach the router (same policy as the documented dev flow).
-fn router_ssh_args(ssh_key: &str, router: &str) -> Vec<String> {
+/// Base ssh args to reach the router.  Host identity is pinned (see
+/// DEFAULT_KNOWN_HOSTS): dns-sync sshes to the router as root and edits its DNS
+/// config, so `accept-new` — which silently trusts a new key after a reinstall
+/// or an on-path impersonation — is not good enough here.
+fn router_ssh_args(ssh_key_file: &str, known_hosts: &str, router: &str) -> Vec<String> {
     vec![
         "-i".into(),
-        ssh_key.into(),
+        ssh_key_file.into(),
         "-o".into(),
         "BatchMode=yes".into(),
         "-o".into(),
         "ConnectTimeout=10".into(),
         "-o".into(),
-        "StrictHostKeyChecking=accept-new".into(),
+        "StrictHostKeyChecking=yes".into(),
+        "-o".into(),
+        format!("UserKnownHostsFile={known_hosts}"),
         router.into(),
     ]
 }
 
 /// Run `python3 - <script>` on the router; `script_args` arrive as argv.
 fn router_python(
-    ssh_key: &str,
+    ssh_key_file: &str,
+    known_hosts: &str,
     router: &str,
     script: &str,
     script_args: &[String],
 ) -> Result<(bool, String, String), String> {
-    let mut args = router_ssh_args(ssh_key, router);
+    let mut args = router_ssh_args(ssh_key_file, known_hosts, router);
     args.push("python3".into());
     // Read the script from stdin; the requested names arrive as argv.
     args.push("-".into());
@@ -323,8 +339,8 @@ fn router_python(
     run_input("ssh", &refs, script)
 }
 
-fn router_restart_dnsmasq(ssh_key: &str, router: &str) -> Result<(), String> {
-    let restart = ssh(ssh_key, router, "configctl dnsmasq restart")
+fn router_restart_dnsmasq(ssh_key_file: &str, known_hosts: &str, router: &str) -> Result<(), String> {
+    let restart = ssh(ssh_key_file, known_hosts, router, "configctl dnsmasq restart")
         .map_err(|e| format!("dnsmasq restart failed: {}", e))?;
     if !restart.trim().is_empty() {
         for line in restart.lines() {
@@ -335,9 +351,9 @@ fn router_restart_dnsmasq(ssh_key: &str, router: &str) -> Result<(), String> {
 }
 
 /// Append names to the services1 host override's aliases and restart dnsmasq.
-fn router_add_aliases(ssh_key: &str, router: &str, missing: &[String]) -> Result<(), String> {
+fn router_add_aliases(ssh_key_file: &str, known_hosts: &str, router: &str, missing: &[String]) -> Result<(), String> {
     println!("  editing /conf/config.xml (backup taken) and restarting dnsmasq...");
-    let (ok, stdout, stderr) = router_python(ssh_key, router, PY_ADD_ALIASES, missing)?;
+    let (ok, stdout, stderr) = router_python(ssh_key_file, known_hosts, router, PY_ADD_ALIASES, missing)?;
     if !stdout.trim().is_empty() {
         for line in stdout.lines() {
             println!("    {}", line);
@@ -349,13 +365,13 @@ fn router_add_aliases(ssh_key: &str, router: &str, missing: &[String]) -> Result
     if !ok {
         return Err("router edit failed (see above)".into());
     }
-    router_restart_dnsmasq(ssh_key, router)
+    router_restart_dnsmasq(ssh_key_file, known_hosts, router)
 }
 
 /// Current services1 host-override aliases (FQDNs) from /conf/config.xml —
 /// the names dns-sync manages on the router.
-fn router_managed_aliases(ssh_key: &str, router: &str) -> Result<Vec<String>, String> {
-    let (ok, stdout, stderr) = router_python(ssh_key, router, PY_GET_ALIASES, &[])?;
+fn router_managed_aliases(ssh_key_file: &str, known_hosts: &str, router: &str) -> Result<Vec<String>, String> {
+    let (ok, stdout, stderr) = router_python(ssh_key_file, known_hosts, router, PY_GET_ALIASES, &[])?;
     if !ok {
         return Err(format!("router alias read failed: {}", stderr.trim()));
     }
@@ -371,9 +387,9 @@ fn router_managed_aliases(ssh_key: &str, router: &str) -> Result<Vec<String>, St
 }
 
 /// Remove names from the services1 host override's aliases and restart dnsmasq.
-fn router_remove_aliases(ssh_key: &str, router: &str, stale: &[String]) -> Result<(), String> {
+fn router_remove_aliases(ssh_key_file: &str, known_hosts: &str, router: &str, stale: &[String]) -> Result<(), String> {
     println!("  editing /conf/config.xml (backup taken) and restarting dnsmasq...");
-    let (ok, stdout, stderr) = router_python(ssh_key, router, PY_REMOVE_ALIASES, stale)?;
+    let (ok, stdout, stderr) = router_python(ssh_key_file, known_hosts, router, PY_REMOVE_ALIASES, stale)?;
     if !stdout.trim().is_empty() {
         for line in stdout.lines() {
             println!("    {}", line);
@@ -385,7 +401,7 @@ fn router_remove_aliases(ssh_key: &str, router: &str, stale: &[String]) -> Resul
     if !ok {
         return Err("router edit failed (see above)".into());
     }
-    router_restart_dnsmasq(ssh_key, router)
+    router_restart_dnsmasq(ssh_key_file, known_hosts, router)
 }
 
 // ---------------------------------------------------------------------------
@@ -654,7 +670,8 @@ fn do_managed_split(
 struct Opts {
     expected: String,
     last_expected: String,
-    ssh_key: String,
+    ssh_key_file: String,
+    known_hosts: String,
     router: String,
     env_file: String,
     router_only: bool,
@@ -664,7 +681,7 @@ struct Opts {
 fn usage() -> ! {
     eprintln!(
         "usage: dns-sync <check|sync|prune> [--expected FILE] [--last-expected FILE] \
-         [--ssh-key PATH] [--router HOST] [--env-file PATH] [--router-only|--do-only]\n\n  check  report expected vs present DNS (exit 1 if missing or stale)\n  sync   add missing records (strictly additive)\n  prune  remove rename leftovers — records dns-sync manages that were\n         expected previously but are no longer (never touches records that\n         predate dns-sync)"
+         [--ssh-key PATH] [--known-hosts PATH] [--router HOST] [--env-file PATH] [--router-only|--do-only]\n\n  check  report expected vs present DNS (exit 1 if missing or stale)\n  sync   add missing records (strictly additive)\n  prune  remove rename leftovers — records dns-sync manages that were\n         expected previously but are no longer (never touches records that\n         predate dns-sync)"
     );
     std::process::exit(2);
 }
@@ -673,7 +690,8 @@ fn parse_args() -> (Opts, String) {
     let mut opts = Opts {
         expected: DEFAULT_EXPECTED.into(),
         last_expected: DEFAULT_LAST_EXPECTED.into(),
-        ssh_key: DEFAULT_SSH_KEY.into(),
+        ssh_key_file: DEFAULT_SSH_KEY.into(),
+        known_hosts: DEFAULT_KNOWN_HOSTS.into(),
         router: DEFAULT_ROUTER.into(),
         env_file: DEFAULT_ENV_FILE.into(),
         router_only: false,
@@ -684,12 +702,14 @@ fn parse_args() -> (Opts, String) {
     while let Some(a) = args.next() {
         match a.as_str() {
             "check" | "sync" | "prune" if subcmd.is_none() => subcmd = Some(a),
-            "--expected" | "--last-expected" | "--ssh-key" | "--router" | "--env-file" => {
+            "--expected" | "--last-expected" | "--ssh-key" | "--known-hosts" | "--router"
+            | "--env-file" => {
                 let v = args.next().unwrap_or_else(|| usage());
                 match a.as_str() {
                     "--expected" => opts.expected = v,
                     "--last-expected" => opts.last_expected = v,
-                    "--ssh-key" => opts.ssh_key = v,
+                    "--ssh-key" => opts.ssh_key_file = v,
+                    "--known-hosts" => opts.known_hosts = v,
                     "--router" => opts.router = v,
                     _ => opts.env_file = v,
                 }
@@ -749,7 +769,7 @@ fn run_check(opts: &Opts) -> i32 {
     let mut legacy: Vec<String> = Vec::new();
 
     if !opts.do_only {
-        let hosts = match router_hosts(&opts.ssh_key, &opts.router) {
+        let hosts = match router_hosts(&opts.ssh_key_file, &opts.known_hosts, &opts.router) {
             Ok(h) => h,
             Err(e) => {
                 eprintln!("router: {}", e);
@@ -764,7 +784,7 @@ fn run_check(opts: &Opts) -> i32 {
             .iter()
             .filter(|(s, _, _)| s == "MISSING")
             .count();
-        let managed = match router_managed_aliases(&opts.ssh_key, &opts.router) {
+        let managed = match router_managed_aliases(&opts.ssh_key_file, &opts.known_hosts, &opts.router) {
             Ok(m) => m,
             Err(e) => {
                 eprintln!("router: {}", e);
@@ -853,7 +873,7 @@ fn run_sync(opts: &Opts) -> i32 {
 
     // --- router ---
     if !opts.do_only {
-        let hosts = match router_hosts(&opts.ssh_key, &opts.router) {
+        let hosts = match router_hosts(&opts.ssh_key_file, &opts.known_hosts, &opts.router) {
             Ok(h) => h,
             Err(e) => {
                 eprintln!("router: {}", e);
@@ -876,12 +896,12 @@ fn run_sync(opts: &Opts) -> i32 {
             for n in &missing {
                 println!("  + {}", n);
             }
-            if let Err(e) = router_add_aliases(&opts.ssh_key, &opts.router, &missing) {
+            if let Err(e) = router_add_aliases(&opts.ssh_key_file, &opts.known_hosts, &opts.router, &missing) {
                 eprintln!("router: {}", e);
                 return 1;
             }
             // verify
-            match router_hosts(&opts.ssh_key, &opts.router) {
+            match router_hosts(&opts.ssh_key_file, &opts.known_hosts, &opts.router) {
                 Ok(after) => {
                     let still: Vec<&String> = missing.iter().filter(|n| !after.contains_key(*n)).collect();
                     if still.is_empty() {
@@ -984,7 +1004,7 @@ fn run_prune(opts: &Opts) -> i32 {
 
     // --- router ---
     if !opts.do_only {
-        let managed = match router_managed_aliases(&opts.ssh_key, &opts.router) {
+        let managed = match router_managed_aliases(&opts.ssh_key_file, &opts.known_hosts, &opts.router) {
             Ok(v) => v,
             Err(e) => {
                 eprintln!("router: {}", e);
@@ -1000,11 +1020,11 @@ fn run_prune(opts: &Opts) -> i32 {
             for n in &stale {
                 println!("  - {}", n);
             }
-            if let Err(e) = router_remove_aliases(&opts.ssh_key, &opts.router, &stale) {
+            if let Err(e) = router_remove_aliases(&opts.ssh_key_file, &opts.known_hosts, &opts.router, &stale) {
                 eprintln!("router: {}", e);
                 return 1;
             }
-            match router_hosts(&opts.ssh_key, &opts.router) {
+            match router_hosts(&opts.ssh_key_file, &opts.known_hosts, &opts.router) {
                 Ok(after) => {
                     let still: Vec<&String> =
                         stale.iter().filter(|n| after.contains_key(*n)).collect();

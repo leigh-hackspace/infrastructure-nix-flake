@@ -63,5 +63,18 @@ in {
   environment.etc."dns-sync/expected-int-names".text =
     lib.concatStringsSep "\n" intNames + "\n";
 
+  # Pinned router host keys — dns-sync sshes to the router as root with
+  # StrictHostKeyChecking=yes (see dns-sync/src/main.rs), so a router reinstall
+  # must be an explicit act here rather than something accepted silently.
+  # Regenerate with `just router-known-hosts` and paste the result.
+  # network-status points at this same file rather than keeping its own list.
+  #
+  # All three key types the router offers, so any KEX picks a pinned key.
+  environment.etc."dns-sync/known_hosts".text = ''
+    10.3.1.1 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJsSlRavpS3tNlWtYQogSqAIJRBPWT5MDwikeUPuS1aO
+    10.3.1.1 ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBEvD2vzBFQPrAyudJsakBDVjQLszqFZgbwzXKPJcECFzG/xyYtXNAo1vSJ6YLLIxGrZj6PSrfFZAf4v/lKRBsvY=
+    10.3.1.1 ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCmMFcJ/Z0AlGOPnxRRAAl6MNVx3qtVGtk8drdbyTEhF1u/UgHWBxwoQPU+IDig67T/c5+NAt72LG3nf3HDXjH/JcmHuc+g7XjMQgnaooKKZ+qFl/rW0o5UO1RN/T+Kgf0OzlkPHW/n8MpbvlnK0EBwTZorOx2JdGW0pbJBxEXzkimgV4B63kv1Jt44KPLZfgHs5R0XVuE4cz8RVOOfr+PlmDUMfmRZj01wddi+lzHZKBQxKuZ/BI2b6WzpJHC3criCDLA7aIcVEkRDIkFVHT8nFnBfrBw3UkkaJAtGHiG+vu2o2Y2+RAsDdQJ6uDpmts223qHzpC8Mra/lGlss+RBi2cX5vFmh/SZhDqG4Kq53bjy+1fEDdLl6/srPekPPvhCTJamuyDrtQEbTZEpPL5mRhXKpCz2Qq4iR6mkxEWtN4wKcWSExTLkC8TTynuvtsTwNm3YJrbKoynNROq07WN/e00totHeU8r6K7IgVjWn9U8G+wzH20cvIkOopyLOUrrU=
+  '';
+
   environment.systemPackages = [dnsSync];
 }

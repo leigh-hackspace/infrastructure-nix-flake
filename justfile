@@ -81,6 +81,14 @@ dns-sync-sync:
 dns-sync-prune:
     ssh -i ~/.ssh/agent-hop-key -o BatchMode=yes leigh-admin@10.3.1.20 'sudo -n dns-sync prune'
 
+# Print the router's pinned host key line. dns-sync and network-status ssh to
+# it as root with StrictHostKeyChecking=yes against /etc/dns-sync/known_hosts
+# (machines/services1/dns-sync.nix), so after a router reinstall run this and
+# paste the result there — the tools refuse to connect rather than trusting a
+# new key silently.
+router-known-hosts:
+    ssh -i ~/.ssh/agent-hop-key -o BatchMode=yes root@10.3.1.1 'sh -c "ssh-keyscan -t ed25519,ecdsa,rsa 10.3.1.1 2>/dev/null"'
+
 switch-netboot:
     #!/usr/bin/env bash
     set -euo pipefail

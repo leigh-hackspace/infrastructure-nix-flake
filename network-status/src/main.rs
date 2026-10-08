@@ -143,13 +143,24 @@ fn now_ts() -> i64 {
 }
 
 /// Run the collection script on the router; returns its stdout.
-fn fetch_router(ssh_key: &str, router: &str) -> Result<String, String> {
+fn fetch_router(ssh_key: &str, known_hosts: &str, router: &str) -> Result<String, String> {
     let mut child = Command::new("ssh")
         .arg("-i")
         .arg(ssh_key)
         .args(["-o", "BatchMode=yes"])
         .args(["-o", "ConnectTimeout=10"])
-        .args(["-o", "StrictHostKeyChecking=accept-new"])
+        // Host identity is pinned, not TOFU: these tools ssh to the router as
+        // root, and `accept-new` would silently re-trust a key after a router
+        // reinstall (or an on-path impersonation).  The list is generated from
+        // the router's own sshd host keys by `just router-known-hosts` and
+        // shipped as /etc/network-status/known_hosts; missing file = no ssh
+        // rather than an unverified connection.
+        .args([
+            "-o",
+            "StrictHostKeyChecking=yes",
+            "-o",
+            &format!("UserKnownHostsFile={known_hosts}"),
+        ])
         .arg(router)
         .arg("sh -s")
         .stdin(Stdio::piped())
@@ -477,7 +488,7 @@ fn fmt_bytes(b: u64) -> String {
 
 fn sample_once(args: &Args, prev: &Option<Snapshot>) -> Snapshot {
     let ts = now_ts();
-    match fetch_router(&args.ssh_key, &args.router) {
+    match fetch_router(&args.ssh_key, &args.known_hosts, &args.router) {
         Ok(raw) => {
             let parsed = parse_output(&raw);
             let dt = prev.as_ref().map(|p| (ts - p.ts) as f64).unwrap_or(0.0);
@@ -803,6 +814,8 @@ struct Args {
     port: u16,
     router: String,
     ssh_key: String,
+    /// Pinned router host keys (`UserKnownHostsFile`). See fetch_router.
+    known_hosts: String,
     interval: Duration,
     wan: String,
     title: String,
@@ -957,6 +970,7 @@ fn main() {
     let mut port: u16 = 8091;
     let mut router = "root@10.3.1.1".to_string();
     let mut ssh_key = "/home/leigh-admin/.ssh/agent-hop-key".to_string();
+    let mut known_hosts = "/etc/network-status/known_hosts".to_string();
     let mut interval_secs: u64 = 5;
     let mut wan = "em0".to_string();
     let mut title = "network-info".to_string();
@@ -985,6 +999,12 @@ fn main() {
             "--ssh-key" => {
                 if let Some(v) = argv.get(i + 1) {
                     ssh_key = v.clone();
+                    i += 1;
+                }
+            }
+            "--known-hosts" => {
+                if let Some(v) = argv.get(i + 1) {
+                    known_hosts = v.clone();
                     i += 1;
                 }
             }
@@ -1022,6 +1042,7 @@ fn main() {
         port,
         router,
         ssh_key,
+        known_hosts,
         interval: Duration::from_secs(interval_secs),
         wan,
         title,

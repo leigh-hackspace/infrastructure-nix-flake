@@ -27,6 +27,10 @@
   INFRA,
   ...
 }: let
+  # Path of the shared machine-hop key (installed for leigh-admin by
+  # common/users.nix).  Router-ssh services reference this instead of each
+  # hardcoding the path.
+  MACHINE_HOP_KEY = "/home/leigh-admin/.ssh/agent-hop-key";
   # Prebuilt SolidJS/TypeScript SPA. The bundle (dist/) is committed to the
   # git tree and copied into the store here, so the build is fully hermetic:
   # Nix builds run offline and the npm deps (esbuild, babel, ...) are not in
@@ -78,7 +82,11 @@ in {
         "--router"
         "root@10.3.1.1"
         "--ssh-key"
-        "/home/leigh-admin/.ssh/agent-hop-key"
+        # The machine-hop key installed by common/users.nix, referenced rather
+        # than hardcoded per service.
+        MACHINE_HOP_KEY
+        "--known-hosts"
+        "/etc/dns-sync/known_hosts"
         "--interval"
         "5"
         "--wan"
