@@ -82,7 +82,8 @@ clippy:
 #
 #   just build-frontend                 # all three
 #   just build-frontend filestore       # one of them
-#   just build-frontend crate=filestore # ditto, for passing flags after it
+# (just 1.51 passes any extra argument straight into the single parameter, so
+# there are no flags here — a bad name just fails the whitelist check.)
 build-frontend crate="all":
     #!/usr/bin/env bash
     set -euo pipefail
