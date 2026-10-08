@@ -3,13 +3,10 @@
   pkgs,
   config,
   ...
-}:
-
-let
+}: let
   CONFIG = import ../config.nix;
   slackWebhookUrl = lib.strings.trim (builtins.readFile (config.sopsSecretText "slack_url"));
-in
-{
+in {
   # # List all backups
   # sudo list-backups-srv
   #

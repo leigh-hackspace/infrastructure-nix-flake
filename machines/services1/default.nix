@@ -1,6 +1,4 @@
-flakeInputs:
-
-{
+flakeInputs: {
   networking.hostName = "services1"; # Define your hostname.
 
   imports = [

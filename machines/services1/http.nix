@@ -13,7 +13,7 @@ let
   CONFIG = import ./config.nix;
   nginxSsoConfig = import ./lib/nginx-sso-config.nix;
   mkSSOVirtualHost = import ./lib/nginx-sso-helper.nix;
-  mkIntVhost = import ./lib/nginx-int-vhost-helper.nix { inherit lib; };
+  mkIntVhost = import ./lib/nginx-int-vhost-helper.nix {inherit lib;};
 in {
   # Necessary for secret access
   users.groups.secrets.members = ["nginx"];
@@ -126,7 +126,7 @@ in {
       };
 
       "login.int.leighhack.org" = mkIntVhost {
-        serverAliases = [ "login.leighhack.org" ];
+        serverAliases = ["login.leighhack.org"];
         proxyPass = "http://127.0.0.1:8082";
         # The SSO cookie nginx-sso sets on a successful login exceeds
         # nginx's default 4k proxy header buffer, which makes the /login
@@ -179,7 +179,7 @@ in {
       };
 
       "api.int.leighhack.org" = mkIntVhost {
-        serverAliases = [ "api.leighhack.org" ];
+        serverAliases = ["api.leighhack.org"];
         proxyPass = "http://10.3.1.30:8081";
         acl = "";
       };
@@ -204,7 +204,7 @@ in {
       };
 
       "user-tweaker.int.leighhack.org" = mkIntVhost {
-        serverAliases = [ "user-tweaker.leighhack.org" ];
+        serverAliases = ["user-tweaker.leighhack.org"];
         proxyPass = "http://10.3.1.30:8084";
       };
 

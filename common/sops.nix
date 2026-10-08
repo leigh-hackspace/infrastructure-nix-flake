@@ -1,12 +1,14 @@
-{ config, pkgs, lib, ... }:
-
-let
+{
+  config,
+  pkgs,
+  lib,
+  ...
+}: let
   # sops-nix (f140661) does not expose decrypted contents, so secrets that
   # are embedded into generated configs at build time are decrypted in a
   # small derivation (see sopsSecretText below).
   sopsFile = ../secrets/secrets.yaml;
-in
-{
+in {
   options = {
     sopsSecretText = lib.mkOption {
       description = ''
@@ -33,8 +35,7 @@ in
   };
 
   config = {
-    sopsSecretText =
-      name:
+    sopsSecretText = name:
       pkgs.runCommand "sops-secret-${name}" {
         nativeBuildInputs = [
           pkgs.sops
@@ -55,7 +56,7 @@ in
         yq -r ".${name}" "$tmp/all.json" | tr -d '\r\n' > $out
       '';
 
-    environment.systemPackages = with pkgs; [ sops ];
+    environment.systemPackages = with pkgs; [sops];
 
     environment.variables = {
       SOPS_AGE_KEY_FILE = config.sops.age.keyFile;
@@ -66,7 +67,7 @@ in
     };
 
     # Make the key visible to sandboxed builds (see sopsSecretsKeyFile).
-    nix.settings."extra-sandbox-paths" = [ "/var/lib/sops-nix" ];
+    nix.settings."extra-sandbox-paths" = ["/var/lib/sops-nix"];
 
     systemd.tmpfiles.rules = [
       # Make the sops age key readable by the nix build user so secrets can
@@ -79,7 +80,7 @@ in
       age.keyFile = "/var/lib/sops-nix/key.txt";
       defaultSopsFile = sopsFile;
       secrets = {
-        immich_oidc_client_secret = { };
+        immich_oidc_client_secret = {};
 
         # Shared restart token for the status dashboards (see
         # machines/services1/services/status.nix and
@@ -91,7 +92,7 @@ in
         # LAN-only convenience credential, not a real secret.  Anything that
         # must stay out of the store belongs in CONFIG.ENV_FILE
         # (/run/secrets/env_file, root-only at runtime) instead.
-        status_dashboard_lan_token = { };
+        status_dashboard_lan_token = {};
       };
     };
   };

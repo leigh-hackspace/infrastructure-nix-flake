@@ -1,9 +1,11 @@
-{ config, lib, ... }:
-
-let
+{
+  config,
+  lib,
+  ...
+}: let
   CONFIG = import ../config.nix;
   mkSSOVirtualHost = import ../lib/nginx-sso-helper.nix;
-  mkIntVhost = import ../lib/nginx-int-vhost-helper.nix { inherit lib; };
+  mkIntVhost = import ../lib/nginx-int-vhost-helper.nix {inherit lib;};
 
   AIBOX_IP = "10.3.1.32";
 
@@ -15,16 +17,13 @@ let
   # endpoint works without SSO sign-in (the vhosts are already
   # ACL-restricted to the local network). Must match
   # services.status-dashboard.restartToken on this machine and on aibox.
-  lanTokenHeader =
-    token:
-    ''
-      proxy_set_header X-Status-Token ${token};
-    '';
-in
-{
+  lanTokenHeader = token: ''
+    proxy_set_header X-Status-Token ${token};
+  '';
+in {
   # Runs the shared dashboard (common/status-dashboard.nix) locally on
   # 127.0.0.1:8088, probing services1's NAS mounts.
-  imports = [ ../../../common/status-dashboard.nix ];
+  imports = [../../../common/status-dashboard.nix];
 
   services.status-dashboard = {
     enable = true;

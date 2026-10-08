@@ -3,14 +3,11 @@
   lib,
   config,
   ...
-}:
-
-let
+}: let
   CONFIG = import ../config.nix;
-in
-{
+in {
   # Necessary for secret access
-  users.groups.secrets.members = [ "outline" ];
+  users.groups.secrets.members = ["outline"];
 
   services.outline = {
     enable = true;

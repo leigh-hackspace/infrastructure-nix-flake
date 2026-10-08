@@ -2,12 +2,9 @@
   config,
   lib,
   ...
-}:
-
-let
+}: let
   LIBRESPEED_UID = 8004;
-in
-{
+in {
   users.users.librespeed = {
     uid = LIBRESPEED_UID;
     group = "users";
@@ -46,7 +43,7 @@ in
   };
 
   # required due to unix socket permissions
-  users.users.nginx.extraGroups = [ config.users.groups.anubis.name ];
+  users.users.nginx.extraGroups = [config.users.groups.anubis.name];
 
   services.nginx.virtualHosts = {
     "speed.leighhack.org" = {

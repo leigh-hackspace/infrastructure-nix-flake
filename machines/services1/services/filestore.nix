@@ -13,11 +13,16 @@
 # env-file sops secret.  LAN-only, fronted by nginx as
 # filestore.int.leighhack.org (the int record is synced by dns-sync from the
 # vhost list — it replaces the old commented-out vhost in http.nix).
-{ config, lib, pkgs, CRANE, INFRA, ... }:
-
-let
+{
+  config,
+  lib,
+  pkgs,
+  CRANE,
+  INFRA,
+  ...
+}: let
   CONFIG = import ../config.nix;
-  mkIntVhost = import ../lib/nginx-int-vhost-helper.nix { inherit lib; };
+  mkIntVhost = import ../lib/nginx-int-vhost-helper.nix {inherit lib;};
 
   # The upload limit, in the two places it has to agree: the backend's
   # --max-upload and nginx's client_max_body_size.  Written as bytes so the
@@ -46,30 +51,34 @@ let
     # common/crane.nix).
     sharedCrates = ["oidc" "build-spa"];
   };
-  filestore = CRANE.cached (filestoreArgs // {
-    cargoArtifacts = CRANE.deps filestoreArgs;
-    # Point build.rs at the nix-built bundle instead of the (uncommitted)
-    # frontend/dist in the source tree.
-    preBuild = "export FILESTORE_DIST=${frontendDist}";
-  });
-in
-{
+  filestore = CRANE.cached (filestoreArgs
+    // {
+      cargoArtifacts = CRANE.deps filestoreArgs;
+      # Point build.rs at the nix-built bundle instead of the (uncommitted)
+      # frontend/dist in the source tree.
+      preBuild = "export FILESTORE_DIST=${frontendDist}";
+    });
+in {
   # The backing store is the /mnt/filestore NFS share on the NAS, so the
   # service must wait for the NAS (common/nas.nix) and keep restarting forever
   # (the "never give up" infra policy, common/systemd.nix).
   systemd.services.filestore = INFRA.mkNeverGiveUp {
     description = "filestore web file browser (/mnt/filestore)";
-    wantedBy = [ "multi-user.target" ];
-    after = [ "wait-for-nas.service" "network-online.target" ];
-    requires = [ "wait-for-nas.service" ];
+    wantedBy = ["multi-user.target"];
+    after = ["wait-for-nas.service" "network-online.target"];
+    requires = ["wait-for-nas.service"];
     serviceConfig = {
       Type = "simple";
       ExecStart = lib.concatStringsSep " " [
         "${filestore}/bin/filestore"
-        "--root" "/mnt/filestore"
-        "--env-file" CONFIG.ENV_FILE
-        "--port" "8096"
-        "--max-upload" "${toString maxUploadBytes}"
+        "--root"
+        "/mnt/filestore"
+        "--env-file"
+        CONFIG.ENV_FILE
+        "--port"
+        "8096"
+        "--max-upload"
+        "${toString maxUploadBytes}"
       ];
     };
   };

@@ -1,94 +1,93 @@
 # Helper function to create SSO-protected virtual hosts
 let
-  mkSSOVirtualHost =
-    { proxyPass,
-      bodySize ? "1024M",
-      timeouts ? 3600,
-    }:
-    {
-      useACMEHost = "leighhack.org";
-      forceSSL = true;
+  mkSSOVirtualHost = {
+    proxyPass,
+    bodySize ? "1024M",
+    timeouts ? 3600,
+  }: {
+    useACMEHost = "leighhack.org";
+    forceSSL = true;
+
+    extraConfig = ''
+      # Redirect the user to the login page when they are not logged in
+      error_page 401 = @error401;
+
+      client_max_body_size        ${bodySize};
+      proxy_connect_timeout       ${toString timeouts};
+      proxy_send_timeout          ${toString timeouts};
+      proxy_read_timeout          ${toString timeouts};
+      send_timeout                ${toString timeouts};
+    '';
+
+    locations."/" = {
+      inherit proxyPass;
+      recommendedProxySettings = true;
+      proxyWebsockets = true;
 
       extraConfig = ''
-        # Redirect the user to the login page when they are not logged in
-        error_page 401 = @error401;
+        auth_request /sso-auth;
 
-        client_max_body_size        ${bodySize};
-        proxy_connect_timeout       ${toString timeouts};
-        proxy_send_timeout          ${toString timeouts};
-        proxy_read_timeout          ${toString timeouts};
-        send_timeout                ${toString timeouts};
+        # Automatically renew SSO cookie on request
+        auth_request_set $cookie $upstream_http_set_cookie;
+        add_header Set-Cookie $cookie;
+
+        # Provide "X-WEBAUTH-USER" header to the backend so we know who has logged in
+        auth_request_set $username $upstream_http_x_username;
+        proxy_set_header X-WEBAUTH-USER $username;
+
+        # No cache
+        add_header Cache-Control "no-cache, no-store, must-revalidate";
+        add_header Pragma "no-cache";
+        add_header Expires "0";
       '';
-
-      locations."/" = {
-        inherit proxyPass;
-        recommendedProxySettings = true;
-        proxyWebsockets = true;
-
-        extraConfig = ''
-          auth_request /sso-auth;
-
-          # Automatically renew SSO cookie on request
-          auth_request_set $cookie $upstream_http_set_cookie;
-          add_header Set-Cookie $cookie;
-
-          # Provide "X-WEBAUTH-USER" header to the backend so we know who has logged in
-          auth_request_set $username $upstream_http_x_username;
-          proxy_set_header X-WEBAUTH-USER $username;
-
-          # No cache
-          add_header Cache-Control "no-cache, no-store, must-revalidate";
-          add_header Pragma "no-cache";
-          add_header Expires "0";
-        '';
-      };
-
-      # Fake service worker (override the one provided by the app)
-      locations."~ /sw\\.js$" = {
-        extraConfig = ''
-          return 200 'self.addEventListener("install", function(e) { e.waitUntil(self.skipWaiting()); }); self.addEventListener("activate", function(e) { e.waitUntil(self.clients.claim()); });';
-          add_header Content-Type application/javascript;
-          add_header Cache-Control no-cache;
-        '';
-      };
-
-      locations."/sso-auth" = {
-        # Access /auth endpoint to query login state
-        proxyPass = "http://127.0.0.1:8082/auth";
-
-        extraConfig = ''
-          # Do not allow requests from outside
-          internal;
-          # Do not forward the request body (nginx-sso does not care about it)
-          proxy_pass_request_body off;
-          proxy_set_header Content-Length "";
-          # Set custom information for ACL matching: Each one is available as
-          # a field for matching: X-Host = x-host, ...
-          proxy_set_header X-Origin-URI $request_uri;
-          proxy_set_header X-Host $http_host;
-          proxy_set_header X-Real-IP $remote_addr;
-          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-          proxy_set_header X-Forwarded-Proto $scheme;
-          # The renewed SSO cookie returned by /auth can exceed nginx's
-          # default 4k proxy header buffer ("upstream sent too big header").
-          # busy >= buffer_size and busy < total buffers - one buffer.
-          proxy_buffer_size       32k;
-          proxy_buffers           16 8k;
-          proxy_busy_buffers_size 32k;
-        '';
-      };
-
-      # Define where to send the user to login and specify how to get back
-      locations."@error401" = {
-        extraConfig = ''
-          # If the requested URI is an asset, redirect to root instead
-          set $redirect_uri $scheme://$http_host$request_uri;
-          if ($request_uri ~* "\.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$") {
-            set $redirect_uri $scheme://$http_host/;
-          }
-          return 302 https://login.leighhack.org/login?go=$redirect_uri;
-        '';
-      };
     };
+
+    # Fake service worker (override the one provided by the app)
+    locations."~ /sw\\.js$" = {
+      extraConfig = ''
+        return 200 'self.addEventListener("install", function(e) { e.waitUntil(self.skipWaiting()); }); self.addEventListener("activate", function(e) { e.waitUntil(self.clients.claim()); });';
+        add_header Content-Type application/javascript;
+        add_header Cache-Control no-cache;
+      '';
+    };
+
+    locations."/sso-auth" = {
+      # Access /auth endpoint to query login state
+      proxyPass = "http://127.0.0.1:8082/auth";
+
+      extraConfig = ''
+        # Do not allow requests from outside
+        internal;
+        # Do not forward the request body (nginx-sso does not care about it)
+        proxy_pass_request_body off;
+        proxy_set_header Content-Length "";
+        # Set custom information for ACL matching: Each one is available as
+        # a field for matching: X-Host = x-host, ...
+        proxy_set_header X-Origin-URI $request_uri;
+        proxy_set_header X-Host $http_host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        # The renewed SSO cookie returned by /auth can exceed nginx's
+        # default 4k proxy header buffer ("upstream sent too big header").
+        # busy >= buffer_size and busy < total buffers - one buffer.
+        proxy_buffer_size       32k;
+        proxy_buffers           16 8k;
+        proxy_busy_buffers_size 32k;
+      '';
+    };
+
+    # Define where to send the user to login and specify how to get back
+    locations."@error401" = {
+      extraConfig = ''
+        # If the requested URI is an asset, redirect to root instead
+        set $redirect_uri $scheme://$http_host$request_uri;
+        if ($request_uri ~* "\.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$") {
+          set $redirect_uri $scheme://$http_host/;
+        }
+        return 302 https://login.leighhack.org/login?go=$redirect_uri;
+      '';
+    };
+  };
 in
-mkSSOVirtualHost
+  mkSSOVirtualHost

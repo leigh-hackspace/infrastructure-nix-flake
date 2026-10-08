@@ -66,8 +66,14 @@
   # (all added by common/nas.nix), a NAS that is still importing after a power
   # cut can hang this host's boot — see AGENTS.md (automount gotcha).
   infra.nas.exports = [
-    { where = "/mnt/filestore"; share = "/mnt/sas-10k/filestore"; }
-    { where = "/mnt/ds-photos"; share = "/mnt/sas-10k/ds-photos"; }
+    {
+      where = "/mnt/filestore";
+      share = "/mnt/sas-10k/filestore";
+    }
+    {
+      where = "/mnt/ds-photos";
+      share = "/mnt/sas-10k/ds-photos";
+    }
   ];
 
   swapDevices = [

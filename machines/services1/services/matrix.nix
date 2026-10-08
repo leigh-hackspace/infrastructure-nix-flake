@@ -3,8 +3,7 @@
   lib,
   config,
   ...
-}:
-let
+}: let
   CONFIG = import ../config.nix;
   fqdn = "matrix.leighhack.org";
   baseUrl = "https://matrix.leighhack.org";
@@ -15,8 +14,7 @@ let
     add_header Access-Control-Allow-Origin *;
     return 200 '${builtins.toJSON data}';
   '';
-in
-{
+in {
   # Necessary for secret access
   users.groups.secrets.members = [
     "synapse"
@@ -97,7 +95,7 @@ in
       listeners = [
         {
           port = 8008;
-          bind_addresses = [ "::1" ];
+          bind_addresses = ["::1"];
           type = "http";
           tls = false;
           x_forwarded = true;
@@ -113,8 +111,8 @@ in
         }
       ];
     };
-    extras = [ "oidc" ];
-    extraConfigFiles = [ "/run/secrets/synapse_authentik" ];
+    extras = ["oidc"];
+    extraConfigFiles = ["/run/secrets/synapse_authentik"];
   };
 
   # # Didn't work, run manually...
@@ -126,7 +124,7 @@ in
   #     LC_CTYPE = "C";
   # '';
 }
-
 ## Make a Authentik signed in user as admin...
 # sudo -u postgres psql matrix-synapse
 # UPDATE users SET admin = 1 WHERE name = '@cjdell:matrix.leighhack.org';
+

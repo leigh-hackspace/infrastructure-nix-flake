@@ -23,9 +23,7 @@
   CRANE,
   INFRA,
   ...
-}:
-
-let
+}: let
   cfg = config.services.status-dashboard;
 
   statusDashboard = CRANE.cached {
@@ -35,8 +33,7 @@ let
     cargoLock = CRANE.lockFile ../status-dashboard/Cargo.lock;
     sharedCrates = ["web"];
   };
-in
-{
+in {
   options.services.status-dashboard = {
     enable = lib.mkEnableOption "the systemd status dashboard";
 
@@ -69,7 +66,7 @@ in
     restartToken = lib.mkOption {
       type = lib.types.str;
       default = "";
-      apply = v: builtins.replaceStrings [ "\n" "\r" ] [ "" "" ] v;
+      apply = v: builtins.replaceStrings ["\n" "\r"] ["" ""] v;
       description = ''
         Token accepted by POST /api/restart in place of X-WEBAUTH-USER.
         Newlines are stripped: a token read from a secret file would otherwise
@@ -89,8 +86,8 @@ in
   config = lib.mkIf cfg.enable {
     systemd.services.status-dashboard = INFRA.mkNeverGiveUp {
       description = "Systemd status dashboard";
-      wantedBy = [ "multi-user.target" ];
-      after = [ "network.target" ];
+      wantedBy = ["multi-user.target"];
+      after = ["network.target"];
       # Tools the dashboard shells out to (findmnt / ping / uptime / hostname).
       path = [
         pkgs.util-linux
@@ -102,14 +99,18 @@ in
         ExecStart = lib.concatStringsSep " " (
           [
             "${statusDashboard}/bin/status-dashboard"
-            "--bind" cfg.bind
-            "--port" "8088"
-            "--mounts" (lib.concatStringsSep "," cfg.mounts)
-            "--title" cfg.title
+            "--bind"
+            cfg.bind
+            "--port"
+            "8088"
+            "--mounts"
+            (lib.concatStringsSep "," cfg.mounts)
+            "--title"
+            cfg.title
           ]
           # Only passed when a LAN token is configured.
           ++ lib.optional (cfg.restartToken != "")
-          ("--restart-token ${cfg.restartToken}")
+          "--restart-token ${cfg.restartToken}"
         );
       };
     };

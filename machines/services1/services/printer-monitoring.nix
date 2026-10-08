@@ -20,7 +20,6 @@
   INFRA,
   ...
 }: let
-
   exporter = CRANE.cached {
     pname = "moonraker-exporter";
     version = "0.1.0";

@@ -35,7 +35,6 @@
   CRANE,
   ...
 }: let
-
   dnsSync = CRANE.cached {
     pname = "dns-sync";
     version = "0.1.0";

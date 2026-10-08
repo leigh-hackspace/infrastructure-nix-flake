@@ -4,13 +4,10 @@
   pkgs,
   modulesPath,
   ...
-}:
-
-let
+}: let
   CONFIG = import ../config.nix;
   mkSSOVirtualHost = import ../lib/nginx-sso-helper.nix;
-in
-{
+in {
   # sudo smem -r | sort -k 4 -nr | head
   # sudo smem -rs swap | head
   virtualisation.oci-containers.containers.frigate = {

@@ -30,7 +30,7 @@
 
     # Chris stuff...
     allow 192.168.49.0/24;          # Chris Home Internal
-    allow 51.148.168.145/32;        # Chris Zen (IPv4)   
+    allow 51.148.168.145/32;        # Chris Zen (IPv4)
     allow 2a02:8010:6680::0/48;     # Chris Zen (IPv6)
     allow 2a0a:ef40:154a::0/48;     # Chris 2
     allow 2001:4860:7::0/48;        # Society1

@@ -14,7 +14,7 @@
             // },
             "formatting": {
                 "command": [
-                    "nixfmt"
+                    "alejandra"
                 ],
             },
         },
@@ -22,7 +22,7 @@
         "nixd": {
             "formatting": {
                 "command": [
-                    "nixfmt"
+                    "alejandra"
                 ],
             },
             "options": {

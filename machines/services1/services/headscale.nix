@@ -1,20 +1,16 @@
 # Make sure hackspace LAN is advertised
 # sudo tailscale set --advertise-routes=10.3.0.0/16,2001:8b0:1d14::0/48,fd99:dead:beef:0225::/64
 # sudo tailscale set --advertise-routes=10.3.0.0/16,fd99:dead:beef:0225::/64
-
 {
   pkgs,
   lib,
   config,
   ...
-}:
-
-let
+}: let
   CONFIG = import ../config.nix;
-in
-{
+in {
   # Necessary for secret access
-  users.groups.secrets.members = [ "headscale" ];
+  users.groups.secrets.members = ["headscale"];
 
   services.headscale = {
     enable = true;
@@ -30,7 +26,7 @@ in
         override_local_dns = false;
         base_domain = "ts.leighhack.org";
         magic_dns = true;
-        search_domains = [ "int.leighhack.org" ];
+        search_domains = ["int.leighhack.org"];
         nameservers = {
           global = [
             "9.9.9.9"
@@ -38,7 +34,7 @@ in
             "1.1.1.1"
           ];
           split = {
-            "int.leighhack.org" = [ "10.3.1.1" ];
+            "int.leighhack.org" = ["10.3.1.1"];
           };
         };
       };
@@ -62,57 +58,55 @@ in
         issuer = "https://${CONFIG.AUTHENTIK_DOMAIN}/application/o/headplane/";
         client_id = "uvJnUrNJuaUXw3K8cJhT9fX7IMQ9amcBY5vTYJTQ";
         client_secret_path = CONFIG.HEADPLANE_CLIENT_SECRET_FILE;
-        allowed_groups = [ "Members" ];
+        allowed_groups = ["Members"];
       };
     };
   };
 
-  services.headplane =
-    let
-      format = pkgs.formats.yaml { };
+  services.headplane = let
+    format = pkgs.formats.yaml {};
 
-      # A workaround generate a valid Headscale config accepted by Headplane when `config_strict == true`.
-      settings = lib.recursiveUpdate config.services.headscale.settings {
-        tls_cert_path = "/dev/null";
-        tls_key_path = "/dev/null";
-        policy.path = "/dev/null";
+    # A workaround generate a valid Headscale config accepted by Headplane when `config_strict == true`.
+    settings = lib.recursiveUpdate config.services.headscale.settings {
+      tls_cert_path = "/dev/null";
+      tls_key_path = "/dev/null";
+      policy.path = "/dev/null";
+    };
+
+    headscaleConfig = format.generate "headscale.yml" settings;
+  in {
+    enable = true;
+    settings = {
+      server = {
+        host = "127.0.0.1";
+        port = 8086;
+        cookie_secret_path = pkgs.writeText "cookie_secret_path" "12345678123456781234567812345678";
+        base_url = "https://${CONFIG.HEADSCALE_DOMAIN}/admin";
       };
+      headscale = {
+        url = "https://${CONFIG.HEADSCALE_DOMAIN}";
+        config_path = "${headscaleConfig}";
+      };
+      integration.agent = {
+        enabled = true;
+        pre_authkey_path = CONFIG.HEADPLANE_PRE_AUTHKEY_FILE;
+      };
+      oidc = {
+        issuer = "https://${CONFIG.AUTHENTIK_DOMAIN}/application/o/headplane/";
+        client_id = "uvJnUrNJuaUXw3K8cJhT9fX7IMQ9amcBY5vTYJTQ";
+        client_secret_path = CONFIG.HEADPLANE_CLIENT_SECRET_FILE;
+        # Only support login through Authentik (go straight to login)
+        disable_api_key_login = true;
 
-      headscaleConfig = format.generate "headscale.yml" settings;
-    in
-    {
-      enable = true;
-      settings = {
-        server = {
-          host = "127.0.0.1";
-          port = 8086;
-          cookie_secret_path = pkgs.writeText "cookie_secret_path" "12345678123456781234567812345678";
-          base_url = "https://${CONFIG.HEADSCALE_DOMAIN}/admin";
-        };
-        headscale = {
-          url = "https://${CONFIG.HEADSCALE_DOMAIN}";
-          config_path = "${headscaleConfig}";
-        };
-        integration.agent = {
-          enabled = true;
-          pre_authkey_path = CONFIG.HEADPLANE_PRE_AUTHKEY_FILE;
-        };
-        oidc = {
-          issuer = "https://${CONFIG.AUTHENTIK_DOMAIN}/application/o/headplane/";
-          client_id = "uvJnUrNJuaUXw3K8cJhT9fX7IMQ9amcBY5vTYJTQ";
-          client_secret_path = CONFIG.HEADPLANE_CLIENT_SECRET_FILE;
-          # Only support login through Authentik (go straight to login)
-          disable_api_key_login = true;
+        # Might needed when integrating with Authentik.
+        # token_endpoint_auth_method = "client_secret_basic";
+        token_endpoint_auth_method = "client_secret_post";
 
-          # Might needed when integrating with Authentik.
-          # token_endpoint_auth_method = "client_secret_basic";
-          token_endpoint_auth_method = "client_secret_post";
-
-          headscale_api_key_path = CONFIG.HEADPLANE_API_KEY_FILE;
-          # redirect_uri = "https://${CONFIG.HEADSCALE_DOMAIN}/admin/oidc/callback";
-        };
+        headscale_api_key_path = CONFIG.HEADPLANE_API_KEY_FILE;
+        # redirect_uri = "https://${CONFIG.HEADSCALE_DOMAIN}/admin/oidc/callback";
       };
     };
+  };
 
   services.nginx.virtualHosts = {
     "${CONFIG.HEADSCALE_DOMAIN}" = {

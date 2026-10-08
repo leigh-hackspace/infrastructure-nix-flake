@@ -1,6 +1,4 @@
-{ pkgs, ... }:
-
-{
+{pkgs, ...}: {
   users.users.leigh-admin = {
     uid = 1234;
     isNormalUser = true;

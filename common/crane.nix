@@ -67,11 +67,17 @@
   # part of the git tree once staged, and `cp -a` copies it as a *symlink* —
   # pointing at a path that does not exist inside the store tree.  So clear it
   # out first and build the directory from scratch.
-  withSharedCrates = {pname, src, names}: let
-    copies = lib.concatMapStringsSep "\n" (n: ''
-      mkdir -p $out/common-rs
-      cp -a ${sharedCrateDir n} $out/common-rs/${n}
-    '') names;
+  withSharedCrates = {
+    pname,
+    src,
+    names,
+  }: let
+    copies =
+      lib.concatMapStringsSep "\n" (n: ''
+        mkdir -p $out/common-rs
+        cp -a ${sharedCrateDir n} $out/common-rs/${n}
+      '')
+      names;
   in
     pkgs.runCommand "${pname}-src" {} ''
       mkdir -p $out
@@ -85,13 +91,19 @@
 
   # `src` with the named shared crates copied in as stubs: real manifests, empty
   # sources, for the dependency build only.
-  withStubbedSharedCrates = {pname, src, names}: let
-    stubs = lib.concatMapStringsSep "\n" (n: ''
-      mkdir -p $out/common-rs/${n}/src
-      cp ${pkgs.writeText "${pname}-${n}-stub-Cargo.toml" (builtins.readFile (sharedCrateManifest n))} \
-        $out/common-rs/${n}/Cargo.toml
-      : > $out/common-rs/${n}/src/lib.rs
-    '') names;
+  withStubbedSharedCrates = {
+    pname,
+    src,
+    names,
+  }: let
+    stubs =
+      lib.concatMapStringsSep "\n" (n: ''
+        mkdir -p $out/common-rs/${n}/src
+        cp ${pkgs.writeText "${pname}-${n}-stub-Cargo.toml" (builtins.readFile (sharedCrateManifest n))} \
+          $out/common-rs/${n}/Cargo.toml
+        : > $out/common-rs/${n}/src/lib.rs
+      '')
+      names;
   in
     pkgs.runCommand "${pname}-deps-src" {} ''
       mkdir -p $out
@@ -103,29 +115,55 @@
 
   # `args.sharedCrates = ["oidc"]` selects the right source tree for the call:
   # real shared code for the crate build, stubs for the dependency build.
-  resolveShared = {args, stub}: let
+  resolveShared = {
+    args,
+    stub,
+  }: let
     names = args.sharedCrates or [];
     wrapped =
-      if names == [] then args
-      else if stub then removeAttrs (args // {
-        src = withStubbedSharedCrates {inherit (args) pname src; inherit names;};
-      }) ["sharedCrates"]
-      else removeAttrs (args // {
-        src = withSharedCrates {inherit (args) pname src; inherit names;};
-      }) ["sharedCrates"];
-  in wrapped;
+      if names == []
+      then args
+      else if stub
+      then
+        removeAttrs (args
+          // {
+            src = withStubbedSharedCrates {
+              inherit (args) pname src;
+              inherit names;
+            };
+          }) ["sharedCrates"]
+      else
+        removeAttrs (args
+          // {
+            src = withSharedCrates {
+              inherit (args) pname src;
+              inherit names;
+            };
+          }) ["sharedCrates"];
+  in
+    wrapped;
 
   # The cached dependency derivation on its own. Only Cargo.toml, Cargo.lock and
   # any .cargo/config.toml feed it (the sources are stubbed), so it survives
   # every edit to the crate itself.
-  deps = args: craneLib.buildDepsOnly (resolveShared {inherit args; stub = true;} // {doCheck = false;});
+  deps = args:
+    craneLib.buildDepsOnly (resolveShared {
+        inherit args;
+        stub = true;
+      }
+      // {doCheck = false;});
 
   # A crate built against cached deps. Pass `cargoArtifacts` explicitly when the
   # crate's own build has hooks that reference another derivation (e.g. a preBuild
   # pointing build.rs at a sibling SPA): those would otherwise become inputs of
   # the dependency build and invalidate the cache whenever that derivation
   # changes, even though cargo never sees them as dependencies.
-  cached = args: craneLib.buildPackage (resolveShared {inherit args; stub = false;} // {doCheck = false;});
+  cached = args:
+    craneLib.buildPackage (resolveShared {
+        inherit args;
+        stub = false;
+      }
+      // {doCheck = false;});
 
   # wasm-bindgen-cli pinned to 0.2.128 — the exact wasm-bindgen version every SPA
   # is compiled against (see the frontend Cargo.locks). The CLI and the

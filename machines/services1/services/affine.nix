@@ -3,25 +3,22 @@
   pkgs,
   lib,
   ...
-}:
-
-let
+}: let
   CONFIG = import ../config.nix;
   UPLOAD_LOCATION = "/srv/affine/storage";
   CONFIG_LOCATION = "/srv/affine/config";
   DB_DATABASE = "affine";
   DB_USERNAME = "affine";
   DB_PASSWORD = lib.strings.trim (builtins.readFile (config.sopsSecretText "pg_pass"));
-in
-{
+in {
   users.users.affine = {
     uid = 8300;
     isNormalUser = true;
     description = "Affine User";
   };
 
-  systemd.services.podman-affine-server.wants = [ "podman-affine-migration.service" ];
-  systemd.services.podman-affine-server.after = [ "podman-affine-migration.service" ];
+  systemd.services.podman-affine-server.wants = ["podman-affine-migration.service"];
+  systemd.services.podman-affine-server.after = ["podman-affine-migration.service"];
 
   virtualisation.oci-containers.containers.affine-server = {
     hostname = "affine-server";

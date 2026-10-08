@@ -23,6 +23,27 @@ boot:
 switch:
     sudo nixos-rebuild switch --flake . && sudo nixos-confirm
 
+# --- Nix formatting ---
+
+# Format every tracked .nix file with alejandra (the repo standard: it is what
+# .zed/settings.json runs on save and what the devshell ships).  The whole tree
+# was reformatted in one sweep, so keep it that way — a stray unformatted file
+# makes the next real diff unreadable (docs/repo-audit-2026-10-07.md §1.3).
+fmt:
+    nix develop --command bash -c 'git ls-files "*.nix" | xargs -r alejandra'
+
+# The check half of the same rule: lists every file that is not alejandra-clean
+# and exits non-zero.  Wired into `just check`.
+fmt-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    nix develop --command bash -c '
+      bad=0
+      for f in $(git ls-files "*.nix"); do
+        alejandra --check "$f" >/dev/null 2>&1 || { echo "not alejandra-clean: $f"; bad=1; }
+      done
+      exit $bad'
+
 # --- Rust crates (toolchain from `nix develop`: cargo/rustc/rustfmt/clippy +
 # --- the pinned wasm-bindgen-cli) ---
 

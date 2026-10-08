@@ -4,12 +4,9 @@
   pkgs,
   modulesPath,
   ...
-}:
-
-let
+}: let
   MQTT_UID = 1883;
-in
-{
+in {
   users.users.mqtt = {
     uid = MQTT_UID;
     group = "mqtt";

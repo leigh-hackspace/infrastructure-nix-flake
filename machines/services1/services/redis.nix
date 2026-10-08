@@ -3,12 +3,9 @@
   lib,
   config,
   ...
-}:
-
-let
+}: let
   CONFIG = import ../config.nix;
-in
-{
+in {
   # services.redis.servers.affine = {
   #   enable = true;
   #   port = 8301;

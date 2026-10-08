@@ -4,9 +4,7 @@
   pkgs,
   modulesPath,
   ...
-}:
-
-{
+}: {
   imports = [
     (modulesPath + "/installer/scan/not-detected.nix")
   ];
@@ -19,9 +17,9 @@
     "sd_mod"
     "sr_mod"
   ];
-  boot.initrd.kernelModules = [ "i915" ];
-  boot.kernelModules = [ "kvm-intel" ];
-  boot.extraModulePackages = [ ];
+  boot.initrd.kernelModules = ["i915"];
+  boot.kernelModules = ["kvm-intel"];
+  boot.extraModulePackages = [];
 
   # Performance tradeoff, decided deliberately: CPU side-channel mitigations
   # are off on both machines (see also security.sudo.wheelNeedsPassword = false
@@ -70,12 +68,21 @@
   # config for unit-file mounts) and why NAS-dependent services must order
   # themselves against wait-for-nas.service.
   infra.nas.exports = [
-    { where = "/mnt/cameras"; share = "/mnt/sas-10k/cameras"; }
-    { where = "/mnt/filestore"; share = "/mnt/sas-10k/filestore"; }
-    { where = "/mnt/backups"; share = "/mnt/sas-10k/backups"; }
+    {
+      where = "/mnt/cameras";
+      share = "/mnt/sas-10k/cameras";
+    }
+    {
+      where = "/mnt/filestore";
+      share = "/mnt/sas-10k/filestore";
+    }
+    {
+      where = "/mnt/backups";
+      share = "/mnt/sas-10k/backups";
+    }
   ];
 
-  swapDevices = [ ];
+  swapDevices = [];
 
   nixpkgs.hostPlatform = lib.mkDefault "x86_64-linux";
   hardware.cpu.intel.updateMicrocode = lib.mkDefault config.hardware.enableRedistributableFirmware;

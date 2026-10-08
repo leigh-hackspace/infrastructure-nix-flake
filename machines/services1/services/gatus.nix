@@ -21,7 +21,7 @@
 #   https://gatus.int.leighhack.org   (LAN/tailnet only, like kuma was)
 let
   CONFIG = import ../config.nix;
-  mkIntVhost = import ../lib/nginx-int-vhost-helper.nix { inherit lib; };
+  mkIntVhost = import ../lib/nginx-int-vhost-helper.nix {inherit lib;};
 
   # Standard Slack alert, attached to every endpoint. ALERT_COUNT is the
   # number of consecutive failed checks for that endpoint.

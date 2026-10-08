@@ -8,7 +8,7 @@
     "nixd": {
       "initialization_options": {
         "formatting": {
-          "command": ["alejandra", "--quiet", "--"] // or ["nixfmt"]
+          "command": ["alejandra", "--quiet", "--"] // repo standard; do not switch to nixfmt
         }
       },
       "settings": {

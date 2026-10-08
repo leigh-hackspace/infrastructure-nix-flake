@@ -4,7 +4,6 @@
   pkgs,
   ...
 }:
-
 # Prometheus + Grafana monitoring server for this machine (for now — the
 # scrape configs are structured so other hosts can be added later, e.g.
 # (aibox at 10.3.1.32 is already wired up in the scrape configs below).
@@ -16,28 +15,26 @@
 #
 # Ports: 9091 for Prometheus (9090 is taken by cockpit), 3000 for Grafana,
 # exporters on 9100 (node), 9558 (systemd), 9633 (smartctl).
-
 let
   CONFIG = import ../config.nix;
-  mkIntVhost = import ../lib/nginx-int-vhost-helper.nix { inherit lib; };
+  mkIntVhost = import ../lib/nginx-int-vhost-helper.nix {inherit lib;};
 
   PROM_PORT = 9091;
 
-  dashboards = import ./monitoring-dashboards.nix { inherit lib; };
+  dashboards = import ./monitoring-dashboards.nix {inherit lib;};
 
   # One JSON file per dashboard, provisioned into Grafana at boot.
-  dashboardsDir =
-    let
-      files = lib.mapAttrs (
+  dashboardsDir = let
+    files =
+      lib.mapAttrs (
         uid: dashboard: pkgs.writeText "${uid}.json" (builtins.toJSON dashboard)
-      ) dashboards;
-    in
-    pkgs.runCommand "grafana-dashboards" { } (
-      ''
-        mkdir -p $out
-        ${lib.concatStrings (lib.attrValues (lib.mapAttrs (uid: f: "cp ${f} $out/${uid}.json\n") files))}
-      ''
-    );
+      )
+      dashboards;
+  in
+    pkgs.runCommand "grafana-dashboards" {} ''
+      mkdir -p $out
+      ${lib.concatStrings (lib.attrValues (lib.mapAttrs (uid: f: "cp ${f} $out/${uid}.json\n") files))}
+    '';
 
   # Alert rules. No alertmanager is wired up yet (gatus already pings the
   # HTTP endpoints); these light up the Prometheus "Alerts" tab and are
@@ -161,9 +158,8 @@ let
         ];
       }
     );
-in
-{
-  users.groups.secrets.members = [ "grafana" ];
+in {
+  users.groups.secrets.members = ["grafana"];
 
   # --- Prometheus -----------------------------------------------------
   services.prometheus = {
@@ -174,29 +170,38 @@ in
     scrapeConfigs = [
       {
         job_name = "prometheus";
-        static_configs = [ { targets = [ "127.0.0.1:${toString PROM_PORT}" ]; } ];
+        static_configs = [{targets = ["127.0.0.1:${toString PROM_PORT}"];}];
       }
       # services1 + aibox; add more targets here as other machines get
       # node exporters.
       {
         job_name = "node";
         static_configs = [
-          { targets = [ "127.0.0.1:9100" ]; labels.instance = "services1:9100"; }
-          { targets = [ "10.3.1.32:9100" ]; }
+          {
+            targets = ["127.0.0.1:9100"];
+            labels.instance = "services1:9100";
+          }
+          {targets = ["10.3.1.32:9100"];}
         ];
       }
       {
         job_name = "systemd";
         static_configs = [
-          { targets = [ "127.0.0.1:9558" ]; labels.instance = "services1:9558"; }
-          { targets = [ "10.3.1.32:9558" ]; }
+          {
+            targets = ["127.0.0.1:9558"];
+            labels.instance = "services1:9558";
+          }
+          {targets = ["10.3.1.32:9558"];}
         ];
       }
       {
         job_name = "smartctl";
         static_configs = [
-          { targets = [ "127.0.0.1:9633" ]; labels.instance = "services1:9633"; }
-          { targets = [ "10.3.1.32:9633" ]; }
+          {
+            targets = ["127.0.0.1:9633"];
+            labels.instance = "services1:9633";
+          }
+          {targets = ["10.3.1.32:9633"];}
         ];
         # SMART queries can be slow on large/degraded disks.
         scrape_interval = "5m";
@@ -209,7 +214,12 @@ in
         job_name = "router";
         metrics_path = "/metrics";
         scrape_interval = "10s";
-        static_configs = [ { targets = [ "127.0.0.1:8091" ]; labels.instance = "router:8091"; } ];
+        static_configs = [
+          {
+            targets = ["127.0.0.1:8091"];
+            labels.instance = "router:8091";
+          }
+        ];
       }
       # Klipper/Moonraker on the hackspace 3D-print servers (blue/lime),
       # re-exported by moonraker-exporter (printer-monitoring.nix). Targets
@@ -218,18 +228,18 @@ in
         job_name = "moonraker";
         scrape_interval = "30s";
         scrape_timeout = "20s";
-        static_configs = [ { targets = [ "127.0.0.1:9701" ]; } ];
+        static_configs = [{targets = ["127.0.0.1:9701"];}];
       }
     ];
 
-    ruleFiles = [ rulesFile ];
+    ruleFiles = [rulesFile];
   };
 
   services.prometheus.exporters = {
     node = {
       enable = true;
       port = 9100;
-      enabledCollectors = [ "systemd" ];
+      enabledCollectors = ["systemd"];
     };
     systemd = {
       enable = true;

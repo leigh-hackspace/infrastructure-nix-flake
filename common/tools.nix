@@ -1,6 +1,10 @@
-{ config, lib, pkgs, INFRA, ... }:
-
 {
+  config,
+  lib,
+  pkgs,
+  INFRA,
+  ...
+}: {
   environment.systemPackages = with pkgs; [
     # System Tools
     appimage-run
@@ -49,10 +53,10 @@
   # Ping the NAS and only exit once a successful ping comes back. Prevents services starting before the network is truely ready.
   systemd.services.wait-for-network = {
     description = "Wait for Network";
-    after = [ "network-online.target" ];
-    wants = [ "network-online.target" ];
+    after = ["network-online.target"];
+    wants = ["network-online.target"];
     # Start at boot so its state is always visible (e.g. on the status dashboard).
-    wantedBy = [ "multi-user.target" ];
+    wantedBy = ["multi-user.target"];
     serviceConfig = {
       Type = "oneshot";
       RemainAfterExit = true;

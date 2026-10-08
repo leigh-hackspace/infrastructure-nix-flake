@@ -1,7 +1,7 @@
 {lib, ...}: let
   CONFIG = import ./config.nix;
   mkSSOVirtualHost = import ./lib/nginx-sso-helper.nix;
-  mkIntVhost = import ./lib/nginx-int-vhost-helper.nix { inherit lib; };
+  mkIntVhost = import ./lib/nginx-int-vhost-helper.nix {inherit lib;};
 in {
   services.nginx.virtualHosts = {
     "ai.leighhack.org" = lib.mkMerge [
