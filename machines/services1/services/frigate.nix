@@ -32,6 +32,11 @@ in
       "8555:8555/udp"
     ];
     environment = {
+      # Placeholder, not a credential: frigate's own config (/srv/frigate/config,
+      # outside the flake) overrides this at runtime, and the go2rtc RTSP
+      # endpoint it guards is bound to the LAN only.  Do not rely on this value
+      # for anything that is actually secret — put it in CONFIG.ENV_FILE or a
+      # sops secret instead.
       FRIGATE_RTSP_PASSWORD = "password";
     };
     extraOptions = [
@@ -40,6 +45,11 @@ in
       "--device=/dev/apex_0:/dev/apex_0"
       "--shm-size=1152m"
       "--cap-add=CAP_PERFMON"
+      # Broad, and broader than the --device/--cap-add list above suggests:
+      # frigate's documented podman setup asks for it (camera/GPU/USB access
+      # through whatever the host exposes).  Tightening it means naming every
+      # device frigate touches — worth doing, but it breaks detection when you
+      # get it wrong, so it is a deliberate tradeoff rather than an oversight.
       "--privileged"
     ];
   };

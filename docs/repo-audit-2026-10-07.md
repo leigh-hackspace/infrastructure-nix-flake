@@ -285,19 +285,47 @@ inherited.
    injected value from a file — or drop the LAN-token path entirely and require
    SSO for restarts.
 
-2. **`FRIGATE_RTSP_PASSWORD = "password"`** (`machines/services1/services/frigate.nix:35`)
-   — hardcoded weak secret in a world-readable store path.
+   **Decided 2026-10-08: keep it, and document it as a LAN convenience
+   credential.** The token only reaches restarts through the LAN-only `*.int`
+   vhosts (already ACL-restricted to the tailnet/LAN ranges) and the dashboard
+   itself binds to loopback; anyone with store read access on either machine
+   already has root there, i.e. they can restart the units directly. What was
+   done instead: the exposure is stated at the option and in `common/sops.nix`,
+   the comparison is now byte-wise rather than short-circuiting, a missing token
+   is logged instead of silently disabling restarts, and the secret is written
+   without a trailing newline so the header/comparison can actually match
+   (commit "status-dashboard: make the LAN restart token actually verifiable").
+   If it ever needs to be a real capability, the fix is unchanged: `sops.secrets`
+   + `EnvironmentFile=` for the binary and an nginx `set $token` read from a
+   file, or drop the LAN path and require SSO.
 
-3. **`--privileged` on the frigate container** while the explicit
-   `--device`/`--cap-add=CAP_PERFMON` list is already present.
+2. ~~**`FRIGATE_RTSP_PASSWORD = "password"`**~~
+   (`machines/services1/services/frigate.nix`) — ~~hardcoded weak secret in a
+   world-readable store path.~~ **Decided 2026-10-08: it is a placeholder, not a
+   secret.** Frigate's own config (`/srv/frigate/config`, outside the flake)
+   overrides it at runtime and the go2rtc endpoint it guards is LAN-only; the
+   value is now commented as such so nobody mistakes it for a credential.  If it
+   ever has to be real, it belongs in `CONFIG.ENV_FILE`/a sops secret.
 
-4. **`borgbackup` `encryption.mode = "none"`** (`machines/services1/services/backup.nix`)
-   — acceptable if the repo is access-controlled, but it deserves an explicit
-   comment saying so.
+3. ~~**`--privileged` on the frigate container**~~ while the explicit
+   `--device`/`--cap-add=CAP_PERFMON` list is already present. **Decided
+   2026-10-08: kept, and commented.** Frigate's documented podman setup asks for
+   it (camera/GPU/USB passthrough); tightening it to an explicit device list is
+   the right change but breaks detection when the list is wrong, so it is now
+   recorded as a tradeoff rather than left as an unexplained extra flag.
 
-5. **`mitigations=off` on both machines** plus `security.sudo.wheelNeedsPassword
-   = false`. A deliberate performance tradeoff; state it once in AGENTS.md
-   rather than discovering it in two kernel-param lists.
+4. ~~**`borgbackup` `encryption.mode = "none"`**~~
+   (`machines/services1/services/backup.nix`) — ~~acceptable if the repo is
+   access-controlled, but it deserves an explicit comment saying so.~~ Done
+   2026-10-08: the comment states the trust boundary (NAS share + `backups` ssh
+   user + LAN) and the condition under which to switch to `repokey-blake2`.
+
+5. ~~**`mitigations=off` on both machines** plus
+   `security.sudo.wheelNeedsPassword = false`.~~ ~~A deliberate performance
+   tradeoff; state it once in AGENTS.md rather than discovering it in two
+   kernel-param lists.~~ Done 2026-10-08: both kernel-param lists and
+   `common/base.nix` now cross-reference the same decision (trusted LAN,
+   single operator, speed matters) instead of each appearing as a bare flag.
 
 ---
 

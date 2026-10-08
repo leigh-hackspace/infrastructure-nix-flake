@@ -30,6 +30,12 @@ in
   # journalctl -u borgbackup-job-backup-srv -b
   services.borgbackup.jobs.backup-srv = {
     paths = "/srv";
+    # Deliberately unencrypted: the repo lives on the NAS share that is already
+    # the trust boundary (access-controlled `backups` user over ssh with
+    # CONFIG.BACKUP_KEY_FILE, on the LAN), and the payloads here are container
+    # volumes whose secrets live elsewhere (CONFIG.ENV_FILE, Postgres).  If the
+    # NAS ever stops being trusted — off-site copies, a share exposed beyond the
+    # LAN — switch this to repokey-blake2 and keep the key off the NAS.
     encryption.mode = "none";
     environment.BORG_RSH = "ssh -i ${CONFIG.BACKUP_KEY_FILE}";
     repo = "ssh://backups@nas2.int.leighhack.org:3022/backups/services1.int.leighhack.org/borg/srv";

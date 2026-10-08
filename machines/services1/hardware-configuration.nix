@@ -23,6 +23,11 @@
   boot.kernelModules = [ "kvm-intel" ];
   boot.extraModulePackages = [ ];
 
+  # Performance tradeoff, decided deliberately: CPU side-channel mitigations
+  # are off on both machines (see also security.sudo.wheelNeedsPassword = false
+  # in common/base.nix).  These boxes are single-operator, on a trusted LAN
+  # behind authentik/nginx, and the workload is I/O- and GPU-bound; the cost is
+  # real (Spectre/Meltdown class attacks) and accepted, not overlooked.
   boot.kernelParams = [
     "i915.enable_guc=2"
     "mitigations=off"

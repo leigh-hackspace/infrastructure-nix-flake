@@ -47,7 +47,10 @@
   console.keyMap = "uk";
 
   # Deliberate: both boxes are single-operator machines with `leigh-admin` in
-  # wheel and passwordless sudo (the deploy recipes assume it).
+  # wheel and passwordless sudo (the deploy recipes assume it).  Paired with
+  # `mitigations=off` in each machine's hardware-configuration.nix — the same
+  # "trusted LAN, single operator, speed matters" tradeoff, decided once here
+  # rather than discovered in two kernel-param lists.
   security.sudo.wheelNeedsPassword = false;
 
   # Prebuilt binaries from cargo/npm find the dynamic linker they need.

@@ -28,7 +28,11 @@
   boot.kernelPackages = pkgs.linuxPackages_latest;
 
   boot.kernelParams = [
-    # More speed
+    # More speed.  CPU side-channel mitigations are off on both machines as a
+    # deliberate tradeoff (same decision as passwordless wheel sudo in
+    # common/base.nix): single-operator boxes on a trusted LAN behind
+    # authentik/nginx, I/O- and GPU-bound workloads.  See also
+    # machines/services1/hardware-configuration.nix.
     "mitigations=off"
     # IOMMU off (less overhead)
     "amd_iommu=off"
