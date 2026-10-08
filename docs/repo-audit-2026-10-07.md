@@ -87,7 +87,7 @@ runbooks.
 | ~~18 vhosts repeating `useACMEHost` + `forceSSL` + `recommendedProxySettings` + `CONFIG.LOCAL_NETWORK`~~ | ~~`machines/services1/http.nix` (375 lines)~~ | Done 2026-10-08: `machines/services1/lib/nginx-int-vhost-helper.nix` (`mkIntVhost { proxyPass; acl ? CONFIG.LOCAL_NETWORK; websockets; bodySize; timeouts; proxyBuffering; proxyHeaderBuffers; extraConfig; serverAliases; }`). 24 vhosts across `http.nix`, `ai.nix`, `status.nix`, `filestore.nix`, `gocardless-dashboard.nix`, `monitoring.nix`, `frigate.nix`… converted (−130 lines); the rest keep their own shape (multiple locations, `root`, redirects, SSO). |
 | ~~`client_max_body_size 1024M` hardcoded with a `# TODO: Make this configurable (Llama needs it)`~~ | ~~`machines/services1/lib/nginx-sso-helper.nix:14`~~ | Done 2026-10-08: `mkSSOVirtualHost { proxyPass; bodySize ? "1024M"; timeouts ? 3600; }` — the TODO is gone and the SSO vhosts that need something else say so. |
 | ~~Same constant written twice, must be kept in sync by hand~~ | ~~`--max-upload 2G` vs `client_max_body_size 2048M` (`filestore.nix`)~~ | Done 2026-10-08: one `maxUploadBytes` in the `let`; the flag and `client_max_body_size` are both derived from it. |
-| `import ../../../common/crane.nix { inherit pkgs crane; }` repeated 7× | every crate module | pass `CRANE` through `specialArgs` once in `flake.nix` |
+| ~~`import ../../../common/crane.nix { inherit pkgs crane; }` repeated 7×~~ | ~~every crate module~~ | Done 2026-10-08: `common/crane-args.nix` injects `CRANE` as a module argument (built with each machine's own `pkgs`); modules just list `CRANE` in their args. |
 | `fix-nix-shell` defined twice | `flake.nix` | hoist above the `let` |
 
 ### 2.2 Rust

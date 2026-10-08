@@ -7,7 +7,7 @@
   pkgs,
   ...
 }: {
-  imports = [ ../../common/base.nix ];
+  imports = [../../common/base.nix];
 
   # This box builds packages that need to reach the network/NAS at build time
   # (see common/sops.nix for the build-time secret decryption).
@@ -15,7 +15,7 @@
 
   # The gasket driver (Coral TPU) is not in the running kernel's package set,
   # so pull it from the matching kernel's package set explicitly.
-  boot.extraModulePackages = [ pkgs.linuxKernel.packages.linux_6_18.gasket ];
+  boot.extraModulePackages = [pkgs.linuxKernel.packages.linux_6_18.gasket];
 
   # This value determines the NixOS release from which the default
   # settings for stateful data, like file locations and database versions

@@ -3,8 +3,12 @@
 # Imported for both machines in flake.nix.  The per-machine copies of this file
 # were byte-identical apart from services1's container-update timer, which now
 # lives in machines/services1/containers.nix.
-{ config, lib, INFRA, ... }:
 {
+  config,
+  lib,
+  INFRA,
+  ...
+}: {
   virtualisation.podman = {
     enable = true;
     autoPrune.enable = true;
@@ -24,6 +28,7 @@
   #
   # Note that the nixos-utils.containers module imported in flake.nix is the
   # *container image update* timer, not this policy.
-  systemd.services = lib.mapAttrs' (name: _: lib.nameValuePair "podman-${name}" INFRA.mkNeverGiveUpOverride)
+  systemd.services =
+    lib.mapAttrs' (name: _: lib.nameValuePair "podman-${name}" INFRA.mkNeverGiveUpOverride)
     config.virtualisation.oci-containers.containers;
 }

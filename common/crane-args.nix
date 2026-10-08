@@ -12,7 +12,10 @@
 # The value depends only on `pkgs` and the `crane` flake input (both external
 # module arguments), never on `config`, so reading `_module.args.CRANE` cannot
 # introduce an evaluation cycle.
-{ pkgs, crane, ... }:
 {
-  _module.args.CRANE = import ./crane.nix { inherit pkgs crane; };
+  pkgs,
+  crane,
+  ...
+}: {
+  _module.args.CRANE = import ./crane.nix {inherit pkgs crane;};
 }

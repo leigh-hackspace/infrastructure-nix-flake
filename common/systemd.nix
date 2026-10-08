@@ -4,8 +4,7 @@
 # flake.nix), so the house "never give up" restart policy has one definition
 # instead of a hand-copied pair of lines — and a comment explaining why — in
 # every unit file.
-{ lib }:
-{
+{lib}: {
   # Wrap a systemd.services.<name> definition written in this repo with the
   # "never give up" policy: Restart=always plus startLimitIntervalSec=0.
   #
@@ -28,10 +27,12 @@
     def
     // {
       startLimitIntervalSec = 0;
-      serviceConfig = (def.serviceConfig or { }) // {
-        Restart = "always";
-        RestartSec = def.serviceConfig.RestartSec or "5s";
-      };
+      serviceConfig =
+        (def.serviceConfig or {})
+        // {
+          Restart = "always";
+          RestartSec = def.serviceConfig.RestartSec or "5s";
+        };
     };
 
   # The same policy applied to a unit defined by a nixpkgs module

@@ -18,8 +18,7 @@
 #
 # The defaults are deliberately the LAN-restricted ones: a vhost that is
 # reachable from outside has to opt out with `acl = ""`.
-{ lib }:
-{
+{lib}: {
   proxyPass,
   acl ? (import ../config.nix).LOCAL_NETWORK,
   websockets ? false,
@@ -28,11 +27,10 @@
   proxyBuffering ? null,
   proxyHeaderBuffers ? false,
   extraConfig ? "",
-  serverAliases ? [ ],
+  serverAliases ? [],
   forceSSL ? true,
   useACMEHost ? "leighhack.org",
-}:
-{
+}: {
   inherit useACMEHost forceSSL serverAliases;
 
   locations."/" = {
@@ -52,7 +50,11 @@
         send_timeout          ${timeouts};
       ''
       + lib.optionalString (proxyBuffering != null) ''
-        proxy_buffering ${if proxyBuffering then "on" else "off"};
+        proxy_buffering ${
+          if proxyBuffering
+          then "on"
+          else "off"
+        };
       ''
       + lib.optionalString proxyHeaderBuffers ''
         # The upstream's response headers exceed nginx's default 4k proxy header

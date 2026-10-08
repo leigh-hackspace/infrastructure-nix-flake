@@ -3,7 +3,7 @@
 # experimental-features) live in common/base.nix; keep this file to what is
 # specific to this box.
 {
-  imports = [ ../../common/base.nix ];
+  imports = [../../common/base.nix];
 
   # This box is the desk machine as well as the AI/camera box: the user is
   # logged in on the console without a password prompt.
