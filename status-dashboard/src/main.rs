@@ -269,9 +269,7 @@ fn nas_status(mounts: &[String]) -> (bool, Option<f64>, Vec<(String, String)>) {
         // entry on separate lines; the last one is the actual filesystem type.
         let fstype = run_cmd(&["findmnt", "-n", "-o", "FSTYPE", path], CMD_TIMEOUT)
             .map(|(_, o)| {
-                o.lines()
-                    .filter(|l| !l.trim().is_empty())
-                    .last()
+                o.lines().rfind(|l| !l.trim().is_empty())
                     .map(|l| l.trim().to_string())
                     .unwrap_or_default()
             })

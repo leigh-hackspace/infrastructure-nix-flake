@@ -8,7 +8,7 @@
 //! Zero external crates (house style, see dns-sync/status-dashboard). All
 //! Moonraker traffic is plain HTTP on the LAN, so requests go over
 //! `std::net::TcpStream` directly (no TLS, no curl). JSON is parsed with the
-//! tiny hand-rolled parser in `json.rs`.
+//! shared hand-rolled parser in `common-rs/json`.
 //!
 //! Usage:
 //!
@@ -30,7 +30,7 @@
 //! print:    0 standby, 1 printing, 2 paused, 3 complete, 4 cancelled, 5 error
 //! ```
 
-mod json;
+use common_json as json;
 
 use std::env;
 use std::fmt::Display;
@@ -66,7 +66,7 @@ fn main() {
                     Some((name, url)) => {
                         let hostport = url
                             .strip_prefix("http://")
-                            .unwrap_or(&url)
+                            .unwrap_or(url)
                             .to_string();
                         printers.push(Printer { name: name.to_string(), hostport });
                     }

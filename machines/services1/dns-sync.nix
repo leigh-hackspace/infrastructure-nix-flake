@@ -34,16 +34,16 @@
   pkgs,
   crane,
   ...
-}:
-
-let
-  CRANE = import ../../common/crane.nix { inherit pkgs crane; };
+}: let
+  CRANE = import ../../common/crane.nix {inherit pkgs crane;};
 
   dnsSync = CRANE.cached {
     pname = "dns-sync";
     version = "0.1.0";
     src = ../../dns-sync;
     cargoLock = CRANE.lockFile ../../dns-sync/Cargo.lock;
+    # `common-json` path dependency (see common-rs/ and common/crane.nix).
+    sharedCrates = ["json"];
   };
 
   # Every *.int.leighhack.org name this nginx serves (vhost names + aliases).
@@ -51,17 +51,18 @@ let
     lib.unique (
       lib.filter (n: lib.hasSuffix ".int.leighhack.org" n) (
         lib.flatten (
-          lib.mapAttrsToList (name: vh:
-            [ name ] ++ (lib.toList (vh.serverAliases or [ ]))
-          ) config.services.nginx.virtualHosts
+          lib.mapAttrsToList (
+            name: vh:
+              [name] ++ (lib.toList (vh.serverAliases or []))
+          )
+          config.services.nginx.virtualHosts
         )
       )
     )
   );
-in
-{
+in {
   environment.etc."dns-sync/expected-int-names".text =
     lib.concatStringsSep "\n" intNames + "\n";
 
-  environment.systemPackages = [ dnsSync ];
+  environment.systemPackages = [dnsSync];
 }

@@ -22,7 +22,7 @@ use futures_util::{Stream, StreamExt};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::auth;
+use common_oidc as oidc;
 use crate::fsutil::Store;
 
 type Shared = Arc<crate::Shared>;
@@ -30,7 +30,7 @@ type Shared = Arc<crate::Shared>;
 // ---------------------------------------------------------------------------
 // auth
 
-pub struct Authed(pub auth::Session);
+pub struct Authed(pub oidc::Session);
 
 impl FromRequestParts<Shared> for Authed {
     type Rejection = Response;
@@ -43,14 +43,14 @@ impl FromRequestParts<Shared> for Authed {
         // treated as an authenticated local session so the API can be driven
         // directly from the machine without the OIDC dance.
         if shared.cfg.no_auth {
-            return Ok(Authed(auth::session_for_dev("local")));
+            return Ok(Authed(oidc::dev_session("local")));
         }
         let cookie = parts
             .headers
             .get(header::COOKIE)
             .and_then(|v| v.to_str().ok())
-            .and_then(cookie_value);
-        match cookie.and_then(|c| auth::session_for_cookie(shared, &c)) {
+            .and_then(|h| cookie_value(h, shared.oidc.cookie_name()));
+        match cookie.and_then(|c| shared.oidc.session_for_cookie(&c)) {
             Some(s) => Ok(Authed(s)),
             None => Err(
                 (StatusCode::UNAUTHORIZED, Json(json!({"error": "unauthenticated"})))
@@ -60,15 +60,23 @@ impl FromRequestParts<Shared> for Authed {
     }
 }
 
-fn cookie_value(header: &str) -> Option<String> {
+fn cookie_value(header: &str, name: &str) -> Option<String> {
     for kv in header.split(';') {
         if let Some((k, v)) = kv.trim().split_once('=') {
-            if k.trim() == auth::COOKIE_NAME {
+            if k.trim() == name {
                 return Some(v.trim().to_string());
             }
         }
     }
     None
+}
+
+/// A short random token for upload temp files.  Not a credential — the name only
+/// has to be unlikely to collide with a concurrent upload.
+fn random_hex(nbytes: usize) -> String {
+    let mut b = vec![0u8; nbytes];
+    getrandom::getrandom(&mut b).expect("getrandom");
+    b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
 fn content_length(headers: &axum::http::HeaderMap) -> Option<u64> {
@@ -227,9 +235,7 @@ async fn dev_login(State(shared): State<Shared>) -> Response {
     match &shared.cfg.dev_user {
         None => (StatusCode::NOT_FOUND, "disabled").into_response(),
         Some(username) => {
-            let session = auth::session_for_dev(username);
-            let cookie = auth::random_hex(24);
-            shared.sessions.lock().unwrap().insert(cookie.clone(), session);
+            let (cookie, _session) = shared.oidc.add_dev_session(username);
             (
                 StatusCode::SEE_OTHER,
                 [
@@ -238,7 +244,7 @@ async fn dev_login(State(shared): State<Shared>) -> Response {
                         header::SET_COOKIE,
                         format!(
                             "{}={cookie}; Max-Age=43200; Path=/; HttpOnly; SameSite=Lax",
-                            auth::COOKIE_NAME
+                            shared.oidc.cookie_name()
                         ),
                     ),
                 ],
@@ -249,7 +255,7 @@ async fn dev_login(State(shared): State<Shared>) -> Response {
 }
 
 async fn login(State(shared): State<Shared>) -> Response {
-    let (url, _state) = auth::begin_login(&shared);
+    let (url, _state) = shared.oidc.begin_login();
     (StatusCode::SEE_OTHER, [(header::LOCATION, url)]).into_response()
 }
 
@@ -260,9 +266,9 @@ async fn logout(
     if let Some(cookie) = headers
         .get(header::COOKIE)
         .and_then(|v| v.to_str().ok())
-        .and_then(cookie_value)
+        .and_then(|h| cookie_value(h, shared.oidc.cookie_name()))
     {
-        shared.sessions.lock().unwrap().remove(&cookie);
+        shared.oidc.drop_session(&cookie);
     }
     (
         StatusCode::SEE_OTHER,
@@ -270,7 +276,10 @@ async fn logout(
             (header::LOCATION, "/".to_string()),
             (
                 header::SET_COOKIE,
-                format!("{}=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax", auth::COOKIE_NAME),
+                format!(
+                    "{}=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax",
+                    shared.oidc.cookie_name()
+                ),
             ),
         ],
     )
@@ -292,7 +301,7 @@ async fn callback(
         (Some(e), _, _) => {
             (StatusCode::FORBIDDEN, format!("login failed: {e}")).into_response()
         }
-        (None, Some(c), Some(s)) => match auth::finish_login(&shared, &c, &s).await {
+        (None, Some(c), Some(s)) => match shared.oidc.finish_login(&c, &s).await {
             Ok((cookie, _session)) => (
                 StatusCode::SEE_OTHER,
                 [
@@ -301,7 +310,7 @@ async fn callback(
                         header::SET_COOKIE,
                         format!(
                             "{}={cookie}; Max-Age=43200; Path=/; HttpOnly; SameSite=Lax",
-                            auth::COOKIE_NAME
+                            shared.oidc.cookie_name()
                         ),
                     ),
                 ],
@@ -502,7 +511,7 @@ async fn upload(
         .ok_or_else(|| ApiError::bad("invalid path"))?;
     tokio::fs::create_dir_all(&parent).await?;
 
-    let token = auth::random_hex(8);
+    let token = random_hex(8);
     let tmp = parent.join(format!(".filestore-uploading-{token}"));
     let mut guard = UploadGuard { tmp: tmp.clone(), done: false };
 
@@ -617,7 +626,7 @@ async fn zip(
         let abs = shared.store.resolve(p)?;
         match tokio::fs::metadata(&abs).await {
             Ok(_) => targets.push(abs),
-            Err(_) => return Err(ApiError::not_found(&format!("no such file: {p}"))),
+            Err(_) => return Err(ApiError::not_found(format!("no such file: {p}"))),
         }
     }
     let name = match targets.len() {
@@ -643,7 +652,7 @@ async fn zip(
             ],
             Body::from_stream(stream.map(|r| match r {
                 Ok(b) => Ok::<Bytes, io::Error>(b),
-                Err(e) => Err(io::Error::new(io::ErrorKind::Other, e)),
+                Err(e) => Err(io::Error::other(e)),
             })),
         )
             .into_response(),

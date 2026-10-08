@@ -1,8 +1,8 @@
-//! Embedded web assets.  The contents of frontend/dist are copied into the
-//! build and exposed here as a static table by `build.rs` (see
-//! assets_gen.rs in OUT_DIR).  frontend/dist is committed to git (the Dioxus
-//! SPA is built locally, not by Nix — same rule as network-status/frontend),
-//! so production binaries embed the real SPA; when dist is absent during
+//! Embedded web assets.  The contents of the SPA bundle are copied into the
+//! build and exposed here as a static table by `build.rs` (generated as
+//! assets_gen.rs in OUT_DIR; the bundle itself is built by the flake — see
+//! `machines/aibox/frigate-monitor.nix`, which sets FRIGATE_MONITOR_DIST — and
+//! `frontend/dist` is git-ignored).  When no bundle is present during local
 //! development a placeholder index.html is generated instead.
 
 include!(concat!(env!("OUT_DIR"), "/assets_gen.rs"));

@@ -37,6 +37,9 @@ let
     version = "0.1.0";
     src = ../../../filestore;
     cargoLock = CRANE.lockFile ../../../filestore/Cargo.lock;
+    # `common-oidc` + `common-build-spa` path dependencies (see common-rs/ and
+    # common/crane.nix).
+    sharedCrates = ["oidc" "build-spa"];
   };
   filestore = CRANE.cached (filestoreArgs // {
     cargoArtifacts = CRANE.deps filestoreArgs;

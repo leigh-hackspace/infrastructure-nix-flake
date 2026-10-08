@@ -8,3 +8,7 @@ name = "moonraker-exporter"
 path = "src/main.rs"
 
 [dependencies]
+# Shared hand-rolled JSON parser (the same one dns-sync uses).  In the source
+# tree common-rs/ is a symlink to ../common-rs (git-ignored); the Nix build
+# replaces it with a real copy (see common/crane.nix).
+common-json = { path = "./common-rs/json" }

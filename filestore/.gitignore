@@ -1,0 +1,8 @@
+# filestore: cargo output and the wasm SPA bundle (built by the flake, never committed)
+/target/
+/frontend/target/
+/frontend/dist/
+
+# shared in-repo crates (path dependencies; a symlink to ../common-rs,
+# materialised as a real copy by the Nix build)
+/common-rs

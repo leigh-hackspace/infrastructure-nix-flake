@@ -17,11 +17,15 @@
 # aibox has no nginx of its own; services1 reverse-proxies
 # frigate-monitor.int.leighhack.org to 10.3.1.32:8090 (see
 # machines/services1/services/frigate-monitor.nix).
-{ config, lib, pkgs, crane, ... }:
-
-let
+{
+  config,
+  lib,
+  pkgs,
+  crane,
+  ...
+}: let
   cfg = config.services.frigate-monitor;
-  CRANE = import ../../common/crane.nix { inherit pkgs crane; };
+  CRANE = import ../../common/crane.nix {inherit pkgs crane;};
 
   # The Dioxus SPA compiled to wasm (this replaces the frontend/dist that used to
   # be committed to the git tree).  The pinned wasm-bindgen-cli and the wasm build
@@ -43,15 +47,17 @@ let
     version = "0.2.0";
     src = ../../frigate-monitor;
     cargoLock = CRANE.lockFile ../../frigate-monitor/Cargo.lock;
+    # `common-build-spa` path dependency (see common-rs/ and common/crane.nix).
+    sharedCrates = ["build-spa"];
   };
-  frigateMonitor = CRANE.cached (frigateMonitorArgs // {
-    cargoArtifacts = CRANE.deps frigateMonitorArgs;
-    # Point build.rs at the nix-built bundle instead of the (uncommitted)
-    # frontend/dist in the source tree.
-    preBuild = "export FRIGATE_MONITOR_DIST=${frontendDist}";
-  });
-in
-{
+  frigateMonitor = CRANE.cached (frigateMonitorArgs
+    // {
+      cargoArtifacts = CRANE.deps frigateMonitorArgs;
+      # Point build.rs at the nix-built bundle instead of the (uncommitted)
+      # frontend/dist in the source tree.
+      preBuild = "export FRIGATE_MONITOR_DIST=${frontendDist}";
+    });
+in {
   options.services.frigate-monitor = {
     enable = lib.mkEnableOption "the main_space scene-change monitor";
 
@@ -91,14 +97,14 @@ in
 
   config = lib.mkMerge [
     # This machine-specific module exists for the service; on by default.
-    { services.frigate-monitor.enable = true; }
+    {services.frigate-monitor.enable = true;}
 
     (lib.mkIf cfg.enable {
       systemd.services.frigate-monitor = {
         description = "Frigate main_space scene-change monitor";
-        wantedBy = [ "multi-user.target" ];
-        after = [ "network-online.target" ];
-        wants = [ "network-online.target" ];
+        wantedBy = ["multi-user.target"];
+        after = ["network-online.target"];
+        wants = ["network-online.target"];
         # The RTSP source is on services1; keep trying forever (infra policy).
         serviceConfig = {
           Type = "simple";
@@ -106,13 +112,20 @@ in
           StateDirectory = "frigate-monitor";
           ExecStart = lib.concatStringsSep " " [
             "${frigateMonitor}/bin/frigate-monitor"
-            "--bind" cfg.bind
-            "--port" (toString cfg.port)
-            "--rtsp" cfg.rtsp
-            "--interval" (toString cfg.intervalSec)
-            "--persist" (toString cfg.persist)
-            "--data-dir" "/var/lib/frigate-monitor"
-            "--ffmpeg" "${pkgs.ffmpeg}/bin/ffmpeg"
+            "--bind"
+            cfg.bind
+            "--port"
+            (toString cfg.port)
+            "--rtsp"
+            cfg.rtsp
+            "--interval"
+            (toString cfg.intervalSec)
+            "--persist"
+            (toString cfg.persist)
+            "--data-dir"
+            "/var/lib/frigate-monitor"
+            "--ffmpeg"
+            "${pkgs.ffmpeg}/bin/ffmpeg"
           ];
           Restart = "always";
           RestartSec = "5s";

@@ -1,0 +1,4 @@
+# cargo build output and lock files: these crates are built as path dependencies of the
+# apps, whose own Cargo.lock governs the whole graph.
+target/
+Cargo.lock

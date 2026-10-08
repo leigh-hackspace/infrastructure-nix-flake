@@ -149,6 +149,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6e4de3bc4ea267985becf712dc6d9eed8b04c953b3fcfb339ebc87acd9804901"
 
 [[package]]
+name = "common-build-spa"
+version = "0.1.0"
+
+[[package]]
+name = "common-oidc"
+version = "0.1.0"
+dependencies = [
+ "base64ct",
+ "getrandom 0.2.17",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "urlencoding",
+]
+
+[[package]]
 name = "core-foundation-sys"
 version = "0.8.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -405,15 +423,15 @@ dependencies = [
 name = "gocardless-dashboard"
 version = "0.1.0"
 dependencies = [
- "base64ct",
  "chrono",
+ "common-build-spa",
+ "common-oidc",
  "gdash-dto",
  "getrandom 0.2.17",
  "reqwest",
  "sea-query",
  "serde",
  "serde_json",
- "sha2",
  "sqlx",
  "tiny_http",
  "tokio",

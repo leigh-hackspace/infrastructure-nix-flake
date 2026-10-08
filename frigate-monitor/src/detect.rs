@@ -677,6 +677,6 @@ pub(crate) fn connected_regions(mask: &[bool], w: u32, h: u32, min_area: u32) ->
             });
         }
     }
-    out.sort_by(|a, b| (b.w * b.h).cmp(&(a.w * a.h)));
+    out.sort_by_key(|b| std::cmp::Reverse(b.w * b.h));
     out
 }

@@ -76,11 +76,10 @@ pub fn run(cfg: crate::Config, shared: Arc<RwLock<Shared>>) {
         }
     };
     eprintln!("frigate-monitor listening on http://{addr}");
-    for stream in listener.incoming() {
-        if let Ok(stream) = stream {
-            let shared = Arc::clone(&shared);
-            thread::spawn(move || handle_client(stream, shared));
-        }
+    // Failed accepts are skipped: a backlog hiccup is not worth logging.
+    for stream in listener.incoming().flatten() {
+        let shared = Arc::clone(&shared);
+        thread::spawn(move || handle_client(stream, shared));
     }
 }
 
@@ -133,8 +132,7 @@ fn handle_client(mut stream: TcpStream, shared: Arc<RwLock<Shared>>) {
         },
         "/api/events/" => not_found(&mut stream),
         _ => {
-            if path.starts_with("/api/events/") {
-                let rest = &path["/api/events/".len()..];
+            if let Some(rest) = path.strip_prefix("/api/events/") {
                 if let Ok(id) = rest.parse::<u64>() {
                     let dir = events::event_dir(&s.data_dir, id);
                     if let Some(meta) = events::read_meta(&dir) {
@@ -143,8 +141,7 @@ fn handle_client(mut stream: TcpStream, shared: Arc<RwLock<Shared>>) {
                     }
                 }
                 not_found(&mut stream);
-            } else if path.starts_with("/files/") {
-                let rest = &path["/files/".len()..];
+            } else if let Some(rest) = path.strip_prefix("/files/") {
                 let parts: Vec<&str> = rest.split('/').collect();
                 if parts.len() == 2 {
                     if let Ok(id) = parts[0].parse::<u64>() {
@@ -178,7 +175,7 @@ fn param_u64(query: &str, key: &str) -> Option<u64> {
 }
 
 fn serve_asset(stream: &mut TcpStream, name: &str) {
-    match crate::assets::find(name) {
+    match crate::assets::find_asset(name) {
         Some(a) => send(stream, "200 OK", a.mime, a.data.to_vec()),
         None => not_found(stream),
     }

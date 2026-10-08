@@ -159,6 +159,10 @@ pub struct DbData {
     pub subscriptions: Vec<Subscription>,
     pub payments: Vec<Payment>,
     pub refunds: Vec<Refund>,
+    /// Loaded from the `payouts` table for completeness (payouts are synced and
+    /// stored); no view reads them yet, hence the allow rather than a deletion
+    /// that would drop the round trip.
+    #[allow(dead_code)]
     pub payouts: Vec<Payout>,
     pub last_sync: Option<String>,
 }
@@ -262,7 +266,7 @@ pub async fn write_all(pool: &PgPool, data: &Fetched, now_rfc3339: &str) -> Resu
         let json = serde_json::to_string(c).unwrap();
         vec![ev(&c.id), evo(c.email.as_deref()), evo(name_opt.as_deref()), ev(&json)]
     }).collect();
-    let sql = build_insert("customers", &COLS_CUSTOMERS, rows);
+    let sql = build_insert("customers", COLS_CUSTOMERS, rows);
     sqlx::query(&sql)
         .execute(&mut *tx)
         .await
@@ -273,7 +277,7 @@ pub async fn write_all(pool: &PgPool, data: &Fetched, now_rfc3339: &str) -> Resu
         let json = serde_json::to_string(m).unwrap();
         vec![ev(&m.id), evo(m.links.customer.as_deref()), evo(m.status.as_deref()), ev(&json)]
     }).collect();
-    let sql = build_insert("mandates", &COLS_MANDATES, rows);
+    let sql = build_insert("mandates", COLS_MANDATES, rows);
     sqlx::query(&sql)
         .execute(&mut *tx)
         .await
@@ -291,7 +295,7 @@ pub async fn write_all(pool: &PgPool, data: &Fetched, now_rfc3339: &str) -> Resu
             ev(&json),
         ]
     }).collect();
-    let sql = build_insert("subscriptions", &COLS_SUBSCRIPTIONS, rows);
+    let sql = build_insert("subscriptions", COLS_SUBSCRIPTIONS, rows);
     sqlx::query(&sql)
         .execute(&mut *tx)
         .await
@@ -311,7 +315,7 @@ pub async fn write_all(pool: &PgPool, data: &Fetched, now_rfc3339: &str) -> Resu
             ev(&json),
         ]
     }).collect();
-    let sql = build_insert("payments", &COLS_PAYMENTS, rows);
+    let sql = build_insert("payments", COLS_PAYMENTS, rows);
     sqlx::query(&sql)
         .execute(&mut *tx)
         .await
@@ -329,7 +333,7 @@ pub async fn write_all(pool: &PgPool, data: &Fetched, now_rfc3339: &str) -> Resu
             ev(&json),
         ]
     }).collect();
-    let sql = build_insert("refunds", &COLS_REFUNDS, rows);
+    let sql = build_insert("refunds", COLS_REFUNDS, rows);
     sqlx::query(&sql)
         .execute(&mut *tx)
         .await
@@ -340,7 +344,7 @@ pub async fn write_all(pool: &PgPool, data: &Fetched, now_rfc3339: &str) -> Resu
         let json = serde_json::to_string(p).unwrap();
         vec![ev(&p.id), evi(p.amount_cents()), evo(p.currency.as_deref()), evo(p.status.as_deref()), ev(&json)]
     }).collect();
-    let sql = build_insert("payouts", &COLS_PAYOUTS, rows);
+    let sql = build_insert("payouts", COLS_PAYOUTS, rows);
     sqlx::query(&sql)
         .execute(&mut *tx)
         .await
@@ -430,8 +434,16 @@ pub async fn read_ak_log(pool: &PgPool, limit: u32) -> Result<Vec<gdash_dto::AkL
     let sql = format!(
         "SELECT id, to_char(ts AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), action, \n         username, email, customer_id, detail \n         FROM authentik_sync_log \n         ORDER BY id DESC LIMIT {limit}"
     );
-    let rows: Vec<(i64, String, String, Option<String>, Option<String>, Option<String>, Option<String>)> =
-        sqlx::query_as(&sql)
+    type AkLogTuple = (
+        i64,
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    );
+    let rows: Vec<AkLogTuple> = sqlx::query_as(&sql)
             .fetch_all(pool)
             .await
             .map_err(|e| e.to_string())?;

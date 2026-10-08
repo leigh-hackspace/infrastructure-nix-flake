@@ -1,0 +1,10 @@
+[package]
+name = "common-json"
+version = "0.1.0"
+edition = "2021"
+
+# Shared hand-rolled JSON parser for the zero-external-crate tools (dns-sync,
+# moonraker-exporter).  Path dependency: see common/crane.nix for how the
+# shared source reaches the Nix build.
+
+[dependencies]

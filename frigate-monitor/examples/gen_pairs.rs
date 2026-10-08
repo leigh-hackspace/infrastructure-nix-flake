@@ -22,7 +22,7 @@ fn main() {
             *p = image::Rgb([v, v.wrapping_add(6), v.wrapping_add(2)]);
         }
         // Table-ish darker band.
-        for (px, py, p) in img.enumerate_pixels_mut() {
+        for (_px, py, p) in img.enumerate_pixels_mut() {
             if py > 240 && py < 300 {
                 let d = (py - 240) as u8;
                 *p = image::Rgb([90 - d / 3, 96 - d / 3, 100 - d / 3]);

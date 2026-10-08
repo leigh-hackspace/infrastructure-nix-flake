@@ -1,0 +1,11 @@
+[package]
+name = "common-build-spa"
+version = "0.1.0"
+edition = "2021"
+
+# Shared build.rs helper: embeds a Dioxus SPA bundle into the binary.  Used as a
+# *build* dependency by filestore, gocardless-dashboard and frigate-monitor,
+# whose build.rs files were three copies of this file (differing only in the
+# dist env var and the app name).  Path dependency: see common/crane.nix.
+
+[dependencies]

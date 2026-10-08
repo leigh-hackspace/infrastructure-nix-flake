@@ -335,13 +335,11 @@ fn parse_output(raw: &str) -> Parsed {
                     }
                 }
             }
-            "PF" => {
-                if t.contains("current entries") {
+            "PF" if t.contains("current entries") => {
                     if let Some(last) = t.split_whitespace().last() {
                         p.pf_states = last.parse().ok();
                     }
                 }
-            }
             "RETRANS" => {
                 if let Some(first) = t.split_whitespace().next() {
                     if p.retrans_total.is_none() {
@@ -635,7 +633,7 @@ fn snapshot_json(s: &Snapshot, args: &Args) -> String {
         s.ts,
         s.ok,
         s.error.as_deref().map(json_str).unwrap_or_else(|| "null".into()),
-        json_str(&router_host(&args.router)),
+        json_str(router_host(&args.router)),
         jopt_u64(s.uptime_secs),
         load,
         jopt_u64(s.nprocs.map(|n| n as u64)),

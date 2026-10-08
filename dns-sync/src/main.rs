@@ -26,9 +26,9 @@
 //!
 //! Zero external crates (house style): HTTP goes through `curl`, the
 //! router edit goes through `ssh` + python3 (present on OPNsense), and
-//! JSON is parsed with the tiny hand-rolled parser in `json.rs`.
+//! JSON is parsed with the shared hand-rolled parser in `common-rs/json`.
 
-mod json;
+use common_json as json;
 
 use std::collections::BTreeMap;
 use std::env;

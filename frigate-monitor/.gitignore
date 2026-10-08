@@ -1,3 +1,7 @@
 /target/
-frontend/target/
+/frontend/target/
 /tmp/
+
+# shared in-repo crates (path dependency; a symlink to ../common-rs,
+# materialised as a real copy by the Nix build)
+/common-rs

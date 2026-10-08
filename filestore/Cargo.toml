@@ -22,8 +22,11 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
-sha2 = "0.10"
-base64ct = "1"
+# Shared authentik OIDC login (same flow as gocardless-dashboard).  In the
+# source tree common-rs/ is a symlink to ../common-rs (git-ignored); the Nix
+# build replaces it with a real copy (see common/crane.nix).
+common-oidc = { path = "./common-rs/oidc" }
+# upload temp-file tokens (see server.rs::random_hex)
 getrandom = "0.2"
 urlencoding = "2"
 # deflate only — the default feature set pulls in zstd/lzma/bzip2 C deps we
@@ -32,3 +35,7 @@ urlencoding = "2"
 mime_guess = "2"
 flate2 = "1.1.10"
 crc32fast = "1.5.2"
+
+# Shared build.rs helper that embeds the SPA bundle (common-rs/build-spa).
+[build-dependencies]
+common-build-spa = { path = "./common-rs/build-spa" }

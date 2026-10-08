@@ -1,12 +1,12 @@
-//! Minimal JSON parser, written from scratch so the project keeps its
-//! "zero external crates" house style (see status-dashboard/).
-//!
-//! This is a copy of the parser used by `dns-sync` (../../dns-sync/src/json.rs)
-//! with a couple of extra accessors (`as_f64`, `as_bool`, `at`) that the
-//! moonraker-exporter needs.
+//! Minimal JSON parser, written from scratch so the zero-external-crate tools
+//! (dns-sync, moonraker-exporter, status-dashboard) keep their house style.
 //!
 //! Supports objects, arrays, strings (with escapes), numbers, booleans and
 //! null. Field order is not preserved (we only ever look values up by key).
+//!
+//! This is the superset of what the two callers need: `get`/`at` for lookup,
+//! `as_str`/`as_f64`/`as_bool`/`as_u64`/`as_array` for values. Adding an
+//! accessor here is cheaper than copying the parser again.
 
 use std::collections::BTreeMap;
 
@@ -245,9 +245,10 @@ impl<'a> Parser<'a> {
                             None => out.extend_from_slice("\u{fffd}".as_bytes()),
                         }
                     }
-                    other => {
-                        return Err(format!("invalid escape at byte {}", self.pos))
+                    Some(c) => {
+                        return Err(format!("invalid escape '\\{}' at byte {}", c as char, self.pos))
                     }
+                    None => return Err(format!("unterminated escape at byte {}", self.pos)),
                 },
                 Some(c) if c < 0x20 => {
                     return Err(format!("unescaped control char at byte {}", self.pos))
@@ -271,5 +272,172 @@ impl<'a> Parser<'a> {
             v = v * 16 + d;
         }
         Ok(v)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The shape the DigitalOcean DNS API returns (dns-sync reads this).
+    #[test]
+    fn parses_a_digitalocean_records_page() {
+        let doc = parse(
+            r#"{"links":{"next":"?page=2"},"meta":{"total":3},"page":1,"per_page":200,
+                "records":[{"id":"1","name":"filestore.int","data":"10.3.1.20","type":"A","ttl":1800},
+                           {"id":"2","name":"x.int","data":"","type":"CNAME"},
+                           {"id":"3","name":"y","type":"TXT"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(doc.get("page").and_then(|j| j.as_u64()), Some(1));
+        let records = doc.get("records").and_then(|j| j.as_array()).unwrap();
+        assert_eq!(records.len(), 3);
+        assert_eq!(records[0].get("name").and_then(|j| j.as_str()), Some("filestore.int"));
+        assert_eq!(records[0].get("ttl").and_then(|j| j.as_u64()), Some(1800));
+        // A record with no `data` key is absent, not empty.
+        assert!(records[2].get("data").is_none());
+        assert_eq!(records[1].get("data").and_then(|j| j.as_str()), Some(""));
+    }
+
+    /// The shape Moonraker returns (moonraker-exporter reads this).
+    #[test]
+    fn parses_a_moonraker_status_response() {
+        let doc = parse(
+            r#"{"result":{"klippy_state":"ready","print_stats":{"state":"printing",
+                 "filename":"benchy.gcode","filament_used":1234.5,"message":null},
+                 "temperature":45.25,"is_active":true}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            doc.at(&["result", "klippy_state"]).and_then(|j| j.as_str()),
+            Some("ready")
+        );
+        assert_eq!(
+            doc.at(&["result", "print_stats", "filename"]).and_then(|j| j.as_str()),
+            Some("benchy.gcode")
+        );
+        let used = doc.at(&["result", "print_stats", "filament_used"]).unwrap();
+        assert_eq!(used.as_f64(), Some(1234.5));
+        assert_eq!(doc.at(&["result", "temperature"]).and_then(|j| j.as_f64()), Some(45.25));
+        assert_eq!(doc.at(&["result", "is_active"]).and_then(|j| j.as_bool()), Some(true));
+        assert!(doc.at(&["result", "print_stats", "message"]).unwrap() == &Json::Null);
+        // A missing path is None at every level, not a panic.
+        assert!(doc.at(&["result", "nope", "deeper"]).is_none());
+        assert!(doc.get("nope").is_none());
+    }
+
+    #[test]
+    fn scalars_and_containers_round_trip() {
+        assert_eq!(parse("null").unwrap(), Json::Null);
+        assert_eq!(parse("true").unwrap(), Json::Bool(true));
+        assert_eq!(parse("false").unwrap(), Json::Bool(false));
+        assert_eq!(parse("  42  ").unwrap(), Json::Num(42.0));
+        assert_eq!(parse("\"\"").unwrap(), Json::Str(String::new()));
+        assert_eq!(parse("[]").unwrap(), Json::Arr(vec![]));
+        assert_eq!(parse("{}").unwrap(), Json::Obj(BTreeMap::new()));
+        assert_eq!(
+            parse("[1, [2, [3]]]").unwrap(),
+            Json::Arr(vec![
+                Json::Num(1.0),
+                Json::Arr(vec![Json::Num(2.0), Json::Arr(vec![Json::Num(3.0)])]),
+            ])
+        );
+    }
+
+    #[test]
+    fn numbers_accept_negatives_exponents_and_zero() {
+        for (src, want) in [
+            ("-1", -1.0),
+            ("0", 0.0),
+            ("-0.5", -0.5),
+            ("1e3", 1000.0),
+            ("1.5e-2", 0.015),
+            ("2E+2", 200.0),
+        ] {
+            assert_eq!(parse(src).unwrap(), Json::Num(want), "parsing {src}");
+        }
+    }
+
+    #[test]
+    fn strings_decode_escapes() {
+        let s = parse(r#""a\"b\\c\/d\n\t\r\b\f\u00e9\u6210""#).unwrap();
+        assert_eq!(s.as_str().unwrap(), "a\"b\\c/d\n\t\r\u{8}\u{c}\u{e9}\u{6210}");
+    }
+
+    #[test]
+    fn as_u64_truncates_a_float() {
+        // The exporters read ints out of float-typed JSON; the truncation is
+        // deliberate, so pin it.
+        assert_eq!(parse("7.9").unwrap().as_u64(), Some(7));
+        assert_eq!(parse("7").unwrap().as_u64(), Some(7));
+        assert_eq!(parse("\"7\"").unwrap().as_u64(), None);
+    }
+
+    #[test]
+    fn accessors_refuse_the_wrong_type() {
+        let doc = parse(r#"{"s":"x","n":1,"b":true,"a":[],"o":{}}"#).unwrap();
+        for k in ["s", "n", "b", "a", "o"] {
+            let v = doc.get(k).unwrap();
+            assert!(v.as_str().is_some() == (k == "s"), "{k}");
+            assert!(v.as_f64().is_some() == (k == "n"), "{k}");
+            assert!(v.as_bool().is_some() == (k == "b"), "{k}");
+            assert!(v.as_array().is_some() == (k == "a"), "{k}");
+            assert!(v.get("any").is_none(), "{k} is not an object");
+        }
+    }
+
+    #[test]
+    fn malformed_documents_error_instead_of_guessing() {
+        for bad in [
+            "",                     // empty document
+            "{",                    // unterminated object
+            "[1,",                  // unterminated array
+            r#""unterminated"#,     // unterminated string
+            "{\"a\" 1}",           // missing colon
+            "{\"a\":1,}",          // trailing comma
+            "1 2",                  // trailing value
+            "nul",                  // misspelled literal
+            "tru",
+            r#""\q""#,             // invalid escape
+        ] {
+            let r = parse(bad);
+            assert!(r.is_err(), "{bad} should not parse: {:?}", r);
+        }
+        // Whitespace outside a string is fine; only control characters *inside*
+        // a string are rejected.
+        assert!(parse("{\"a\"\n:1}").is_ok());
+    }
+
+    #[test]
+    fn a_raw_control_char_in_a_string_is_rejected() {
+        // A literal newline inside a string is not valid JSON; accepting it
+        // would let a value smuggle a line break into the dnsmasq hosts file.
+        assert!(parse("\"a\nb\"").is_err());
+        assert!(parse("\"a\tb\"").is_err());
+    }
+
+    #[test]
+    fn duplicate_keys_keep_the_last_value() {
+        // BTreeMap insert-overwrite: worth pinning because dns-sync builds the
+        // expected-name set from these documents.
+        let doc = parse(r#"{"name":"first","name":"second"}"#).unwrap();
+        assert_eq!(doc.get("name").and_then(|j| j.as_str()), Some("second"));
+    }
+
+    #[test]
+    fn number_grammar_is_lenient_where_it_does_not_matter() {
+        // A leading zero is not valid JSON, but the parser accepts it (and the
+        // APIs it reads never send one).  Pinned so a future strictness change
+        // is a deliberate one.
+        assert_eq!(parse("01").unwrap(), Json::Num(1.0));
+    }
+
+    #[test]
+    fn whitespace_is_ignored_everywhere() {
+        let doc = parse(" {\n \"a\" :\t[ 1 ,\r\n 2 ]\n} ").unwrap();
+        assert_eq!(
+            doc.get("a").unwrap(),
+            &Json::Arr(vec![Json::Num(1.0), Json::Num(2.0)])
+        );
     }
 }

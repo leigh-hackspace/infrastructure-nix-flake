@@ -106,7 +106,7 @@ fn build_customer_view(
     // GC mandate ids held by this customer (shown in the UI so that distinct
     // records that happen to share a name/email are tellable apart), and
     // whether any of them is itself active (independent of `active`).
-    let mandate_ids: Vec<String> = mandates.iter().map(|m| (*m).id.clone()).collect();
+    let mandate_ids: Vec<String> = mandates.iter().map(|m| m.id.clone()).collect();
     let has_active_mandate = mandates
         .iter()
         .any(|m| ACTIVE_MANDATE_STATUSES.contains(&m.status.as_deref().unwrap_or("")));
@@ -122,11 +122,11 @@ fn build_customer_view(
     fn payment_ts(p: &Payment) -> Option<String> {
         p.charge_date.clone().or_else(|| p.created_at.clone())
     }
-    let last_paid = succeeded.iter().filter_map(|p| payment_ts(*p)).max();
+    let last_paid = succeeded.iter().filter_map(|p| payment_ts(p)).max();
     let last_payment = last_paid.as_ref().and_then(|lp| {
         succeeded
             .iter()
-            .find(|p| payment_ts(**p).as_deref() == Some(lp.as_str()))
+            .find(|p| payment_ts(p).as_deref() == Some(lp.as_str()))
             .and_then(|p| p.amount_cents())
     });
     let total_paid: i64 = succeeded

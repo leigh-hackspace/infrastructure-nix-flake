@@ -12,16 +12,20 @@
 # client id/secret live in the shared env-file sops secret.  LAN-only,
 # fronted by nginx as gocardless.int.leighhack.org (int record synced by
 # dns-sync from the vhost list).
-{ config, lib, pkgs, crane, ... }:
-
-let
+{
+  config,
+  lib,
+  pkgs,
+  crane,
+  ...
+}: let
   CONFIG = import ../config.nix;
-  CRANE = import ../../../common/crane.nix { inherit pkgs crane; };
+  CRANE = import ../../../common/crane.nix {inherit pkgs crane;};
 
   # The Dioxus SPA compiled to wasm (pinned wasm-bindgen-cli and the wasm build
   # recipe live in common/crane.nix).  Its gdash-dto path dependency is a
   # symlink in the source tree, so materialise a real copy for the sandbox.
-  frontendSrc = pkgs.runCommand "gocardless-dashboard-frontend-src" { } ''
+  frontendSrc = pkgs.runCommand "gocardless-dashboard-frontend-src" {} ''
     cp -r ${../../../gocardless-dashboard/frontend} $out
     # Store paths are read-only and cp -r preserves the mode, so make the
     # copy writable before adding the dto crate (the gdash-dto path
@@ -46,29 +50,34 @@ let
     version = "0.1.0";
     src = ../../../gocardless-dashboard;
     cargoLock = CRANE.lockFile ../../../gocardless-dashboard/Cargo.lock;
+    # `common-oidc` + `common-build-spa` path dependencies (see common-rs/ and
+    # common/crane.nix).
+    sharedCrates = ["oidc" "build-spa"];
   };
-  dashboard = CRANE.cached (dashboardArgs // {
-    cargoArtifacts = CRANE.deps dashboardArgs;
-    # Point build.rs at the nix-built bundle instead of the (uncommitted)
-    # frontend/dist in the source tree.
-    preBuild = "export GOCARDLESS_DASHBOARD_DIST=${frontendDist}";
-  });
-in
-{
+  dashboard = CRANE.cached (dashboardArgs
+    // {
+      cargoArtifacts = CRANE.deps dashboardArgs;
+      # Point build.rs at the nix-built bundle instead of the (uncommitted)
+      # frontend/dist in the source tree.
+      preBuild = "export GOCARDLESS_DASHBOARD_DIST=${frontendDist}";
+    });
+in {
   # Runs as root (like the other CONFIG.ENV_FILE consumers): /run/secrets is
   # root:keys 0710, so only root can reach the secret files inside it.
   systemd.services.gocardless-dashboard = {
     description = "GoCardless Pro sync + dashboard";
-    wantedBy = [ "multi-user.target" ];
-    after = [ "postgresql.service" "network-online.target" ];
-    requires = [ "postgresql.service" ];
+    wantedBy = ["multi-user.target"];
+    after = ["postgresql.service" "network-online.target"];
+    requires = ["postgresql.service"];
     serviceConfig = {
       Type = "simple";
       StateDirectory = "gocardless-dashboard";
       ExecStart = lib.concatStringsSep " " [
         "${dashboard}/bin/gocardless-dashboard"
-        "--env-file" CONFIG.ENV_FILE
-        "--port" "8095"
+        "--env-file"
+        CONFIG.ENV_FILE
+        "--port"
+        "8095"
       ];
       # Never give up.
       Restart = "always";
@@ -87,13 +96,14 @@ in
   # journalctl -u gocardless-authentik-sync -f
   systemd.services.gocardless-authentik-sync = {
     description = "GoCardless -> authentik Members group sync";
-    after = [ "postgresql.service" "network-online.target" ];
-    wants = [ "network-online.target" ];
+    after = ["postgresql.service" "network-online.target"];
+    wants = ["network-online.target"];
     serviceConfig = {
       Type = "oneshot";
       ExecStart = lib.concatStringsSep " " [
         "${dashboard}/bin/gocardless-dashboard"
-        "--env-file" CONFIG.ENV_FILE
+        "--env-file"
+        CONFIG.ENV_FILE
         "--authentik-sync"
       ];
     };
@@ -105,7 +115,7 @@ in
       Unit = "gocardless-authentik-sync.service";
       OnCalendar = "*-*-* 01:00:00";
     };
-    wantedBy = [ "timers.target" ];
+    wantedBy = ["timers.target"];
   };
 
   # LAN-only vhost (the binary only listens on 127.0.0.1).

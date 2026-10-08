@@ -108,7 +108,7 @@ pub fn zip(targets: &[PathBuf]) -> ZipStream {
 }
 
 fn unique_name(base: &str, used: &mut Vec<String>) -> String {
-    if !used.iter().any(|u| u == &base) {
+    if !used.iter().any(|u| u == base) {
         used.push(base.to_string());
         return base.to_string();
     }
@@ -298,8 +298,8 @@ impl<'a, W: Write> ZipWriter<'a, W> {
             uncomp_size += n as u64;
         }
         // finish() flushes the deflate stream and returns the wrapped
-        // writer (our `Tracked`); dropping it ends the borrow of self.
-        drop(enc.finish()?);
+        // writer (our `Tracked`); discarding it ends the borrow of self.
+        enc.finish()?;
         let comp_size = self.offset - data_start;
         let crc = hasher.finalize();
         let zip64 = zip64 || comp_size > U32MAX as u64;

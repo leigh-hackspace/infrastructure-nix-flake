@@ -1,0 +1,5 @@
+/target/
+
+# shared in-repo crates (path dependencies; a symlink to ../common-rs,
+# materialised as a real copy by the Nix build)
+/common-rs

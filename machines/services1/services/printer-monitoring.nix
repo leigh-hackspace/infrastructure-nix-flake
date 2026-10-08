@@ -18,33 +18,38 @@
   lib,
   crane,
   ...
-}:
-
-let
-  CRANE = import ../../../common/crane.nix { inherit pkgs crane; };
+}: let
+  CRANE = import ../../../common/crane.nix {inherit pkgs crane;};
 
   exporter = CRANE.cached {
     pname = "moonraker-exporter";
     version = "0.1.0";
     src = ../../../moonraker-exporter;
     cargoLock = CRANE.lockFile ../../../moonraker-exporter/Cargo.lock;
+    # `common-json` path dependency (see common-rs/ and common/crane.nix).
+    sharedCrates = ["json"];
   };
 
   printers = [
-    { name = "blue"; url = "http://10.3.14.62:7125"; }
-    { name = "lime"; url = "http://10.3.14.61:7125"; }
+    {
+      name = "blue";
+      url = "http://10.3.14.62:7125";
+    }
+    {
+      name = "lime";
+      url = "http://10.3.14.61:7125";
+    }
   ];
 
   printerArgs = lib.concatStringsSep " " (
     map (p: "--printer ${p.name}=${p.url}") printers
   );
-in
-{
+in {
   systemd.services.moonraker-exporter = {
     description = "Prometheus exporter for the 3D-print servers' Moonraker APIs";
-    wantedBy = [ "multi-user.target" ];
-    after = [ "network-online.target" ];
-    wants = [ "network-online.target" ];
+    wantedBy = ["multi-user.target"];
+    after = ["network-online.target"];
+    wants = ["network-online.target"];
 
     serviceConfig = {
       ExecStart = "${exporter}/bin/moonraker-exporter --listen 127.0.0.1:9701 ${printerArgs}";

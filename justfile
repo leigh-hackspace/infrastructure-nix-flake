@@ -15,6 +15,34 @@ boot:
 switch:
     sudo nixos-rebuild switch --flake .
 
+# --- Rust crates (toolchain from `nix develop`: cargo/rustc/rustfmt/clippy +
+# --- the pinned wasm-bindgen-cli) ---
+
+# Recreate the git-ignored symlinks that let cargo resolve the in-repo path
+# dependencies (each crate's common-rs/, gocardless-dashboard/frontend/dto).
+# Run once after a fresh clone; `nix develop` does it automatically.
+shared-rs:
+    @bash common/shared-rs-links.sh
+
+# cargo test over the shared crates and every app crate.
+test:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bash common/shared-rs-links.sh
+    nix develop --command bash -c '
+      crates="common-rs/json common-rs/oidc common-rs/build-spa dns-sync moonraker-exporter status-dashboard network-status filestore gocardless-dashboard frigate-monitor"
+      for c in $crates; do echo "=== test $c"; (cd $c && cargo test --offline); done'
+
+# cargo clippy over the same set.  Warnings are reported, not fatal: the point
+# is to see them (they used to go entirely unchecked).
+clippy:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bash common/shared-rs-links.sh
+    nix develop --command bash -c '
+      crates="common-rs/json common-rs/oidc common-rs/build-spa dns-sync moonraker-exporter status-dashboard network-status filestore gocardless-dashboard frigate-monitor"
+      for c in $crates; do echo "=== clippy $c"; (cd $c && cargo clippy --offline --all-targets 2>&1 | grep -vE "^(Compiling|Checking|Finished|    Finished)" | head -40); done'
+
 # --- frontend (frigate-monitor web UI) ---
 
 # Rebuild the Dioxus SPA into frigate-monitor/frontend/dist using the

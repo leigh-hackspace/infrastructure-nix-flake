@@ -1,0 +1,22 @@
+[package]
+name = "common-oidc"
+version = "0.1.0"
+edition = "2021"
+
+# Shared authentik OIDC login (authorization-code + S256 PKCE + introspection
+# group gate) for the LAN web apps: filestore and gocardless-dashboard.  Both
+# used to carry a byte-for-byte copy of this flow; the contract with authentik
+# lives here now (see the Authentik section of AGENTS.md).  Path dependency:
+# see common/crane.nix for how the shared source reaches the Nix build.
+
+[dependencies]
+base64ct = "1"
+getrandom = "0.2"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+serde = { version = "1", features = ["derive"] }
+sha2 = "0.10"
+urlencoding = "2"
+
+[dev-dependencies]
+serde_json = "1"
+tokio = { version = "1", features = ["rt", "time"] }

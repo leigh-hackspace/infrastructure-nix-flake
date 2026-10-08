@@ -142,19 +142,21 @@
         let
           pkgs = import nixpkgs { inherit system; };
           rust = pkgs.rust.packages.stable;
+          CRANE = import ./common/crane.nix {inherit pkgs; crane = flakeInputs.crane;};
         in
         pkgs.mkShell {
           packages = [
             rust.rustc
             rust.cargo
             rust.rustfmt
-            # NOTE: not pkgs.wasm-bindgen-cli. frigate-monitor's crate is
-            # pinned to wasm-bindgen 0.2.128 in Cargo.lock, and the wasm
-            # bindgen *schema* must match the CLI version exactly, so
-            # nixpkgs' 0.2.121 would refuse to process the output. The
-            # shellHook below installs the matching 0.2.128 from crates.io
-            # (cached after first run). `lld` is the linker the wasm32
-            # target links with.
+            rust.clippy
+            # NOTE: not pkgs.wasm-bindgen-cli. The SPAs are pinned to
+            # wasm-bindgen 0.2.128 in their Cargo.locks, and the wasm bindgen
+            # *schema* must match the CLI version exactly, so nixpkgs' 0.2.121
+            # would refuse to process the output. This is the same pinned CLI
+            # derivation the flake uses to build the SPA bundles
+            # (common/crane.nix), so it is already in the store.
+            CRANE.wasmBindgenCli
             pkgs.lld
             pkgs.just
             pkgs.git
@@ -164,12 +166,12 @@
             pkgs.python3
           ];
           shellHook = ''
-            if [ "$(wasm-bindgen --version 2>/dev/null)" != "wasm-bindgen 0.2.128" ]; then
-                echo "frigate-monitor: installing pinned wasm-bindgen-cli 0.2.128 (~1 min, cached afterwards)…"
-                cargo install -f wasm-bindgen-cli --version 0.2.128 --quiet
+            # In-repo path dependencies (common-rs/, frontend/dto) are git-ignored
+            # symlinks; cargo needs them, the Nix build does not.  Run the
+            # working-tree copy, not the one copied into the shell's store path.
+            if [ -f ./common/shared-rs-links.sh ]; then
+                bash ./common/shared-rs-links.sh >/dev/null
             fi
-            # Put the installed CLI ahead of any nixpkgs one on PATH.
-            export PATH="$HOME/.cargo/bin:$PATH"
           '';
         };
     };

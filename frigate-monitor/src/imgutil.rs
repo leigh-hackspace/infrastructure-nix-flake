@@ -189,8 +189,8 @@ pub fn zoom_crop(img: &RgbImage, x: u32, y: u32, w: u32, h: u32) -> RgbImage {
     let y1 = (y + h + pad_y).min(img.height());
     let cw = (x1 - x0).max(8);
     let ch = (y1 - y0).max(8);
-    let mut tmp = img.clone();
-    image::imageops::crop_imm(&mut tmp, x0, y0, cw, ch).to_image()
+    let tmp = img.clone();
+    image::imageops::crop_imm(&tmp, x0, y0, cw, ch).to_image()
 }
 
 #[cfg(test)]

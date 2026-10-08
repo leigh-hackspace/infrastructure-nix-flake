@@ -19,7 +19,17 @@ Guidance for AI agents working in this repository. Read this before making chang
   Machines: `services1` (the main services box, 10.3.1.20) and `aibox`.
 - `common/` — shared modules imported by both machines (`tools.nix`,
   `users.nix`, `sops.nix`, plus `crane.nix` — the shared crane build helpers,
-  see the Rust builds section).
+  see the Rust builds section — and `frontend-build-spa.sh`, the one SPA build
+  recipe all three Dioxus frontends call).
+- `common-rs/` — shared **in-repo** Rust crates used as cargo path dependencies:
+  `json` (hand-rolled parser: dns-sync, moonraker-exporter), `oidc` (authentik
+  login + `Infra` group gate: filestore, gocardless-dashboard) and `build-spa`
+  (the `build.rs` that embeds a Dioxus bundle: all three SPA apps). Each
+  consuming crate has a **git-ignored** `common-rs -> ../common-rs` symlink and
+  depends on `path = "./common-rs/<name>"`; `just shared-rs` (or entering
+  `nix develop`) creates the symlinks, and the service modules pass
+  `sharedCrates = ["oidc"]` etc. so the Nix build copies the crates in. Same
+  convention as `gocardless-dashboard/frontend/dto`.
 - `dns-sync/` — top-level Rust tool (zero external crates) that keeps the
   router's dnsmasq and DigitalOcean DNS in step with the `*.int.leighhack.org`
   nginx vhosts. Wired in via `machines/services1/dns-sync.nix`, which also
@@ -541,6 +551,21 @@ Two things decide whether the cache actually holds:
   input of the dependency derivation, so a SPA-only change would rebuild the
   binary's deps. The service files therefore build a clean `args` set for the deps
   and add the hook only on the crate build.
+- Shared in-repo crates go through `sharedCrates = ["<name>"]` (in both the
+  `CRANE.deps` args and the `CRANE.cached` args). The build gets the real
+  `common-rs/<name>` copied into the source tree; the dependency build gets a
+  **stub** (real `Cargo.toml`, empty `src/lib.rs`) keyed on that manifest's
+  contents. So editing shared code does not recompile the vendored deps, while
+  changing a shared crate's dependencies does. Never put the symlink itself in
+  git — the flake source is the git tree, and a dangling symlink outside the
+  crate's own tree cannot be copied into the store.
+
+Local Rust workflow: `nix develop` (cargo/rustc/rustfmt/**clippy** + the pinned
+wasm-bindgen-cli, no network on entry) creates the path-dependency symlinks for
+you. `just test` runs the unit tests (`common-rs/json`, `common-rs/oidc` have
+them; the app crates mostly do not), `just clippy` lints every crate (warnings
+are reported, not fatal — there are ~15 pre-existing ones), `just shared-rs`
+just recreates the symlinks.
 
 The pinned `wasm-bindgen-cli` (0.2.128, which must match the wasm-bindgen crate in
 each frontend's Cargo.lock exactly) and the wasm build recipe live in
@@ -560,24 +585,25 @@ just build-frontend    # = cd frigate-monitor/frontend && nix develop --command 
 cd frigate-monitor/frontend && nix develop --command bash build.sh
 ```
 
-The devshell is self-contained: `nix develop` installs the pinned
-`wasm-bindgen-cli 0.2.128` (via a shellHook `cargo install -f`) so the build
-works out of the box, and the stable toolchain already bundles the
-`wasm32-unknown-unknown` std — **no rustup and no network needed for the
-target**. `lld` is included because the wasm target links with `wasm-ld` from
-it (the flake sets `CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_LINKER=wasm-ld` and
-passes `pkgs.lld`).
+The devshell is self-contained: `nix develop` ships the pinned
+`wasm-bindgen-cli 0.2.128` as a derivation (`CRANE.wasmBindgenCli`, the same one
+the flake uses to build the bundles — no `cargo install`, no network on entry),
+and the stable toolchain already bundles the `wasm32-unknown-unknown` std —
+**no rustup and no network needed for the target**. `lld` is included because
+the wasm target links with `wasm-ld` from it (the flake sets
+`CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_LINKER=wasm-ld` and passes `pkgs.lld`).
 
 **Gotcha — wasm-bindgen CLI must match the crate version exactly.** The SPA is
 compiled against `wasm-bindgen 0.2.128` (in `frontend/Cargo.lock`). The JS glue
 it generates is schema-versioned, so `wasm-bindgen-cli 0.2.121` (what nixpkgs
 ships) **hard-fails** with a "schema version" error, not a warning. That is why
-the devshell installs 0.2.128 and the flake pins its own copy
+the devshell pins 0.2.128 and the flake pins its own copy
 (`buildWasmBindgenCli` + `fetchurl` from `static.crates.io`, whose API endpoint
-is blocked — use `static`). The version check in `build.sh` is a _warning_, not
-a guard; the real constraint is the schema match. Do **not** "fix" this by
-bumping the crate or downgrading the CLI to nixpkgs' version — keep the crate
-pinned at 0.2.128 and match the CLI to it.
+is blocked — use `static`). `common/frontend-build-spa.sh` reads the wanted
+version out of the frontend's own `Cargo.lock` and **fails** on a mismatch (the
+build would die anyway). Do **not** "fix" this by bumping the crate or
+downgrading the CLI to nixpkgs' version — keep the crate pinned at 0.2.128 and
+match the CLI to it.
 
 The grid is infinitely scrollable — there is **no "load more" button**; the
 `onscroll` handler appends the next page when the bottom is within ~600px.

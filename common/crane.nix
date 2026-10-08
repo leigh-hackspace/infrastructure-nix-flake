@@ -28,6 +28,7 @@
   pkgs,
   crane,
 }: let
+  lib = pkgs.lib;
   craneLib = crane.mkLib pkgs;
 
   # Read a Cargo.lock at evaluation time and re-emit it as a content-keyed store
@@ -38,17 +39,86 @@
   # lock contents, only a dependency change forces a rebuild.
   lockFile = p: pkgs.writeText "Cargo.lock" (builtins.readFile p);
 
+  # --- shared in-repo crates (common-rs/) ------------------------------------
+  #
+  # Some crates share code through cargo *path* dependencies (`dns-sync` and
+  # `moonraker-exporter` use `common-json`, `filestore` and
+  # `gocardless-dashboard` use `common-oidc`).  The dependency is written
+  # `path = "./common-rs/<name>"` and the crate directory carries a git-ignored
+  # `common-rs` symlink to the repo's `common-rs/`, so `cargo build` works in
+  # the crate's own directory like any other workspace.  A Nix build is handed
+  # one crate's source tree, which cannot contain anything above the tree, so
+  # the source passed to crane gets the real shared crates copied inside it —
+  # the same trick the gocardless-dashboard frontend uses for its `dto`
+  # dependency.
+  #
+  # The dependency build is given stub sources instead of the real shared code:
+  # the path dependencies only have to resolve there, and keying the stubs on
+  # the shared crates' manifests (read at eval time) means a dependency change
+  # in a shared crate invalidates the cache while editing shared code does not.
+  # Passing the real shared sources through the dependency build would make a
+  # one-line change in common-rs recompile every vendored dependency.
+  sharedCrateDir = name: "${../common-rs}/${name}";
+  sharedCrateManifest = name: ../common-rs + "/${name}/Cargo.toml";
+
+  # `src` with the named shared crates copied in (real sources).
+  withSharedCrates = {pname, src, names}: let
+    copies = lib.concatMapStringsSep "\n" (n: ''
+      mkdir -p $out/common-rs
+      cp -a ${sharedCrateDir n} $out/common-rs/${n}
+    '') names;
+  in
+    pkgs.runCommand "${pname}-src" {} ''
+      mkdir -p $out
+      cp -a ${src}/. $out/
+      # Store paths are read-only and cp -a preserves the mode, so make the
+      # copy writable before adding anything to it.
+      chmod -R u+w $out
+      ${copies}
+    '';
+
+  # `src` with the named shared crates copied in as stubs: real manifests, empty
+  # sources, for the dependency build only.
+  withStubbedSharedCrates = {pname, src, names}: let
+    stubs = lib.concatMapStringsSep "\n" (n: ''
+      mkdir -p $out/common-rs/${n}/src
+      cp ${pkgs.writeText "${pname}-${n}-stub-Cargo.toml" (builtins.readFile (sharedCrateManifest n))} \
+        $out/common-rs/${n}/Cargo.toml
+      : > $out/common-rs/${n}/src/lib.rs
+    '') names;
+  in
+    pkgs.runCommand "${pname}-deps-src" {} ''
+      mkdir -p $out
+      cp -a ${src}/. $out/
+      chmod -R u+w $out
+      ${stubs}
+    '';
+
+  # `args.sharedCrates = ["oidc"]` selects the right source tree for the call:
+  # real shared code for the crate build, stubs for the dependency build.
+  resolveShared = {args, stub}: let
+    names = args.sharedCrates or [];
+    wrapped =
+      if names == [] then args
+      else if stub then removeAttrs (args // {
+        src = withStubbedSharedCrates {inherit (args) pname src; inherit names;};
+      }) ["sharedCrates"]
+      else removeAttrs (args // {
+        src = withSharedCrates {inherit (args) pname src; inherit names;};
+      }) ["sharedCrates"];
+  in wrapped;
+
   # The cached dependency derivation on its own. Only Cargo.toml, Cargo.lock and
   # any .cargo/config.toml feed it (the sources are stubbed), so it survives
   # every edit to the crate itself.
-  deps = args: craneLib.buildDepsOnly (args // {doCheck = false;});
+  deps = args: craneLib.buildDepsOnly (resolveShared {inherit args; stub = true;} // {doCheck = false;});
 
   # A crate built against cached deps. Pass `cargoArtifacts` explicitly when the
   # crate's own build has hooks that reference another derivation (e.g. a preBuild
   # pointing build.rs at a sibling SPA): those would otherwise become inputs of
   # the dependency build and invalidate the cache whenever that derivation
   # changes, even though cargo never sees them as dependencies.
-  cached = args: craneLib.buildPackage (args // {doCheck = false;});
+  cached = args: craneLib.buildPackage (resolveShared {inherit args; stub = false;} // {doCheck = false;});
 
   # wasm-bindgen-cli pinned to 0.2.128 — the exact wasm-bindgen version every SPA
   # is compiled against (see the frontend Cargo.locks). The CLI and the
@@ -71,7 +141,7 @@
       version = "0.2.128";
       src = wasmBindgenCliSrc;
       hash = "sha256-R1Tas33Ursy8kqsxguAkG0ZhNed2n5uFTAhw1l2qlLY=";
-      preBuild = "source ${../frigate-monitor/cargo-vendor-ua-patch.sh}";
+      preBuild = "source ${../common/cargo-vendor-ua-patch.sh}";
     };
   };
 

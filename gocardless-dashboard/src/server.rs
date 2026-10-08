@@ -8,7 +8,6 @@ use std::sync::Arc;
 
 use tiny_http::{Header, Response, Server};
 
-use crate::auth;
 use crate::db;
 use crate::sync;
 use crate::Shared;
@@ -37,8 +36,8 @@ pub fn run(shared: Arc<Shared>) -> ! {
                 .collect();
 
             // Housekeeping piggy-backed on traffic (1 in 4096 connections).
-            if getrandom_int() % 4096 == 0 {
-                auth::purge_expired(&shared);
+            if getrandom_int().is_multiple_of(4096) {
+                shared.oidc.purge_expired();
             }
 
             let (status, resp_headers, body) =
@@ -132,12 +131,12 @@ fn route(
 ) -> (u16, Vec<(String, String)>, Vec<u8>) {
     // --- OIDC ---
     if path == "/auth/login" && method == "GET" {
-        let (url, _state) = auth::begin_login(shared);
+        let (url, _state) = shared.oidc.begin_login();
         return (302, vec![("location".into(), url)], Vec::new());
     }
     if path == "/auth/logout" {
-        if let Some(cookie) = cookie_value(headers, auth::COOKIE_NAME) {
-            shared.sessions.lock().unwrap().remove(&cookie);
+        if let Some(cookie) = cookie_value(headers, shared.oidc.cookie_name()) {
+            shared.oidc.drop_session(&cookie);
         }
         return (
             302,
@@ -145,7 +144,10 @@ fn route(
                 ("location".into(), "/".into()),
                 (
                     "set-cookie".into(),
-                    format!("{}=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax", auth::COOKIE_NAME),
+                    format!(
+                        "{}=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax",
+                        shared.oidc.cookie_name()
+                    ),
                 ),
             ],
             Vec::new(),
@@ -174,10 +176,7 @@ fn route(
                 login_page("<p class=err>missing state — start login again</p>"),
             ),
             (_, Some(c), Some(s)) => {
-                match shared
-                    .rt
-                    .block_on(auth::finish_login(shared, &c, &s))
-                {
+                match shared.rt.block_on(shared.oidc.finish_login(&c, &s)) {
                     Ok((cookie, _session)) => (
                         302,
                         vec![
@@ -186,7 +185,7 @@ fn route(
                                 "set-cookie".into(),
                                 format!(
                                     "{}={cookie}; Max-Age=43200; Path=/; HttpOnly; SameSite=Lax",
-                                    auth::COOKIE_NAME
+                                    shared.oidc.cookie_name()
                                 ),
                             ),
                         ],
@@ -204,7 +203,7 @@ fn route(
 
     // --- JSON API (session-gated) ---
     if path.starts_with("/api/") {
-        let cookie = match cookie_value(headers, auth::COOKIE_NAME) {
+        let cookie = match cookie_value(headers, shared.oidc.cookie_name()) {
             Some(c) => c,
             None => {
                 return (
@@ -214,7 +213,7 @@ fn route(
                 )
             }
         };
-        if auth::session_for_cookie(shared, &cookie).is_none() {
+        if shared.oidc.session_for_cookie(&cookie).is_none() {
             return (
                 401,
                 json_headers(),
@@ -223,7 +222,7 @@ fn route(
         }
 
         if path == "/api/session" {
-            let sess = auth::session_for_cookie(shared, &cookie).unwrap();
+            let sess = shared.oidc.session_for_cookie(&cookie).unwrap();
             return (
                 200,
                 json_headers(),
