@@ -5,6 +5,7 @@
 }: let
   CONFIG = import ../config.nix;
   UNIFI_UID = 8901;
+  mkIntVhost = import ../lib/nginx-int-vhost-helper.nix { inherit lib; };
   mongoPass = lib.strings.trim (builtins.readFile (config.sopsSecretText "unifi_db_password"));
 in {
   users.users.unifi = {
@@ -60,15 +61,8 @@ in {
   };
 
   services.nginx.virtualHosts = {
-    "unifi-admin.int.leighhack.org" = {
-      useACMEHost = "leighhack.org";
-      forceSSL = true;
-
-      locations."/" = {
-        proxyPass = "https://127.0.0.1:8443";
-        recommendedProxySettings = true;
-        extraConfig = CONFIG.LOCAL_NETWORK;
-      };
+    "unifi-admin.int.leighhack.org" = mkIntVhost {
+      proxyPass = "https://127.0.0.1:8443";
     };
   };
 

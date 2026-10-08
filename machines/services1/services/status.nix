@@ -1,8 +1,9 @@
-{ config, ... }:
+{ config, lib, ... }:
 
 let
   CONFIG = import ../config.nix;
   mkSSOVirtualHost = import ../lib/nginx-sso-helper.nix;
+  mkIntVhost = import ../lib/nginx-int-vhost-helper.nix { inherit lib; };
 
   AIBOX_IP = "10.3.1.32";
 
@@ -41,17 +42,9 @@ in
     };
 
     # LAN-only (ACL-restricted), restart allowed via the LAN token below.
-    "services1-status.int.leighhack.org" = {
-      useACMEHost = "leighhack.org";
-      forceSSL = true;
-
-      locations."/" = {
-        proxyPass = "http://127.0.0.1:8088";
-        recommendedProxySettings = true;
-        extraConfig =
-          CONFIG.LOCAL_NETWORK
-          + lanTokenHeader lanToken;
-      };
+    "services1-status.int.leighhack.org" = mkIntVhost {
+      proxyPass = "http://127.0.0.1:8088";
+      extraConfig = lanTokenHeader lanToken;
     };
 
     # --- aibox's dashboard (proxied from 10.3.1.32) ---------------------
@@ -63,17 +56,9 @@ in
       proxyPass = "http://${AIBOX_IP}:8088";
     };
 
-    "aibox-status.int.leighhack.org" = {
-      useACMEHost = "leighhack.org";
-      forceSSL = true;
-
-      locations."/" = {
-        proxyPass = "http://${AIBOX_IP}:8088";
-        recommendedProxySettings = true;
-        extraConfig =
-          CONFIG.LOCAL_NETWORK
-          + lanTokenHeader lanToken;
-      };
+    "aibox-status.int.leighhack.org" = mkIntVhost {
+      proxyPass = "http://${AIBOX_IP}:8088";
+      extraConfig = lanTokenHeader lanToken;
     };
   };
 }

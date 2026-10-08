@@ -13,6 +13,7 @@ let
   CONFIG = import ./config.nix;
   nginxSsoConfig = import ./lib/nginx-sso-config.nix;
   mkSSOVirtualHost = import ./lib/nginx-sso-helper.nix;
+  mkIntVhost = import ./lib/nginx-int-vhost-helper.nix { inherit lib; };
 in {
   # Necessary for secret access
   users.groups.secrets.members = ["nginx"];
@@ -107,87 +108,42 @@ in {
       # Alexandria audiobook generator on aibox (machines/aibox/alexandria.nix):
       # AI book -> voiced audiobook WebUI (FastAPI on 4200). LAN/tailscale only;
       # the int record is synced by dns-sync.
-      "alexandria.int.leighhack.org" = {
-        useACMEHost = "leighhack.org";
-        forceSSL = true;
-
-        locations."/" = {
-          proxyPass = "http://10.3.1.32:4200";
-          recommendedProxySettings = true;
-          proxyWebsockets = true;
-
-          extraConfig = ''
-            ${CONFIG.LOCAL_NETWORK}
-            # Book uploads + long audio-generation requests
-            client_max_body_size 1024M;
-            proxy_buffering off;
-            proxy_read_timeout   3600s;
-            proxy_send_timeout   3600s;
-            send_timeout         3600s;
-          '';
-        };
+      "alexandria.int.leighhack.org" = mkIntVhost {
+        proxyPass = "http://10.3.1.32:4200";
+        websockets = true;
+        # Book uploads + long audio-generation requests
+        bodySize = "1024M";
+        timeouts = "3600s";
+        proxyBuffering = false;
       };
 
       # Router network dashboard (machines/services1/network-status.nix):
       # realtime per-interface bandwidth, connection counts and issues for
       # the OPNsense box at 10.3.1.1. LAN-only; the router/DO records are
       # synced by dns-sync.
-      "network-info.int.leighhack.org" = {
-        useACMEHost = "leighhack.org";
-        forceSSL = true;
-
-        locations."/" = {
-          proxyPass = "http://127.0.0.1:8091";
-          recommendedProxySettings = true;
-          extraConfig = CONFIG.LOCAL_NETWORK;
-        };
+      "network-info.int.leighhack.org" = mkIntVhost {
+        proxyPass = "http://127.0.0.1:8091";
       };
 
-      "login.int.leighhack.org" = {
-        serverAliases = ["login.leighhack.org"];
-        useACMEHost = "leighhack.org";
-        forceSSL = true;
-
-        locations."/" = {
-          proxyPass = "http://127.0.0.1:8082";
-          recommendedProxySettings = true;
-
-          # The SSO cookie nginx-sso sets on a successful login exceeds
-          # nginx's default 4k proxy header buffer, which makes the /login
-          # callback fail with "upstream sent too big header" (502).
-          # busy >= buffer_size and busy < total buffers - one buffer.
-          extraConfig = ''
-            proxy_buffer_size       32k;
-            proxy_buffers           16 8k;
-            proxy_busy_buffers_size 32k;
-          '';
-        };
+      "login.int.leighhack.org" = mkIntVhost {
+        serverAliases = [ "login.leighhack.org" ];
+        proxyPass = "http://127.0.0.1:8082";
+        # The SSO cookie nginx-sso sets on a successful login exceeds
+        # nginx's default 4k proxy header buffer, which makes the /login
+        # callback fail with "upstream sent too big header" (502).
+        proxyHeaderBuffers = true;
+        acl = "";
       };
 
-      "webhooks.leighhack.org" = {
-        useACMEHost = "leighhack.org";
-        forceSSL = true;
-
-        locations."/" = {
-          proxyPass = "https://10.3.1.39:443";
-          recommendedProxySettings = true;
-          extraConfig = ''
-            proxy_connect_timeout       300;
-            proxy_send_timeout          300;
-            proxy_read_timeout          300;
-            send_timeout                300;
-          '';
-        };
+      "webhooks.leighhack.org" = mkIntVhost {
+        proxyPass = "https://10.3.1.39:443";
+        timeouts = "300";
+        acl = "";
       };
 
-      "web-test.leighhack.org" = {
-        useACMEHost = "leighhack.org";
-        forceSSL = true;
-
-        locations."/" = {
-          proxyPass = "https://10.3.1.39:443";
-          recommendedProxySettings = true;
-        };
+      "web-test.leighhack.org" = mkIntVhost {
+        proxyPass = "https://10.3.1.39:443";
+        acl = "";
       };
 
       "retro.leighhack.org" = {
@@ -200,105 +156,56 @@ in {
         };
       };
 
-      "firewall.int.leighhack.org" = {
-        useACMEHost = "leighhack.org";
-        forceSSL = true;
-
-        locations."/" = {
-          proxyPass = "https://10.3.1.1:60443";
-          recommendedProxySettings = true;
-          extraConfig = CONFIG.LOCAL_NETWORK;
-        };
+      "firewall.int.leighhack.org" = mkIntVhost {
+        proxyPass = "https://10.3.1.1:60443";
       };
 
-      "truenas.int.leighhack.org" = {
-        useACMEHost = "leighhack.org";
-        forceSSL = true;
-
-        locations."/" = {
-          proxyPass = "https://10.3.1.6:443";
-          recommendedProxySettings = true;
-          proxyWebsockets = true;
-          extraConfig = CONFIG.LOCAL_NETWORK;
-        };
+      "truenas.int.leighhack.org" = mkIntVhost {
+        proxyPass = "https://10.3.1.6:443";
+        websockets = true;
       };
 
-      "monster.int.leighhack.org" = {
-        useACMEHost = "leighhack.org";
-        forceSSL = true;
-
-        locations."/" = {
-          proxyPass = "https://10.3.1.11:8006";
-          recommendedProxySettings = true;
-          proxyWebsockets = true;
-        };
+      # Proxmox web UI. Not LAN-ACL'd (deliberately: reachable from the tailnet
+      # ranges in CONFIG.LOCAL_NETWORK anyway) — kept as it was, `acl = ""`.
+      "monster.int.leighhack.org" = mkIntVhost {
+        proxyPass = "https://10.3.1.11:8006";
+        websockets = true;
+        acl = "";
       };
 
-      "access-api.int.leighhack.org" = {
-        useACMEHost = "leighhack.org";
-        forceSSL = true;
-
-        locations."/" = {
-          proxyPass = "http://10.3.1.30:8083";
-          recommendedProxySettings = true;
-        };
+      "access-api.int.leighhack.org" = mkIntVhost {
+        proxyPass = "http://10.3.1.30:8083";
+        acl = "";
       };
 
-      "api.int.leighhack.org" = {
-        serverAliases = ["api.leighhack.org"];
-        useACMEHost = "leighhack.org";
-        forceSSL = true;
-
-        locations."/" = {
-          proxyPass = "http://10.3.1.30:8081";
-          recommendedProxySettings = true;
-        };
+      "api.int.leighhack.org" = mkIntVhost {
+        serverAliases = [ "api.leighhack.org" ];
+        proxyPass = "http://10.3.1.30:8081";
+        acl = "";
       };
 
       # filestore.int.leighhack.org moved to services/filestore.nix (the
       # Rust filestore binary on this box, 127.0.0.1:8096 — replacing the
       # old apps1:8001 deployment).
 
-      "id.int.leighhack.org" = {
+      "id.int.leighhack.org" = mkIntVhost {
         serverAliases = [
           "id.leighhack.org"
           "authentik.int.leighhack.org"
         ];
-        useACMEHost = "leighhack.org";
-        forceSSL = true;
-
-        locations."/" = {
-          proxyPass = "http://10.3.1.36:9000";
-          recommendedProxySettings = true;
-          proxyWebsockets = true;
-
-          extraConfig = ''
-            proxy_buffering off;
-          '';
-        };
+        proxyPass = "http://10.3.1.36:9000";
+        websockets = true;
+        proxyBuffering = false;
+        acl = "";
       };
 
-      "jenkins.int.leighhack.org" = {
-        useACMEHost = "leighhack.org";
-        forceSSL = true;
-
-        locations."/" = {
-          proxyPass = "http://10.3.1.30:8082";
-          recommendedProxySettings = true;
-          extraConfig = CONFIG.LOCAL_NETWORK;
-        };
+      "jenkins.int.leighhack.org" = mkIntVhost {
+        proxyPass = "http://10.3.1.30:8082";
       };
 
-      "user-tweaker.int.leighhack.org" = {
-        serverAliases = ["user-tweaker.leighhack.org"];
-        useACMEHost = "leighhack.org";
-        forceSSL = true;
-
-        locations."/" = {
-          proxyPass = "http://10.3.1.30:8084";
-          recommendedProxySettings = true;
-          extraConfig = CONFIG.LOCAL_NETWORK;
-        };
+      "user-tweaker.int.leighhack.org" = mkIntVhost {
+        serverAliases = [ "user-tweaker.leighhack.org" ];
+        proxyPass = "http://10.3.1.30:8084";
       };
 
       "ha.int.leighhack.org" = {
@@ -352,22 +259,12 @@ in {
         proxyPass = "http://10.3.2.50";
       };
 
-      "immich.leighhack.org" = {
-        useACMEHost = "leighhack.org";
-        forceSSL = true;
-
-        locations."/" = {
-          proxyPass = "http://10.3.1.32:2283";
-          recommendedProxySettings = true;
-          proxyWebsockets = true;
-
-          extraConfig = ''
-            client_max_body_size 50000M;
-            proxy_read_timeout   600s;
-            proxy_send_timeout   600s;
-            send_timeout         600s;
-          '';
-        };
+      "immich.leighhack.org" = mkIntVhost {
+        proxyPass = "http://10.3.1.32:2283";
+        websockets = true;
+        bodySize = "50000M";
+        timeouts = "600s";
+        acl = "";
       };
     };
   };

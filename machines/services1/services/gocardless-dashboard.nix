@@ -21,6 +21,7 @@
   ...
 }: let
   CONFIG = import ../config.nix;
+  mkIntVhost = import ../lib/nginx-int-vhost-helper.nix { inherit lib; };
   CRANE = import ../../../common/crane.nix {inherit pkgs crane;};
 
   # The Dioxus SPA compiled to wasm (pinned wasm-bindgen-cli and the wasm build
@@ -116,14 +117,7 @@ in {
   };
 
   # LAN-only vhost (the binary only listens on 127.0.0.1).
-  services.nginx.virtualHosts."gocardless.int.leighhack.org" = {
-    useACMEHost = "leighhack.org";
-    forceSSL = true;
-
-    locations."/" = {
-      proxyPass = "http://127.0.0.1:8095";
-      recommendedProxySettings = true;
-      extraConfig = CONFIG.LOCAL_NETWORK;
-    };
+  services.nginx.virtualHosts."gocardless.int.leighhack.org" = mkIntVhost {
+    proxyPass = "http://127.0.0.1:8095";
   };
 }

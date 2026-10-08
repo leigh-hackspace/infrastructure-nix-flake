@@ -21,6 +21,7 @@
 #   https://gatus.int.leighhack.org   (LAN/tailnet only, like kuma was)
 let
   CONFIG = import ../config.nix;
+  mkIntVhost = import ../lib/nginx-int-vhost-helper.nix { inherit lib; };
 
   # Standard Slack alert, attached to every endpoint. ALERT_COUNT is the
   # number of consecutive failed checks for that endpoint.
@@ -242,15 +243,8 @@ in {
     };
   };
 
-  services.nginx.virtualHosts."gatus.int.leighhack.org" = {
-    useACMEHost = "leighhack.org";
-    forceSSL = true;
-
-    locations."/" = {
-      proxyPass = "http://localhost:8999";
-      recommendedProxySettings = true;
-      # kuma's status page was LAN/tailnet only; keep gatus the same.
-      extraConfig = CONFIG.LOCAL_NETWORK;
-    };
+  # kuma's status page was LAN/tailnet only; keep gatus the same.
+  services.nginx.virtualHosts."gatus.int.leighhack.org" = mkIntVhost {
+    proxyPass = "http://localhost:8999";
   };
 }

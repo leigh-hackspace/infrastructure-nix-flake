@@ -1,7 +1,10 @@
 # Helper function to create SSO-protected virtual hosts
 let
   mkSSOVirtualHost =
-    { proxyPass }:
+    { proxyPass,
+      bodySize ? "1024M",
+      timeouts ? 3600,
+    }:
     {
       useACMEHost = "leighhack.org";
       forceSSL = true;
@@ -10,12 +13,11 @@ let
         # Redirect the user to the login page when they are not logged in
         error_page 401 = @error401;
 
-        # TODO: Make this configurable (Llama needs it)
-        client_max_body_size        1024M;
-        proxy_connect_timeout       3600;
-        proxy_send_timeout          3600;
-        proxy_read_timeout          3600;
-        send_timeout                3600;
+        client_max_body_size        ${bodySize};
+        proxy_connect_timeout       ${toString timeouts};
+        proxy_send_timeout          ${toString timeouts};
+        proxy_read_timeout          ${toString timeouts};
+        send_timeout                ${toString timeouts};
       '';
 
       locations."/" = {

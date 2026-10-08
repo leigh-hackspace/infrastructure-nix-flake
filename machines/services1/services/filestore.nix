@@ -18,6 +18,12 @@
 let
   CONFIG = import ../config.nix;
   CRANE = import ../../../common/crane.nix { inherit pkgs crane; };
+  mkIntVhost = import ../lib/nginx-int-vhost-helper.nix { inherit lib; };
+
+  # The upload limit, in the two places it has to agree: the backend's
+  # --max-upload and nginx's client_max_body_size.  Written as bytes so the
+  # nginx value is derived from it rather than hand-copied.
+  maxUploadBytes = 2 * 1024 * 1024 * 1024; # 2G
 
   # The Dioxus SPA compiled to wasm (pinned wasm-bindgen-cli and the wasm build
   # recipe live in common/crane.nix).
@@ -64,28 +70,18 @@ in
         "--root" "/mnt/filestore"
         "--env-file" CONFIG.ENV_FILE
         "--port" "8096"
-        "--max-upload" "2G"
+        "--max-upload" "${toString maxUploadBytes}"
       ];
     };
   };
 
   # LAN-only vhost (the binary only listens on 127.0.0.1).
-  services.nginx.virtualHosts."filestore.int.leighhack.org" = {
-    useACMEHost = "leighhack.org";
-    forceSSL = true;
-
-    locations."/" = {
-      proxyPass = "http://127.0.0.1:8096";
-      recommendedProxySettings = true;
-      extraConfig = ''
-        # Uploads are raw request bodies.  nginx's default here is 10m, which
-        # 413'd every drag-in upload bigger than that (the popup the UI shows is
-        # nginx's error page, not the app's), so raise it to the limit the
-        # backend enforces with --max-upload 2G.
-        client_max_body_size 2048M;
-
-        ${CONFIG.LOCAL_NETWORK}
-      '';
-    };
+  services.nginx.virtualHosts."filestore.int.leighhack.org" = mkIntVhost {
+    proxyPass = "http://127.0.0.1:8096";
+    # Uploads are raw request bodies, so the vhost's client_max_body_size must
+    # match the --max-upload above: nginx's default here is 10m, which 413'd
+    # every drag-in upload bigger than that (the popup the UI shows is nginx's
+    # error page, not the app's).
+    bodySize = "${toString (maxUploadBytes / (1024 * 1024))}M";
   };
 }

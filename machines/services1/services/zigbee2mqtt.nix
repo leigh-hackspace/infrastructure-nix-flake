@@ -1,7 +1,8 @@
-{config, ...}: let
+{config, lib, ...}: let
   CONFIG = import ../config.nix;
   ZIGBEE2MQTT_UID = 8124;
   mkSSOVirtualHost = import ../lib/nginx-sso-helper.nix;
+  mkIntVhost = import ../lib/nginx-int-vhost-helper.nix { inherit lib; };
 in {
   users.users.zigbee2mqtt = {
     uid = ZIGBEE2MQTT_UID;
@@ -36,16 +37,9 @@ in {
       proxyPass = "http://127.0.0.1:8282";
     };
 
-    "zigbee2mqtt.int.leighhack.org" = {
-      forceSSL = true;
-      useACMEHost = "leighhack.org";
-
-      locations."/" = {
-        proxyPass = "http://127.0.0.1:8282";
-        recommendedProxySettings = true;
-        proxyWebsockets = true;
-        extraConfig = CONFIG.LOCAL_NETWORK;
-      };
+    "zigbee2mqtt.int.leighhack.org" = mkIntVhost {
+      proxyPass = "http://127.0.0.1:8282";
+      websockets = true;
     };
   };
 

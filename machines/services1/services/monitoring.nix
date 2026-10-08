@@ -19,6 +19,7 @@
 
 let
   CONFIG = import ../config.nix;
+  mkIntVhost = import ../lib/nginx-int-vhost-helper.nix { inherit lib; };
 
   PROM_PORT = 9091;
 
@@ -316,29 +317,15 @@ in
 
   # --- nginx -----------------------------------------------------------
   services.nginx.virtualHosts = {
-    "prometheus.int.leighhack.org" = {
-      useACMEHost = "leighhack.org";
-      forceSSL = true;
-
-      locations."/" = {
-        proxyPass = "http://127.0.0.1:${toString PROM_PORT}";
-        recommendedProxySettings = true;
-        extraConfig = CONFIG.LOCAL_NETWORK;
-      };
+    "prometheus.int.leighhack.org" = mkIntVhost {
+      proxyPass = "http://127.0.0.1:${toString PROM_PORT}";
     };
 
     # Replaces the old grafana.int vhost in http.nix which proxied to the
     # (now superseded) Grafana on 10.3.1.30.
-    "grafana.int.leighhack.org" = {
-      useACMEHost = "leighhack.org";
-      forceSSL = true;
-
-      locations."/" = {
-        proxyPass = "http://127.0.0.1:3000";
-        recommendedProxySettings = true;
-        proxyWebsockets = true;
-        extraConfig = CONFIG.LOCAL_NETWORK;
-      };
+    "grafana.int.leighhack.org" = mkIntVhost {
+      proxyPass = "http://127.0.0.1:3000";
+      websockets = true;
     };
   };
 }
