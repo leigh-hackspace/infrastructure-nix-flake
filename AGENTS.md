@@ -17,6 +17,10 @@ Guidance for AI agents working in this repository. Read this before making chang
 - `flake.nix` — the flake. Inputs include private repos via
   `git+file:///home/leigh-admin/Projects/...` (gocardless-tools, pi-room-sys).
   Machines: `services1` (the main services box, 10.3.1.20) and `aibox`.
+- `docs/` — narrative write-ups, post-mortems and audits (gtx1060 saga,
+  sso-redesign, filestore gotchas, the repo audit). They live here rather than
+  next to the modules so the flake source stays config only; module comments
+  point into them when they need the backstory.
 - `common/` — shared modules imported by both machines (`tools.nix`,
   `users.nix`, `sops.nix`, plus `crane.nix` — the shared crane build helpers,
   see the Rust builds section — and `frontend-build-spa.sh`, the one SPA build
@@ -103,32 +107,18 @@ Guidance for AI agents working in this repository. Read this before making chang
   (treats every request as a local session) and is **only honoured on a loopback
   bind** — `main.rs` exits if it is combined with a non-loopback `--bind`.
   `frontend/dist/` and `target/` are git-ignored.
-  The SPA was originally written against the dioxus 0.6 API and had to be ported
-  to the pinned 0.7.10 — see the filestore gotchas below.
+  The SPA was written against the dioxus 0.6 API and ported to the pinned 0.7.10;
+  the port and the SPA's other traps (keyboard selection, context-menu clamping,
+  drag-out to the OS, upload body limits) are written up in
+  `docs/filestore-gotchas-2026-10-05.md`.
   There is a permanent headless-browser test suite in `filestore/tests/` (Node +
   Playwright, run with `just filestore-test`); see `filestore/tests/README.md`
   for the test hooks the SPA carries (`data-fs-name`, `#fs-menu`, `#fs-modal`, …)
   and the bugs it has already caught.
-  Selection is keyboard-driven as well: the arrow keys move it and shift+arrow
-  extends the range from the anchor (`AppState::focus`, shared with shift-click),
-  with the column count read from the rendered grid so up/down matches what the
-  user sees. Enter opens the focused row (folder → navigate, previewable file →
-  preview, otherwise download) and is left to the focused control when a text
-  field or button has focus, so the search box and the modal input still work.
-  The context menu is clamped to the viewport (it can only be measured
-  after the first paint, so `menu.rs` caches the size between opens) and closes on
-  any click outside it.
-  Rows publish `text/uri-list` on `dragstart` (the download URL, or the ZIP URL
-  for a folder) as well as `application/x-filestore`, because the internal format
-  is only understood by this page and an external drop target would refuse the
-  drag. A page can only hand an OS target a URL or bytes it already holds, so
-  Finder turns such a drop into a `.webloc`; the drag also carries `text/html`
-  with the file name as the link text because Finder names the shortcut from the
-  link text (otherwise every drop is called `filestore.int.leighhack.org:.webloc`).
-  Uploads are raw request bodies, so axum's `DefaultBodyLimit` does not apply to
-  them: the server enforces `--max-upload` (2G in production) and the vhost's
-  `client_max_body_size` must match it, otherwise nginx 413s the request and the
-  upload popup prints its HTML error page.
+  Path containment: `Store::resolve` rejects any `..` component and the root is
+  canonicalised at startup, but symlinks **inside** the share are followed
+  wherever they point (the NAS uses them) — the guarantee is "no traversal from
+  the API", not "nothing outside the share is reachable". See `filestore/src/fsutil.rs`.
 - `machines/services1/` — the services box:
   - `hardware-configuration.nix` — NFS mounts for the NAS and their explicit
     automount units (see gotcha below).
@@ -236,60 +226,20 @@ unauthenticated via Moonraker on the trusted LAN
   flake-managed. Web UI: https://id.leighhack.org (also served as
   `authentik.int.leighhack.org`); nginx on the box proxies to 127.0.0.1:9000.
 - Admin access: the default `akadmin` user is **disabled**. Real admins are
-  members of the superuser groups `Infra` (or `pgina`), e.g. `cjdell`. To
-  use the admin API, mint a token as an active admin via the ORM:
-
-  ```bash
-  docker exec -i authentik-server-1 ak shell <<'PY'
-  from authentik.core.models import Token, User
-  t = Token(identifier="setup", user=User.objects.get(username="cjdell"),
-            intent="api", expiring=False)
-  t.save(); print(t.key)   # shown once — delete the token when done
-  PY
-  ```
-
-  The admin REST API is **not** usable from the box (the box's nginx
-  proxies `/api/v3/...` collection endpoints to the UI SPA — they 404 with
-  HTML), so manage everything through the ORM shell above. `ak shell` prints
-  a banner and swallows tracebacks unless you keep stderr and filter the log
-  noise: `docker exec -i authentik-server-1 ak shell 2>&1 <<'PY' | grep -viE
-  "imported related module" | grep -vE '"level": "(debug|info)"'`.
-
+  members of the superuser groups `Infra` (or `pgina`), e.g. `cjdell`. The
+  admin REST API is **not** usable from the box (its nginx proxies
+  `/api/v3/...` collection endpoints to the UI SPA — they 404 with HTML), so
+  everything goes through the `ak shell` ORM; the token-minting snippet and the
+  log-noise filter are in `docs/authentik-oidc-notes.md`.
 - OAuth2 providers/apps are managed via the ORM/UI (no declarative config).
   Client secrets are **write-only**: generate your own, pass it on
   create/save, and store it in sops — they can never be read back.
-- **Creating an OIDC provider that actually works** (all three of these
-  bites are invisible until login is tried):
-  - Copy `authentication_flow` / `authorization_flow` /
-    `invalidation_flow` / `signing_key` from a known-good provider (Grafana,
-    pk 3). Redirect URIs match **strictly**.
-  - Duration fields (`access_code_validity`, `access_token_validity`,
-    `refresh_token_validity`) must be the `key=value` format, e.g.
-    `"minutes=5"` (what `authentik.lib.utils.time.timedelta_from_string`
-    parses). ISO-8601 values like `"5m"` save fine but crash
-    `/application/o/authorize/` with a 500 (`ValueError` in
-    `timedelta_from_string`).
-  - Custom scopes need a **ScopeMapping child row** (multi-table
-    inheritance). A plain `PropertyMapping` attached to the provider
-    silently does not advertise its scope — the token is issued without it
-    (log line: "Application requested scopes not configured, setting to
-    overlap"). Create it with:
-    ```python
-    from authentik.core.models import PropertyMapping
-    from authentik.providers.oauth2.models import ScopeMapping
-    pm = PropertyMapping.objects.create(name="... groups scope",
-                                        expression='''return {
-        "groups": [g.name for g in request.user.ak_groups.all()],
-    }''')
-    sm = ScopeMapping(pk=pm.pk, scope_name="groups")  # child reuses parent pk!
-    sm.save()
-    # then include pm in provider.property_mappings.set([...])
-    ```
-    `get_or_create(propertymapping_ptr=...)` does NOT work (it tries to
-    insert a second parent row → IntegrityError). The stock OpenID mappings
-    (openid/email/profile) are regular scope mappings already present.
-  - There is no `code_challenge_methods` field on this version's
-    `OAuth2Provider` (AttributeError) — S256 PKCE is just available.
+- **Before creating an OIDC provider, read `docs/authentik-oidc-notes.md`.**
+  Three invisible bites, summarised: copy the flows + `signing_key` from a
+  known-good provider (Grafana, pk 3) and match redirect URIs strictly; duration
+  fields must be `key=value` (`"minutes=5"`, not `"5m"` — the latter saves fine
+  then 500s at `/application/o/authorize/`); a custom scope needs a real
+  **ScopeMapping child row**, a plain `PropertyMapping` is silently ignored.
 - **Client-side OIDC contract** (what `gocardless-dashboard` implements;
   keep new clients consistent): authorization-code flow with **S256 PKCE**,
   where the challenge must be **unpadded** base64url — authentik recomputes
@@ -298,11 +248,6 @@ unauthenticated via Moonraker on the trusted LAN
   ("Code challenge not matching"). Scopes `openid profile email groups`;
   group claims come from the groups scope mapping, not a user profile
   attribute.
-- Debugging: `docker logs authentik-server-1` is JSON; `system_exception`
-  events carry full tracebacks, `authentik.asgi` lines carry request +
-  status. OIDC endpoints: `/application/o/authorize/` (browser GET),
-  `/application/o/token/` (client POST). A POST to `/application/o/authorize/`
-  with an API token 403s on CSRF — expected, not a bug.
 - Deployed integrations:
   - Grafana (services1): provider pk 3, client_id
     `8TMM2mYHBV2YQCovNbgGKbuEp0LJcxo2TjpqNN9s`, client secret in sops as
@@ -348,52 +293,25 @@ unauthenticated via Moonraker on the trusted LAN
   started by hand (GOAD lab at 192.168.10.0/24, rtsp, windows/AD labs, …).
   Starting all six at once needs ~24 GB of the host's 32 GB RAM.
 
-### Runbook — bringing the VMs back after a power cut (verified 2026-09-30)
+### Runbook — bringing the VMs back after a power cut
 
-Everything is slow right after a cold start because the NAS is still
-importing and all VM disks are `cache=direct` qcow2s on `nas2-nfs`: measured
-NFS READ RTT ~25 ms steady / up to 1.8 s during the start storm (a LAN NFS
-read should be <1 ms), NAS `aqu-sz` ~6.5 and `%util` 82–84 % on the 7200 rpm
-`sas-10k` disks. Expect guest boots to take many minutes and don't chase it as
-a VM fault.
+Full procedure (verified 2026-09-30): **`docs/monster-powercut-runbook.md`**.
+The short version, and the parts that are easy to get wrong:
 
-```bash
-ssh -i ~/.ssh/agent-hop-key root@10.3.1.11
-qm list                       # everything 'stopped'
-pvesm status                  # nas2-nfs must say 'active' BEFORE starting anything
-ha-manager status             # HA services may be in 'error' after 5 failed restarts
-systemd-analyze blame | head  # host boot: ~44 s, of which pve-guests ~8 s on NFS
-```
-
-1. **Wait for the NAS export.** `pvesm status` / `mount | grep nas2-nfs` must
-   show it online. NAS = `nas2` (10.3.1.6). `leigh-admin@10.3.1.6` is keyed
-   with the machine-hop-key but has **no passwordless sudo**, so only
-   `zpool list`, `lsblk`, `iostat`, `/proc/spl/kstat/zfs/...` work
-   (`zpool status`/SMART need root — use the TrueNAS UI). Its shell is zsh:
-   never `echo ===` (zsh reads `===` as command expansion).
-2. **Clear HA error state — disable, *wait*, then start.** Doing both back to
-   back in one loop races: the start is rejected with `service 'vm:127' in
-   error state, must be disabled and fixed first`.
-
-   ```bash
-   for i in 108 109 127 128; do ha-manager set vm:$i --state disabled; done
-   ha-manager status        # wait until all four report 'disabled'
-   for i in 108 109 127 128; do ha-manager set vm:$i --state started; sleep 3; done
-   ```
-
-   Use `ha-manager set … --state started`, **not** `qm start`, for
-   HA-managed VMs.
-3. **Start the non-HA autostart VMs by hand:** `qm start 107; qm start 132`.
-   During the storm `qm start` can fail with
-   ``start failed: … failed: got timeout`` (qemu can't daemonize before the
-   timeout while opening its qcow2). That is a pool-latency symptom, not a VM
-   problem — just retry; 132 then started fine on the second attempt.
-4. **Verify:** `qm list | grep -v stopped`, `ha-manager status` all `started`,
-   then `qm guest cmd <id> ping` (agents answer late — `mercury` came up
-   first while the rest were still booting).
-5. **Leave the `onboot: 0` lab VMs alone for a bit** and start them one at a
-   time (each is a burst of random reads against the slow pool); ~24 GB of
-   the host's 32 GB RAM is already committed by the six infra VMs.
+- `pvesm status` must show `nas2-nfs` **active** before any VM start; the NAS is
+  still importing after an outage and every start fails with
+  `storage 'nas2-nfs' is not online`. Boots take many minutes — that is pool
+  latency, not a VM fault.
+- HA services left in `error` must be cleared **disable → wait → start**
+  (`ha-manager set vm:<id> --state disabled`, confirm with `ha-manager status`,
+  then `--state started`). Doing both in one loop races and the start is
+  rejected.
+- HA-managed VMs (108, 109, 127, 128) are started with `ha-manager set …
+  --state started`, never `qm start`. The non-HA autostart VMs (107, 132) are
+  `qm start`ed by hand; a `got timeout` from `qm start` during the storm is
+  pool latency — retry.
+- Leave the `onboot: 0` lab VMs alone; ~24 GB of the host's 32 GB is already
+  committed by the six infra VMs.
 
 ## SSH between machines (machine-hop-key)
 
@@ -421,6 +339,12 @@ systemd-analyze blame | head  # host boot: ~44 s, of which pve-guests ~8 s on NF
 
 - Deploy with the justfile: `just switch` / `just boot`
   (`sudo nixos-rebuild switch --flake .`).
+- **Check before you deploy:** `just check` (flake evaluation, the config
+  assertions in `machines/services1/lib/check-*.nix` and `alejandra --check`
+  over every tracked `.nix`) and, when anything is built rather than just
+  evaluated, `just check-build` (`nixos-rebuild dry-build` for both machines —
+  it compiles everything and activates nothing). `just test` runs the cargo
+  tests, `just clippy` the lints, `just filestore-test` the browser suite.
 - **GOLDEN RULE — confirm immediately after every switch/boot:**
   `system.autoRollback.enable = true` is set on **both** machines
   (services1 _and_ aibox, via nixos-utils). The `auto-rollback.timer` rolls
@@ -447,9 +371,11 @@ switch --flake .#<machine> && sudo nixos-confirm'` (the `cd`
 - **New files must be `git add`-ed** before they are visible to the flake
   (flake sources come from the git tree; untracked files are excluded).
 - Do not commit unless asked. Staging (`git add`) is fine and often required.
-- Formatting: the repo nominally uses alejandra (see `.zed/settings.json`),
-  but many pre-existing files are not alejandra-clean. Match the surrounding
-  file's style; do not reformat whole pre-existing files.
+- Formatting: the whole tree is alejandra-clean and `just fmt` keeps it that way
+  (`just fmt-check`, run by `just check`, fails otherwise). Alejandra is the only
+  formatter — it is in the devshell and configured in both `.zed/settings.json`
+  and `.vscode/settings.json`, so editor and CI agree. Do not hand-format or
+  switch to nixfmt.
 
 ## Nix commands (local dev)
 

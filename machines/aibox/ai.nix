@@ -5,7 +5,7 @@
   ...
 }: let
   # Pin the main model to the iGPU — the only Vulkan device on this box since
-  # the GTX 1060 (Vulkan1) was removed (2026-09-02; see gtx1060-followup.md).
+  # the GTX 1060 (Vulkan1) was removed (2026-09-02; see ../../docs/gtx1060-followup.md).
   # GGML_VK_VISIBLE_DEVICES=0 is kept as defence in depth so no code path
   # (presets, auto device selection, future flag removal) can ever enumerate
   # past the iGPU.

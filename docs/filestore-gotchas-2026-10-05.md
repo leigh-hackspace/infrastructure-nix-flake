@@ -104,3 +104,36 @@ dead input).
   indented continuation lines orphaned and the file becomes invalid YAML.
 - Client secrets are write-only through the API but readable via the ORM shell
   (`OAuth2Provider.client_secret`) on the authentik box.
+
+## 8. Selection is keyboard-driven as well as mouse-driven
+
+The arrow keys move the selection and shift+arrow extends the range from the
+anchor (`AppState::focus`, the same state shift-click uses), with the column
+count read from the rendered grid so up/down matches what the user sees rather
+than what the model assumes. Enter opens the focused row (folder → navigate,
+previewable file → preview, otherwise download) and is deliberately left to the
+focused control when a text field or button has focus, so the search box and the
+modal input still work.
+
+## 9. The context menu can only be measured after the first paint
+
+It is clamped to the viewport, but its size is unknown until it has been
+rendered once, so `menu.rs` caches the size between opens. It closes on any click
+outside it.
+
+## 10. Drag-out to the OS: a page can only hand over a URL or bytes it holds
+
+Rows publish `text/uri-list` on `dragstart` (the download URL, or the ZIP URL for
+a folder) as well as `application/x-filestore`, because the internal format is
+only understood by this page and an external drop target would refuse the drag.
+A browser cannot stream a remote file to Finder, so the drop becomes a `.webloc`
+shortcut; the drag therefore also carries `text/html` with the file name as the
+link text, because Finder names the shortcut from the link text — otherwise every
+drop is called `filestore.int.leighhack.org:.webloc`.
+
+## 11. Uploads are raw request bodies, so axum's body limit does not apply
+
+`DefaultBodyLimit` does not cover them: the server enforces `--max-upload`
+(2G in production) and the vhost's `client_max_body_size` must match it,
+otherwise nginx 413s the request first and the upload popup prints nginx's HTML
+error page.
