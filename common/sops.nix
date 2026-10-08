@@ -47,7 +47,12 @@ in
       } ''
         tmp=$(mktemp -d)
         sops -d --output-type json ${sopsFile} > "$tmp/all.json"
-        yq -r ".${name}" "$tmp/all.json" > $out
+        # `yq ... | tr -d '\n'`: yq ends its output with a newline, and a token
+        # or URL read from the resulting store path would otherwise carry it —
+        # nginx would get a header value with a trailing newline (a request
+        # splitting risk) and the dashboard would compare tokens against a
+        # value that can never match the header it receives.
+        yq -r ".${name}" "$tmp/all.json" | tr -d '\r\n' > $out
       '';
 
     environment.systemPackages = with pkgs; [ sops ];
@@ -79,6 +84,13 @@ in
         # Shared restart token for the status dashboards (see
         # machines/services1/services/status.nix and
         # machines/aibox/status-dashboard.nix).
+        #
+        # This one is embedded in the generated systemd units (via the
+        # dashboard's --restart-token) and injected into the LAN vhosts as an
+        # nginx header, so it lands in the world-readable nix store: it is a
+        # LAN-only convenience credential, not a real secret.  Anything that
+        # must stay out of the store belongs in CONFIG.ENV_FILE
+        # (/run/secrets/env_file, root-only at runtime) instead.
         status_dashboard_lan_token = { };
       };
     };

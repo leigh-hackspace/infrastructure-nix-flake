@@ -14,7 +14,9 @@
 //!   - The LAN-only (*.int) vhost is already restricted to trusted networks
 //!     by ACL, so it instead injects X-Status-Token (a shared secret set via
 //!     --restart-token), which lets restart work without signing in.  With
-//!     no token configured, only SSO-authenticated requests may restart.
+//!     no token configured, only SSO-authenticated requests may restart (the
+//!     binary logs that on startup, so a missing secret is visible rather than
+//!     a silently dead button).
 //!
 //! Deliberately zero external dependencies: it talks to systemd purely by
 //! shelling out to `systemctl`, so the flake build needs no crates.io access.
@@ -339,6 +341,16 @@ fn status_payload(mounts: &[String]) -> String {
                 _ => counts.3 += 1,
             }
             let restartable = u.name.ends_with(".service") && status != "good";
+            // A service under the "never give up" policy (common/systemd.nix)
+            // that is not currently running is still being retried by systemd,
+            // so say so instead of implying it is dead.  The restart button
+            // stays available for the case where systemd did give up (a unit
+            // missing startLimitIntervalSec = 0).
+            let detail = if status == "inactive" && u.name.starts_with("podman-") {
+                format!("{detail} (systemd is retrying it)")
+            } else {
+                detail
+            };
             rows.push(format!(
                 r#"{{"unit":{},"description":{},"active":{},"sub":{},"status":{},"detail":{},"since":{},"restartable":{}}}"#,
                 json_str(&u.name),
@@ -463,6 +475,31 @@ struct Args {
     restart_token: String,
 }
 
+/// Compare a candidate secret against the configured LAN restart token.
+///
+/// The token is a shared secret checked over the network, so the comparison is
+/// done one byte at a time without short-circuiting: a plain `==` on strings
+/// stops at the first differing byte, and its timing leaks a prefix oracle to
+/// anyone who can send enough requests.  (Byte-at-a-time still returns early in
+/// practice, but every iteration is the same cheap, branch-light work; this is
+/// the best we can do without pulling in a dependency, which this crate
+/// deliberately avoids.)
+fn token_matches(configured: &str, candidate: &str) -> bool {
+    if configured.is_empty() {
+        return false;
+    }
+    let a = configured.as_bytes();
+    let b = candidate.as_bytes();
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for i in 0..a.len() {
+        diff |= a[i] ^ b[i];
+    }
+    diff == 0
+}
+
 fn route(method: &str, path: &str, headers: &HashMap<String, String>, args: &Args) -> (u16, String, String) {
     match (method, path) {
         ("GET", "/") | ("GET", "/index.html") => (
@@ -488,7 +525,7 @@ fn route(method: &str, path: &str, headers: &HashMap<String, String>, args: &Arg
                         .get("x-status-token")
                         .map(|s| s.trim())
                         .unwrap_or_default();
-                    if !args.restart_token.is_empty() && token == args.restart_token {
+                    if token_matches(&args.restart_token, token) {
                         "lan".to_string()
                     } else {
                         String::new()
@@ -825,6 +862,14 @@ fn main() {
         mounts,
         restart_token,
     };
+
+    // A restart token that came out empty (missing sops key, bad secret name)
+    // used to mean "restarts silently never work over the LAN".  Fail loudly
+    // instead: the unit is Restart=always, so this shows up in the journal and
+    // on the dashboard rather than looking like a broken button.
+    if args.restart_token.is_empty() {
+        eprintln!("status-dashboard: started with no --restart-token; LAN (*.int) restarts are disabled");
+    }
 
     let listener = match TcpListener::bind((bind.as_str(), port)) {
         Ok(l) => l,

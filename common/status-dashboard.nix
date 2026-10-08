@@ -60,10 +60,21 @@ in
     # Shared secret that the LAN-only (*.int) nginx vhost injects as
     # X-Status-Token, allowing restarts without SSO sign-in. Empty (the
     # default) means restarts require SSO only.
+    #
+    # Note: the token is embedded in the generated unit (and in the nginx
+    # vhost's header), so it ends up in the world-readable nix store.  Treat it
+    # as a LAN-only convenience credential; keep anything genuinely secret in
+    # CONFIG.ENV_FILE (/run/secrets/env_file, root-only at runtime).
     restartToken = lib.mkOption {
       type = lib.types.str;
       default = "";
-      description = "Token accepted by POST /api/restart in place of X-WEBAUTH-USER.";
+      apply = v: builtins.replaceStrings [ "\n" "\r" ] [ "" "" ] v;
+      description = ''
+        Token accepted by POST /api/restart in place of X-WEBAUTH-USER.
+        Newlines are stripped: a token read from a secret file would otherwise
+        carry yq's trailing newline into an nginx header and into the
+        comparison, where it can never match.
+      '';
     };
 
     # The live hostname is shown in the header regardless.
