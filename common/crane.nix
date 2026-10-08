@@ -62,6 +62,11 @@
   sharedCrateManifest = name: ../common-rs + "/${name}/Cargo.toml";
 
   # `src` with the named shared crates copied in (real sources).
+  #
+  # The git-ignored `common-rs` symlink a crate carries for local cargo work is
+  # part of the git tree once staged, and `cp -a` copies it as a *symlink* —
+  # pointing at a path that does not exist inside the store tree.  So clear it
+  # out first and build the directory from scratch.
   withSharedCrates = {pname, src, names}: let
     copies = lib.concatMapStringsSep "\n" (n: ''
       mkdir -p $out/common-rs
@@ -74,6 +79,7 @@
       # Store paths are read-only and cp -a preserves the mode, so make the
       # copy writable before adding anything to it.
       chmod -R u+w $out
+      rm -rf $out/common-rs
       ${copies}
     '';
 
@@ -91,6 +97,7 @@
       mkdir -p $out
       cp -a ${src}/. $out/
       chmod -R u+w $out
+      rm -rf $out/common-rs
       ${stubs}
     '';
 

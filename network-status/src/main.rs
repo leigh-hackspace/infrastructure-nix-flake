@@ -34,6 +34,7 @@
 //! Zero external crates (house style, see status-dashboard/): ssh goes
 //! through the `ssh` binary, JSON is hand-rolled, and the frontend is a
 //! prebuilt SolidJS + TypeScript SPA served as static files (--static-dir).
+//! The request/response plumbing is the shared in-repo `common-rs/web`.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::Write;
@@ -936,44 +937,14 @@ fn serve_static(static_dir: &Option<String>, path: &str) -> Option<(u16, String,
 }
 
 fn handle_client(mut stream: TcpStream, state: &State, args: &Args) {
-    use std::io::Read;
-    let mut buf = Vec::new();
-    let mut tmp = [0u8; 4096];
-    loop {
-        if buf.windows(4).any(|w| w == b"\r\n\r\n") {
-            break;
-        }
-        match stream.read(&mut tmp) {
-            Ok(0) => return,
-            Ok(n) => buf.extend_from_slice(&tmp[..n]),
-            Err(_) => return,
-        }
-        if buf.len() > 64 * 1024 {
-            return;
-        }
-    }
-
-    let head = String::from_utf8_lossy(&buf);
-    let mut lines = head.lines();
-    let request_line = lines.next().unwrap_or("");
-    let mut parts = request_line.split_whitespace();
-    let method = parts.next().unwrap_or("");
-    // Drop any query string so static routes resolve by path only.
-    let path = parts.next().unwrap_or("").split('?').next().unwrap_or("");
-
-    let (status, ctype, body) = route(method, path, state, args);
-    let reason = match status {
-        200 => "OK",
-        404 => "Not Found",
-        503 => "Service Unavailable",
-        _ => "OK",
+    let request = match common_web::read_request(&mut stream) {
+        Some(request) => request,
+        None => return,
     };
-    let head = format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n",
-        body.len()
-    );
-    let _ = stream.write_all(head.as_bytes());
-    let _ = stream.write_all(body.as_bytes());
+
+    // request.path() drops any query string so static routes resolve by path.
+    let (status, ctype, body) = route(&request.method, request.path(), state, args);
+    let _ = common_web::respond(&mut stream, status, &ctype, &body);
 }
 
 // ---------------------------------------------------------------------------

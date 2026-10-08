@@ -8,3 +8,4 @@ name = "network-status"
 path = "src/main.rs"
 
 [dependencies]
+common-web = { path = "./common-rs/web" }

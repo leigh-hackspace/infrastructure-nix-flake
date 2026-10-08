@@ -1,0 +1,11 @@
+[package]
+name = "common-web"
+version = "0.1.0"
+edition = "2021"
+
+# Shared hand-rolled HTTP/1.1 plumbing for the zero-external-crate servers
+# (status-dashboard, network-status).  Path dependency: see common/crane.nix
+# for how the shared source reaches the Nix build, and common-rs/web/src/lib.rs
+# for which behaviour won when the two copies disagreed.
+
+[dependencies]

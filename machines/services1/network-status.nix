@@ -50,6 +50,7 @@
     version = "0.1.0";
     src = ../../network-status;
     cargoLock = CRANE.lockFile ../../network-status/Cargo.lock;
+    sharedCrates = ["web"];
   };
 in {
   systemd.services.network-status = INFRA.mkNeverGiveUp {

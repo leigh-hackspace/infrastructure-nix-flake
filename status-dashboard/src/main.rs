@@ -22,7 +22,7 @@
 //! shelling out to `systemctl`, so the flake build needs no crates.io access.
 
 use std::collections::HashMap;
-use std::io::{Read, Write};
+use std::io::Read;
 use std::net::{TcpListener, TcpStream};
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
@@ -442,32 +442,6 @@ fn is_safe_unit(name: &str) -> bool {
             || name.ends_with(".timer"))
 }
 
-fn percent_decode(s: &str) -> String {
-    fn hex_val(b: u8) -> Option<u8> {
-        match b {
-            b'0'..=b'9' => Some(b - b'0'),
-            b'a'..=b'f' => Some(b - b'a' + 10),
-            b'A'..=b'F' => Some(b - b'A' + 10),
-            _ => None,
-        }
-    }
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let (Some(h), Some(l)) = (hex_val(bytes[i + 1]), hex_val(bytes[i + 2])) {
-                out.push(h * 16 + l);
-                i += 3;
-                continue;
-            }
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
 #[derive(Clone)]
 struct Args {
     title: String,
@@ -509,7 +483,7 @@ fn route(method: &str, path: &str, headers: &HashMap<String, String>, args: &Arg
         ),
         ("GET", "/api/status") => (200, "application/json".to_string(), status_payload(&args.mounts)),
         ("POST", _) if path.starts_with("/api/restart/") => {
-            let unit = percent_decode(&path["/api/restart/".len()..]);
+            let unit = common_web::percent_decode(&path["/api/restart/".len()..]);
             if !is_safe_unit(&unit) {
                 return (400, "application/json".to_string(), json_error("bad unit name"));
             }
@@ -558,52 +532,13 @@ fn route(method: &str, path: &str, headers: &HashMap<String, String>, args: &Arg
 }
 
 fn handle_client(mut stream: TcpStream, args: &Args) {
-    // Read the request head up to the blank line.
-    let mut buf = Vec::new();
-    let mut tmp = [0u8; 4096];
-    loop {
-        if buf.windows(4).any(|w| w == b"\r\n\r\n") {
-            break;
-        }
-        match stream.read(&mut tmp) {
-            Ok(0) => return,
-            Ok(n) => buf.extend_from_slice(&tmp[..n]),
-            Err(_) => return,
-        }
-        if buf.len() > 64 * 1024 {
-            return; // unreasonably large head
-        }
-    }
-
-    let head = String::from_utf8_lossy(&buf);
-    let mut lines = head.lines();
-    let request_line = lines.next().unwrap_or("");
-    let mut parts = request_line.split_whitespace();
-    let method = parts.next().unwrap_or("");
-    let path = parts.next().unwrap_or("");
-
-    let mut headers: HashMap<String, String> = HashMap::new();
-    for line in lines {
-        if let Some((key, value)) = line.split_once(':') {
-            headers.insert(key.trim().to_ascii_lowercase(), value.trim().to_string());
-        }
-    }
-
-    let (status, ctype, body) = route(method, path, &headers, args);
-    let reason = match status {
-        200 => "OK",
-        400 => "Bad Request",
-        403 => "Forbidden",
-        404 => "Not Found",
-        500 => "Internal Server Error",
-        _ => "OK",
+    let request = match common_web::read_request(&mut stream) {
+        Some(request) => request,
+        None => return,
     };
-    let head = format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n",
-        body.len()
-    );
-    let _ = stream.write_all(head.as_bytes());
-    let _ = stream.write_all(body.as_bytes());
+
+    let (status, ctype, body) = route(&request.method, request.path(), &request.headers, args);
+    let _ = common_web::respond(&mut stream, status, &ctype, &body);
 }
 
 // ---------------------------------------------------------------------------

@@ -33,6 +33,7 @@ let
     version = "0.1.0";
     src = ../status-dashboard;
     cargoLock = CRANE.lockFile ../status-dashboard/Cargo.lock;
+    sharedCrates = ["web"];
   };
 in
 {

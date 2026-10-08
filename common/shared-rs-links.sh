@@ -17,7 +17,7 @@ if [ ! -w "$root" ] || [ ! -d "$root/common-rs" ]; then
     exit 0
 fi
 
-for crate in dns-sync moonraker-exporter filestore gocardless-dashboard frigate-monitor; do
+for crate in dns-sync moonraker-exporter filestore gocardless-dashboard frigate-monitor status-dashboard network-status; do
     ln -sfn ../common-rs "$root/$crate/common-rs"
 done
 
