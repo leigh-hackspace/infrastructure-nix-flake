@@ -8,6 +8,11 @@
 # Panel helpers below keep the individual dashboards compact; everything
 # else is plain Grafana dashboard JSON.
 let
+  # The klippy / print_stats state tables, read out of the exporter's own Rust
+  # arrays (lib/printer-states.nix).  The panels and the Prometheus alert rules
+  # both come from there, so the number -> label tables cannot drift.
+  PRINTER = import ../lib/printer-states.nix;
+
   DS = {
     type = "prometheus";
     uid = "prometheus";
@@ -116,9 +121,9 @@ let
   orange = "orange";
   red = "red";
 
-  # Stat tile that renders a numeric state code as text. `mapping` is
-  # { code = "label" } — keep the tables in sync with the exporter
-  # (moonraker-exporter/src/main.rs).
+  # Stat tile that renders a numeric state code as text.  `mapping` is
+  # { code = "label" }; for the printer states it comes from the exporter itself
+  # (PRINTER above), not from a hand-written table.
   stateStat = {
     id,
     x,
@@ -542,13 +547,7 @@ in {
         x = 0;
         y = 0;
         title = "blue · Klipper";
-        mapping = {
-          "0" = "startup";
-          "1" = "ready";
-          "2" = "error";
-          "3" = "shutdown";
-          "4" = "disconnected";
-        };
+        mapping = PRINTER.klippy.mapping;
         target = "moonraker_klippy_state{printer=\"blue\"}";
       })
       (stateStat {
@@ -556,14 +555,7 @@ in {
         x = 4;
         y = 0;
         title = "blue · Job";
-        mapping = {
-          "0" = "standby";
-          "1" = "printing";
-          "2" = "paused";
-          "3" = "complete";
-          "4" = "cancelled";
-          "5" = "error";
-        };
+        mapping = PRINTER.print.mapping;
         target = "moonraker_print_state{printer=\"blue\"}";
       })
       (st {
@@ -634,13 +626,7 @@ in {
         x = 0;
         y = 4;
         title = "lime · Klipper";
-        mapping = {
-          "0" = "startup";
-          "1" = "ready";
-          "2" = "error";
-          "3" = "shutdown";
-          "4" = "disconnected";
-        };
+        mapping = PRINTER.klippy.mapping;
         target = "moonraker_klippy_state{printer=\"lime\"}";
       })
       (stateStat {
@@ -648,14 +634,7 @@ in {
         x = 4;
         y = 4;
         title = "lime · Job";
-        mapping = {
-          "0" = "standby";
-          "1" = "printing";
-          "2" = "paused";
-          "3" = "complete";
-          "4" = "cancelled";
-          "5" = "error";
-        };
+        mapping = PRINTER.print.mapping;
         target = "moonraker_print_state{printer=\"lime\"}";
       })
       (st {

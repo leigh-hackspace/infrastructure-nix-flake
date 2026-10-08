@@ -264,11 +264,11 @@ update-pkgs:
 # --- filestore headless-browser test suite ---
 
 # Nix-level checks: the flake evaluates, both machines' option assertions hold,
-# the hand-rolled config serializers match their expectations, and every tracked
-# .nix file is alejandra-clean.  Fast (evaluation only, no compilation).  The
-# rest of the test surface: `just test` (cargo tests), `just clippy` (lints),
-# `just filestore-test` (headless-browser suite) and `just check-build` (the
-# deploy-readiness build).
+# the hand-rolled config serializers and the generated printer-state tables match
+# their expectations, and every tracked .nix file is alejandra-clean.  Fast
+# (evaluation only, no compilation).  The rest of the test surface: `just test`
+# (cargo tests), `just clippy` (lints), `just filestore-test` (headless-browser
+# suite) and `just check-build` (the deploy-readiness build).
 check:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -276,6 +276,8 @@ check:
     nix flake check
     echo "=== config-to-gitlab assertions"
     nix eval --impure --raw -f machines/services1/lib/check-config-to-gitlab.nix
+    echo "=== printer-state tables (exporter <-> dashboards/alerts)"
+    nix eval --impure --raw -f machines/services1/lib/check-printer-states.nix
     echo "=== alejandra --check"
     just fmt-check
 

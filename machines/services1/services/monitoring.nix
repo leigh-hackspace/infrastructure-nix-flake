@@ -19,6 +19,10 @@ let
   CONFIG = import ../config.nix;
   mkIntVhost = import ../lib/nginx-int-vhost-helper.nix {inherit lib;};
 
+  # Printer state enums (klippy / print_stats) come from the exporter's own
+  # arrays, so the alert numbers below are the exporter's, not a copy.
+  PRINTER = import ../lib/printer-states.nix;
+
   PROM_PORT = 9091;
 
   dashboards = import ./monitoring-dashboards.nix {inherit lib;};
@@ -117,14 +121,14 @@ let
               }
               {
                 alert = "KlipperError";
-                expr = "moonraker_klippy_state{state=\"error\"} == 2";
+                expr = "moonraker_klippy_state{state=\"error\"} == ${builtins.toString PRINTER.klippy.code.error}";
                 for = "10m";
                 labels.severity = "warning";
                 annotations.summary = "Klipper is in error state on {{ $labels.printer }}";
               }
               {
                 alert = "KlipperShutdown";
-                expr = "moonraker_klippy_state{state=\"shutdown\"} == 3";
+                expr = "moonraker_klippy_state{state=\"shutdown\"} == ${builtins.toString PRINTER.klippy.code.shutdown}";
                 for = "5m";
                 labels.severity = "critical";
                 annotations.summary = "Klipper is in shutdown state on {{ $labels.printer }}";

@@ -22,13 +22,15 @@
 //! `/etc/machine-id` and DHCPv6 DUID, so the `3d-*` names advertised each
 //! other's IPv6 addresses (lime's identity was regenerated 2026-10-03).
 //!
-//! State enums (numeric value carries the label; dashboards map number ->
-//! text, keep these tables in sync with monitoring-dashboards.nix):
-//!
-//! ```text
-//! klippy:   0 startup, 1 ready, 2 error, 3 shutdown, 4 disconnected
-//! print:    0 standby, 1 printing, 2 paused, 3 complete, 4 cancelled, 5 error
-//! ```
+//! State enums: the numeric value of `moonraker_klippy_state` /
+//! `moonraker_print_state` is the index of the label into `KLIPPY_STATES` /
+//! `PRINT_STATES` below (the label is also carried as a `state=` tag).  The
+//! Grafana value mappings and the Prometheus alert rules are *generated* from
+//! these two arrays — machines/services1/lib/printer-states.nix reads them out
+//! of this file at eval time — so the exporter and the dashboards cannot drift.
+//! If you reorder or add to an array, the alert rule numbers and the dashboard
+//! labels follow automatically; if the arrays stop parsing, evaluation fails
+//! loudly (`just check`).
 
 use common_json as json;
 
@@ -64,11 +66,11 @@ fn main() {
             "--printer" => match args.next() {
                 Some(v) => match v.split_once('=') {
                     Some((name, url)) => {
-                        let hostport = url
-                            .strip_prefix("http://")
-                            .unwrap_or(url)
-                            .to_string();
-                        printers.push(Printer { name: name.to_string(), hostport });
+                        let hostport = url.strip_prefix("http://").unwrap_or(url).to_string();
+                        printers.push(Printer {
+                            name: name.to_string(),
+                            hostport,
+                        });
                     }
                     None => usage("--printer expects NAME=http://host:port"),
                 },
@@ -83,11 +85,10 @@ fn main() {
         usage("at least one --printer is required");
     }
 
-    let listener = TcpListener::bind(&listen)
-        .unwrap_or_else(|e| {
-            eprintln!("cannot bind {listen}: {e}");
-            std::process::exit(1);
-        });
+    let listener = TcpListener::bind(&listen).unwrap_or_else(|e| {
+        eprintln!("cannot bind {listen}: {e}");
+        std::process::exit(1);
+    });
 
     for conn in listener.incoming() {
         match conn {
@@ -185,26 +186,30 @@ fn emit(out: &mut Vec<String>, printer: &str, name: &str, extra: &str, value: im
     out.push(format!("{name}{{printer=\"{printer}\"{extra}}} {value}"));
 }
 
-fn klippy_code(state: &str) -> i64 {
-    match state {
-        "startup" => 0,
-        "ready" => 1,
-        "error" => 2,
-        "shutdown" => 3,
-        "disconnected" => 4,
-        _ => 99,
-    }
-}
+/// klippy states, in the order Moonraker reports them.  Index == metric value.
+/// Parsed out of this file by machines/services1/lib/printer-states.nix: keep
+/// the literal `&["a", "b"]` shape on one line and keep the name.
+const KLIPPY_STATES: &[&str] = &["startup", "ready", "error", "shutdown", "disconnected"];
 
-fn print_code(state: &str) -> i64 {
-    match state {
-        "standby" => 0,
-        "printing" => 1,
-        "paused" => 2,
-        "complete" => 3,
-        "cancelled" => 4,
-        "error" => 5,
-        _ => 99,
+/// print_stats states, in the order Moonraker reports them.  Index == metric
+/// value.  Same parsing contract as KLIPPY_STATES.
+const PRINT_STATES: &[&str] = &[
+    "standby",
+    "printing",
+    "paused",
+    "complete",
+    "cancelled",
+    "error",
+];
+
+/// The enum value for a state label: its position in the table, or 99 for a
+/// state Moonraker has started reporting that this exporter does not know
+/// (a new upstream state then shows up as 99 rather than silently colliding
+/// with an existing one).
+fn state_code(states: &[&str], state: &str) -> i64 {
+    match states.iter().position(|s| *s == state) {
+        Some(i) => i as i64,
+        None => 99,
     }
 }
 
@@ -229,14 +234,18 @@ fn scrape(printer: &Printer, out: &mut Vec<String>) {
         p,
         "moonraker_klippy_state",
         &format!("state=\"{}\"", esc(klippy_state)),
-        klippy_code(klippy_state),
+        state_code(KLIPPY_STATES, klippy_state),
     );
     emit(
         out,
         p,
         "moonraker_klippy_connected",
         "",
-        if info.at(&["result", "klippy_connected"]).and_then(Json::as_bool) == Some(true) {
+        if info
+            .at(&["result", "klippy_connected"])
+            .and_then(Json::as_bool)
+            == Some(true)
+        {
             1
         } else {
             0
@@ -257,11 +266,16 @@ fn scrape(printer: &Printer, out: &mut Vec<String>) {
 
     // /printer/objects/query — temps + current print state. Works even when
     // klippy is in its error state (returns last-known object values).
-    if let Some(query) = api(printer, "/printer/objects/query?extruder&heater_bed&print_stats&mcu") {
+    if let Some(query) = api(
+        printer,
+        "/printer/objects/query?extruder&heater_bed&print_stats&mcu",
+    ) {
         let status = query.at(&["result", "status"]);
         if let Some(status) = status {
             for heater in ["extruder", "heater_bed"] {
-                let Some(obj) = status.get(heater) else { continue };
+                let Some(obj) = status.get(heater) else {
+                    continue;
+                };
                 let label = format!("heater=\"{heater}\"");
                 if let Some(t) = obj.get("temperature").and_then(Json::as_f64) {
                     emit(out, p, "moonraker_heater_temperature", &label, t);
@@ -278,7 +292,7 @@ fn scrape(printer: &Printer, out: &mut Vec<String>) {
                         p,
                         "moonraker_print_state",
                         &format!("state=\"{}\"", esc(state)),
-                        print_code(state),
+                        state_code(PRINT_STATES, state),
                     );
                 }
                 if let Some(file) = ps.get("filename").and_then(Json::as_str) {
@@ -321,13 +335,7 @@ fn scrape(printer: &Printer, out: &mut Vec<String>) {
                         .at(&["mcu_constants", "SERIAL_BAUD"])
                         .and_then(Json::as_u64)
                     {
-                        emit(
-                            out,
-                            p,
-                            "moonraker_mcu_info",
-                            &format!("baud=\"{baud}\""),
-                            1,
-                        );
+                        emit(out, p, "moonraker_mcu_info", &format!("baud=\"{baud}\""), 1);
                     }
                     match mcu.get("last_stats") {
                         Some(ls) => {
@@ -383,7 +391,13 @@ fn scrape(printer: &Printer, out: &mut Vec<String>) {
                     emit(out, p, "moonraker_host_memory_used_bytes", "", v * 1024.0);
                 }
                 if let Some(v) = mem.get("available").and_then(Json::as_f64) {
-                    emit(out, p, "moonraker_host_memory_available_bytes", "", v * 1024.0);
+                    emit(
+                        out,
+                        p,
+                        "moonraker_host_memory_available_bytes",
+                        "",
+                        v * 1024.0,
+                    );
                 }
             }
             // Raspberry Pi SoC temperature (whole-board heat).
@@ -392,7 +406,9 @@ fn scrape(printer: &Printer, out: &mut Vec<String>) {
             }
         }
         // Moonraker process cpu/memory (latest sample).
-        let samples = ps.at(&["result", "moonraker_stats"]).and_then(Json::as_array);
+        let samples = ps
+            .at(&["result", "moonraker_stats"])
+            .and_then(Json::as_array);
         if let Some(samples) = samples {
             if let Some(last) = samples.last() {
                 if let Some(cpu) = last.get("cpu_usage").and_then(Json::as_f64) {
@@ -418,11 +434,7 @@ fn scrape(printer: &Printer, out: &mut Vec<String>) {
                 out,
                 p,
                 "moonraker_host_info",
-                &format!(
-                    "model=\"{}\",serial=\"{}\"",
-                    esc(model),
-                    esc(serial)
-                ),
+                &format!("model=\"{}\",serial=\"{}\"", esc(model), esc(serial)),
                 1,
             );
             // Total RAM already comes from proc_stats' system_memory.
@@ -447,4 +459,64 @@ fn usage(msg: &str) -> ! {
         "usage: moonraker-exporter [--listen 127.0.0.1:9701] --printer NAME=http://host:port ..."
     );
     std::process::exit(2);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The numbers here are what the deployed Grafana dashboards and Prometheus
+    // alert rules were built with.  They are generated from the tables (see
+    // machines/services1/lib/printer-states.nix), so this test exists only to
+    // catch an accidental reorder/relabel of a table: that would silently
+    // renumber every panel and alert rule.
+    #[test]
+    fn klippy_codes_are_the_table_positions() {
+        let expected = [
+            ("startup", 0),
+            ("ready", 1),
+            ("error", 2),
+            ("shutdown", 3),
+            ("disconnected", 4),
+        ];
+        for (label, code) in expected {
+            assert_eq!(state_code(KLIPPY_STATES, label), code, "klippy {label}");
+        }
+        assert_eq!(KLIPPY_STATES.len(), expected.len());
+    }
+
+    #[test]
+    fn print_codes_are_the_table_positions() {
+        let expected = [
+            ("standby", 0),
+            ("printing", 1),
+            ("paused", 2),
+            ("complete", 3),
+            ("cancelled", 4),
+            ("error", 5),
+        ];
+        for (label, code) in expected {
+            assert_eq!(state_code(PRINT_STATES, label), code, "print {label}");
+        }
+        assert_eq!(PRINT_STATES.len(), expected.len());
+    }
+
+    // A state Moonraker learns about must not collide with a known one.
+    #[test]
+    fn unknown_state_codes_to_99() {
+        assert_eq!(state_code(KLIPPY_STATES, "restarting"), 99);
+        assert_eq!(state_code(PRINT_STATES, "cancelled_by_operator"), 99);
+    }
+
+    // A duplicate label would make two states share a metric value.
+    #[test]
+    fn tables_have_no_duplicate_labels() {
+        for table in [KLIPPY_STATES, PRINT_STATES] {
+            for (i, a) in table.iter().enumerate() {
+                for b in &table[i + 1..] {
+                    assert_ne!(a, b, "duplicate label in state table: {a}");
+                }
+            }
+        }
+    }
 }
