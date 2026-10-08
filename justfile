@@ -9,11 +9,16 @@ reboot:
     sync
     sudo bash -c "echo b > /proc/sysrq-trigger"
 
+# Both recipes chain `sudo nixos-confirm` in the same shell invocation: both
+# machines set system.autoRollback.enable = true, so the auto-rollback timer
+# rolls back to the last confirmed generation within a minute or two of a
+# switch.  Confirming in a later session can land _after_ the rollback and mark
+# the old generation good, which defeats the point (see AGENTS.md, GOLDEN RULE).
 boot:
-    sudo nixos-rebuild boot --flake .
+    sudo nixos-rebuild boot --flake . && sudo nixos-confirm
 
 switch:
-    sudo nixos-rebuild switch --flake .
+    sudo nixos-rebuild switch --flake . && sudo nixos-confirm
 
 # --- Rust crates (toolchain from `nix develop`: cargo/rustc/rustfmt/clippy +
 # --- the pinned wasm-bindgen-cli) ---
