@@ -571,19 +571,26 @@ The pinned `wasm-bindgen-cli` (0.2.128, which must match the wasm-bindgen crate 
 each frontend's Cargo.lock exactly) and the wasm build recipe live in
 `common/crane.nix` as `CRANE.wasmSpa` instead of being duplicated per machine.
 
-## frigate-monitor web UI — local development
+## SPA frontends — local development
 
-The Dioxus SPA in `frigate-monitor/frontend/` is built to wasm and embedded into
-the service as `frontendDist` (see `machines/aibox/frigate-monitor.nix`).
-`frigate-monitor/frontend/dist/` is **git-ignored and never committed** — the
-flake rebuilds it at deploy time. To iterate locally:
+The same recipe applies to all three Dioxus SPAs (`frigate-monitor/frontend/`,
+`filestore/frontend/`, `gocardless-dashboard/frontend/`): each is built to wasm
+and embedded into its service as `frontendDist` (see
+`machines/aibox/frigate-monitor.nix`, `machines/services1/services/filestore.nix`,
+`machines/services1/services/gocardless-dashboard.nix`). Their `dist/`
+directories are **git-ignored and never committed** — the flake rebuilds them at
+deploy time. To iterate locally:
 
 ```bash
-nix develop            # toolchain: cargo/rustc/rustfmt + lld + just + git
-just build-frontend    # = cd frigate-monitor/frontend && nix develop --command bash build.sh
-# or, equivalently:
+nix develop            # toolchain: cargo/rustc/rustfmt + lld + just + git + alejandra
+just build-frontend                    # all three SPAs
+just build-frontend filestore          # just one
+# or, equivalently, per frontend:
 cd frigate-monitor/frontend && nix develop --command bash build.sh
 ```
+
+(`network-status/frontend/` is the exception — SolidJS + npm, and its `dist/` is
+committed; see the network-status bullet above and `just network-status-frontend`.)
 
 The devshell is self-contained: `nix develop` ships the pinned
 `wasm-bindgen-cli 0.2.128` as a derivation (`CRANE.wasmBindgenCli`, the same one

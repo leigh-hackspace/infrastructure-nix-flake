@@ -72,16 +72,65 @@ clippy:
       crates="common-rs/json common-rs/oidc common-rs/build-spa common-rs/web dns-sync moonraker-exporter status-dashboard network-status filestore gocardless-dashboard frigate-monitor"
       for c in $crates; do echo "=== clippy $c"; (cd $c && cargo clippy --offline --all-targets 2>&1 | grep -vE "^(Compiling|Checking|Finished|    Finished)" | head -40); done'
 
-# --- frontend (frigate-monitor web UI) ---
+# --- frontend (the three Dioxus SPAs) ---
 
-# Rebuild the Dioxus SPA into frigate-monitor/frontend/dist using the
-# devshell's toolchain (cargo/rustc/lld + pinned wasm-bindgen-cli 0.2.128).
-# Same toolchain the flake uses for its frontendDist; dist/ is git-ignored
-# and rebuilt by the flake on deploy, so this is just for local iteration.
-build-frontend:
+# Rebuild a Dioxus SPA into its frontend/dist using the devshell's toolchain
+# (cargo/rustc/lld + the pinned wasm-bindgen-cli).  Same recipe the flake runs
+# (common/frontend-build-spa.sh vs CRANE.wasmSpa), so the local dist/ matches
+# the one it embeds; those dist/ directories are git-ignored and rebuilt at
+# deploy time, so this is only for local iteration.
+#
+#   just build-frontend                 # all three
+#   just build-frontend filestore       # one of them
+#   just build-frontend crate=filestore # ditto, for passing flags after it
+build-frontend crate="all":
     #!/usr/bin/env bash
     set -euo pipefail
-    nix develop --command bash -c 'cd frigate-monitor/frontend && exec ./build.sh'
+    # The parameter arrives through just's quote() — shell-quoted, and the case
+    # below is a whitelist anyway.
+    case {{quote(crate)}} in
+        all) crates="frigate-monitor filestore gocardless-dashboard" ;;
+        *) crates={{quote(crate)}} ;;
+    esac
+    for c in $crates; do
+        if [ ! -f "$c/frontend/build.sh" ]; then
+            echo "no $c/frontend/build.sh — expected one of: frigate-monitor filestore gocardless-dashboard all" >&2
+            exit 2
+        fi
+        echo "=== build-frontend $c"
+        nix develop --command bash -c "exec ./$c/frontend/build.sh"
+    done
+
+# network-status' SPA is the exception: it is SolidJS + esbuild, not Dioxus, and
+# its npm deps are not nixpkgs-cached, so the flake cannot rebuild it offline and
+# network-status/frontend/dist is COMMITTED (see the note in
+# machines/services1/network-status.nix).  Build it with npm, then commit the
+# result; `just network-status-dist-check` catches a bundle that has drifted from
+# src/.
+network-status-frontend:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd network-status/frontend
+    npm install
+    npm run build
+
+# Fails if the committed network-status bundle is not what `npm run build`
+# produces from the current src/ — the one drift the committed dist/ allows.
+network-status-dist-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd network-status/frontend
+    if [ ! -d node_modules ]; then
+        echo "node_modules missing — run 'npm install' here once (or 'just network-status-frontend')" >&2
+        exit 2
+    fi
+    npm run build >/dev/null
+    if ! git diff --quiet -- dist; then
+        echo "network-status/frontend/dist has drifted from src/ — commit the rebuild:" >&2
+        git --no-pager diff --stat -- dist
+        exit 1
+    fi
+    echo "network-status dist/ matches a fresh build"
 
 
 # --- DNS sync (keeps router dnsmasq + DigitalOcean DNS in step with the
