@@ -336,21 +336,18 @@ inherited.
   are now one script (`common/frontend-build-spa.sh`), so the recipe only needs
   an argument.
 - ~~The devshell runs `cargo install -f wasm-bindgen-cli` on **every** `nix
-  develop` entry (network + ~1 min). `common/crane.nix` already builds the
-  pinned 0.2.128 CLI as a derivation — put `CRANE.wasmBindgenCli` in the
-  devshell `packages` instead.~~ Done 2026-10-08: the devshell ships
-  `CRANE.wasmBindgenCli` (already in the store from the SPA derivations) and
-  `rust.clippy`; the shellHook no longer touches the network. `just clippy` and
-  `just test` are new. The pre-existing lints are fixed except two
-  `needless_range_loop`s in frigate-monitor's CV code (`detect.rs`,
-  `imgutil.rs`), left alone deliberately: that code has no tests and the
-  suggested iterator rewrite is the kind of change that needs them.
-- `switch-netboot` mutates `flake.lock` (`nix flake update pi-room-sys`) as a
-  side effect of a deploy recipe. Split it into its own recipe.
-- `just reboot` is a sysrq hard reboot listed second in the recipe list. Rename
-  to `hard-reboot` so it is less likely to be hit by tab completion.
+  develop` entry (network + ~1 min).~~ Done 2026-10-08 (see the devshell note
+  above).
+- ~~`switch-netboot` mutates `flake.lock` (`nix flake update pi-room-sys`) as a
+  side effect of a deploy recipe. Split it into its own recipe.~~ Done
+  2026-10-08: `just update-netboot-input` is the pin move; `switch-netboot`
+  no longer touches `flake.lock`.
+- ~~`just reboot` is a sysrq hard reboot listed second in the recipe list.
+  Rename to `hard-reboot` so it is less likely to be hit by tab completion.~~
+  Done 2026-10-08.
 - `machines/services1/lib/config-to-gitlab.nix` is a hand-rolled Nix→GitLab
   config serializer; if it is still used, it needs tests, otherwise delete it.
+  (It **is** used — `machines/services1/services/gitlab.nix:6` — so: tests.)
 
 ---
 

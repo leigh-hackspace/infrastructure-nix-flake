@@ -5,7 +5,10 @@ default:
 
 SOPS_KEY_FILE := "{{env_var_or_error('HOME')}}/.config/sops/age/keys.txt"
 
-reboot:
+# Hard reboot via the sysrq trigger — no sync of the running system beyond
+# `sync`, no unmount, no orderly shutdown.  Named so it is unlikely to be hit by
+# tab completion where `reboot`/`switch` are what you meant.
+hard-reboot:
     sync
     sudo bash -c "echo b > /proc/sysrq-trigger"
 
@@ -89,11 +92,18 @@ dns-sync-prune:
 router-known-hosts:
     ssh -i ~/.ssh/agent-hop-key -o BatchMode=yes root@10.3.1.1 'sh -c "ssh-keyscan -t ed25519,ecdsa,rsa 10.3.1.1 2>/dev/null"'
 
+# Pull the netboot input (pi-room-sys) to its latest revision.  Split out of
+# switch-netboot: a deploy recipe silently rewriting flake.lock is a side effect
+# nobody expects, and the pin should be an explicit act.
+update-netboot-input:
+    nix flake update pi-room-sys
+
+# Rebuild+switch for the netboot setup, then reboot the netbooted clients.
+# Assumes the pi-room-sys pin is already right — run update-netboot-input first
+# if you mean to move it.
 switch-netboot:
     #!/usr/bin/env bash
     set -euo pipefail
-
-    nix flake update pi-room-sys
 
     sudo bash -c 'umount -f -l /exports/netboot-squashfs | true'
     sudo nixos-rebuild switch --flake .
