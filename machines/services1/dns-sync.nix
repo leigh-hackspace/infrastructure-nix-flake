@@ -45,19 +45,9 @@
   };
 
   # Every *.int.leighhack.org name this nginx serves (vhost names + aliases).
-  intNames = lib.sort (a: b: a < b) (
-    lib.unique (
-      lib.filter (n: lib.hasSuffix ".int.leighhack.org" n) (
-        lib.flatten (
-          lib.mapAttrsToList (
-            name: vh:
-              [name] ++ (lib.toList (vh.serverAliases or []))
-          )
-          config.services.nginx.virtualHosts
-        )
-      )
-    )
-  );
+  # Shared with the gatus endpoint check: see lib/int-vhost-names.nix.
+  intVhostNames = import ./lib/int-vhost-names.nix {inherit lib;};
+  intNames = intVhostNames config.services.nginx.virtualHosts;
 in {
   environment.etc."dns-sync/expected-int-names".text =
     lib.concatStringsSep "\n" intNames + "\n";

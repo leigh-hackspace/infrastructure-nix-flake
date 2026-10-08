@@ -22,9 +22,30 @@
 let
   CONFIG = import ../config.nix;
   mkIntVhost = import ../lib/nginx-int-vhost-helper.nix {inherit lib;};
+  intVhostNames = import ../lib/int-vhost-names.nix {inherit lib;};
 
-  # Standard Slack alert, attached to every endpoint. ALERT_COUNT is the
-  # number of consecutive failed checks for that endpoint.
+  # Host of an https URL; null for http://, icmp://, tcp:// and friends.  Only
+  # https is checked: those are the vhosts this box terminates TLS for.  The
+  # http:// *.int endpoints (3d-*, woodwork) are dnsmasq hosts on the hackspace
+  # LAN, not vhosts here.
+  httpsHost = url: let
+    m = builtins.match "https://([^/:]+).*" url;
+  in
+    if m == null
+    then null
+    else builtins.head m;
+
+  # https *.int endpoints that are not names this nginx serves; the assertion at
+  # the bottom of this file requires this to be empty.
+  unbackedIntEndpoints = let
+    hosts =
+      builtins.filter (h: h != null && lib.hasSuffix ".int.leighhack.org" h)
+      (map (e: httpsHost (e.url or "")) (config.services.gatus.settings.endpoints or []));
+  in
+    lib.subtractLists (intVhostNames config.services.nginx.virtualHosts) hosts;
+
+  # Standard Slack alert, attached to every endpoint.
+  # ALERT_COUNT is the number of consecutive failed checks for that endpoint.
   slackAlert = {
     type = "slack";
     description = "down";
@@ -96,6 +117,29 @@ let
       alerts = [slackAlert];
     };
 in {
+  # --- drift guard (docs/repo-audit-2026-10-07.md §3.7) ----------------------
+  #
+  # Gatus, the Prometheus alert rules and the status dashboard all model "is this
+  # thing up", and this endpoint list is the one part of that which is
+  # hand-maintained.  Generating it from `services.nginx.virtualHosts` (the
+  # attrset dns-sync already derives the expected DNS names from) is deliberately
+  # *not* done: the list mixes nginx-served apps with ICMP/TCP targets that are
+  # dnsmasq hosts rather than vhosts (cameras, switches, the printers, the NAS),
+  # it watches public names too, and every entry carries its own group and status
+  # condition.  Auto-generating would invent checks for things that are not meant
+  # to be watched and quietly change what alerts fire.
+  #
+  # What must not drift is the other direction: an https `*.int.leighhack.org`
+  # endpoint has to be a name this box's nginx actually serves.  Otherwise a
+  # renamed or removed app leaves gatus alerting on a name that no longer exists
+  # here, forever.  That is asserted below, on every eval.
+  assertions = [
+    {
+      assertion = unbackedIntEndpoints == [];
+      message = "gatus: these https *.int.leighhack.org endpoints are not vhosts this nginx serves: ${builtins.toJSON unbackedIntEndpoints}.  The app was renamed or removed and its gatus endpoint was left behind — remove or retarget it in machines/services1/services/gatus.nix.";
+    }
+  ];
+
   services.gatus = {
     enable = true;
     settings = {
