@@ -9,7 +9,6 @@ flakeInputs: {
     ./ai.nix
     ./alexandria.nix
     ./configuration.nix
-    ./containers.nix
     ./frigate-monitor.nix
     ./hardware-configuration.nix
     ./immich.nix

@@ -1,9 +1,10 @@
+# Podman and the "never give up" policy for every oci-containers unit.
+#
+# Imported for both machines in flake.nix.  The per-machine copies of this file
+# were byte-identical apart from services1's container-update timer, which now
+# lives in machines/services1/containers.nix.
+{ config, lib, INFRA, ... }:
 {
-  lib,
-  config,
-  INFRA,
-  ...
-}: {
   virtualisation.podman = {
     enable = true;
     autoPrune.enable = true;
@@ -21,9 +22,8 @@
   # to come back after a power cut.  Force Restart=always and disable the
   # rate limit so containers retry forever.
   #
-  # Shared with machines/services1/containers.nix; note that the
-  # nixos-utils.containers module imported in flake.nix is the *container
-  # update* timer, not this policy.
+  # Note that the nixos-utils.containers module imported in flake.nix is the
+  # *container image update* timer, not this policy.
   systemd.services = lib.mapAttrs' (name: _: lib.nameValuePair "podman-${name}" INFRA.mkNeverGiveUpOverride)
     config.virtualisation.oci-containers.containers;
 }

@@ -1,37 +1,12 @@
-{
-  config,
-  lib,
-  pkgs,
-  modulesPath,
-  INFRA,
-  ...
-}:
-
-let
-  CONFIG = import ./config.nix;
-in
+# Nightly container-image update (nixos-utils' containers module, imported for
+# both machines in flake.nix; the timer and the update script come from there).
+#
+# Podman itself, the oci-containers backend and the "never give up" restart
+# policy for container units live in common/containers.nix.
+{ config, lib, ... }:
 {
   system.updateContainers = {
     enable = true;
     webhookUrl = lib.strings.trim (builtins.readFile (config.sopsSecretText "slack_url"));
   };
-
-  virtualisation.podman = {
-    enable = true;
-    autoPrune.enable = true;
-    dockerCompat = true;
-    dockerSocket.enable = true;
-    defaultNetwork.settings.dns_enabled = true;
-  };
-
-  virtualisation.oci-containers.backend = "podman";
-
-  # OCI container services must never give up.  The default Restart policy
-  # from `oci-containers` is "on-failure", and systemd's start rate-limit
-  # (5 starts in 10s) permanently stops a unit after a handful of quick
-  # failures — e.g. a container that keeps failing while waiting for the NAS
-  # to come back after a power cut.  Force Restart=always and disable the
-  # rate limit so containers retry forever.
-  systemd.services = lib.mapAttrs' (name: _: lib.nameValuePair "podman-${name}" INFRA.mkNeverGiveUpOverride)
-    config.virtualisation.oci-containers.containers;
 }

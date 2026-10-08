@@ -78,6 +78,7 @@
               nixos-utils.nixosModules.containers
 
               ./common/sops.nix
+              ./common/containers.nix
               ./common/tools.nix
               ./common/users.nix
 
@@ -102,6 +103,7 @@
               nixos-utils.nixosModules.containers
 
               ./common/sops.nix
+              ./common/containers.nix
               ./common/tools.nix
               ./common/users.nix
 
