@@ -1,61 +1,16 @@
-# Edit this configuration file to define what should be installed on
-# your system.  Help is available in the configuration.nix(5) man page
-# and in the NixOS manual (accessible by running ‘nixos-help’).
+# aibox-specific system configuration.  The settings shared with services1
+# (timezone, i18n, keyboard, sudo, nix-ld, ssh, bootloader, autoRollback,
+# experimental-features) live in common/base.nix; keep this file to what is
+# specific to this box.
 {
-  system.autoRollback.enable = true;
+  imports = [ ../../common/base.nix ];
 
-  nix.settings.experimental-features = [
-    "nix-command"
-    "flakes"
-  ];
-
-  # Bootloader.
-  boot.loader.systemd-boot.enable = true;
-  boot.loader.efi.canTouchEfiVariables = true;
-
-  # Set your time zone.
-  time.timeZone = "Europe/London";
-
-  # Select internationalisation properties.
-  i18n.defaultLocale = "en_GB.UTF-8";
-
-  i18n.extraLocaleSettings = {
-    LC_ADDRESS = "en_GB.UTF-8";
-    LC_IDENTIFICATION = "en_GB.UTF-8";
-    LC_MEASUREMENT = "en_GB.UTF-8";
-    LC_MONETARY = "en_GB.UTF-8";
-    LC_NAME = "en_GB.UTF-8";
-    LC_NUMERIC = "en_GB.UTF-8";
-    LC_PAPER = "en_GB.UTF-8";
-    LC_TELEPHONE = "en_GB.UTF-8";
-    LC_TIME = "en_GB.UTF-8";
-  };
-
-  # Configure keymap in X11
-  services.xserver.xkb = {
-    layout = "gb";
-    variant = "";
-  };
-
-  # Configure console keymap
-  console.keyMap = "uk";
-
-  # Use sudo without password
-  security.sudo.wheelNeedsPassword = false;
-
-  # Enable automatic login for the user.
+  # This box is the desk machine as well as the AI/camera box: the user is
+  # logged in on the console without a password prompt.
   services.displayManager.autoLogin.enable = true;
   services.displayManager.autoLogin.user = "leigh-admin";
 
-  # Install firefox.
   programs.firefox.enable = true;
-
-  programs.nix-ld.enable = true;
-
-  # List services that you want to enable:
-
-  # Enable the OpenSSH daemon.
-  services.openssh.enable = true;
 
   # This value determines the NixOS release from which the default
   # settings for stateful data, like file locations and database versions

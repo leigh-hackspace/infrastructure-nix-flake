@@ -1,62 +1,21 @@
-# Edit this configuration file to define what should be installed on
-# your system.  Help is available in the configuration.nix(5) man page
-# and in the NixOS manual (accessible by running ‘nixos-help’).
+# services1-specific system configuration.  The settings shared with aibox
+# (timezone, i18n, keyboard, sudo, nix-ld, ssh, bootloader, autoRollback,
+# experimental-features) live in common/base.nix; keep this file to what is
+# specific to this box.
 {
   config,
   pkgs,
   ...
 }: {
+  imports = [ ../../common/base.nix ];
+
+  # This box builds packages that need to reach the network/NAS at build time
+  # (see common/sops.nix for the build-time secret decryption).
   nix.settings.sandbox = "relaxed";
 
-  system.autoRollback.enable = true;
-
-  nix.settings.experimental-features = [
-    "nix-command"
-    "flakes"
-  ];
-
-  # Bootloader.
-  boot.loader.systemd-boot.enable = true;
-  boot.loader.efi.canTouchEfiVariables = true;
-
-  # boot.kernelPackages = pkgs.linuxPackages_latest;
-  boot.extraModulePackages = [pkgs.linuxKernel.packages.linux_6_18.gasket];
-
-  # Set your time zone.
-  time.timeZone = "Europe/London";
-
-  # Select internationalisation properties.
-  i18n.defaultLocale = "en_GB.UTF-8";
-
-  i18n.extraLocaleSettings = {
-    LC_ADDRESS = "en_GB.UTF-8";
-    LC_IDENTIFICATION = "en_GB.UTF-8";
-    LC_MEASUREMENT = "en_GB.UTF-8";
-    LC_MONETARY = "en_GB.UTF-8";
-    LC_NAME = "en_GB.UTF-8";
-    LC_NUMERIC = "en_GB.UTF-8";
-    LC_PAPER = "en_GB.UTF-8";
-    LC_TELEPHONE = "en_GB.UTF-8";
-    LC_TIME = "en_GB.UTF-8";
-  };
-
-  # Configure keymap in X11
-  services.xserver.xkb = {
-    layout = "gb";
-    variant = "";
-  };
-
-  # Configure console keymap
-  console.keyMap = "uk";
-
-  security.sudo.wheelNeedsPassword = false;
-
-  programs.nix-ld.enable = true;
-
-  # List services that you want to enable:
-
-  # Enable the OpenSSH daemon.
-  services.openssh.enable = true;
+  # The gasket driver (Coral TPU) is not in the running kernel's package set,
+  # so pull it from the matching kernel's package set explicitly.
+  boot.extraModulePackages = [ pkgs.linuxKernel.packages.linux_6_18.gasket ];
 
   # This value determines the NixOS release from which the default
   # settings for stateful data, like file locations and database versions
