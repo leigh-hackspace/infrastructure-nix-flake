@@ -15,8 +15,9 @@
 #   kuma port  -> gatus TCP endpoint   (tcp: {} + [RESPONSE_TIME])
 # Kuma's three groups (Fabrication, Cameras, Network Switches) are kept via
 # gatus's `group` field. Alerting goes to the same #infra-alerts Slack
-# channel kuma used (alerting.slack.webhook-url below), firing after 2
-# consecutive failures and on recovery.
+# channel kuma used (alerting.slack.webhook-url below), firing after
+# `failure-threshold` consecutive failures and again on recovery
+# (`send-on-resolved`).
 #
 #   https://gatus.int.leighhack.org   (LAN/tailnet only, like kuma was)
 let
@@ -45,14 +46,38 @@ let
     lib.subtractLists (intVhostNames config.services.nginx.virtualHosts) hosts;
 
   # Standard Slack alert, attached to every endpoint.
-  # ALERT_COUNT is the number of consecutive failed checks for that endpoint.
+  #
+  # The two knobs that decide when a message goes out are failure-threshold
+  # (consecutive failed checks needed to fire) and success-threshold (consecutive
+  # successes needed to mark the incident resolved, which send-on-resolved then
+  # announces). gatus defaults them to 3 and 2; they are spelled out here so the
+  # debounce is explicit rather than inherited.
+  #
+  # There is no per-alert `condition` and no `snooze` in gatus 5.36.0 (see
+  # alerting/alert/alert.go) — yaml.v3 ignores unknown keys, so the
+  # `condition: ALERT_COUNT == 2` this file used to carry was silently dead config
+  # and the effective threshold was the default 3. Debouncing means the thresholds.
   slackAlert = {
     type = "slack";
     description = "down";
-    condition = "ALERT_COUNT == 2";
+    failure-threshold = 3;
+    success-threshold = 2;
     send-on-resolved = true;
-    snooze = "10m";
   };
+
+  # Same alert, debounced for sources that flap: the WiFi cameras. Measured over a
+  # week of gatus's own check log on the previous config, Cam 1 - Rack fired 14
+  # times and Cam 9 - Social Space 7, and nearly all of it was single-check blips
+  # (225 of Cam 1's 276 failure runs were 1 check long, 34 were 2). At
+  # failure-threshold 5 a blip never fires while a camera genuinely off for 5
+  # minutes still does, and success-threshold 3 stops the "resolved" message for a
+  # momentary bounce back that never reached anyone in the first place.
+  flappingSlackAlert =
+    slackAlert
+    // {
+      failure-threshold = 5;
+      success-threshold = 3;
+    };
 
   # HTTP check. `status` is the status-code condition (default: any 2xx).
   # `insecure` skips TLS verification (kuma "ignore TLS").
@@ -61,6 +86,7 @@ let
     url,
     status ? "[STATUS] >= 200 && [STATUS] < 300",
     group ? null,
+    alert ? slackAlert,
     insecure ? false,
   }:
     (lib.optionalAttrs (group != null) {inherit group;})
@@ -73,7 +99,7 @@ let
         status
         "[RESPONSE_TIME] < 5000"
       ];
-      alerts = [slackAlert];
+      alerts = [alert];
     }
     // (lib.optionalAttrs insecure {
       client."insecure-skip-verify" = true;
@@ -86,6 +112,7 @@ let
     name,
     url,
     group ? null,
+    alert ? slackAlert,
     max ? "1000",
   }:
     (lib.optionalAttrs (group != null) {inherit group;})
@@ -96,7 +123,7 @@ let
       interval = "60s";
       timeout = "10s";
       conditions = ["[RESPONSE_TIME] < ${max}"];
-      alerts = [slackAlert];
+      alerts = [alert];
     };
 
   # TCP port check. `url` is host:port (the tcp:// scheme is required for
@@ -105,6 +132,7 @@ let
     name,
     url,
     group ? null,
+    alert ? slackAlert,
   }:
     (lib.optionalAttrs (group != null) {inherit group;})
     // {
@@ -114,7 +142,7 @@ let
       interval = "60s";
       timeout = "10s";
       conditions = ["[RESPONSE_TIME] < 1000"];
-      alerts = [slackAlert];
+      alerts = [alert];
     };
 in {
   # --- drift guard (docs/repo-audit-2026-10-07.md §3.7) ----------------------
@@ -231,6 +259,8 @@ in {
         })
 
         # --- Cameras ---------------------------------------------------
+        # Frigate is the box itself, so it keeps the standard alert; everything
+        # below is a camera on WiFi and uses the debounced one.
         (mkHttp {
           name = "Frigate";
           url = "https://frigate.int.leighhack.org";
@@ -240,31 +270,37 @@ in {
           name = "Cam 1 - Rack";
           url = "cam1.int.leighhack.org";
           group = "Cameras";
+          alert = flappingSlackAlert;
         })
         (mkPing {
           name = "Cam 9 - Social Space";
           url = "cam9.int.leighhack.org";
           group = "Cameras";
+          alert = flappingSlackAlert;
         })
         (mkPing {
           name = "Main Space";
           url = "main_space.int.leighhack.org";
           group = "Cameras";
+          alert = flappingSlackAlert;
         })
         (mkPing {
           name = "Cam 5 - Pi Room";
           url = "cam5.int.leighhack.org";
           group = "Cameras";
+          alert = flappingSlackAlert;
         })
         (mkPing {
           name = "Workshop";
           url = "workshop.int.leighhack.org";
           group = "Cameras";
+          alert = flappingSlackAlert;
         })
         (mkHttp {
           name = "Woodwork";
           url = "http://woodwork.int.leighhack.org";
           group = "Cameras";
+          alert = flappingSlackAlert;
         })
 
         # --- Network Switches ------------------------------------------
