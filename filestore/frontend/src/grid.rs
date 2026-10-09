@@ -144,6 +144,45 @@ pub fn move_selection(mut st: AppState, delta: i64, shift: bool) {
     scroll_row_into_view(&names[i as usize]);
 }
 
+/// Type-ahead: a bare letter jumps the selection to the entry in the current
+/// folder whose name starts with it, in the order the grid shows them (dirs
+/// first).  Pressing the same letter again cycles to the next match, so `p`, `p`
+/// walks `Photos` then `pandas.csv`.
+///
+/// It searches from `focus + 1`, which is what makes repeat presses cycle rather
+/// than stick on the first match.
+pub fn typeahead(mut st: AppState, letter: char) {
+    let names: Vec<String> = sorted(&st).iter().map(|e| e.name.clone()).collect();
+    if names.is_empty() {
+        return;
+    }
+    let n = names.len();
+    let start = match *st.focus.read() {
+        Some(i) => (i + 1) % n,
+        None => 0,
+    };
+    // char::to_lowercase is an iterator (a few letters map to more than one
+    // codepoint), so take its first.
+    let want = letter.to_lowercase().next().unwrap_or(letter);
+    let mut hit = None;
+    for k in 0..n {
+        let i = (start + k) % n;
+        if names[i].to_lowercase().starts_with(want) {
+            hit = Some(i);
+            break;
+        }
+    }
+    let Some(i) = hit else {
+        return;
+    };
+    let mut s = st.sel.read().clone();
+    s.clear();
+    s.insert(names[i].clone());
+    st.sel.set(s);
+    st.focus.set(Some(i));
+    scroll_row_into_view(&names[i]);
+}
+
 /// Number of grid columns currently painted (1 for the details table), read from
 /// the rendered `auto-fill` track list so arrow up/down matches what the user sees.
 pub fn grid_columns(st: &AppState) -> usize {

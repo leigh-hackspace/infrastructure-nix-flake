@@ -4,7 +4,9 @@
 //! icon grid / sortable details view, right-click context menus, multi-
 //! selection with bulk actions, HTML5 drag-and-drop (external files and
 //! folders via webkitGetAsEntry, internal move/copy by dragging), popup
-//! previews for images and text, shallow/deep name search, and ZIP
+//! previews (image, video, audio, PDF, text; left/right step through the folder),
+//! shallow/deep name search, type-ahead jump by first letter, the current folder
+//! mirrored in the URL hash so a hard refresh lands back where you were, and ZIP
 //! downloads of single or multiple items.
 //!
 //! Modules: api (HTTP client), state (shared state + helpers), js (JS

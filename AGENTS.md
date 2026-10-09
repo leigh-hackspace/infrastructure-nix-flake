@@ -117,6 +117,12 @@ Guidance for AI agents working in this repository. Read this before making chang
   seek does not re-download the file) and text is returned as truncated JSON.
   Media responses carry `nosniff` and `default-src 'none'` CSP: an `<img>` cannot
   run script, but the same URL opened as a document can, which is the SVG case.
+  While a preview is open, left/right step through the previewable files in the
+  folder (clamped, not wrapped) and the row selection follows. A bare letter
+  type-aheads to the entry starting with it, cycling on repeat presses. The current
+  folder is mirrored into the URL hash with `replaceState` — the app keeps its own
+  back/forward history (`hist`/`hidx`, Backspace), so the browser must not build a
+  second one — and a hard refresh lands back in the folder.
   The SPA was written against the dioxus 0.6 API and ported to the pinned 0.7.10;
   the port and the SPA's other traps (keyboard selection, context-menu clamping,
   drag-out to the OS, upload body limits) are written up in

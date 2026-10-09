@@ -5,12 +5,12 @@ use dioxus::prelude::*;
 use wasm_bindgen::JsCast;
 
 use crate::api::*;
-use crate::grid::{DetailsView, grid_columns, IconGrid, move_selection, open_focused};
+use crate::grid::{DetailsView, grid_columns, IconGrid, move_selection, open_focused, typeahead};
 use crate::js::ensure_js_glue;
 use crate::menu::ContextMenu;
 use crate::modal::ModalBox;
 use crate::misc::{Toasts, UploadBar};
-use crate::preview::PreviewBox;
+use crate::preview::{PreviewBox, step_preview};
 use crate::searchview::ResultsView;
 use crate::state::*;
 
@@ -47,7 +47,7 @@ pub fn App() -> Element {
                 return;
             }
         }
-        load_dir(st);
+        restore_from_url(st);
     });
 
     // keyboard shortcuts
@@ -116,6 +116,19 @@ pub fn App() -> Element {
                         if st.search.read().is_some() {
                             return;
                         }
+                        // With a preview open, left/right step through the
+                        // previewable files in this folder.  Up/down do nothing:
+                        // the popup is the thing being read, and moving the
+                        // selection behind it would be invisible.
+                        if st.preview.read().is_some() {
+                            e.prevent_default();
+                            match e.key().as_str() {
+                                "ArrowLeft" => step_preview(st, -1),
+                                "ArrowRight" => step_preview(st, 1),
+                                _ => {}
+                            }
+                            return;
+                        }
                         // In the icon grid up/down moves a whole row (one column
                         // per step); in the details table every arrow is one row.
                         let cols = grid_columns(&st) as i64;
@@ -137,6 +150,20 @@ pub fn App() -> Element {
                         load_dir(st);
                     }
                     "Backspace" => go(st, -1),
+                    // Type-ahead: a bare letter jumps to the entry in this folder
+                    // that starts with it (Photos, then pandas.csv on the second
+                    // press).  Only a bare letter — Ctrl/Cmd/A are taken, and a
+                    // text field keeps its own typing.
+                    k if k.chars().count() == 1
+                        && !ctrl
+                        && !e.alt_key()
+                        && k.chars().next().map(|c| c.is_alphanumeric()).unwrap_or(false)
+                        && !matches!(tag.as_str(), "INPUT" | "TEXTAREA")
+                        && st.modal.read().is_none()
+                        && st.search.read().is_none()
+                        && st.preview.read().is_none() => {
+                        typeahead(st, k.chars().next().unwrap());
+                    }
                     _ => {}
                 }
             });

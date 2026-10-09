@@ -47,8 +47,9 @@ test hooks (harmless in production):
   (`1` when the row is selected, so a test can check *which* rows are selected,
   not just how many)
 - stable ids: `#fs-content`, `#fs-status`, `#fs-menu`, `#fs-modal`,
-  `#fs-modal-input`, `#fs-preview`, `#fs-preview-kind` (the footer naming the
-  kind), `#fs-search`, `#fs-toasts`, `#fs-uploads`
+  `#fs-modal-input`, `#fs-preview`, `#fs-preview-name` (the popup header),
+  `#fs-preview-kind` (the footer naming the kind), `#fs-search`, `#fs-toasts`,
+  `#fs-uploads`
 - `index.html` uses an empty `data:` icon so Chromium does not request
   `/favicon.ico` (which would show up as a console error)
 - drag-out is checked by dispatching a synthetic `dragstart` with a real
@@ -137,3 +138,20 @@ Types a browser cannot render are not in the table (`image/tiff`, `image/heic`,
 `video/x-msvideo`, Office documents), so the UI does not promise a preview for
 them; a file with an unknown extension is not advertised but the API still tries
 it as text, which the suite checks both ways.
+
+## Keyboard and URL behaviour the suite covers
+
+- **Type-ahead** — a bare letter selects the entry in the current folder that
+  starts with it, and repeat presses cycle through the matches in the order the
+  grid shows them (directories first, so `p` gives `Photos` before `pandas.csv`).
+  The test checks the cycle, that a different letter restarts, and that the search
+  box keeps its own typing.
+- **Preview stepping** — left/right move to the previous/next previewable file in
+  the folder and clamp at the ends rather than wrapping; the row selection follows,
+  so closing the popup leaves you on the file you last looked at.
+- **URL hash** — the current folder is mirrored into the hash with
+  `replaceState`, because the app keeps its own back/forward history (`hist` /
+  `hidx`, Backspace) and the browser must not build a second one that disagrees
+  with it. A reload lands back in the folder, including a percent-encoded name,
+  and the restored folder is the current history entry rather than a step back to
+  a root the user never visited.

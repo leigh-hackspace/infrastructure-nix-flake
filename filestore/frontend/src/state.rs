@@ -178,7 +178,47 @@ pub fn navigate(mut st: AppState, path: &str) {
     st.search.set(None);
     st.ctx.set(None);
     st.path.set(path);
+    sync_url(&st);
     load_dir(st);
+}
+
+/// Restore the folder from the URL hash on first load.
+///
+/// It becomes the *current* history entry: the root you never visited should not
+/// be a step back.
+pub fn restore_from_url(mut st: AppState) {
+    let p = url_path();
+    if p.is_empty() {
+        load_dir(st);
+        return;
+    }
+    st.hist.set(vec![p.clone()]);
+    st.hidx.set(0);
+    st.path.set(p);
+    sync_url(&st);
+    load_dir(st);
+}
+
+/// Mirror the current path into the URL hash, so a hard refresh lands back where
+/// you were.
+///
+/// `replaceState`, not `location.hash = …`: the app keeps its own back/forward
+/// history (`hist`/`hidx`, Backspace), and letting the browser build a second one
+/// would make the two disagree about where you are.
+pub fn sync_url(st: &AppState) {
+    let js = format!(
+        "(function(){{var h={p}===''?'':'#'+encodeURIComponent({p});history.replaceState(null,'',location.pathname+h);}})()",
+        p = serde_json::json!(st.path.read().clone())
+    );
+    let _ = js_eval(&js);
+}
+
+/// The path in the URL hash, or "" for the store root.
+pub fn url_path() -> String {
+    js_eval_string(
+        "(function(){{try{{return decodeURIComponent((location.hash || '').replace(/^#/, ''));}}catch(e){{return '';}}}})()",
+    )
+    .unwrap_or_default()
 }
 
 pub fn go(mut st: AppState, delta: i64) {
@@ -194,6 +234,7 @@ pub fn go(mut st: AppState, delta: i64) {
     st.search.set(None);
     st.ctx.set(None);
     st.path.set(path);
+    sync_url(&st);
     load_dir(st);
 }
 

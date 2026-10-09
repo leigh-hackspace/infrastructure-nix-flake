@@ -10,6 +10,7 @@ use dioxus::prelude::*;
 use serde::Deserialize;
 
 use crate::api::*;
+use crate::grid::sorted;
 use crate::state::*;
 use crate::ui::TBTN;
 use common_preview::Kind;
@@ -57,6 +58,46 @@ pub fn open_preview(mut st: AppState, path: &str, name: &str) {
             state: PreviewState::Error("not previewable".into()),
         })),
     }
+}
+
+/// Arrow keys step the preview to the previous/next previewable file in the
+/// current folder, in the order the grid shows them, and the selection follows so
+/// closing the popup leaves you on the file you last looked at.
+///
+/// It steps across every previewable file rather than only images: a folder of
+/// images with a notes.txt in it steps through the text file too, because that is
+/// the order on screen.  It clamps at the ends rather than wrapping.
+pub fn step_preview(mut st: AppState, delta: i64) {
+    let entries = sorted(&st);
+    let Some(pv) = st.preview.read().clone() else {
+        return;
+    };
+    let names: Vec<String> = entries
+        .iter()
+        .filter(|e| !e.is_dir && is_previewable(&e.name))
+        .map(|e| e.name.clone())
+        .collect();
+    let Some(pos) = names.iter().position(|n| *n == pv.name) else {
+        return;
+    };
+    let next = (pos as i64 + delta).clamp(0, names.len() as i64 - 1) as usize;
+    if next == pos {
+        return;
+    }
+    let name = names[next].clone();
+    let row = entries.iter().position(|e| e.name == name);
+    let full = join_rel(&st.path.read(), &name);
+
+    open_preview(st, &full, &name);
+
+    let mut s = st.sel.read().clone();
+    s.clear();
+    s.insert(name.clone());
+    st.sel.set(s);
+    if let Some(i) = row {
+        st.focus.set(Some(i));
+    }
+    scroll_row_into_view(&name);
 }
 
 fn set_preview(mut st: AppState, path: &str, state: PreviewState) {
@@ -155,7 +196,10 @@ pub fn PreviewBox(st: AppState, preview: Preview) -> Element {
                 onmousedown: move |e| e.stop_propagation(),
                 div {
                     style: "display:flex;align-items:center;gap:8px;padding:8px 12px;background:#f0f0f0;border-bottom:1px solid #ccc",
-                    b { "{preview.name}" }
+                    b {
+                        id: "fs-preview-name",
+                        "{preview.name}"
+                    }
                     div { style: "flex:1" }
                     button {
                         style: TBTN,

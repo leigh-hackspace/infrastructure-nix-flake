@@ -80,6 +80,8 @@ const FIXTURE = {
   'notes.txt': 'hello world\nsecond line\n',
   'data.json': '{"a": 1, "b": [1,2,3]}\n',
   'table.csv': 'name,value\na,1\nb,2\n',
+  'pandas.csv': 'a,b\n1,2\n',
+  'a b/x.txt': 'in the spaced folder\n',
   'binary.bin': Buffer.from([1, 2, 3, 0, 4]),
   'drawing.svg': '<svg xmlns="http://www.w3.org/2000/svg"><circle r="10"/></svg>',
   'Makefile': 'all:\n\techo hi\n',
@@ -88,6 +90,7 @@ const FIXTURE = {
   'docs/readme.md': '# Title\n\nSome **markdown**.\n',
   'docs/notes.txt': 'docs copy\n',
   'photos/2024/cat.png': PNG_1PX,
+  'photos/2024/dog.png': PNG_1PX,
   // Not a decodable video: the point of the video tests is which element the UI
   // picks and what the server sends, not that Chromium can play it.
   'media/clip.mp4': Buffer.from([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70]),
@@ -257,6 +260,31 @@ test('navigation: up button', async () => {
   const bc = await page.evaluate(() => [...document.querySelectorAll('#root button')].map((b) => b.innerText));
   assert.ok(bc.some((b) => b.includes('photos')), 'breadcrumb is back on /photos');
   assert.ok((await rowNames()).includes('2024'));
+});
+
+test('url: the current folder is in the hash, so a hard refresh lands back in it', async () => {
+  await openRow('photos');
+  assert.equal(new URL(page.url()).hash, '#photos');
+
+  await page.reload();
+  await waitLoaded();
+  assert.ok((await rowNames()).includes('2024'), 'the reload restored /photos');
+
+  // the restored folder is the current history entry, not a step back to a root
+  // the user never visited
+  await blur();
+  await page.keyboard.press('Backspace');
+  await waitLoaded();
+  assert.ok((await rowNames()).includes('2024'), 'back from the restored folder does not jump to the root');
+
+  // percent-encoded, and decoded back on load
+  await clickButton('/');
+  await waitLoaded();
+  await openRow('a b');
+  assert.equal(new URL(page.url()).hash, '#a%20b');
+  await page.reload();
+  await waitLoaded();
+  assert.ok((await rowNames()).includes('x.txt'), 'the encoded hash decodes to the right folder');
 });
 
 test('download through the context menu', async () => {
@@ -603,6 +631,32 @@ test('preview: a file the table does not know is not advertised, but the API sti
   assert.match(b.json.error, /binary/, 'binary content is refused as text');
 });
 
+test('preview: left/right step through the previewable files in the folder', async () => {
+  const pname = () => page.evaluate(() => document.getElementById('fs-preview-name').innerText.trim());
+  const waitName = (n) =>
+    page.waitForFunction((name) => document.getElementById('fs-preview-name').innerText.trim() === name, n, { timeout: 8000 });
+
+  await openRow('photos');
+  await openRow('2024');
+  await row('cat.png').dblclick();
+  await page.waitForSelector('#fs-preview img', { timeout: 8000 });
+  assert.equal(await pname(), 'cat.png');
+
+  await page.keyboard.press('ArrowRight');
+  await waitName('dog.png');
+  // the selection follows, so closing the popup leaves you on the last file
+  assert.deepEqual(await selectedNames(), ['dog.png']);
+
+  // clamped at the end rather than wrapping
+  await page.keyboard.press('ArrowRight');
+  await page.waitForTimeout(300);
+  assert.equal(await pname(), 'dog.png', 'the last file does not wrap to the first');
+
+  await page.keyboard.press('ArrowLeft');
+  await waitName('cat.png');
+  await closePreview();
+});
+
 test('search: shallow and deep', async () => {
   // deep search from the root must find a file several levels down
   await page.fill('#fs-search', 'needle');
@@ -769,6 +823,28 @@ test('keyboard: Escape closes menu, modal and preview', async () => {
   await page.waitForSelector('#fs-preview pre', { timeout: 8000 });
   await page.keyboard.press('Escape');
   await page.waitForFunction(() => !document.getElementById('fs-preview'), null, { timeout: 8000 });
+});
+
+test('keyboard: a letter jumps the selection to the entry starting with it', async () => {
+  await blur();
+  await page.keyboard.press('p');
+  assert.deepEqual(await selectedNames(), ['photos'], 'p selects the Photos folder');
+
+  // repeat presses cycle through the matches, in the order the grid shows them
+  // (directories first, so Photos before pandas.csv)
+  await page.keyboard.press('p');
+  assert.deepEqual(await selectedNames(), ['pandas.csv']);
+  await page.keyboard.press('p');
+  assert.deepEqual(await selectedNames(), ['photos'], 'and wrap back to the first match');
+
+  // a different letter starts that letter's matches
+  await page.keyboard.press('n');
+  assert.deepEqual(await selectedNames(), ['notes.txt']);
+
+  // the search box keeps its own typing
+  await page.locator('#fs-search').focus();
+  await page.keyboard.type('p');
+  assert.deepEqual(await selectedNames(), ['notes.txt'], 'typing in the search box must not move the selection');
 });
 
 test('keyboard: Enter opens the focused row', async () => {
