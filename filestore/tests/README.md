@@ -47,7 +47,8 @@ test hooks (harmless in production):
   (`1` when the row is selected, so a test can check *which* rows are selected,
   not just how many)
 - stable ids: `#fs-content`, `#fs-status`, `#fs-menu`, `#fs-modal`,
-  `#fs-modal-input`, `#fs-preview`, `#fs-search`, `#fs-toasts`, `#fs-uploads`
+  `#fs-modal-input`, `#fs-preview`, `#fs-preview-kind` (the footer naming the
+  kind), `#fs-search`, `#fs-toasts`, `#fs-uploads`
 - `index.html` uses an empty `data:` icon so Chromium does not request
   `/favicon.ico` (which would show up as a console error)
 - drag-out is checked by dispatching a synthetic `dragstart` with a real
@@ -80,7 +81,11 @@ All of these were found by running the suite and are covered by tests.
    up in wasm as `unreachable`.
 6. **`is_previewable()` advertised SVG** but `/api/preview` refuses SVG (script
    risk), so the menu offered Preview and then showed "not previewable". The
-   allow-list now matches the server.
+   allow-list now matches the server — and it matches structurally, because it is
+   no longer a second copy of the list: the table is `common-rs/preview`, one
+   crate both halves read. SVG is previewable now, as an `<img>` (which cannot run
+   script), with `nosniff` and a `default-src 'none'` CSP on the response for the
+   case where the same URL is opened as a document instead.
 7. **Shallow search reported `scanned: 0`** (and never `truncated`), so the
    results header always claimed nothing had been scanned.
 8. **`/api/list` returned 400 for a missing directory** while every other
@@ -113,3 +118,22 @@ All of these were found by running the suite and are covered by tests.
     error page that the upload popup then printed verbatim. The server now
     enforces `--max-upload` (2G in production) and answers with the JSON error
     the popup expects, and the vhost raises nginx's limit to match.
+14. **A media preview re-downloaded the whole file on every seek.** `/api/preview`
+    ignored `Range`, so scrubbing a video or an audio file transferred the file
+    again from the NAS. It now answers a single range with 206 + `Content-Range`
+    and advertises `Accept-Ranges`.
+
+## What the preview tests check
+
+The table is shared, so the tests check both halves of it: that each kind is
+offered by the menu, rendered in the element a browser can actually show (`img`,
+`video`, `audio`, `iframe`, `pre`), served with the content type the table gives,
+and that a media response answers a `Range` request. The audio fixture is a real
+1 s WAV, so that test proves the element decodes rather than merely exists; the
+video fixture is deliberately not decodable — there it is the element and the
+code that matter, and a headless Chromium cannot draw a PDF viewer either.
+
+Types a browser cannot render are not in the table (`image/tiff`, `image/heic`,
+`video/x-msvideo`, Office documents), so the UI does not promise a preview for
+them; a file with an unknown extension is not advertised but the API still tries
+it as text, which the suite checks both ways.

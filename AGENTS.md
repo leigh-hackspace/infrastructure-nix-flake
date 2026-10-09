@@ -27,13 +27,16 @@ Guidance for AI agents working in this repository. Read this before making chang
   recipe all three Dioxus frontends call).
 - `common-rs/` — shared **in-repo** Rust crates used as cargo path dependencies:
   `json` (hand-rolled parser: dns-sync, moonraker-exporter), `oidc` (authentik
-  login + `Infra` group gate: filestore, gocardless-dashboard) and `build-spa`
-  (the `build.rs` that embeds a Dioxus bundle: all three SPA apps). Each
-  consuming crate has a **git-ignored** `common-rs -> ../common-rs` symlink and
-  depends on `path = "./common-rs/<name>"`; `just shared-rs` (or entering
-  `nix develop`) creates the symlinks, and the service modules pass
-  `sharedCrates = ["oidc"]` etc. so the Nix build copies the crates in. Same
-  convention as `gocardless-dashboard/frontend/dto`.
+  login + `Infra` group gate: filestore, gocardless-dashboard), `preview` (the
+  filestore preview table: extension → what a browser can render it as, read by
+  **both** the API and the SPA so they cannot disagree) and `build-spa` (the
+  `build.rs` that embeds a Dioxus bundle: all three SPA apps). Each consuming
+  crate has a **git-ignored** `common-rs -> ../common-rs` symlink and depends on
+  `path = "./common-rs/<name>"`; `just shared-rs` (or entering `nix develop`)
+  creates the symlinks, and the service modules pass `sharedCrates = ["oidc"]`
+  etc. so the Nix build copies the crates in. Same convention as
+  `gocardless-dashboard/frontend/dto`. `CRANE.wasmSpa` takes `sharedCrates` too,
+  for a SPA that reads one (filestore's).
 - `dns-sync/` — top-level Rust tool (zero external crates) that keeps the
   router's dnsmasq and DigitalOcean DNS in step with the `*.int.leighhack.org`
   nginx vhosts. Wired in via `machines/services1/dns-sync.nix`, which also
@@ -107,6 +110,13 @@ Guidance for AI agents working in this repository. Read this before making chang
   (treats every request as a local session) and is **only honoured on a loopback
   bind** — `main.rs` exits if it is combined with a non-loopback `--bind`.
   `frontend/dist/` and `target/` are git-ignored.
+  Preview support is the table in `common-rs/preview`: images (incl. SVG), video,
+  audio, PDF and text — only types a browser can render itself, since there is no
+  server-side converter, so `image/tiff`/`image/heic`/AVI and Office documents are
+  deliberately not previewable. Media is streamed raw (with `Range` support, so a
+  seek does not re-download the file) and text is returned as truncated JSON.
+  Media responses carry `nosniff` and `default-src 'none'` CSP: an `<img>` cannot
+  run script, but the same URL opened as a document can, which is the SVG case.
   The SPA was written against the dioxus 0.6 API and ported to the pinned 0.7.10;
   the port and the SPA's other traps (keyboard selection, context-menu clamping,
   drag-out to the OS, upload body limits) are written up in

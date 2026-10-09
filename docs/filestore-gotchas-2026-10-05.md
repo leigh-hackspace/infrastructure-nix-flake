@@ -137,3 +137,36 @@ drop is called `filestore.int.leighhack.org:.webloc`.
 (2G in production) and the vhost's `client_max_body_size` must match it,
 otherwise nginx 413s the request first and the upload popup prints nginx's HTML
 error page.
+
+## 12. The preview table has to be one table
+
+`is_previewable()` in the SPA and the classifier in `/api/preview` were two
+hand-copied lists, and they drifted: the menu advertised SVG while the API refused
+it (bug #6 in `filestore/tests/README.md`). The table is now `common-rs/preview`,
+read by both halves, so they cannot disagree. That also means the SPA's crate needs
+the shared crate copied into its source tree — `CRANE.wasmSpa` gained `sharedCrates`
+for it, because the git-ignored `frontend/common-rs` symlink is not part of the
+flake source.
+
+Two constraints decide what can be in it:
+
+- **Only what a browser can render.** There is no server-side converter, so a
+  preview is whatever an `<img>`, `<video>`, `<audio>` or the browser's own PDF
+  viewer shows. `image/tiff` and `image/heic` are real image types that no browser
+  decodes, `video/x-msvideo` is a real type that nothing plays, and docx/xlsx are
+  zipped XML. Putting them in the table would make the UI promise a preview it
+  cannot deliver, so the table is a browser-support table, not a MIME list.
+- **Content from the store is untrusted.** Media is served from the app's own
+  origin, so the response carries `nosniff` and `default-src 'none'`. SVG is
+  accepted because it is rendered through an `<img>`, which cannot run script — but
+  the same URL can be opened as a document, which is why the CSP sits on the
+  response instead of the old "refuse SVG" rule.
+
+Media responses answer a single `Range` request with 206 + `Content-Range`. Without
+it every seek in a video or audio file re-transfers the whole file from the NAS.
+
+Text is still returned as JSON (truncated at 512 KiB), so the SPA's text path is
+unchanged. A file whose extension the table does not know is not advertised by the
+UI, but the API still tries it as text — which is what makes an oddly-named
+plain-text file previewable when fetched directly, and what the suite checks both
+ways.

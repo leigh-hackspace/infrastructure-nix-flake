@@ -21,8 +21,11 @@ for crate in dns-sync moonraker-exporter filestore gocardless-dashboard frigate-
     ln -sfn ../common-rs "$root/$crate/common-rs"
 done
 
-# gocardless-dashboard's wasm frontend shares its wire types the same way
-# (frontend/dto -> ../dto, git-ignored; the flake materialises a real copy).
+# The wasm frontends share their path dependencies the same way
+# (gocardless-dashboard/frontend/dto -> ../dto, and filestore's SPA reads the
+# preview table the server uses through frontend/common-rs).  Both are
+# git-ignored; the flake materialises a real copy.
 ln -sfn ../dto "$root/gocardless-dashboard/frontend/dto"
+ln -sfn ../../common-rs "$root/filestore/frontend/common-rs"
 
 echo "shared path-dependency symlinks are in place"

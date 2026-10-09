@@ -1,0 +1,15 @@
+[package]
+name = "common-preview"
+version = "0.1.0"
+edition = "2021"
+
+# Shared preview table for filestore: file name -> what a browser can render it
+# as.  The axum server uses it to decide what to stream (raw bytes for media,
+# truncated JSON for text) and the SPA uses it to decide which rows advertise
+# "Preview" and which element to render it in.  It used to be two hand-copied
+# lists, and they drifted: the UI advertised SVG while the API refused it (bug
+# #6 in filestore/tests/README.md).  Path dependency: see common/crane.nix.
+
+[dependencies]
+
+[dev-dependencies]

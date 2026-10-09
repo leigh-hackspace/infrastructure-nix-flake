@@ -33,6 +33,48 @@ const PNG_1PX = Buffer.from(
   'base64',
 );
 
+// A 1 s silent PCM WAV: real enough that Chromium decodes it, so an audio test
+// can check the element actually loaded metadata rather than just existing.
+function wav(seconds = 1, rate = 8000) {
+  const n = seconds * rate;
+  const h = Buffer.alloc(44);
+  h.write('RIFF', 0);
+  h.writeUInt32LE(36 + n * 2, 4);
+  h.write('WAVE', 8);
+  h.write('fmt ', 12);
+  h.writeUInt32LE(16, 16);
+  h.writeUInt16LE(1, 20); // PCM
+  h.writeUInt16LE(1, 22);
+  h.writeUInt32LE(rate, 24);
+  h.writeUInt32LE(rate * 2, 28);
+  h.writeUInt16LE(2, 32);
+  h.writeUInt16LE(16, 34);
+  h.write('data', 36);
+  h.writeUInt32LE(n * 2, 40);
+  return Buffer.concat([h, Buffer.alloc(n * 2)]);
+}
+
+// A one-page PDF with a correct xref.  Headless Chromium does not draw it, but a
+// valid file is what makes "the browser's viewer gets a real PDF" testable.
+function pdf() {
+  const objs = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>',
+  ];
+  let out = '%PDF-1.4\n';
+  const offs = [];
+  objs.forEach((o, i) => {
+    offs.push(out.length);
+    out += `${i + 1} 0 obj ${o} endobj\n`;
+  });
+  const xref = out.length;
+  out += `xref\n0 ${objs.length + 1}\n0000000000 65535 f \n`;
+  for (const o of offs) out += `${String(o).padStart(10, '0')} 00000 n \n`;
+  out += `trailer << /Size ${objs.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF`;
+  return Buffer.from(out, 'latin1');
+}
+
 // value null => directory
 const FIXTURE = {
   'notes.txt': 'hello world\nsecond line\n',
@@ -40,11 +82,17 @@ const FIXTURE = {
   'table.csv': 'name,value\na,1\nb,2\n',
   'binary.bin': Buffer.from([1, 2, 3, 0, 4]),
   'drawing.svg': '<svg xmlns="http://www.w3.org/2000/svg"><circle r="10"/></svg>',
+  'Makefile': 'all:\n\techo hi\n',
   'big-truncated.txt': 'line\n'.repeat(200000),
   'move-me.txt': 'move me\n',
   'docs/readme.md': '# Title\n\nSome **markdown**.\n',
   'docs/notes.txt': 'docs copy\n',
   'photos/2024/cat.png': PNG_1PX,
+  // Not a decodable video: the point of the video tests is which element the UI
+  // picks and what the server sends, not that Chromium can play it.
+  'media/clip.mp4': Buffer.from([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70]),
+  'media/sound.wav': wav(),
+  'docs/report.pdf': pdf(),
   'sub/a.txt': 'nested file\n',
   'sub/deep/deeper/needle-found-me.txt': 'x'.repeat(100),
   'weird dir with spaces/a file.txt': 'inside weird dir\n',
@@ -450,13 +498,109 @@ test('preview: image', async () => {
   assert.equal(w, 1, 'the image actually decodes');
 });
 
-test('preview: svg is not offered (the server refuses it)', async () => {
-  await row('drawing.svg').click({ button: 'right' });
+test('preview: each kind renders in the element the browser can actually show', async () => {
+  // One probe per kind in common-rs/preview.  The table is shared by the server
+  // and the SPA, so this checks the two halves agree on both the kind and the
+  // element it is rendered in.
+  const probes = [
+    ['probe.png', 'image', 'img', 'image/png'],
+    ['probe.mp4', 'video', 'video', 'video/mp4'],
+    ['probe.opus', 'audio', 'audio', 'audio/opus'],
+    ['probe.pdf', 'pdf', 'iframe', 'application/pdf'],
+    ['probe.py', 'text', 'pre', 'text/plain; charset=utf-8'],
+  ];
+  for (const [name] of probes) fs.writeFileSync(abs(name), 'x');
+  await page.reload();
+  await waitLoaded();
+
+  for (const [name, kind, el, ct] of probes) {
+    await row(name).dblclick();
+    await page.waitForSelector(`#fs-preview ${el}`, { timeout: 8000 });
+    const label = await page.evaluate(() => document.getElementById('fs-preview-kind').innerText.trim());
+    assert.equal(label, kind, `${name} renders as a ${el} and is labelled ${kind}`);
+    const r = await api('/api/preview?path=' + name);
+    if (kind === 'text') {
+      assert.equal(JSON.parse(r.body).kind, 'text', `${name} is served as text`);
+    } else {
+      assert.equal(r.headers['content-type'], ct, `${name} is served with its table content type`);
+    }
+    await closePreview();
+  }
+});
+
+test('preview: audio really decodes', async () => {
+  await row('media').dblclick();
+  await row('sound.wav').dblclick();
+  await page.waitForSelector('#fs-preview audio', { timeout: 8000 });
+  const m = await page.evaluate(async () => {
+    const a = document.querySelector('#fs-preview audio');
+    if (a.readyState < 1) {
+      await new Promise((r) => {
+        a.addEventListener('loadedmetadata', r, { once: true });
+        setTimeout(r, 6000);
+      });
+    }
+    return { duration: a.duration, error: a.error ? a.error.code : null };
+  });
+  assert.equal(m.error, null, 'the audio element loaded the file');
+  assert.ok(Math.abs(m.duration - 1) < 0.01, `the fixture is 1 s long (got ${m.duration})`);
+  await closePreview();
+});
+
+test('preview: media answers a Range request, so a seek does not re-download the file', async () => {
+  const r = await fetch(BASE + '/api/preview?path=media/clip.mp4', { headers: { Range: 'bytes=0-3' } });
+  assert.equal(r.status, 206, 'a single range is a partial response');
+  assert.equal(r.headers.get('content-range'), 'bytes 0-3/8');
+  assert.equal(r.headers.get('accept-ranges'), 'bytes');
+  assert.equal((await r.arrayBuffer()).byteLength, 4, 'only the requested slice is sent');
+
+  // open-ended range, and a nonsense one (which serves the whole file)
+  const open = await fetch(BASE + '/api/preview?path=media/clip.mp4', { headers: { Range: 'bytes=4-' } });
+  assert.equal(open.status, 206);
+  assert.equal((await open.arrayBuffer()).byteLength, 4);
+  const bad = await fetch(BASE + '/api/preview?path=media/clip.mp4', { headers: { Range: 'bytes=0-3,4-7' } });
+  assert.equal(bad.status, 200, 'multiple ranges are not supported, so the whole file is served');
+});
+
+test('preview: media responses are not executable documents', async () => {
+  // The store's content is served from the app's own origin.  An <img>/<video>/
+  // <audio> cannot run script, but the same URL opened as a document can, so the
+  // response carries nosniff and a CSP that allows nothing.
+  const h = (await api('/api/preview?path=drawing.svg')).headers;
+  assert.equal(h['content-type'], 'image/svg+xml', 'svg is previewable as an image');
+  assert.equal(h['x-content-type-options'], 'nosniff');
+  assert.equal(h['content-security-policy'], "default-src 'none'");
+
+  await row('drawing.svg').dblclick();
+  await page.waitForSelector('#fs-preview img', { timeout: 8000 });
+  await closePreview();
+});
+
+test('preview: a well-known name with no extension is still text', async () => {
+  await row('Makefile').dblclick();
+  await page.waitForSelector('#fs-preview pre', { timeout: 8000 });
+  const text = await page.evaluate(() => document.querySelector('#fs-preview pre').innerText);
+  assert.ok(text.includes('echo hi'), 'Makefile previews as text');
+  await closePreview();
+});
+
+test('preview: a file the table does not know is not advertised, but the API still tries it as text', async () => {
+  fs.writeFileSync(abs('odd-thing.unknown'), 'plain text with no known extension\n');
+  await page.reload();
+  await waitLoaded();
+  await row('odd-thing.unknown').click({ button: 'right' });
   const items = await menuItems();
   assert.ok(
     !items.some((i) => i.includes('Preview')),
-    `svg must not be advertised as previewable (got ${JSON.stringify(items)})`,
+    `an unknown extension must not promise a preview (got ${JSON.stringify(items)})`,
   );
+  await page.keyboard.press('Escape');
+  const r = await apiJson('/api/preview?path=odd-thing.unknown');
+  assert.equal(r.json.kind, 'text', 'fetching it directly still gives the text');
+
+  // and a real binary is refused, not garbled
+  const b = await apiJson('/api/preview?path=binary.bin');
+  assert.match(b.json.error, /binary/, 'binary content is refused as text');
 });
 
 test('search: shallow and deep', async () => {

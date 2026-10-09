@@ -13,7 +13,7 @@ use std::task::{Context, Poll};
 use axum::body::Body;
 use axum::extract::{FromRequestParts, Query, State};
 use axum::http::header;
-use axum::http::{StatusCode, Uri};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -24,6 +24,7 @@ use serde_json::{json, Value};
 
 use crate::fsutil::Store;
 use common_oidc as oidc;
+use common_preview::{self, Kind};
 
 type Shared = Arc<crate::Shared>;
 
@@ -609,7 +610,7 @@ async fn download(
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "file".to_string());
     let mime = mime_guess::from_path(&abs).first_or_octet_stream();
-    let stream = FileStream::spawn(abs, 1 << 20)?;
+    let stream = FileStream::spawn(abs, 0, meta.len(), 1 << 20)?;
     Ok((
         StatusCode::OK,
         [
@@ -660,43 +661,80 @@ async fn zip(State(shared): State<Shared>, Authed(_): Authed, uri: Uri) -> ApiRe
         .into_response())
 }
 
-/// Preview: text files are returned truncated (first 512 KiB, lossy UTF-8);
-/// images are streamed raw so the browser can render them in an <img>.
+/// Preview.  Media is streamed raw so the browser renders it itself (`<img>`,
+/// `<video>`, `<audio>`, or its own viewer for a PDF in an `<iframe>`); text is
+/// read truncated (first 512 KiB, lossy UTF-8) and returned as JSON.
+///
+/// What counts as previewable comes from the shared table in `common-rs/preview`,
+/// which the SPA uses for the same decision — they used to be two hand-copied
+/// lists and drifted, so the UI advertised SVG while the API refused it (bug #6
+/// in `filestore/tests/README.md`).  A file whose extension the table does not
+/// know is not advertised by the UI but is still tried as text here, so an
+/// oddly-named plain-text file previews when fetched directly.
 async fn preview(
     State(shared): State<Shared>,
     Authed(_): Authed,
     Query(q): Query<PathQ>,
+    headers: axum::http::HeaderMap,
 ) -> ApiResult<Response> {
     const MAX_TEXT: u64 = 512 * 1024;
     let (abs, meta) = file_path(&shared, &q).await?;
     if meta.is_dir() {
         return Err(ApiError::bad("cannot preview a directory"));
     }
+    let name = abs
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let kind = common_preview::kind(&name);
 
-    let mime = mime_guess::from_path(&abs).first_or_octet_stream();
-    let kind = if mime.as_ref().starts_with("image/") {
-        "image"
-    } else {
-        "text"
-    };
-
-    if kind == "image" && mime.as_ref() == "image/svg+xml" {
-        // SVG is XML — don't render it directly (script risk).
-        return Err(ApiError::bad("SVG preview not supported"));
-    }
-
-    if kind == "image" {
-        let stream = FileStream::spawn(abs, 1 << 20)?;
-        return Ok((
-            StatusCode::OK,
-            [
-                (header::CONTENT_TYPE, mime.to_string()),
-                (header::CONTENT_LENGTH, meta.len().to_string()),
-                (header::CACHE_CONTROL, "private, max-age=60".to_string()),
-            ],
-            Body::from_stream(stream),
-        )
-            .into_response());
+    if matches!(kind, Some(Kind::Image | Kind::Video | Kind::Audio | Kind::Pdf)) {
+        let mime = common_preview::content_type(&name)
+            .unwrap_or("application/octet-stream")
+            .to_string();
+        // Browsers issue a Range request when seeking in media.  Without it a seek
+        // re-downloads the whole file, which on a NAS-backed store is the
+        // difference between scrubbing a video and transferring 2 GB.
+        let range = parse_range(headers.get(header::RANGE), meta.len());
+        let (start, len) = match range {
+            Some((a, b)) => (a, b - a + 1),
+            None => (0, meta.len()),
+        };
+        let stream = FileStream::spawn(abs, start, len, 1 << 20)?;
+        let mut h = HeaderMap::new();
+        h.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_str(&mime).map_err(|_| ApiError::bad("unknown content type"))?,
+        );
+        h.insert(header::CONTENT_LENGTH, HeaderValue::from_str(&len.to_string()).unwrap());
+        h.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+        h.insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("private, max-age=60"),
+        );
+        // These responses come from the app's own origin, and the content is
+        // whatever the store holds.  nosniff stops the browser deciding that a .txt
+        // full of HTML is HTML, and the CSP stops script running if one of them is
+        // opened as a *document*: an <img>/<video>/<audio> cannot run script, but a
+        // top-level navigation to the same URL can, which is the SVG case.
+        h.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+        h.insert(
+            HeaderName::from_static("content-security-policy"),
+            HeaderValue::from_static("default-src 'none'"),
+        );
+        if let Some((a, b)) = range {
+            h.insert(
+                header::CONTENT_RANGE,
+                HeaderValue::from_str(&format!("bytes {a}-{b}/{}", meta.len()))
+                    .map_err(|_| ApiError::bad("invalid Range header"))?,
+            );
+        }
+        let status = if range.is_some() {
+            StatusCode::PARTIAL_CONTENT
+        } else {
+            StatusCode::OK
+        };
+        return Ok((status, h, Body::from_stream(stream)).into_response());
     }
 
     // text: read the head synchronously in a blocking task (bounded size).
@@ -708,7 +746,10 @@ async fn preview(
         let mut buf = vec![0u8; n as usize];
         let got = f.read_exact(&mut buf).map(|()| buf.len()).unwrap_or(0);
         let buf = buf[..got].to_vec();
-        let bin = buf.iter().take(8).any(|&b| b == 0);
+        // A NUL anywhere in the head means binary, not just in the first 8 bytes:
+        // a UTF-16 text file starts with a BOM and then alternates NULs, and a
+        // file that is text for the first 8 bytes and data after is not text.
+        let bin = buf.contains(&0);
         Ok::<(Vec<u8>, bool), io::Error>((buf, bin))
     })
     .await
@@ -718,6 +759,76 @@ async fn preview(
     }
     let text = String::from_utf8_lossy(&bytes).into_owned();
     Ok(Json(json!({"kind": "text", "truncated": truncated, "text": text})).into_response())
+}
+
+/// Single-range `Range: bytes=a-b` (also `a-` and `-N`).  A browser seeking in
+/// media sends exactly one range, so multiple ranges are not supported; anything
+/// unparseable is ignored, which serves the whole file.
+fn parse_range(value: Option<&header::HeaderValue>, size: u64) -> Option<(u64, u64)> {
+    let spec = value?.to_str().ok()?.strip_prefix("bytes=")?;
+    if size == 0 || spec.contains(',') {
+        return None;
+    }
+    let (a, b) = spec.split_once('-')?;
+    let start = match a {
+        "" => size.saturating_sub(b.parse::<u64>().ok()?),
+        s => s.parse::<u64>().ok()?,
+    };
+    let end = match b {
+        "" => size - 1,
+        s => s.parse::<u64>().ok()?.min(size - 1),
+    };
+    if start >= size || start > end {
+        return None;
+    }
+    Some((start, end))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_range;
+    use axum::http::HeaderValue;
+
+    fn r(spec: &str, size: u64) -> Option<(u64, u64)> {
+        parse_range(Some(&HeaderValue::from_str(spec).unwrap()), size)
+    }
+
+    #[test]
+    fn range_is_a_single_closed_interval() {
+        assert_eq!(r("bytes=0-3", 100), Some((0, 3)));
+        assert_eq!(r("bytes=40-49", 100), Some((40, 49)));
+        // open-ended: to the end of the file
+        assert_eq!(r("bytes=40-", 100), Some((40, 99)));
+        // suffix form: the last 10 bytes
+        assert_eq!(r("bytes=-10", 100), Some((90, 99)));
+    }
+
+    #[test]
+    fn range_clamps_and_refuses_nonsense() {
+        // clamped to the file, not past it
+        assert_eq!(r("bytes=95-200", 100), Some((95, 99)));
+        // multiple ranges are not supported (a media seek sends one)
+        assert_eq!(r("bytes=0-3,10-13", 100), None);
+        assert_eq!(r("bytes=100-", 100), None);
+        assert_eq!(r("bytes=200-300", 100), None);
+        assert_eq!(r("bytes=5-3", 100), None);
+        assert_eq!(r("bytes=abc-def", 100), None);
+        assert_eq!(r("items=0-3", 100), None);
+        assert_eq!(r("bytes=0-3", 0), None);
+    }
+
+    #[test]
+    fn preview_table_agrees_with_the_spa() {
+        // The SPA renders each kind with a different element, so a kind must not
+        // move to another one without the frontend being rebuilt as well.
+        use common_preview::{content_type, kind, Kind};
+        assert_eq!(kind("photo.png"), Some(Kind::Image));
+        assert_eq!(kind("clip.mkv"), Some(Kind::Video));
+        assert_eq!(kind("song.opus"), Some(Kind::Audio));
+        assert_eq!(kind("report.pdf"), Some(Kind::Pdf));
+        assert_eq!(kind("Makefile"), Some(Kind::Text));
+        assert_eq!(content_type("a.svg"), Some("image/svg+xml"));
+    }
 }
 
 // --- a Stream over a file's contents ---
@@ -731,9 +842,15 @@ struct FileStream {
 }
 
 impl FileStream {
-    fn spawn(path: std::path::PathBuf, chunk: usize) -> ApiResult<Self> {
+    fn spawn(
+        path: std::path::PathBuf,
+        start: u64,
+        len: u64,
+        chunk: usize,
+    ) -> ApiResult<Self> {
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
         std::thread::spawn(move || {
+            use std::io::Seek;
             let mut f = match std::fs::File::open(&path) {
                 Ok(f) => f,
                 Err(e) => {
@@ -741,11 +858,23 @@ impl FileStream {
                     return;
                 }
             };
+            if start > 0 {
+                if let Err(e) = f.seek(std::io::SeekFrom::Start(start)) {
+                    let _ = tx.blocking_send(Err(e));
+                    return;
+                }
+            }
             let mut buf = vec![0u8; chunk];
+            let mut left = len;
             loop {
-                match f.read(&mut buf) {
+                if left == 0 {
+                    break;
+                }
+                let want = std::cmp::min(chunk, left as usize);
+                match f.read(&mut buf[..want]) {
                     Ok(0) => break,
                     Ok(n) => {
+                        left -= n as u64;
                         if tx
                             .blocking_send(Ok(Bytes::copy_from_slice(&buf[..n])))
                             .is_err()

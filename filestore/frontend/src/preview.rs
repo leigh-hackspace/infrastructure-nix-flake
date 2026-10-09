@@ -1,4 +1,10 @@
-//! Popup preview: images (streamed through <img>) and text (truncated).
+//! Popup preview.  Media the browser can render itself (image, video, audio,
+//! PDF) is pointed at the preview URL — no JSON round trip, the element streams
+//! it.  Text is fetched here (truncated) and shown as source.
+//!
+//! Which kind a file is comes from the shared table in common-rs/preview, the
+//! same one the server classifies with, so the menu can never offer a Preview the
+//! API refuses.
 
 use dioxus::prelude::*;
 use serde::Deserialize;
@@ -6,6 +12,7 @@ use serde::Deserialize;
 use crate::api::*;
 use crate::state::*;
 use crate::ui::TBTN;
+use common_preview::Kind;
 
 #[derive(Deserialize)]
 struct Prev {
@@ -16,31 +23,40 @@ struct Prev {
     text: String,
 }
 
-/// Open a preview for a file: images immediately, text after fetching.
+/// Open a preview for a file: media immediately (the element fetches the URL),
+/// text after fetching it.
 pub fn open_preview(mut st: AppState, path: &str, name: &str) {
     st.ctx.set(None);
-    if is_image(name) {
-        st.preview.set(Some(Preview {
+    match common_preview::kind(name) {
+        Some(Kind::Image | Kind::Video | Kind::Audio | Kind::Pdf) => {
+            st.preview.set(Some(Preview {
+                path: path.to_string(),
+                name: name.to_string(),
+                state: PreviewState::Render(common_preview::kind(name).unwrap()),
+            }));
+        }
+        Some(Kind::Text) => {
+            st.preview.set(Some(Preview {
+                path: path.to_string(),
+                name: name.to_string(),
+                state: PreviewState::Loading,
+            }));
+            let path = path.to_string();
+            spawn_task(async move {
+                let state = match get_json::<Prev>(&preview_url(&path)).await {
+                    Ok(p) if p.kind == "text" => PreviewState::Text(p.text, p.truncated),
+                    Ok(_) => PreviewState::Error("not previewable".into()),
+                    Err(e) => PreviewState::Error(e),
+                };
+                set_preview(st, &path, state);
+            });
+        }
+        None => st.preview.set(Some(Preview {
             path: path.to_string(),
             name: name.to_string(),
-            state: PreviewState::Image,
-        }));
-        return;
+            state: PreviewState::Error("not previewable".into()),
+        })),
     }
-    st.preview.set(Some(Preview {
-        path: path.to_string(),
-        name: name.to_string(),
-        state: PreviewState::Loading,
-    }));
-    let path = path.to_string();
-    spawn_task(async move {
-        let state = match get_json::<Prev>(&preview_url(&path)).await {
-            Ok(p) if p.kind == "text" => PreviewState::Text(p.text, p.truncated),
-            Ok(_) => PreviewState::Error("not previewable".into()),
-            Err(e) => PreviewState::Error(e),
-        };
-        set_preview(st, &path, state);
-    });
 }
 
 fn set_preview(mut st: AppState, path: &str, state: PreviewState) {
@@ -53,27 +69,81 @@ fn set_preview(mut st: AppState, path: &str, state: PreviewState) {
     }
 }
 
+const MEDIA: &str = "max-width:100%;max-height:68vh;display:block";
+
+/// The element a kind is rendered in.  Each one streams the preview URL itself;
+/// the server answers a Range request, so scrubbing a video does not re-download
+/// the whole file.
+fn media_element(kind: Kind, src: &str, name: &str) -> Element {
+    match kind {
+        Kind::Image => rsx! {
+            img {
+                src: src.to_string(),
+                style: MEDIA,
+                alt: name.to_string(),
+            }
+        },
+        Kind::Video => rsx! {
+            video {
+                src: src.to_string(),
+                controls: true,
+                style: MEDIA,
+            }
+        },
+        Kind::Audio => rsx! {
+            audio {
+                src: src.to_string(),
+                controls: true,
+                style: "width:100%;min-width:320px",
+            }
+        },
+        Kind::Pdf => rsx! {
+            iframe {
+                src: src.to_string(),
+                style: "width:78vw;height:70vh;border:0;background:#eee;display:block",
+                title: name.to_string(),
+            }
+        },
+        // Text is not a media element: it is fetched as JSON and shown as source.
+        Kind::Text => rsx! { div { "not previewable" } },
+    }
+}
+
 #[component]
 pub fn PreviewBox(st: AppState, preview: Preview) -> Element {
-    let img_src = if is_image(&preview.name) {
-        Some(preview_url(&preview.path))
-    } else {
-        None
-    };
-    let text: Option<String> = match &preview.state {
-        PreviewState::Text(t, _) => Some(t.clone()),
-        _ => None,
-    };
-    let truncated = matches!(&preview.state, PreviewState::Text(_, true));
-    let err = match &preview.state {
-        PreviewState::Error(e) => Some(e.clone()),
-        _ => None,
+    let src = preview_url(&preview.path);
+    let body = match &preview.state {
+        PreviewState::Loading => rsx! {
+            div {
+                style: "color:#777",
+                "loading…"
+            }
+        },
+        PreviewState::Render(kind) => media_element(*kind, &src, &preview.name),
+        PreviewState::Text(text, truncated) => rsx! {
+            pre {
+                style: "margin:0;font-size:12.5px;line-height:1.45;white-space:pre-wrap;word-break:break-word",
+                {text.clone()}
+                if *truncated {
+                    div {
+                        style: "color:#999;margin-top:8px",
+                        "— preview truncated (first 512 KiB) —"
+                    }
+                }
+            }
+        },
+        PreviewState::Error(e) => rsx! {
+            div {
+                style: "color:#c00",
+                "Cannot preview: {e}"
+            }
+        },
     };
 
-    let loading = matches!(preview.state, PreviewState::Loading);
-    let is_image_state = matches!(preview.state, PreviewState::Image);
-    let is_text_state = matches!(preview.state, PreviewState::Text(_, _));
-    let is_err_state = matches!(preview.state, PreviewState::Error(_));
+    let label = match common_preview::kind(&preview.name) {
+        Some(k) => kind_label(k),
+        None => "no inline preview",
+    };
 
     rsx! {
         div {
@@ -101,45 +171,24 @@ pub fn PreviewBox(st: AppState, preview: Preview) -> Element {
                 }
                 div {
                     style: "overflow:auto;padding:12px;min-width:240px;min-height:120px",
-                    if loading {
-                        div {
-                            style: "color:#777",
-                            "loading…"
-                        }
-                    }
-                    if is_image_state {
-                        if img_src.is_some() {
-                            img {
-                                src: img_src.clone().unwrap_or_default(),
-                                style: "max-width:100%;max-height:68vh;display:block",
-                                alt: "{preview.name}"
-                            }
-                        }
-                    }
-                    if is_text_state {
-                        if text.is_some() {
-                            pre {
-                                style: "margin:0;font-size:12.5px;line-height:1.45;white-space:pre-wrap;word-break:break-word",
-                                {text.clone().unwrap_or_default()}
-                                if truncated {
-                                    div {
-                                        style: "color:#999;margin-top:8px",
-                                        "— preview truncated (first 512 KiB) —"
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    if is_err_state {
-                        if err.is_some() {
-                            div {
-                                style: "color:#c00",
-                                "Cannot preview: {err.clone().unwrap_or_default()}"
-                            }
-                        }
-                    }
+                    {body}
+                }
+                div {
+                    id: "fs-preview-kind",
+                    style: "padding:6px 12px;background:#f0f0f0;border-top:1px solid #ccc;font-size:11.5px;color:#666",
+                    "{label}"
                 }
             }
         }
+    }
+}
+
+fn kind_label(kind: Kind) -> &'static str {
+    match kind {
+        Kind::Image => "image",
+        Kind::Video => "video",
+        Kind::Audio => "audio",
+        Kind::Pdf => "pdf",
+        Kind::Text => "text",
     }
 }

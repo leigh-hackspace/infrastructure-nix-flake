@@ -26,6 +26,8 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 # source tree common-rs/ is a symlink to ../common-rs (git-ignored); the Nix
 # build replaces it with a real copy (see common/crane.nix).
 common-oidc = { path = "./common-rs/oidc" }
+# Shared preview table — the same table the SPA renders from (see common-rs/preview).
+common-preview = { path = "./common-rs/preview" }
 # upload temp-file tokens (see server.rs::random_hex)
 getrandom = "0.2"
 urlencoding = "2"

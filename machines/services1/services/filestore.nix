@@ -5,8 +5,9 @@
 # ../../../filestore/frontend and embedded by build.rs — no bundle is
 # committed) on 127.0.0.1:8096, exposing the /mnt/filestore tree: browse,
 # multi-select, right-click menus, drag-and-drop upload (files and folders),
-# move/copy, rename, delete, new folder/file, text+image previews, shallow/
-# deep search and streaming ZIP downloads.
+# move/copy, rename, delete, new folder/file, previews (image, video, audio, PDF
+# and text — the table in common-rs/preview decides what a browser can render),
+# shallow/deep search and streaming ZIP downloads.
 #
 # Login is OIDC against authentik restricted to the `Infra` group (same
 # recipe as gocardless-dashboard); the client id/secret live in the shared
@@ -30,13 +31,15 @@
   maxUploadBytes = 2 * 1024 * 1024 * 1024; # 2G
 
   # The Dioxus SPA compiled to wasm (pinned wasm-bindgen-cli and the wasm build
-  # recipe live in common/crane.nix).
+  # recipe live in common/crane.nix).  It reads the preview table through the
+  # shared crate, so that crate has to be copied into its source tree.
   frontendDist = CRANE.wasmSpa {
     pname = "filestore-web";
     version = "0.1.0";
     src = ../../../filestore/frontend;
     cargoLock = CRANE.lockFile ../../../filestore/frontend/Cargo.lock;
     wasmName = "filestore_web";
+    sharedCrates = ["preview"];
   };
 
   # The binary.  Its build.rs embeds the SPA, so the SPA is a build-hook input
@@ -47,9 +50,9 @@
     version = "0.1.0";
     src = ../../../filestore;
     cargoLock = CRANE.lockFile ../../../filestore/Cargo.lock;
-    # `common-oidc` + `common-build-spa` path dependencies (see common-rs/ and
-    # common/crane.nix).
-    sharedCrates = ["oidc" "build-spa"];
+    # `common-oidc`, `common-build-spa` and `common-preview` path dependencies
+    # (see common-rs/ and common/crane.nix).
+    sharedCrates = ["oidc" "build-spa" "preview"];
   };
   filestore = CRANE.cached (filestoreArgs
     // {

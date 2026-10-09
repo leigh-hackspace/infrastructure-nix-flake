@@ -17,6 +17,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 gloo-net = "0.6"
 gloo-timers = "0.3"
+# Shared preview table, so the UI and the API cannot disagree about what is
+# previewable (see common-rs/preview and filestore/tests/README.md bug #6).
+common-preview = { path = "./common-rs/preview" }
 # Pinned exactly: the wasm-bindgen *crate* must match the wasm-bindgen-cli
 # (0.2.128, installed by the devshell) byte-for-byte — the generated glue is
 # schema-versioned. js-sys/web-sys pin the matching wasm-bindgen release.

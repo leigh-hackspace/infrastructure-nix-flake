@@ -4,5 +4,7 @@
 /frontend/dist/
 
 # shared in-repo crates (path dependencies; a symlink to ../common-rs,
-# materialised as a real copy by the Nix build)
+# materialised as a real copy by the Nix build).  The SPA reads the same crates
+# through frontend/common-rs, which is why its own copy is ignored too.
 /common-rs
+/frontend/common-rs

@@ -194,6 +194,10 @@
   # no wasm linker, so wasm-ld comes from pkgs.lld) and the output is
   # post-processed by wasm-bindgen. Both the cached deps and the crate are built
   # for the wasm target, otherwise the cache would be for the wrong target.
+  #
+  # sharedCrates works here too: a SPA that reads a shared in-repo crate (filestore
+  # uses common-rs/preview for its preview table) has the real crate copied into its
+  # source tree, since the git-ignored symlink is not part of the flake source.
   wasmSpa = {
     pname,
     version,
@@ -201,9 +205,10 @@
     cargoLock,
     # cargo's underscored package name, i.e. the .wasm file cargo emits
     wasmName,
+    sharedCrates ? [],
   }:
     cached {
-      inherit pname version src cargoLock;
+      inherit pname version src cargoLock sharedCrates;
       nativeBuildInputs = [wasmBindgenCli pkgs.lld];
       cargoBuildCommand = "cargoWithProfile build --target wasm32-unknown-unknown";
       preBuild = "export CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_LINKER=wasm-ld";

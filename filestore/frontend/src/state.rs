@@ -8,6 +8,7 @@ use gloo_timers::future::sleep;
 use serde::Deserialize;
 
 use crate::api::*;
+use common_preview::Kind;
 
 /// Fire-and-forget task on the ROOT scope.
 ///
@@ -68,7 +69,9 @@ pub enum Modal {
 #[derive(Clone, PartialEq)]
 pub enum PreviewState {
     Loading,
-    Image,
+    /// Media the browser renders itself from the preview URL: an <img>, a
+    /// <video>, an <audio>, or the PDF viewer in an <iframe>.
+    Render(Kind),
     Text(String, bool),
     Error(String),
 }
@@ -338,23 +341,13 @@ pub fn icon_for(name: &str, is_dir: bool) -> &'static str {
     }
 }
 
+/// Whether a row offers "Preview" (and what double-click / Enter does with it).
+///
+/// The table is the shared one in `common-rs/preview`, so the UI cannot advertise
+/// something the API refuses — when this was a hand-copied list it did exactly
+/// that for SVG (bug #6 in `filestore/tests/README.md`).
 pub fn is_previewable(name: &str) -> bool {
-    let ext = name.rsplit_once('.').map(|(_, e)| e.to_lowercase()).unwrap_or_default();
-    // Must match the server's preview allow-list: /api/preview refuses svg (an
-    // inline SVG can carry script, and it would be served same-origin), so the
-    // UI must not advertise it as previewable.
-    matches!(
-        ext.as_str(),
-        "jpg" | "jpeg" | "png" | "gif" | "webp" | "bmp"
-            | "txt" | "md" | "log" | "csv" | "tsv" | "json" | "yaml" | "yml"
-            | "toml" | "ini" | "conf" | "xml" | "html" | "css" | "js" | "ts"
-            | "sh" | "py" | "rs" | "c" | "h" | "cpp" | "go" | "nix"
-    )
-}
-
-pub fn is_image(name: &str) -> bool {
-    let ext = name.rsplit_once('.').map(|(_, e)| e.to_lowercase()).unwrap_or_default();
-    matches!(ext.as_str(), "jpg" | "jpeg" | "png" | "gif" | "webp" | "bmp")
+    common_preview::kind(name).is_some()
 }
 
 pub fn fmt_size(n: u64) -> String {

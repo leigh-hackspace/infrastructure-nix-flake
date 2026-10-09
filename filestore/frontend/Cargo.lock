@@ -272,6 +272,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "common-preview"
+version = "0.1.0"
+
+[[package]]
 name = "const-serialize"
 version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1042,6 +1046,7 @@ dependencies = [
 name = "filestore-web"
 version = "0.1.0"
 dependencies = [
+ "common-preview",
  "dioxus",
  "gloo-net",
  "gloo-timers",
