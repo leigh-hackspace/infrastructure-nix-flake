@@ -35,6 +35,11 @@ urlencoding = "2"
 # never use.  async_zip (not `zip`) because it can stream the archive to a
 # writer that cannot Seek, which is what a network response body is.
 mime_guess = "2"
+# You cannot decode a JPEG by hand, so this is the heavyweight dependency of the
+# tool (the same exception as frigate-monitor's `image`).  Only the formats the
+# icon grid can thumbnail are enabled — `image`'s default set also drags in ravif
+# (AVIF), which is not worth it for a thumbnail cache.  See src/thumb.rs.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp", "ico"] }
 flate2 = "1.1.10"
 crc32fast = "1.5.2"
 

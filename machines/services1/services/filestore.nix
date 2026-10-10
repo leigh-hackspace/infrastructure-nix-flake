@@ -7,7 +7,9 @@
 # multi-select, right-click menus, drag-and-drop upload (files and folders),
 # move/copy, rename, delete, new folder/file, previews (image, video, audio, PDF
 # and text — the table in common-rs/preview decides what a browser can render),
-# shallow/deep search and streaming ZIP downloads.
+# shallow/deep search and streaming ZIP downloads.  Image files show a thumbnail in
+# the icon grid, generated on demand and cached in temporary storage (/run, tmpfs)
+# under a key hashed from the file's identity, so a thumbnail is never stale.
 #
 # Login is OIDC against authentik restricted to the `Infra` group (same
 # recipe as gocardless-dashboard); the client id/secret live in the shared
@@ -29,6 +31,13 @@
   # --max-upload and nginx's client_max_body_size.  Written as bytes so the
   # nginx value is derived from it rather than hand-copied.
   maxUploadBytes = 2 * 1024 * 1024 * 1024; # 2G
+
+  # Icon-grid thumbnails, cached in temporary storage.  /run is tmpfs, so the cache
+  # is gone on a reboot; entries are keyed by a hash of the file's identity, so one
+  # can never be stale (see filestore/src/thumb.rs).  The cap is what bounds it.
+  thumbCacheDir = "/run/filestore-thumbs";
+  thumbMaxSide = 128;
+  thumbCacheMaxBytes = 256 * 1024 * 1024; # 256M
 
   # The Dioxus SPA compiled to wasm (pinned wasm-bindgen-cli and the wasm build
   # recipe live in common/crane.nix).  It reads the preview table through the
@@ -82,6 +91,12 @@ in {
         "8096"
         "--max-upload"
         "${toString maxUploadBytes}"
+        "--thumb-cache"
+        thumbCacheDir
+        "--thumb-max-side"
+        "${toString thumbMaxSide}"
+        "--thumb-cache-max"
+        "${toString thumbCacheMaxBytes}"
       ];
     };
   };

@@ -12,6 +12,7 @@
 
 mod fsutil;
 mod server;
+mod thumb;
 mod zipstream;
 
 // The authentik login is shared with gocardless-dashboard (common-rs/oidc).
@@ -56,11 +57,19 @@ pub struct Config {
     /// configured to match (see machines/services1/services/filestore.nix) — its
     /// default is far smaller, which is what produced the "HTTP 413" popups.
     pub max_upload: u64,
+    /// Where thumbnails are cached.  Temporary storage by default: /run is tmpfs on
+    /// services1, so the cache is gone on a reboot and nothing in it outlives the
+    /// machine.  See src/thumb.rs.
+    pub thumb_cache: PathBuf,
+    pub thumb_max_side: u32,
+    pub thumb_max_source: u64,
+    pub thumb_cache_max: u64,
 }
 
 pub struct Shared {
     pub cfg: Arc<Config>,
     pub store: fsutil::Store,
+    pub thumb: thumb::ThumbCache,
     /// The OIDC login: sessions and in-flight logins live inside it, so the
     /// HTTP layer only ever asks it to begin/finish a login or look one up.
     pub oidc: oidc::Oidc,
@@ -188,6 +197,10 @@ async fn main() {
         dev_user: arg_opt(&args, "--dev-user"),
         no_auth,
         max_upload: parse_size(&arg(&args, "--max-upload", Some("2G"))),
+        thumb_cache: PathBuf::from(arg(&args, "--thumb-cache", Some("/run/filestore-thumbs"))),
+        thumb_max_side: arg(&args, "--thumb-max-side", Some("128")).parse().expect("--thumb-max-side"),
+        thumb_max_source: parse_size(&arg(&args, "--thumb-max-source", Some("16M"))),
+        thumb_cache_max: parse_size(&arg(&args, "--thumb-cache-max", Some("256M"))),
     });
 
     // --no-auth is a testing escape hatch: it must never be reachable from
@@ -206,6 +219,19 @@ async fn main() {
     });
     let root_display = store.root.display().to_string();
 
+    let thumb = thumb::ThumbCache::open(
+        &cfg.thumb_cache,
+        cfg.thumb_max_side,
+        cfg.thumb_max_source,
+        cfg.thumb_cache_max,
+    );
+    if thumb.disabled {
+        eprintln!(
+            "thumbnail cache is disabled: cannot create {}",
+            cfg.thumb_cache.display()
+        );
+    }
+
     let oidc = oidc::Oidc::new(
         oidc::OidcConfig {
             // The session cookie name (the old `auth::COOKIE_NAME`).
@@ -221,7 +247,7 @@ async fn main() {
         reqwest::Client::new(),
     );
 
-    let shared = Arc::new(Shared { cfg, store, oidc });
+    let shared = Arc::new(Shared { cfg, store, thumb, oidc });
 
     let addr = format!("{}:{}", shared.cfg.bind, shared.cfg.port);
     eprintln!(

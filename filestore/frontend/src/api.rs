@@ -8,6 +8,7 @@ pub struct Entry {
     pub is_dir: bool,
     pub size: u64,
     pub mtime: i64,
+    pub fingerprint: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
@@ -18,6 +19,7 @@ pub struct Hit {
     pub is_dir: bool,
     pub size: u64,
     pub mtime: i64,
+    pub fingerprint: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
@@ -123,6 +125,19 @@ pub fn enc_path(p: &str) -> String {
 
 pub fn download_url(path: &str) -> String {
     format!("/api/download?path={}", enc_path(path))
+}
+
+/// Thumbnail URL for an image row (see `icon_for`).
+///
+/// `fingerprint` is the file's identity as the API reports it
+/// (`<mtime>-<ctime>-<size>-<inode>`), and it is what keeps a thumbnail from ever
+/// being stale: the browser caches by URL, so a file that changes gets a different
+/// URL and its stored thumbnail can never be shown for the new state.  The server
+/// hashes the same identity for its own cache and recomputes it from the current
+/// stat, so a changed file regenerates whatever `v` says.  Non-image extensions get
+/// no thumbnail at all (the SPA keeps the emoji).
+pub fn thumb_url(path: &str, fingerprint: &str) -> String {
+    format!("/api/thumb?path={}&v={}", enc_path(path), fingerprint)
 }
 
 /// Zip one or more paths (repeated `path` query params).

@@ -139,6 +139,45 @@ Types a browser cannot render are not in the table (`image/tiff`, `image/heic`,
 them; a file with an unknown extension is not advertised but the API still tries
 it as text, which the suite checks both ways.
 
+## What the thumbnail tests check
+
+The icon grid shows a thumbnail for image rows, generated on demand and cached in
+temporary storage (`run.sh` points `--thumb-cache` at the scratch directory and
+exports it as `FS_TEST_THUMB_CACHE`, so the tests can look inside it).  The tests
+check the parts that are easy to get wrong:
+
+- **It is a real thumbnail** — a decodable fixture (a 256x128 BMP, since a 1 px PNG
+cannot show resizing) comes back as a JPEG resized to `--thumb-max-side`, and the
+second request for the same file state is a cache hit (`X-Thumb-Cache`).
+- **It is never stale** — the cache key is a hash of the file's identity
+(`mtime + ctime + size + inode`), so changing the file changes the key and the
+entry served is generated from the file as it is now.  The test rewrites the
+fixture and asserts the served thumbnail is the new file, and that a hand-built URL
+with an old fingerprint regenerates rather than serving the old entry (`v` is only
+there to bust the browser cache; the key is always recomputed from the current
+stat).
+- **The browser cache is keyed on the same identity** — the response is
+`max-age=31536000, immutable` with the identity as its ETag, so a stored response
+can only be reused for the same file state.  Revalidating with the current ETag is
+a 304; an ETag from another state is not honoured.
+- **A file the decoder cannot read falls back to the emoji**, and the failure is
+cached as a marker so a broken image is not re-decoded on every render.
+- **The cap holds** — with `--thumb-cache-max` set to about three thumbnails, five
+files stay under it and at least one entry is pruned.
+
+Two things the suite has to allow for:
+
+- **A refused thumbnail is a normal outcome**, so a failed `/api/thumb` request is
+not counted as a page console error (the runner filters that one URL).  Without the
+exception, any test that renders a folder containing an undecodable image fails.
+- **The fixture is rebuilt for every test**, which can hand a test the same inode
+and the same second as the previous one, so the tests do not assume the cache is
+empty at the start — they use a file the test itself creates, or compare entries
+rather than asserting hit/miss.
+
+The row that shows a thumbnail is still identified by `data-fs-name`, so the tests
+read the rendered `img`'s `src` and compare it with the URL the SPA should build.
+
 ## Keyboard and URL behaviour the suite covers
 
 - **Type-ahead** — a bare letter selects the entry in the current folder that

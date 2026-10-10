@@ -24,6 +24,10 @@ pub struct Row {
     /// relative path of this row's directory (None for files) — used as
     /// the drop-target attribute for external drags
     pub dpath: String,
+    /// Thumbnail URL for image rows (empty for anything else, or for an image whose
+    /// thumbnail the server refused — then the emoji is shown instead).
+    pub thumb: String,
+    pub has_thumb: bool,
     pub size_str: String,
     pub time_str: String,
 }
@@ -52,11 +56,22 @@ pub fn build_rows(st: &AppState) -> Vec<Row> {
     let entries = sorted(st);
     let sel = st.sel.read().clone();
     let path = st.path.read().clone();
+    let failed = st.thumb_failed.read().clone();
     entries
         .into_iter()
         .enumerate()
         .map(|(i, e)| {
             let is_sel = sel.contains(&e.name);
+            let full = api::join_rel(&path, &e.name);
+            // Only the formats the thumbnail cache can rasterise (see
+            // common-rs/preview and filestore/src/thumb.rs) get one; SVG and AVIF
+            // rows keep the emoji.
+            let thumb = if !e.is_dir && common_preview::thumbnailable(&e.name) {
+                api::thumb_url(&full, &e.fingerprint)
+            } else {
+                String::new()
+            };
+            let has_thumb = !thumb.is_empty() && !failed.contains(&thumb);
             Row {
                 i,
                 name: e.name.clone(),
@@ -71,7 +86,9 @@ pub fn build_rows(st: &AppState) -> Vec<Row> {
                 } else {
                     "#fafafa".into()
                 },
-                dpath: if e.is_dir { api::join_rel(&path, &e.name) } else { String::new() },
+                dpath: if e.is_dir { full } else { String::new() },
+                thumb,
+                has_thumb,
                 size_str: if e.is_dir { "—".into() } else { fmt_size(e.size) },
                 time_str: fmt_time(e.mtime),
             }
@@ -417,7 +434,19 @@ pub fn IconGrid(st: AppState) -> Element {
                     },
                     div {
                         style: "font-size:34px;line-height:1",
-                        "{r.icon}"
+                        if r.has_thumb {
+                            img {
+                                src: "{r.thumb}",
+                                loading: "lazy",
+                                style: "width:64px;height:64px;object-fit:contain",
+                                onerror: {
+                                    let u = r.thumb.clone();
+                                    move |_| mark_thumb_failed(st, &u)
+                                },
+                            }
+                        } else {
+                            "{r.icon}"
+                        }
                     }
                     div {
                         style: "font-size:11.5px;text-align:center;word-break:break-all;max-height:32px;overflow:hidden",
@@ -558,7 +587,20 @@ pub fn DetailsView(st: AppState) -> Element {
                             },
                             td {
                                 style: "padding:3px 10px;border-bottom:1px solid #eee;white-space:nowrap;overflow:hidden;text-overflow:ellipsis",
-                                "{r.icon}  {r.name}"
+                                if r.has_thumb {
+                                    img {
+                                        src: "{r.thumb}",
+                                        loading: "lazy",
+                                        style: "width:20px;height:20px;object-fit:contain;margin-right:6px;vertical-align:middle",
+                                        onerror: {
+                                            let u = r.thumb.clone();
+                                            move |_| mark_thumb_failed(st, &u)
+                                        },
+                                    }
+                                } else {
+                                    "{r.icon}"
+                                }
+                                "  {r.name}"
                             }
                             td {
                                 style: "padding:3px 10px;border-bottom:1px solid #eee;color:#555",

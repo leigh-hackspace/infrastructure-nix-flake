@@ -124,6 +124,10 @@ pub struct AppState {
     pub toasts: Signal<Vec<Toast>>,
     pub hist: Signal<Vec<String>>,
     pub hidx: Signal<usize>,
+    /// Thumbnail URLs the server has refused (not decodable, over the size limit,
+    /// or the cache is disabled).  Remembered so a row that cannot be thumbnailed
+    /// falls back to the emoji once instead of re-requesting on every render.
+    pub thumb_failed: Signal<HashSet<String>>,
 }
 
 thread_local! {
@@ -150,6 +154,7 @@ impl AppState {
             toasts: Signal::new(Vec::new()),
             hist: Signal::new(vec![String::new()]),
             hidx: Signal::new(0),
+            thumb_failed: Signal::new(HashSet::new()),
         };
         APP.with(|a| *a.borrow_mut() = Some(st));
         st
@@ -340,6 +345,17 @@ pub fn zip_selected(st: AppState, paths: Vec<String>) {
     }
     download(&zip_url(&paths));
     toast(st, &format!("zipping {} item(s)…", paths.len()), false);
+}
+
+/// A thumbnail that came back broken.  The row falls back to the emoji icon, and
+/// the URL is remembered so the same broken file is not re-requested on every
+/// render.
+///
+/// Keyed by URL rather than by path, because the URL carries the file's identity
+/// (see `api::thumb_url`): when the file changes the URL changes, so a file that
+/// becomes decodable gets another try instead of staying stuck on the emoji.
+pub fn mark_thumb_failed(mut st: AppState, url: &str) {
+    st.thumb_failed.write().insert(url.to_string());
 }
 
 /// Scroll the row with this name into view (arrow-key navigation should not

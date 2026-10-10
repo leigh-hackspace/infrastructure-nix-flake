@@ -113,7 +113,21 @@ Guidance for AI agents working in this repository. Read this before making chang
   Preview support is the table in `common-rs/preview`: images (incl. SVG), video,
   audio, PDF and text — only types a browser can render itself, since there is no
   server-side converter, so `image/tiff`/`image/heic`/AVI and Office documents are
-  deliberately not previewable. Media is streamed raw (with `Range` support, so a
+  deliberately not previewable.  The icon grid shows a **thumbnail** for image rows
+  (`filestore/src/thumb.rs`): generated on demand and cached in temporary storage
+  (`--thumb-cache`, `/run/filestore-thumbs` on services1 — tmpfs, so it is gone on a
+  reboot), resized to `--thumb-max-side` (128 px) and bounded by `--thumb-cache-max`
+  (256M, oldest entries pruned).  Freshness is structural, not invalidation: the cache
+  key is a hash of the file's identity (`mtime + ctime + size + inode`), so any change
+  to the file is a different entry and a stale thumbnail cannot be served.  The same
+  identity is the `v` in the URL the SPA builds — which is what keys the *browser*
+  cache — and the API reports it per entry (`Entry.fingerprint`) so the SPA does not
+  recompute it; the server always rehashes from the current stat, so a stale `v`
+  regenerates.  A file the decoder cannot read gets a cached failure marker (so it is
+  not re-decoded on every render) and the row falls back to the emoji.
+  `common_preview::thumbnailable` is the shared list of what the decoder can rasterise:
+  `Kind::Image` is broader (SVG is XML, AVIF needs `ravif`), so the API and the SPA
+  cannot disagree about which rows get a thumbnail. Media is streamed raw (with `Range` support, so a
   seek does not re-download the file) and text is returned as truncated JSON.
   Media responses carry `nosniff` and `default-src 'none'` CSP: an `<img>` cannot
   run script, but the same URL opened as a document can, which is the SVG case.

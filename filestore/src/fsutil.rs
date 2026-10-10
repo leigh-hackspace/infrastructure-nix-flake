@@ -18,6 +18,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
+
 pub struct Store {
     pub root: PathBuf,
 }
@@ -29,6 +32,10 @@ pub struct Entry {
     pub size: u64,
     /// unix seconds
     pub mtime: i64,
+    /// The file's identity (see `fingerprint`), so the SPA can put it in the
+    /// thumbnail URL and the browser cache is keyed on the same thing the server
+    /// hashes.
+    pub fingerprint: String,
 }
 
 #[derive(Clone, Debug, serde::Serialize)]
@@ -41,6 +48,7 @@ pub struct Hit {
     pub is_dir: bool,
     pub size: u64,
     pub mtime: i64,
+    pub fingerprint: String,
 }
 
 #[derive(Clone, Debug, serde::Serialize)]
@@ -51,12 +59,49 @@ pub struct SearchOutcome {
     pub scanned: u64,
 }
 
-fn mtime_of(meta: &fs::Metadata) -> i64 {
+pub(crate) fn mtime_of(meta: &fs::Metadata) -> i64 {
     meta.modified()
         .ok()
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+/// unix seconds, when the *inode* changed — content or metadata.  mtime alone is
+/// not enough for an identity: a file rewritten inside the same second keeps it.
+pub(crate) fn ctime_of(meta: &fs::Metadata) -> i64 {
+    meta.created()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+#[cfg(unix)]
+fn ino_of(meta: &fs::Metadata) -> u64 {
+    meta.ino()
+}
+
+#[cfg(not(unix))]
+fn ino_of(_: &fs::Metadata) -> u64 {
+    0
+}
+
+/// A file's identity, URL-safe: `<mtime>-<ctime>-<size>-<inode>`.
+///
+/// This is what makes a stale thumbnail impossible.  Every part of it changes when
+/// the file changes (ctime moves on any write, and a recreated file always gets a
+/// new inode), so the same string can never describe two states of a file.  The
+/// thumbnail cache hashes it for its key, and the SPA puts it in the thumbnail URL
+/// so the browser cache is keyed on the same identity — see src/thumb.rs.
+pub fn fingerprint(meta: &fs::Metadata) -> String {
+    format!(
+        "{}-{}-{}-{}",
+        mtime_of(meta),
+        ctime_of(meta),
+        meta.len(),
+        ino_of(meta)
+    )
 }
 
 impl Store {
@@ -103,6 +148,7 @@ impl Store {
             is_dir: meta.is_dir(),
             size: meta.len(),
             mtime: mtime_of(&meta),
+            fingerprint: fingerprint(&meta),
         })
     }
 
@@ -134,6 +180,7 @@ impl Store {
                 is_dir: meta.is_dir(),
                 size: meta.len(),
                 mtime: mtime_of(&meta),
+                fingerprint: fingerprint(&meta),
             });
         }
         out.sort_by(|a, b| {
@@ -178,6 +225,7 @@ impl Store {
                     is_dir: e.is_dir,
                     size: e.size,
                     mtime: e.mtime,
+                    fingerprint: e.fingerprint.clone(),
                 });
             }
             false

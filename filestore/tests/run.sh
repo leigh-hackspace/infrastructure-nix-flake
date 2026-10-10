@@ -51,11 +51,15 @@ fi
 
 # 3. start the server (the suite rebuilds this fixture before every test)
 mkdir -p "$ROOT"
+# The thumbnail cache is pointed at the scratch directory so the suite can look
+# inside it; on the real box it is /run/filestore-thumbs (tmpfs).
+THUMB_DIR="$WORKDIR/thumbs"
+mkdir -p "$THUMB_DIR"
 if ss -ltn 2>/dev/null | grep -q ":${PORT}[[:space:]]"; then
   echo "port ${PORT} is already in use — another filestore is running (kill it first)" >&2
   exit 1
 fi
-"$BIN" --root "$ROOT" --no-auth --port "$PORT" > "$LOG_SERVER" 2>&1 &
+"$BIN" --root "$ROOT" --no-auth --port "$PORT" --thumb-cache "$THUMB_DIR" > "$LOG_SERVER" 2>&1 &
 SRV=$!
 trap 'kill $SRV 2>/dev/null || true; cleanup' EXIT
 
@@ -71,6 +75,6 @@ fi
 
 # 4. run the suite
 cd tests
-export FS_TEST_BIN FS_TEST_ROOT="$ROOT" FS_TEST_PORT="$PORT" FS_TEST_WORKDIR="$WORKDIR"
+export FS_TEST_BIN FS_TEST_ROOT="$ROOT" FS_TEST_PORT="$PORT" FS_TEST_WORKDIR="$WORKDIR" FS_TEST_THUMB_CACHE="$THUMB_DIR"
 [ -d node_modules ] || npm install --no-audit --no-fund
 FS_TEST_BROWSER="${FS_TEST_BROWSER:-}" node suite.mjs

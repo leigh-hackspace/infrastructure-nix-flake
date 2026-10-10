@@ -196,6 +196,22 @@ pub fn kind(name: &str) -> Option<Kind> {
     }
 }
 
+/// Extensions `filestore`'s thumbnail cache can rasterise — the `image` crate
+/// features it is built with.
+const THUMBABLE: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico"];
+
+/// Whether the icon grid can get a *thumbnail* for this file, which is narrower
+/// than what a browser can render: `Kind::Image` includes SVG (XML, only a browser
+/// renders it) and AVIF (needs `ravif`, not enabled).  Both the API and the SPA ask
+/// this, so they cannot disagree about which rows show a thumbnail and which keep
+/// the emoji.
+pub fn thumbnailable(name: &str) -> bool {
+    match extension(&name.to_lowercase()) {
+        Some(ext) => THUMBABLE.contains(&ext),
+        None => false,
+    }
+}
+
 /// Content type to send for this file.  Media responses use it directly; text
 /// responses are JSON, so this is only what a direct fetch gets.
 pub fn content_type(name: &str) -> Option<&'static str> {
@@ -238,6 +254,18 @@ mod tests {
         assert_eq!(kind("scan.tiff"), None);
         assert_eq!(kind("movie.avi"), None);
         assert_eq!(kind("document.docx"), None);
+    }
+
+    #[test]
+    fn thumbnails_cover_what_the_decoder_can_rasterise() {
+        // Previewable but not thumbnailable: a browser renders SVG, and AVIF needs
+        // the ravif feature filestore does not enable.
+        assert!(thumbnailable("photo.PNG"));
+        assert!(thumbnailable("icon.ico"));
+        assert!(!thumbnailable("drawing.svg"));
+        assert!(!thumbnailable("photo.avif"));
+        assert!(!thumbnailable("clip.mp4"));
+        assert!(!thumbnailable("Makefile"));
     }
 
     #[test]

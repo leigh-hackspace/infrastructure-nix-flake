@@ -2,6 +2,7 @@
 
 use dioxus::prelude::*;
 
+use crate::api;
 use crate::state::*;
 
 /// Precomputed display row for a hit (no statements allowed in for bodies).
@@ -10,6 +11,8 @@ struct HitRow {
     parent: String,
     name: String,
     icon: String,
+    thumb: String,
+    has_thumb: bool,
     parent_disp: String,
     size_str: String,
     time_str: String,
@@ -26,17 +29,27 @@ pub fn ResultsView(st: AppState, sv: SearchView) -> Element {
     };
     let err = sv.error.clone().unwrap_or_default();
     let has_err = sv.error.is_some();
+    let failed = st.thumb_failed.read().clone();
     let rows: Vec<HitRow> = sv
         .hits
         .iter()
-        .map(|h| HitRow {
-            rel: h.rel.clone(),
-            parent: h.parent.clone(),
-            name: h.name.clone(),
-            icon: icon_for(&h.name, h.is_dir).to_string(),
-            parent_disp: if h.parent.is_empty() { "/".into() } else { h.parent.clone() },
-            size_str: if h.is_dir { "—".into() } else { fmt_size(h.size) },
-            time_str: fmt_time(h.mtime),
+        .map(|h| {
+            let thumb = if !h.is_dir && common_preview::thumbnailable(&h.name) {
+                api::thumb_url(&h.rel, &h.fingerprint)
+            } else {
+                String::new()
+            };
+            HitRow {
+                rel: h.rel.clone(),
+                parent: h.parent.clone(),
+                name: h.name.clone(),
+                icon: icon_for(&h.name, h.is_dir).to_string(),
+                has_thumb: !thumb.is_empty() && !failed.contains(&thumb),
+                thumb,
+                parent_disp: if h.parent.is_empty() { "/".into() } else { h.parent.clone() },
+                size_str: if h.is_dir { "—".into() } else { fmt_size(h.size) },
+                time_str: fmt_time(h.mtime),
+            }
         })
         .collect();
 
@@ -101,7 +114,20 @@ pub fn ResultsView(st: AppState, sv: SearchView) -> Element {
                                 },
                                 td {
                                     style: "padding:3px 8px;border-bottom:1px solid #eee",
-                                    "{r.icon}  {r.name}"
+                                    if r.has_thumb {
+                                        img {
+                                            src: "{r.thumb}",
+                                            loading: "lazy",
+                                            style: "width:20px;height:20px;object-fit:contain;margin-right:6px;vertical-align:middle",
+                                            onerror: {
+                                                let u = r.thumb.clone();
+                                                move |_| mark_thumb_failed(st, &u)
+                                            },
+                                        }
+                                    } else {
+                                        "{r.icon}"
+                                    }
+                                    "  {r.name}"
                                 }
                                 td {
                                     style: "padding:3px 8px;border-bottom:1px solid #eee;color:#555",

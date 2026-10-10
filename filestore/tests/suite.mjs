@@ -23,6 +23,9 @@ const ROOT = process.env.FS_TEST_ROOT || '/tmp/filestore-test-root';
 // Scratch directory handed down by run.sh (logs, throwaway fixtures).  Falls
 // back to a fresh one so `node suite.mjs` on its own still works.
 const WORKDIR = process.env.FS_TEST_WORKDIR || fs.mkdtempSync(path.join(os.tmpdir(), 'filestore-suite.'));
+// The thumbnail cache directory run.sh points the server at, so the cache tests can
+// look inside it.
+const THUMB_CACHE = process.env.FS_TEST_THUMB_CACHE || '';
 const BASE = `http://127.0.0.1:${PORT}`;
 
 // ---------------------------------------------------------------------------
@@ -75,6 +78,31 @@ function pdf() {
   return Buffer.from(out, 'latin1');
 }
 
+// A real BMP of w x h.  The thumbnail tests need a decodable image big enough to
+// show that the cache resizes, and BMP is the one format that can be written here
+// without a compressor.
+function bmp(w, h, rgb = [10, 128, 240]) {
+  const rowLen = ((w * 3 + 3) & ~3);
+  const row = Buffer.alloc(rowLen, 0);
+  for (let x = 0; x < w; x++) {
+    row[x * 3] = rgb[2]; // BMP stores BGR
+    row[x * 3 + 1] = rgb[1];
+    row[x * 3 + 2] = rgb[0];
+  }
+  const pixels = Buffer.concat(Array(h).fill(row));
+  const head = Buffer.alloc(54, 0);
+  head.write('BM', 0);
+  head.writeUInt32LE(54 + pixels.length, 2);
+  head.writeUInt32LE(54, 10);
+  head.writeUInt32LE(40, 14);
+  head.writeInt32LE(w, 18);
+  head.writeInt32LE(h, 22);
+  head.writeUInt16LE(1, 26);
+  head.writeUInt16LE(24, 28);
+  head.writeUInt32LE(pixels.length, 34);
+  return Buffer.concat([head, pixels]);
+}
+
 // value null => directory
 const FIXTURE = {
   'notes.txt': 'hello world\nsecond line\n',
@@ -91,6 +119,12 @@ const FIXTURE = {
   'docs/notes.txt': 'docs copy\n',
   'photos/2024/cat.png': PNG_1PX,
   'photos/2024/dog.png': PNG_1PX,
+  // Thumbnail fixtures.  A real BMP big enough that resizing is observable (the 1px
+  // PNG cannot show it).  The undecodable image goes in its own folder so the only
+  // test that renders it is the fallback test — a refused thumbnail is a failed
+  // request, and the runner treats console errors as failures.
+  'photos/big.bmp': bmp(256, 128),
+  'thumbfail/broken.png': Buffer.from('this is not an image'),
   // Not a decodable video: the point of the video tests is which element the UI
   // picks and what the server sends, not that Chromium can play it.
   'media/clip.mp4': Buffer.from([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70]),
@@ -221,6 +255,51 @@ async function apiJson(p) {
   const r = await fetch(BASE + p);
   return { status: r.status, json: await r.json() };
 }
+
+// Binary responses (the thumbnail cache serves JPEGs, so `api()`'s text body is
+// not usable).
+async function apiRaw(p, port = PORT) {
+  const r = await fetch(`http://127.0.0.1:${port}${p}`);
+  return {
+    status: r.status,
+    headers: Object.fromEntries(r.headers),
+    body: Buffer.from(await r.arrayBuffer()),
+  };
+}
+
+// The thumbnail URL the SPA builds for a row.  `v` is the file's identity
+// (`<mtime>-<ctime>-<size>-<inode>`) exactly as the API reports it, which is what
+// keeps the browser cache from ever showing a stale thumbnail.
+function thumbUrlFor(rel) {
+  const st = fs.statSync(abs(rel));
+  const enc = rel.split('/').map(encodeURIComponent).join('/');
+  const fp = `${Math.floor(st.mtimeMs / 1000)}-${Math.floor(st.ctimeMs / 1000)}-${st.size}-${st.ino}`;
+  return `/api/thumb?path=${enc}&v=${fp}`;
+}
+
+// Width/height from the first SOF marker — enough to prove the thumbnail was
+// resized rather than copied.
+function jpegSize(buf) {
+  if (buf.length < 4 || buf[0] !== 0xff || buf[1] !== 0xd8) return null;
+  let i = 2;
+  while (i + 9 < buf.length) {
+    if (buf[i] !== 0xff) { i++; continue; }
+    const m = buf[i + 1];
+    if (m >= 0xc0 && m <= 0xcf && m !== 0xc8 && m !== 0xcc) {
+      return { w: buf.readUInt16BE(i + 7), h: buf.readUInt16BE(i + 5) };
+    }
+    i += 2 + buf.readUInt16BE(i + 2);
+  }
+  return null;
+}
+
+// The src of the <img> a row renders, or null when it shows the emoji instead.
+const rowThumbSrc = (name) =>
+  page.evaluate((n) => {
+    const r = document.querySelector(`[data-fs-name=${JSON.stringify(n)}]`);
+    const img = r && r.querySelector('img');
+    return img ? img.getAttribute('src') : null;
+  }, name);
 
 // ---------------------------------------------------------------------------
 // tests
@@ -1088,12 +1167,135 @@ function inflateEntry(buf, dataStart, method, size) {
 const os_tmp = fs.realpathSync(os.tmpdir());
 
 // ---------------------------------------------------------------------------
+// thumbnails
+
+test('thumbnail: an image row renders a cached thumbnail, and the next request is a hit', async () => {
+  // A file this test creates, so its identity is definitely not in the cache yet.
+  fs.writeFileSync(abs('photos/fresh.bmp'), bmp(256, 128));
+  const url = thumbUrlFor('photos/fresh.bmp');
+
+  const first = await apiRaw(url);
+  assert.equal(first.status, 200);
+  assert.equal(first.headers['content-type'], 'image/jpeg');
+  assert.equal(first.headers['x-thumb-cache'], 'miss', 'the first request generates the entry');
+  assert.deepEqual(jpegSize(first.body), { w: 128, h: 64 }, 'the thumbnail is resized, not copied');
+
+  const second = await apiRaw(url);
+  assert.equal(second.headers['x-thumb-cache'], 'hit', 'the second is served from the cache');
+  assert.equal(second.body.length, first.body.length);
+
+  await openRow('photos');
+  assert.equal(await rowThumbSrc('fresh.bmp'), url, 'the row renders the thumbnail');
+
+  // a non-image row keeps the emoji
+  assert.equal(await rowThumbSrc('notes.txt'), null, 'only image rows get a thumbnail');
+});
+
+test('thumbnail: a changed file can never be served the old thumbnail', async () => {
+  const urlBefore = thumbUrlFor('photos/big.bmp');
+  const before = await apiRaw(urlBefore);
+  assert.equal(before.status, 200);
+  assert.deepEqual(jpegSize(before.body), { w: 128, h: 64 });
+
+  // Change the file.  Its identity changes, so the entry served is generated from
+  // the file as it is now — there is nothing to invalidate.
+  fs.writeFileSync(abs('photos/big.bmp'), bmp(64, 64));
+  const urlAfter = thumbUrlFor('photos/big.bmp');
+  assert.notEqual(urlAfter, urlBefore, 'a changed file is a different URL, so the browser cannot show the old one');
+
+  const after = await apiRaw(urlAfter);
+  assert.deepEqual(jpegSize(after.body), { w: 64, h: 64 }, 'the served thumbnail is the new file');
+  assert.notEqual(after.headers.etag, before.headers.etag, 'a changed file is a different entry');
+
+  // A hand-built URL with an old fingerprint still gets the current file: `v` only
+  // busts the browser cache, it is never trusted for the key.
+  const stale = await apiRaw('/api/thumb?path=photos%2Fbig.bmp&v=1-1-1-1');
+  assert.deepEqual(jpegSize(stale.body), { w: 64, h: 64 }, 'a stale v regenerates');
+});
+
+test('thumbnail: the response is cacheable forever because the URL is the file identity', async () => {
+  const url = thumbUrlFor('photos/big.bmp');
+  const r = await apiRaw(url);
+  assert.match(r.headers['cache-control'], /immutable/);
+  assert.ok(r.headers.etag, 'the ETag is the hash of the file identity');
+
+  // Revalidating with the current ETag is a 304: the file has not changed.
+  const re = await fetch(BASE + url, { headers: { 'if-none-match': r.headers.etag } });
+  assert.equal(re.status, 304);
+
+  // An ETag from a different file state must not be reused.
+  const other = await fetch(BASE + url, { headers: { 'if-none-match': 'not-the-current-file' } });
+  assert.equal(other.status, 200);
+
+  // Non-images are refused, so the SPA keeps the emoji.
+  const t = await apiJson('/api/thumb?path=notes.txt');
+  assert.equal(t.status, 400);
+  assert.match(t.json.error, /thumbnailable/);
+});
+
+test('thumbnail: a file image cannot decode falls back to the emoji, and the failure is cached', async () => {
+  const markers = () =>
+    fs.readdirSync(THUMB_CACHE, { recursive: true }).filter((f) => String(f).endsWith('.err')).length;
+
+  const before = markers();
+  const r = await apiJson('/api/thumb?path=thumbfail%2Fbroken.png');
+  assert.equal(r.status, 400);
+  assert.equal(markers(), before + 1, 'the failure is stored in the cache');
+
+  const second = await apiJson('/api/thumb?path=thumbfail%2Fbroken.png');
+  assert.equal(second.status, 400, 'the failure is cached, not re-decoded');
+  assert.equal(markers(), before + 1, 'the cached failure is reused, not regenerated');
+
+  await openRow('thumbfail');
+  // The row renders the img first; the failed request is what switches it to the
+  // emoji, so the fallback has to be waited for.
+  await page.waitForFunction(
+    (n) => {
+      const r = document.querySelector(`[data-fs-name=${JSON.stringify(n)}]`);
+      return !!r && !r.querySelector('img');
+    },
+    'broken.png',
+    { timeout: 8000 },
+  );
+  assert.equal(await rowThumbSrc('broken.png'), null, 'the row falls back to the emoji');
+});
+
+test('thumbnail: the temporary cache stays under --thumb-cache-max', async () => {
+  const dir = path.join(WORKDIR, 'cap-cache');
+  const port = 18100;
+  const p = await startServer(
+    ['--root', ROOT, '--no-auth', '--port', String(port), '--thumb-cache', dir, '--thumb-cache-max', '1200'],
+    port,
+  );
+  try {
+    for (let i = 0; i < 5; i++) {
+      fs.writeFileSync(abs(`photos/cap${i}.bmp`), bmp(200, 200));
+      const r = await apiRaw(`/api/thumb?path=photos%2Fcap${i}.bmp`, port);
+      assert.equal(r.status, 200, `cap${i}: ${r.body.toString('utf8')}`);
+    }
+    const files = fs.readdirSync(dir, { recursive: true }).filter((f) => String(f).endsWith('.jpg'));
+    const total = files.reduce((n, f) => n + fs.statSync(path.join(dir, f)).size, 0);
+    assert.ok(total > 0, 'nothing was cached at all');
+    assert.ok(total <= 1200, `cache is ${total} bytes, over the 1200 cap`);
+    assert.ok(files.length < 5, `no entry was pruned (${files.length} still present)`);
+  } finally {
+    p.kill();
+  }
+});
+
+// ---------------------------------------------------------------------------
 // run
 
 let failed = 0;
 browser = await chromium.launch({ executablePath: process.env.FS_TEST_BROWSER || undefined });
 page = await browser.newPage();
-page.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(m.text() + (m.location()?.url ? ' @ ' + m.location().url : '')); });
+page.on('console', (m) => {
+  // A refused thumbnail is a normal outcome (the UI falls back to the emoji), so a
+  // failed /api/thumb request is not treated as a page error.
+  if (m.type() === 'error' && !(m.location()?.url || '').includes('/api/thumb')) {
+    consoleErrors.push(m.text() + (m.location()?.url ? ' @ ' + m.location().url : ''));
+  }
+});
 page.on('pageerror', (e) => consoleErrors.push('pageerror: ' + e.message));
 
 for (const [name, fn] of tests) {

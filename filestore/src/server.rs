@@ -115,6 +115,12 @@ impl ApiError {
             msg: format!("upload exceeds the {} limit", fmt_limit(limit)),
         }
     }
+    fn internal(msg: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            msg: msg.into(),
+        }
+    }
 }
 
 impl IntoResponse for ApiError {
@@ -144,7 +150,7 @@ impl From<io::Error> for ApiError {
 
 type ApiResult<T> = Result<T, ApiError>;
 
-fn fmt_limit(n: u64) -> String {
+pub(crate) fn fmt_limit(n: u64) -> String {
     const U: [&str; 6] = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
     let mut v = n as f64;
     let mut i = 0;
@@ -238,6 +244,7 @@ pub fn router(shared: Shared) -> Router {
         .route("/api/download", get(download))
         .route("/api/zip", get(zip))
         .route("/api/preview", get(preview))
+        .route("/api/thumb", get(thumbnail))
         .fallback(spa)
         .with_state(shared)
 }
@@ -585,10 +592,9 @@ fn content_disposition(name: &str) -> String {
 
 async fn file_path(
     shared: &Shared,
-    q: &PathQ,
+    rel: &str,
 ) -> ApiResult<(std::path::PathBuf, std::fs::Metadata)> {
-    let rel = q.path.clone().unwrap_or_default();
-    let abs = shared.store.resolve(&rel)?;
+    let abs = shared.store.resolve(rel)?;
     let meta = match tokio::fs::metadata(&abs).await {
         Ok(m) => m,
         Err(_) => return Err(ApiError::not_found("no such file")),
@@ -596,12 +602,104 @@ async fn file_path(
     Ok((abs, meta))
 }
 
+/// The header the thumbnail route reports on: whether the entry was already in the
+/// cache.  Not a standard header, but it is what the test suite asserts on.
+const X_THUMB_CACHE: HeaderName = HeaderName::from_static("x-thumb-cache");
+
+/// Thumbnail for one file, served from the cache in temporary storage.
+///
+/// Freshness comes from the key, not from invalidation: the key is a hash of the
+/// file's identity (relative path + the `fingerprint` in fsutil: mtime, ctime, size,
+/// inode), so a changed file is a different entry and can never be served the
+/// thumbnail of its old state.  `v` in the query is that same identity, put there so
+/// the browser cache is keyed on it too; the key below is always recomputed from the
+/// current stat, so a stale `v` regenerates.
+#[derive(Deserialize)]
+struct ThumbQ {
+    path: Option<String>,
+    /// The client's fingerprint of the file (see `fsutil::fingerprint`).  Never read:
+    /// it is part of the URL contract only, so that the browser cache is keyed on the
+    /// file's identity.  The key below is always recomputed from the current stat.
+    #[allow(dead_code)]
+    v: Option<String>,
+}
+
+async fn thumbnail(
+    State(shared): State<Shared>,
+    Authed(_): Authed,
+    Query(q): Query<ThumbQ>,
+    headers: HeaderMap,
+) -> ApiResult<Response> {
+    let rel = q.path.unwrap_or_default();
+    let (abs, meta) = file_path(&shared, &rel).await?;
+    if meta.is_dir() {
+        return Err(ApiError::bad("cannot thumbnail a directory"));
+    }
+    let name = abs
+        .file_name()
+        .map(|s| s.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    if !common_preview::thumbnailable(&name) {
+        return Err(ApiError::bad("not a thumbnailable image"));
+    }
+
+    let key = shared.thumb.key(&rel, &meta);
+    // A cached response can only be reused when the client's ETag still matches the
+    // key of the file as it is now — that is, only when the file has not changed.
+    if let Some(ife) = headers.get(header::IF_NONE_MATCH) {
+        if ife.to_str().unwrap_or_default().trim_matches('"') == key {
+            return Ok((
+                StatusCode::NOT_MODIFIED,
+                [(header::ETAG, key), (X_THUMB_CACHE, "hit".to_string())],
+            )
+                .into_response());
+        }
+    }
+
+    // Decoding is CPU-bound, so it runs on the blocking pool like the store calls
+    // above.
+    let s = shared.clone();
+    let outcome = tokio::task::spawn_blocking(move || s.thumb.entry(&abs, &rel, &meta))
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+
+    match outcome {
+        crate::thumb::Outcome::Image { key, path, hit } => {
+            let bytes = tokio::fs::read(&path)
+                .await
+                .map_err(|e| ApiError::internal(e.to_string()))?;
+            Ok((
+                StatusCode::OK,
+                [
+                    (header::CONTENT_TYPE, "image/jpeg".to_string()),
+                    (header::CONTENT_LENGTH, bytes.len().to_string()),
+                    // A year and `immutable`, because the URL and the ETag only ever
+                    // change when the file does.
+                    (
+                        header::CACHE_CONTROL,
+                        "private, max-age=31536000, immutable".to_string(),
+                    ),
+                    (header::ETAG, key),
+                    (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
+                    (
+                        X_THUMB_CACHE,
+                        if hit { "hit".to_string() } else { "miss".to_string() },
+                    ),
+                ],
+                bytes,
+            )
+                .into_response())
+        }
+        crate::thumb::Outcome::Failed { msg, .. } => Err(ApiError::bad(msg)),
+    }
+}
+
 async fn download(
     State(shared): State<Shared>,
     Authed(_): Authed,
     Query(q): Query<PathQ>,
 ) -> ApiResult<Response> {
-    let (abs, meta) = file_path(&shared, &q).await?;
+    let (abs, meta) = file_path(&shared, q.path.as_deref().unwrap_or("")).await?;
     if meta.is_dir() {
         return Err(ApiError::bad("use the zip endpoint for directories"));
     }
@@ -678,7 +776,7 @@ async fn preview(
     headers: axum::http::HeaderMap,
 ) -> ApiResult<Response> {
     const MAX_TEXT: u64 = 512 * 1024;
-    let (abs, meta) = file_path(&shared, &q).await?;
+    let (abs, meta) = file_path(&shared, q.path.as_deref().unwrap_or("")).await?;
     if meta.is_dir() {
         return Err(ApiError::bad("cannot preview a directory"));
     }
@@ -770,13 +868,14 @@ fn parse_range(value: Option<&header::HeaderValue>, size: u64) -> Option<(u64, u
         return None;
     }
     let (a, b) = spec.split_once('-')?;
-    let start = match a {
-        "" => size.saturating_sub(b.parse::<u64>().ok()?),
-        s => s.parse::<u64>().ok()?,
-    };
-    let end = match b {
-        "" => size - 1,
-        s => s.parse::<u64>().ok()?.min(size - 1),
+    // `bytes=-10` is the last 10 bytes, so `b` is a count there, not an end index.
+    let (start, end) = match (a, b) {
+        ("", count) => {
+            let n = count.parse::<u64>().ok()?;
+            (size.saturating_sub(n), size - 1)
+        }
+        (s, "") => (s.parse::<u64>().ok()?, size - 1),
+        (s, e) => (s.parse::<u64>().ok()?, e.parse::<u64>().ok()?.min(size - 1)),
     };
     if start >= size || start > end {
         return None;
