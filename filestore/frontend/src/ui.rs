@@ -6,7 +6,7 @@ use wasm_bindgen::JsCast;
 
 use crate::api::*;
 use crate::grid::{DetailsView, grid_columns, IconGrid, move_selection, open_focused, typeahead};
-use crate::js::ensure_js_glue;
+use crate::js::{ensure_drag_hover, ensure_js_glue};
 use crate::menu::ContextMenu;
 use crate::modal::ModalBox;
 use crate::misc::{Toasts, UploadBar};
@@ -36,6 +36,7 @@ pub fn App() -> Element {
             "#,
         );
         ensure_js_glue(st);
+        ensure_drag_hover(st);
     });
 
     // whoami + initial dir load

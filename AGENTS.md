@@ -137,6 +137,16 @@ Guidance for AI agents working in this repository. Read this before making chang
   folder is mirrored into the URL hash with `replaceState` — the app keeps its own
   back/forward history (`hist`/`hidx`, Backspace), so the browser must not build a
   second one — and a hard refresh lands back in the folder.
+  During a drag the directory row under the pointer is marked as the target
+  (`data-fs-drop`: open-folder icon, dashed outline and a `move here` / `copy here`
+  badge — `upload here` for a drag from outside the page) and the dragged rows are
+  dimmed (`data-fs-drag`). The hover is decided on the real event in
+  `frontend/src/js.rs` (`ensure_drag_hover`) rather than in a row handler, because
+  `relatedTarget` is what tells a real leave apart from crossing to a child of the same
+  row — a row-level `dragleave` cleared the highlight on every child crossing. `dragend`
+  is the only event that always runs (including when the drop is refused or the drag
+  leaves the page), so it is what ends the drag. A file row is never a target, and a
+  folder is never a target for itself.
   The SPA was written against the dioxus 0.6 API and ported to the pinned 0.7.10;
   the port and the SPA's other traps (keyboard selection, context-menu clamping,
   drag-out to the OS, upload body limits) are written up in

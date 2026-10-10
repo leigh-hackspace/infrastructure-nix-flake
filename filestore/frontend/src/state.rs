@@ -98,6 +98,15 @@ pub struct Toast {
     pub is_err: bool,
 }
 
+/// What the page is currently dragging.
+#[derive(Clone, PartialEq)]
+pub struct DragInfo {
+    /// names (relative to the current folder) of the rows being dragged
+    pub names: Vec<String>,
+    /// releasing here copies instead of moving (ctrl/cmd held)
+    pub copy: bool,
+}
+
 // ---------------------------------------------------------------------------
 // state
 
@@ -124,6 +133,12 @@ pub struct AppState {
     pub toasts: Signal<Vec<Toast>>,
     pub hist: Signal<Vec<String>>,
     pub hidx: Signal<usize>,
+    /// The drag in progress, or None when it came from outside the page (OS files):
+    /// no row handler sees those, because there is no dragstart on a row.
+    pub drag: Signal<Option<DragInfo>>,
+    /// Name of the directory row the pointer is over during a drag — the row a
+    /// release would drop into. Written by `js::ensure_drag_hover`.
+    pub drop_target: Signal<Option<String>>,
     /// Thumbnail URLs the server has refused (not decodable, over the size limit,
     /// or the cache is disabled).  Remembered so a row that cannot be thumbnailed
     /// falls back to the emoji once instead of re-requesting on every render.
@@ -154,6 +169,8 @@ impl AppState {
             toasts: Signal::new(Vec::new()),
             hist: Signal::new(vec![String::new()]),
             hidx: Signal::new(0),
+            drag: Signal::new(None),
+            drop_target: Signal::new(None),
             thumb_failed: Signal::new(HashSet::new()),
         };
         APP.with(|a| *a.borrow_mut() = Some(st));
@@ -366,6 +383,39 @@ pub fn scroll_row_into_view(name: &str) {
         n = serde_json::json!(name)
     );
     let _ = js_eval(&js);
+}
+
+/// Mark (or unmark) the row a release would drop into.
+///
+/// `dragover` fires on every pointer move, so this must only write the signal when
+/// the answer actually changes — otherwise the grid re-renders on every move.
+///
+/// A row that is itself part of the drag is never a target: a folder cannot receive
+/// itself.
+pub fn set_drop_target(mut st: AppState, mut name: Option<String>) {
+    if let Some(d) = st.drag.read().clone() {
+        if let Some(n) = &name {
+            if d.names.contains(n) {
+                name = None;
+            }
+        }
+    }
+    let cur = st.drop_target.read().clone();
+    if cur != name {
+        st.drop_target.set(name);
+    }
+}
+
+/// Move or copy, as the badge promises.  `copy` is the live ctrl/cmd state, so the
+/// badge and the drop cannot disagree.
+pub fn set_drag_copy(mut st: AppState, copy: bool) {
+    let cur = st.drag.read().clone();
+    if let Some(mut d) = cur {
+        if d.copy != copy {
+            d.copy = copy;
+            st.drag.set(Some(d));
+        }
+    }
 }
 
 pub fn redirect(url: &str) {

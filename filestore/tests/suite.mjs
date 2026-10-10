@@ -244,6 +244,63 @@ async function blur() {
   await page.evaluate(() => document.activeElement.blur());
 }
 
+// The drag hover state is decided on the real event — relatedTarget is what tells a
+// real leave apart from crossing to a child of the same row — so these tests dispatch
+// synthetic drag events with one shared DataTransfer (the same one dragstart filled
+// in, so the internal formats are the real ones).
+async function dragStart(name, ctrl = false) {
+  await page.evaluate(([n, c]) => {
+    const r = document.querySelector(`[data-fs-name=${JSON.stringify(n)}]`);
+    const dt = new DataTransfer();
+    window.__fs_test_dt = dt;
+    r.dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer: dt, ctrlKey: c }));
+  }, [name, ctrl]);
+}
+
+async function dragOver(name, ctrl = false) {
+  await page.evaluate(([n, c]) => {
+    const r = document.querySelector(`[data-fs-name=${JSON.stringify(n)}]`);
+    r.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: window.__fs_test_dt, ctrlKey: c }));
+  }, [name, ctrl]);
+}
+
+async function dragLeave(name, relatedName) {
+  await page.evaluate(([n, rel]) => {
+    const r = document.querySelector(`[data-fs-name=${JSON.stringify(n)}]`);
+    const to = rel ? document.querySelector(`[data-fs-name=${JSON.stringify(rel)}]`) : null;
+    r.dispatchEvent(new DragEvent('dragleave', { bubbles: true, relatedTarget: to, dataTransfer: window.__fs_test_dt }));
+  }, [name, relatedName]);
+}
+
+async function dragEnd(name) {
+  await page.evaluate((n) => {
+    const r = document.querySelector(`[data-fs-name=${JSON.stringify(n)}]`);
+    r.dispatchEvent(new DragEvent('dragend', { bubbles: true, dataTransfer: window.__fs_test_dt }));
+  }, name);
+}
+
+async function dropOn(name) {
+  await page.evaluate((n) => {
+    const r = document.querySelector(`[data-fs-name=${JSON.stringify(n)}]`);
+    r.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: window.__fs_test_dt }));
+  }, name);
+}
+
+const dragAttr = (name, attr) =>
+  page.evaluate(([n, a]) => document.querySelector(`[data-fs-name=${JSON.stringify(n)}]`).getAttribute(a), [name, attr]);
+const rowText = (name) =>
+  page.evaluate((n) => document.querySelector(`[data-fs-name=${JSON.stringify(n)}]`).innerText, name);
+
+// The render is async (a signal write wakes the runtime), so wait for the attribute
+// rather than reading it straight after the dispatch.
+async function waitAttr(name, attr, want) {
+  await page.waitForFunction(
+    ([n, a, w]) => document.querySelector(`[data-fs-name=${JSON.stringify(n)}]`).getAttribute(a) === w,
+    [name, attr, want],
+    { timeout: 8000 },
+  );
+}
+
 // In search mode the toolbar is replaced by the search bar, so the shallow/deep
 // toggle lives inside #root as well.
 
@@ -885,6 +942,95 @@ test('drag out: dragstart publishes text/uri-list for targets outside the page',
   // a folder has no single file, so it publishes its streaming ZIP instead
   const d = await grab('docs');
   assert.match(d.uri, /\/api\/zip\?path=docs$/, `a folder drag publishes its ZIP (got ${d.uri})`);
+});
+
+test('drag: hovering a folder row marks it as the drop target', async () => {
+  await dragStart('move-me.txt');
+  await dragOver('scratch');
+  await waitAttr('scratch', 'data-fs-drop', '1');
+  const t = await rowText('scratch');
+  assert.match(t, /📂/, `the folder icon changes to an open folder (got ${JSON.stringify(t)})`);
+  assert.match(t, /move here/, `the row says what releasing would do (got ${JSON.stringify(t)})`);
+  assert.equal(await dragAttr('move-me.txt', 'data-fs-drag'), '1', 'the dragged row is marked as the source');
+});
+
+test('drag: ctrl held shows the copy badge', async () => {
+  await dragStart('move-me.txt', true);
+  await dragOver('scratch', true);
+  await waitAttr('scratch', 'data-fs-drop', '1');
+  assert.match(await rowText('scratch'), /copy here/, 'ctrl changes the badge to copy');
+});
+
+test('drag: crossing to a child of the target row keeps the highlight', async () => {
+  await dragStart('move-me.txt');
+  await dragOver('scratch');
+  await waitAttr('scratch', 'data-fs-drop', '1');
+  // The pointer moves from the row's icon to its own label.  relatedTarget is still
+  // inside the row, so this is a crossing, not a leave — a row-level dragleave would
+  // have cleared it and the target would flicker while the pointer was still on it.
+  await page.evaluate(() => {
+    const r = document.querySelector('[data-fs-name="scratch"]');
+    const label = [...r.querySelectorAll('div')].pop();
+    r.dispatchEvent(new DragEvent('dragleave', { bubbles: true, relatedTarget: label, dataTransfer: window.__fs_test_dt }));
+  });
+  await page.waitForTimeout(300);
+  assert.equal(await dragAttr('scratch', 'data-fs-drop'), '1', 'the highlight survives a child crossing');
+});
+
+test('drag: leaving the target row clears the highlight', async () => {
+  await dragStart('move-me.txt');
+  await dragOver('scratch');
+  await waitAttr('scratch', 'data-fs-drop', '1');
+  await dragLeave('scratch', null);
+  await waitAttr('scratch', 'data-fs-drop', '0');
+});
+
+test('drag: a folder is not a drop target for itself', async () => {
+  await dragStart('scratch');
+  await dragOver('scratch');
+  await waitAttr('scratch', 'data-fs-drag', '1');
+  assert.equal(await dragAttr('scratch', 'data-fs-drop'), '0', 'the dragged folder is not its own target');
+  await dropOn('scratch');
+  await page.waitForTimeout(500);
+  assert.ok(exists('scratch'), 'scratch is still a folder');
+  const t = await toastTexts();
+  assert.equal(t.length, 0, `nothing was attempted (got ${JSON.stringify(t)})`);
+});
+
+test('drag: a file row is never a drop target', async () => {
+  await dragStart('move-me.txt');
+  await dragOver('notes.txt');
+  await waitAttr('move-me.txt', 'data-fs-drag', '1');
+  assert.equal(await dragAttr('notes.txt', 'data-fs-drop'), '0', 'a file row cannot receive a drop');
+});
+
+test('drag: dragend ends the drag', async () => {
+  await dragStart('move-me.txt');
+  await dragOver('scratch');
+  await waitAttr('scratch', 'data-fs-drop', '1');
+  await dragEnd('move-me.txt');
+  await waitAttr('scratch', 'data-fs-drop', '0');
+  await waitAttr('move-me.txt', 'data-fs-drag', '0');
+});
+
+test('drag: an external drag shows the upload badge', async () => {
+  // No dragstart on a row: a drag from outside the page has no payload this page
+  // understands, so the JS glue uploads it into the hovered folder.
+  await page.evaluate(() => {
+    document.querySelector('[data-fs-name="scratch"]').dispatchEvent(
+      new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: new DataTransfer() }),
+    );
+  });
+  await waitAttr('scratch', 'data-fs-drop', '1');
+  assert.match(await rowText('scratch'), /upload here/, 'an external drop uploads into the hovered folder');
+});
+
+test('drag: the details view marks the target row too', async () => {
+  await clickButton('Details');
+  await dragStart('move-me.txt');
+  await dragOver('scratch');
+  await waitAttr('scratch', 'data-fs-drop', '1');
+  assert.match(await rowText('scratch'), /move here/, 'the table row shows the badge as well');
 });
 
 test('keyboard: Escape closes menu, modal and preview', async () => {

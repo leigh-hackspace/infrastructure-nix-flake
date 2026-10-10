@@ -10,6 +10,24 @@ use crate::state::*;
 
 const ROW_BG_SEL: &str = "#d8ecff";
 const ROW_BORDER_SEL: &str = "#7ab";
+/// The row the pointer is over during a drag gets its own face: a dashed outline and
+/// an open folder, so it reads as "release here" rather than "this row is selected".
+const ROW_BG_DROP: &str = "#e3f2fd";
+const ROW_BORDER_DROP: &str = "#1976d2";
+const DROP_ICON: &str = "📂";
+/// Rows that are part of the drag are dimmed, so the source and the target are
+/// distinguishable while the mouse is down.
+const DRAG_OPACITY: &str = "0.45";
+
+/// What releasing over the hovered row would do.  `drag` is None for a drag that came
+/// from outside the page, which the JS glue uploads into the folder.
+fn drop_badge(drag: &Option<DragInfo>) -> &'static str {
+    match drag {
+        Some(d) if d.copy => "copy here",
+        Some(_) => "move here",
+        None => "upload here",
+    }
+}
 
 /// Precomputed display row — for-loop bodies may not contain statements,
 /// so everything is resolved before the rsx.
@@ -19,8 +37,16 @@ pub struct Row {
     pub icon: String,
     pub is_dir: bool,
     pub is_sel: bool,
-    pub border_c: String,
+    /// this row is the one a release would drop into (a directory under the pointer)
+    pub is_drop: bool,
+    /// this row is one of the items being dragged
+    pub is_drag: bool,
+    /// shown when `is_drop`
+    pub badge: String,
+    pub border: String,
     pub bg_c: String,
+    pub opacity: &'static str,
+    pub outline: &'static str,
     /// relative path of this row's directory (None for files) — used as
     /// the drop-target attribute for external drags
     pub dpath: String,
@@ -57,11 +83,15 @@ pub fn build_rows(st: &AppState) -> Vec<Row> {
     let sel = st.sel.read().clone();
     let path = st.path.read().clone();
     let failed = st.thumb_failed.read().clone();
+    let drag = st.drag.read().clone();
+    let drop = st.drop_target.read().clone();
     entries
         .into_iter()
         .enumerate()
         .map(|(i, e)| {
             let is_sel = sel.contains(&e.name);
+            let is_drag = drag.as_ref().map(|d| d.names.contains(&e.name)).unwrap_or(false);
+            let is_drop = drop.as_deref() == Some(e.name.as_str());
             let full = api::join_rel(&path, &e.name);
             // Only the formats the thumbnail cache can rasterise (see
             // common-rs/preview and filestore/src/thumb.rs) get one; SVG and AVIF
@@ -75,17 +105,35 @@ pub fn build_rows(st: &AppState) -> Vec<Row> {
             Row {
                 i,
                 name: e.name.clone(),
-                icon: icon_for(&e.name, e.is_dir).to_string(),
+                icon: if is_drop {
+                    DROP_ICON
+                } else {
+                    icon_for(&e.name, e.is_dir)
+                }
+                .to_string(),
                 is_dir: e.is_dir,
                 is_sel,
-                border_c: if is_sel { ROW_BORDER_SEL.into() } else { "transparent".into() },
-                bg_c: if is_sel {
+                is_drop,
+                is_drag,
+                badge: drop_badge(&drag).to_string(),
+                border: if is_drop {
+                    format!("1px dashed {ROW_BORDER_DROP}")
+                } else if is_sel {
+                    format!("1px solid {ROW_BORDER_SEL}")
+                } else {
+                    "1px solid transparent".into()
+                },
+                bg_c: if is_drop {
+                    ROW_BG_DROP.into()
+                } else if is_sel {
                     ROW_BG_SEL.into()
                 } else if i % 2 == 0 {
                     "#fff".into()
                 } else {
                     "#fafafa".into()
                 },
+                opacity: if is_drag { DRAG_OPACITY } else { "1" },
+                outline: if is_drop { "1px dashed #1976d2" } else { "none" },
                 dpath: if e.is_dir { full } else { String::new() },
                 thumb,
                 has_thumb,
@@ -261,16 +309,28 @@ pub fn row_drop_internal(st: AppState, dt: &dioxus::html::DataTransfer, row_name
             if let Some(paths) = v["paths"].as_array() {
                 let srcs: Vec<String> =
                     paths.iter().filter_map(|p| p.as_str().map(|s| s.to_string())).collect();
-                if !srcs.is_empty() {
+                if srcs.is_empty() {
+                    return;
+                }
+                let drag = st.drag.read().clone();
+                // A folder cannot receive itself — the row is not a target for a drag
+                // that includes it, so a drop on it is refused rather than attempted.
+                if let Some(d) = &drag {
+                    if d.names.iter().any(|n| n == row_name) {
+                        return;
+                    }
+                }
+                let copy = match &drag {
+                    Some(d) => d.copy,
                     // dioxus's DataTransfer::get_data returns Some("") for formats
                     // that were never set, so is_some() is always true — an internal
                     // drag would then always copy instead of move.
-                    let copy = dt
+                    None => dt
                         .get_data("application/x-filestore-copy")
-                        .is_some_and(|s| !s.is_empty());
-                    let dest = api::join_rel(&st.path.read(), row_name);
-                    move_or_copy(st, srcs, dest, copy);
-                }
+                        .is_some_and(|s| !s.is_empty()),
+                };
+                let dest = api::join_rel(&st.path.read(), row_name);
+                move_or_copy(st, srcs, dest, copy);
             }
         }
     }
@@ -296,7 +356,7 @@ fn esc_attr(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
-fn row_dragstart(de: &DragEvent, st: &AppState, name: &str, is_sel: bool, is_dir: bool) {
+fn row_dragstart(de: &DragEvent, mut st: AppState, name: &str, is_sel: bool, is_dir: bool) {
     let dt = de.data_transfer();
     let dir = st.path.read().clone();
     let sel: std::collections::HashSet<String> = st.sel.read().clone();
@@ -320,6 +380,15 @@ fn row_dragstart(de: &DragEvent, st: &AppState, name: &str, is_sel: bool, is_dir
     if ctrl_held(de.modifiers()) {
         let _ = dt.set_data("application/x-filestore-copy", "1");
     }
+
+    // What is being dragged, so the rows can show themselves as the source and the
+    // hovered folder can show what a release would do.  `copy` starts from the
+    // modifier state at dragstart and follows ctrl/cmd for the rest of the drag.
+    st.drag.set(Some(DragInfo {
+        names: paths.clone(),
+        copy: ctrl_held(de.modifiers()),
+    }));
+    st.drop_target.set(None);
 
     // `application/x-filestore` is only understood by this page, so a drag that
     // leaves the browser (file manager, desktop, an editor) had no payload the
@@ -374,13 +443,15 @@ pub fn IconGrid(st: AppState) -> Element {
                     "data-fs-path": r.dpath.clone(),
                     "data-fs-name": r.name.clone(),
                     "data-fs-sel": if r.is_sel { "1" } else { "0" },
-                    style: "display:flex;flex-direction:column;align-items:center;gap:3px;padding:8px 4px;border:1px solid {r.border_c};background:{r.bg_c};border-radius:4px;cursor:default;user-select:none",
+                    "data-fs-drop": if r.is_drop { "1" } else { "0" },
+                    "data-fs-drag": if r.is_drag { "1" } else { "0" },
+                    style: "display:flex;flex-direction:column;align-items:center;gap:3px;padding:8px 4px;border:{r.border};background:{r.bg_c};border-radius:4px;cursor:default;user-select:none;opacity:{r.opacity}",
                     draggable: "true",
                     ondragstart: {
                         let name = r.name.clone();
                         let is_sel = r.is_sel;
                         let is_dir = r.is_dir;
-                        move |de| row_dragstart(&de, &st, &name, is_sel, is_dir)
+                        move |de| row_dragstart(&de, st, &name, is_sel, is_dir)
                     },
                     ondragover: {
                         let is_dir = r.is_dir;
@@ -446,6 +517,12 @@ pub fn IconGrid(st: AppState) -> Element {
                             }
                         } else {
                             "{r.icon}"
+                        }
+                    }
+                    if r.is_drop {
+                        div {
+                            style: "font-size:11px;font-weight:600;color:#1565c0",
+                            "{r.badge}"
                         }
                     }
                     div {
@@ -527,13 +604,15 @@ pub fn DetailsView(st: AppState) -> Element {
                             "data-fs-path": r.dpath.clone(),
                             "data-fs-name": r.name.clone(),
                             "data-fs-sel": if r.is_sel { "1" } else { "0" },
-                            style: "cursor:default;user-select:none;background:{r.bg_c}",
+                            "data-fs-drop": if r.is_drop { "1" } else { "0" },
+                            "data-fs-drag": if r.is_drag { "1" } else { "0" },
+                            style: "cursor:default;user-select:none;background:{r.bg_c};outline:{r.outline};opacity:{r.opacity}",
                             draggable: "true",
                             ondragstart: {
                                 let name = r.name.clone();
                                 let is_sel = r.is_sel;
                                 let is_dir = r.is_dir;
-                                move |de| row_dragstart(&de, &st, &name, is_sel, is_dir)
+                                move |de| row_dragstart(&de, st, &name, is_sel, is_dir)
                             },
                             ondragover: {
                                 let is_dir = r.is_dir;
@@ -601,6 +680,12 @@ pub fn DetailsView(st: AppState) -> Element {
                                     "{r.icon}"
                                 }
                                 "  {r.name}"
+                                if r.is_drop {
+                                    span {
+                                        style: "margin-left:8px;font-size:11px;font-weight:600;color:#1565c0",
+                                        "{r.badge}"
+                                    }
+                                }
                             }
                             td {
                                 style: "padding:3px 10px;border-bottom:1px solid #eee;color:#555",

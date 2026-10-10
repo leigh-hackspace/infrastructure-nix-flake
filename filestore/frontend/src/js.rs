@@ -5,6 +5,8 @@ use std::time::Duration;
 
 use dioxus::prelude::*;
 use gloo_timers::future::sleep;
+use wasm_bindgen::closure::Closure;
+use wasm_bindgen::JsCast;
 
 use crate::api::*;
 use crate::state::*;
@@ -142,6 +144,82 @@ pub fn ensure_js_glue(mut st: AppState) {
             sleep(Duration::from_millis(400)).await;
         }
     });
+}
+
+/// An event target (or a `dragleave`'s relatedTarget) as an element.
+fn as_el(t: &Option<web_sys::EventTarget>) -> Option<&web_sys::Element> {
+    t.as_ref()?.dyn_ref::<web_sys::Element>()
+}
+
+/// The directory row a drop would land in, for the element under the pointer (or the
+/// element a `dragleave` is moving to).
+///
+/// Files carry an empty `data-fs-path`, so only directory rows are targets — a file
+/// row can never receive a drop.
+fn drop_row(el: Option<&web_sys::Element>) -> Option<String> {
+    let row = el?.closest("[data-fs-path]").ok()?;
+    let row = row?;
+    if row.get_attribute("data-fs-path")?.is_empty() {
+        return None;
+    }
+    row.get_attribute("data-fs-name")
+}
+
+/// Mark the row the pointer is over during a drag, so it can show that releasing
+/// there drops into it.
+///
+/// This has to run on the real event rather than in a Dioxus row handler:
+/// `relatedTarget` is what tells a real leave apart from crossing from a row's icon
+/// to its own label, and `DragData` does not expose it.  A row-level `dragleave`
+/// would clear the highlight on every child crossing, so the target flickered while
+/// the pointer was still inside the row it was on.
+pub fn ensure_drag_hover(mut st: AppState) {
+    static ONCE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if ONCE.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+
+    let handler: Closure<dyn FnMut(wasm_bindgen::JsValue)> = Closure::new(move |v: wasm_bindgen::JsValue| {
+        let Ok(e) = v.dyn_into::<web_sys::DragEvent>() else {
+            return;
+        };
+        // DragEvent extends MouseEvent, which is where relatedTarget and the modifier
+        // state live.
+        let me = e.unchecked_ref::<web_sys::MouseEvent>();
+        match e.type_().as_str() {
+            "dragover" => {
+                set_drop_target(st, drop_row(as_el(&e.target())));
+                // ctrl/cmd held right now, so the badge and the drop cannot disagree.
+                set_drag_copy(st, me.ctrl_key() || me.meta_key());
+            }
+            "dragleave" => {
+                // Only a leave that really exits the row: a relatedTarget still inside
+                // the same row is the pointer crossing one of its children.
+                let to = drop_row(as_el(&me.related_target()));
+                if to.is_none() {
+                    set_drop_target(st, None);
+                }
+            }
+            "drop" => set_drop_target(st, None),
+            // dragend is the only event that always runs — it fires on the row the drag
+            // started from after the drop, and also when the drop was refused or the
+            // drag left the page.  It is what ends the drag.
+            "dragend" => {
+                st.drag.set(None);
+                set_drop_target(st, None);
+            }
+            _ => {}
+        }
+    });
+
+    if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+        let target: &web_sys::EventTarget = doc.unchecked_ref();
+        let func: &js_sys::Function = handler.as_js_value().unchecked_ref::<js_sys::Function>();
+        for ev in ["dragover", "dragleave", "drop", "dragend"] {
+            let _ = target.add_event_listener_with_callback(ev, func);
+        }
+        std::mem::forget(handler);
+    }
 }
 
 /// Move (default) or copy (ctrl) internal paths into `dest_dir`.

@@ -45,7 +45,8 @@ test hooks (harmless in production):
 
 - every grid/table row has `data-fs-path`, `data-fs-name` and `data-fs-sel`
   (`1` when the row is selected, so a test can check *which* rows are selected,
-  not just how many)
+  not just how many), plus `data-fs-drop` (`1` when the row is the one a release
+  would drop into) and `data-fs-drag` (`1` when the row is part of the drag)
 - stable ids: `#fs-content`, `#fs-status`, `#fs-menu`, `#fs-modal`,
   `#fs-modal-input`, `#fs-preview`, `#fs-preview-name` (the popup header),
   `#fs-preview-kind` (the footer naming the kind), `#fs-search`, `#fs-toasts`,
@@ -123,6 +124,25 @@ All of these were found by running the suite and are covered by tests.
     ignored `Range`, so scrubbing a video or an audio file transferred the file
     again from the NAS. It now answers a single range with 206 + `Content-Range`
     and advertises `Accept-Ranges`.
+15. **The drop highlight flickered.** A row-level `dragleave` fires when the pointer
+    crosses from a row's icon to its own label, so the target was cleared while the
+    pointer was still inside the row it was on. The hover is decided on the real event
+    instead (`js.rs::ensure_drag_hover`), where `relatedTarget` shows whether a leave
+    actually exits the row; the suite dispatches a child crossing and asserts the
+    highlight survives.
+
+## What the drag tests check
+
+- hovering a directory row during a drag marks it as the target (`data-fs-drop`) and
+  the row shows what releasing would do — `move here`, `copy here` when ctrl/cmd is
+  held, or `upload here` for a drag from outside the page — with the folder icon
+  changing to an open folder
+- the rows being dragged are marked (`data-fs-drag`) and dimmed, so the source and the
+  target are distinguishable while the mouse is down
+- a file row is never a target, and a folder is never a target for itself: the drop is
+  refused rather than attempted, so nothing is sent to the API
+- `dragend` ends the drag (it is the only event that always runs, including when the
+  drop is refused or the drag leaves the page)
 
 ## What the preview tests check
 
