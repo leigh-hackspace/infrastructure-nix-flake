@@ -293,7 +293,7 @@ check:
 check-build:
     #!/usr/bin/env bash
     set -euo pipefail
-    for m in services1 aibox; do
+    for m in services1 services2 aibox; do
         echo "=== nixos-rebuild dry-build $m"
         nixos-rebuild dry-build --flake ".#$m"
     done

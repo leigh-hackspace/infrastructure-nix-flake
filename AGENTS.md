@@ -16,7 +16,9 @@ Guidance for AI agents working in this repository. Read this before making chang
 
 - `flake.nix` — the flake. Inputs include private repos via
   `git+file:///home/leigh-admin/Projects/...` (gocardless-tools, pi-room-sys).
-  Machines: `services1` (the main services box, 10.3.1.20) and `aibox`.
+  Machines: `services1` (the main services box, 10.3.1.20), `services2` (a
+  clone of services1 with no services yet, 10.3.1.21 — see
+  `machines/services2/README.md`) and `aibox`.
 - `docs/` — narrative write-ups, post-mortems and audits (gtx1060 saga,
   sso-redesign, filestore gotchas, the repo audit). They live here rather than
   next to the modules so the flake source stays config only; module comments
@@ -251,8 +253,9 @@ unauthenticated via Moonraker on the trusted LAN
   expected" / left as-is. `filestore.int` is expected by the flake vhost and
   resolves to 10.3.1.20 in both the router and DigitalOcean.
 - DHCP reservations live in the same dnsmasq config: services1 (10.3.1.20,
-  MACs `c8:d3:ff:a5:b2:25`/`c8:d3:ff:a5:be:7c`), aibox (10.3.1.32),
-  nas1/nas2 (10.3.1.5/10.3.1.6), apps1 (10.3.1.30), yunohost (10.3.1.15).
+  MACs `c8:d3:ff:a5:b2:25`/`c8:d3:ff:a5:be:7c`), services2 (10.3.1.21, MAC
+  `70:85:c2:53:f1:d4`), aibox (10.3.1.32), nas1/nas2 (10.3.1.5/10.3.1.6),
+  apps1 (10.3.1.30), yunohost (10.3.1.15).
 - DigitalOcean zone `leighhack.org`: the DO token is `DO_AUTH_TOKEN` in
   `/var/lib/secrets/.env` (referenced via `CONFIG.ENV_FILE`; read+write scope)
   — never print it or copy it off services1. `*.int` names are CNAMEs →

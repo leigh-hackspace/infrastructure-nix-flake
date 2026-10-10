@@ -83,6 +83,33 @@
         ];
       };
 
+      # The second services box: a clone of services1 on AMD/Radeon hardware
+      # with no services enabled yet (see machines/services2/README.md).  Its
+      # module list is services1's minus containers/crane; add those back
+      # alongside the first real service rather than up front.
+      services2 = nixpkgs.lib.nixosSystem {
+        inherit system;
+        pkgs = import nixpkgs {
+          inherit system;
+          config = {
+            allowUnfree = true;
+          };
+        };
+        specialArgs = flakeInputs // extraArgs;
+        modules = [
+          nix-shell-registry
+
+          nixos-utils.nixosModules.rollback
+
+          ./common/sops.nix
+          ./common/nas.nix
+          ./common/tools.nix
+          ./common/users.nix
+
+          ((import ./machines/services2) flakeInputs)
+        ];
+      };
+
       aibox = nixpkgs.lib.nixosSystem {
         inherit system;
         pkgs = import nixpkgs {
