@@ -1,6 +1,6 @@
 {
   inputs = {
-    nixpkgs.url = "github:nixos/nixpkgs/nixos-26.05";
+    nixpkgs.url = "github:nixos/nixpkgs/nixpkgs-unstable";
     # Rust build helpers (cached dependency derivations); see common/crane.nix.
     crane.url = "github:ipetkov/crane";
 
