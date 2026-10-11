@@ -127,6 +127,14 @@ in
         "stackprotector"
       ];
 
+      # iPXE builds with -Werror (src/Makefile.housekeeping), and 2.0.0 trips
+      # warnings in current gcc, so a warning kills the whole ROM build (seen on
+      # the nixpkgs-unstable bump: `cc1: all warnings being treated as errors`
+      # building bin/w89c840.o, which took aibox's netboot config down with it).
+      # NIX_CFLAGS_COMPILE is appended by the cc wrapper *after* the makefile's
+      # own flags, so -Wno-error wins without dropping the warnings themselves.
+      NIX_CFLAGS_COMPILE = ["-Wno-error"];
+
       makeFlags =
         [
           "ECHO_E_BIN_ECHO=echo"
