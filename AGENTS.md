@@ -478,6 +478,10 @@ Rules that follow from it:
   "run it in a scope" attempts changed nothing.
 - `nix.settings.build-users-group = "nixbld"` is set in `common/base.nix` as correct
   hygiene, but **it did not stop the sweep when tested** — do not rely on it alone.
+- **Assume any nix build on services1/services2 can kill `leigh-admin`'s processes.** Sweeps
+  were seen after a *successful* build and after a build authored by a *different* uid, so
+  the cleanup targets uid 1234 regardless of the client and needs no failure. The `deploy`
+  account gets a build finished; it is not a cure.
 - **aibox does not have this problem.** Verified 2026-10-11: a successful local build there
   produced zero SIGKILLs. It sets `sandbox = true` (only services1/services2 override to
   `relaxed`, for the llama.cpp build) and nothing on it runs as `leigh-admin`, so a sweep

@@ -107,6 +107,15 @@ interrupted, then activate the already-built closure (activation does no build).
 The exact commands are in `AGENTS.md` ("Deploying when every build kills the session"),
 because that is guidance; this file is the story.
 
+**The escape is not a cure.** Later the same day, sweeps were observed after a *successful*
+build, and after a build authored by the `deploy` account rather than uid 1234. So the cleanup
+targets uid 1234 regardless of who asked, and does not need a failure to fire. The `deploy`
+account lets a build **finish** (nothing interrupts it) and keeps it out of an interactive
+session's path, but a sweep can still take out any interactive session — or any
+`User=leigh-admin` service — on that machine. Until the `sandbox = "relaxed"` thread is
+resolved, treat **every** nix build on services1/services2 as able to kill `leigh-admin`'s
+processes.
+
 ## Honest gaps
 
 - **`build-users-group = "nixbld"` did not demonstrably stop the sweep.** It is committed as
