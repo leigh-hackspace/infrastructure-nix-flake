@@ -435,79 +435,74 @@ switch --flake .#<machine> && sudo nixos-confirm'` (the `cd`
   and `.vscode/settings.json`, so editor and CI agree. Do not hand-format or
   switch to nixfmt.
 
-## Why a nix build killed the terminal (fixed 2026-10-11)
 
-**Symptom:** any `nixos-rebuild`/`nix build` of this flake on services1 — `switch`,
-`boot`, `build`, even `dry-activate` — SIGKILLed every process owned by `leigh-admin`
-within a couple of seconds: the shell, tmux, the Zed remote server, `user@1234.service`,
-and `network-status.service`. It killed a human's terminal too, so it was never an
-agent-harness problem.
+## Never build as the interactive admin (services1, 2026-10-11)
 
-**Root cause**, found by strace-ing `nix-daemon` for signal syscalls:
+Full story and evidence: **`docs/nix-build-sigkill-2026-10-11.md`**. The short version:
 
-```
-1750194 clone(...) = 1750544
-1750544 kill(-1, SIGKILL)               = 0     # every process this uid may signal
-1750194 ... CLD_EXITED, si_pid=1750544, si_uid=1234
-```
+`nix-daemon`'s build-user cleanup is `setuid(uid); kill(-1, SIGKILL)`. On services1 the uid
+resolved to **1234 (`leigh-admin`)**, so any build that was interrupted or failed SIGKILLed
+every process the admin owned: the shell it was typed in, tmux, the Zed remote server,
+`user@1234.service`, and `network-status.service`. It killed a human's terminal too, so it
+was never an agent-harness problem.
 
-`kill(-1, SIGKILL)` is nix's build-user cleanup (`setuid(uid); kill(-1, SIGKILL)`), run
-when a build is interrupted or fails. It is meant to sweep a throwaway `nixbld` uid. Here
-it swept **uid 1234**, because nix had no build user to drop to:
+Rules that follow from it:
 
-- current nixpkgs defaults `build-users-group = ""`, pairing that with `sandbox = true`
-  and the `auto-allocate-uids` experimental feature;
-- this repo never enabled `auto-allocate-uids` (only `nix-command`/`flakes`), and
-  services1/services2 set `sandbox = "relaxed"` for the llama.cpp build.
+- **Never run a build as the interactive admin in a remote session.** Builds go through the
+  `deploy` account recipe below, or a unit whose lifetime is not tied to the tool call.
+- **Never run a `switch` as root to dodge it.** The sweep is `kill(-1)`; with uid 0 that
+  reaches every process on the machine, not one user's.
+- **Never reboot or roll back to "recover".** An interrupted build breaks nothing, and
+  `build-users-group` is absent from `nix.conf` in every generation, so an older generation
+  behaves identically.
+- **Always pair `systemd-run` with `--no-block`.** Without it `systemd-run` waits for a
+  oneshot unit to *finish*, so the tool call blocks for the whole build, the harness kills
+  it, and that interruption is exactly what fires the sweep. This is why the first few
+  "run it in a scope" attempts changed nothing.
+- `nix.settings.build-users-group = "nixbld"` is set in `common/base.nix` as correct
+  hygiene, but **it did not stop the sweep when tested** — do not rely on it alone.
 
-No build users + no auto-allocated uids + relaxed sandbox ⇒ builds and their cleanup run
-as the invoking user. `common/base.nix` now sets `nix.settings.build-users-group =
-"nixbld"` (the 32 accounts already exist), which redirects the sweep onto nixbld.
+### Deploying when every build kills the session
 
-**Why only now:** the nixpkgs pin moved to 2026-09-27 about two weeks ago, and the cleanup
-only fires on an *interrupted or failed* build — which is exactly what an agent tool call
-that exceeds its per-call limit produces. The first switch that day finished cleanly and
-killed nothing; every kill after it followed an interrupted build.
+1. Build as a **different user** (a `deploy` account with its own copy of the repo) from a
+   **root-launched unit with `--no-block`**, writing to a log:
 
-**Two things that were NOT the cause,** both convincing in the journal:
+   ```bash
+   sudo systemd-run --no-block --unit=deploy-build --collect --service-type=oneshot \
+     --property=DynamicUser=no --property=User=deploy --property=TimeoutStartSec=3600 \
+     --setenv=PATH=/run/current-system/sw/bin --setenv=HOME=/home/deploy \
+     /run/current-system/sw/bin/bash -c \
+       'cd /home/deploy/repo && /run/current-system/sw/bin/nixos-rebuild build --flake .#services1 > /home/deploy/build.log 2>&1; echo EXIT=$? >> /home/deploy/build.log'
+   ```
 
-- *The activation script.* `dry-activate` changes nothing and still killed the session,
-  and `$system/activate` contains no `kill` at all.
-- *OOM / systemd-oomd / auto-rollback.* Memory and swap were idle, `systemd-oomd` logged
-  nothing, and `auto-rollback.timer` had self-deactivated hours earlier.
+2. Poll the log with short calls; on success it prints the new system path.
+3. **Activate from the built closure** — no build, so nothing to interrupt:
 
-`users.users.leigh-admin.linger = true` (`common/users.nix`) is still worth having, but it
-did not help: the user manager is killed directly, not through a session teardown.
+   ```bash
+   sudo systemd-run --no-block --unit=deploy-activate --collect \
+     --property=DynamicUser=no --property=TimeoutStartSec=600 \
+     /run/current-system/sw/bin/bash -c \
+       '/nix/store/<new-system>/bin/switch-to-configuration switch > /tmp/activate.log 2>&1; \
+        echo SWITCH_EXIT=$? >> /tmp/activate.log; \
+        /run/current-system/sw/bin/nixos-confirm >> /tmp/activate.log 2>&1'
+   ```
 
-**Still true:** a tool call has a hard per-call limit, and a build longer than that gets
-its process killed. Run long builds in a root-launched transient scope and poll a log:
+4. Check `SWITCH_EXIT=0` — and confirm in the same unit, because the GOLDEN RULE still
+   applies. `nixos-confirm` is `/run/current-system/sw/bin/nixos-confirm` *after* the switch
+   (a bare name in the unit gives exit 127).
 
-```bash
-sudo systemd-run --unit=agent-build --collect --service-type=oneshot \
-  --property=DynamicUser=no --property=User=leigh-admin \
-  --property=TimeoutStartSec=3600 \
-  /run/current-system/sw/bin/bash -c \
-    'cd ~/Projects/infrastructure-nix-flake && /run/current-system/sw/bin/nix flake check > ~/agent-build.log 2>&1'
-```
+Traps when setting up the `deploy` account, all hit while doing it: `/home/leigh-admin` is
+mode 700, so `deploy` cannot read the repo or the private flake inputs — copy `whisper-ws`
+and `pi-room-sys` into its home and repoint the *copied* `flake.nix` at them
+(content-identical, so the built store path is the same); `nixos-rebuild` needs `git` on
+PATH; and a non-trusted user cannot build an input-addressed derivation, so a throwaway
+"what uid does the build run as?" probe needs trust that was not granted.
 
-Four traps in that form, all hit while debugging:
-
-- `TimeoutStartSec=0` does **not** mean "no timeout" for a oneshot — it times out
-  immediately. Use a large number.
-- `systemd-run` sets `DynamicUser=yes` by default, so the service cannot read the repo or
-  write a log. Set `DynamicUser=no`.
-- The service gets a minimal PATH: `nixos-rebuild`, `nix`, `pgrep`, `sleep` and `cat` are
-  all "command not found". Use absolute paths (`/run/current-system/sw/bin/...`).
-- Run it as **`leigh-admin`, not root**: Nix's flake fetcher refuses a git repo not owned
-  by the current user (`libgit2 error code = 7`), and `git config --global --add
-  safe.directory` does not satisfy it. A service running as `leigh-admin` cannot write the
-  bootloader, so this pattern is for **builds only** — the `switch`/`boot` activation
-  itself still has to happen in a human's terminal.
-
-Also worth fixing: `network-status.service` runs as `User=leigh-admin`, which is what
-turned a uid-wide SIGKILL into a service outage as well as a dead terminal. A dashboard
-should not run as the admin.
-
+Also worth fixing: `network-status.service` runs as `User=leigh-admin` — that is what turned
+a uid-wide kill into a **service** outage (it restarted seven times) instead of only a dead
+terminal, and a LAN dashboard should not run as the admin. Blocked on the hop key it needs
+(`~/.ssh/agent-hop-key` to reach the router): a dedicated user needs that key in sops, or a
+dedicated router key.
 ## Nix commands (local dev)
 
 The flake is pure and its sources come from the git tree, so everything
@@ -703,18 +698,20 @@ The grid is infinitely scrollable — there is **no "load more" button**; the
   partition (services1 has 18 GB), which is fine at the current load but worth
   matching before it runs anything heavier.
 
-- **services1: pending activation** — the build-farm (`nix.distributedBuilds`),
-  `linger` and `nix.settings.build-users-group = "nixbld"` commits are committed but
-  not yet active on services1: the agent's `switch`/`boot` attempts were killed
-  mid-build by the very bug they were meant to fix (see "Why a nix build killed the
-  terminal"), so `/run/current-system` is still the generation before them and
-  `/etc/nix/nix.conf` still has an empty `builders` line **and** an empty
-  `build-users-group`. Until that generation is live, any interrupted nix build on
-  services1 still SIGKILLs every `leigh-admin` process. Remote building is verified
-  working on the builder side (services2 accepts the hop, `leigh-admin` is in `nixbld`
-  there, and both host keys are in `/root/.ssh/known_hosts` on services1); it needs one
-  real `just switch` in a human's terminal to take effect.
+- **services1: build-farm landed, remote building still unverified** — the generation
+  activated on 2026-10-11 has `nix.distributedBuilds`, `linger` and
+  `build-users-group = "nixbld"` live (`/etc/nix/nix.conf` has a `builders` line). Note that
+  `build-users-group` did **not** stop the SIGKILL sweep when tested — see
+  `docs/nix-build-sigkill-2026-10-11.md` — so do not treat it as protection. `just
+  build-remote` has not been exercised end to end since the switch; verify it with one
+  `--max-jobs 0` build before relying on it.
+- **The `deploy` account is an imperative escape hatch** — created with `useradd` on
+  2026-10-11 to deploy while every build killed the admin's session, with its own copy of
+  the repo and the private flake inputs under `/home/deploy` (see the deploy recipe in the
+  section above). It is not declarative and a switch will not recreate it. Decide whether to
+  make it managed config or remove it once builds as `leigh-admin` are trusted again.
 - **`network-status.service` runs as `User=leigh-admin`** — it should have its own user.
-  It is what turned the uid-wide SIGKILL above into a service outage (the unit was
-  SIGKILLed and restarted seven times) rather than just a dead terminal, and a public-ish
-  dashboard running as the admin is its own problem.
+  It is what turned the uid-wide kill into a *service* outage (SIGKILLed and restarted
+  seven times) rather than just a dead terminal, and a LAN dashboard running as the admin
+  is its own problem. Blocked on the hop key the unit needs (`~/.ssh/agent-hop-key` to
+  reach the router): a dedicated user needs that key in sops, or a dedicated router key.

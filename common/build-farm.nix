@@ -10,10 +10,10 @@
 #      protecting from a build, while services1 is the box that runs the services and
 #      is running out of room. `just build-remote` offloads a build there.
 #
-# GC deliberately does NOT delete generations. `system.autoRollback` (common/base.nix)
-# rolls back to the last *confirmed* generation, so the `system-good` generation has to
-# survive whatever gc does — `--delete-generations old` would eat it. Only unreachable
-# store paths are collected.
+# GC deletes old *system* generations, which is safe for auto-rollback: `system-good`
+# is a separate profile (`/nix/var/nix/profiles/system-good`) and therefore its own GC
+# root, so the generation the rollback timer would switch to cannot be collected by
+# `--delete-older-than` on the `system` profile.
 #
 # Remote building is opt-in per invocation (`--max-jobs 0`), not global: with
 # `nix.maxJobs > 0` the client builds locally anyway, and forcing it to 0 would make
@@ -64,8 +64,13 @@ in {
 
   config = {
     nix.gc.automatic = cfg.gc;
-    # No --delete-generations: see the note at the top.
-    nix.gc.options = "--max-age 30d";
+    # `nix-collect-garbage` has no `--max-age` (only `--delete-older-than` / `--delete-old`),
+    # so the earlier `--max-age 30d` made nix-gc.service fail on every run.
+    #
+    # Deleting old *system* generations is safe for auto-rollback: `system-good` is a
+    # separate profile (`/nix/var/nix/profiles/system-good`), so it is its own GC root
+    # and this cannot collect the generation the rollback timer would switch to.
+    nix.gc.options = "--delete-older-than 30d";
     nix.optimise.automatic = cfg.gc;
 
     # The nix daemon serves builds for `allowed-users`, which defaults to
