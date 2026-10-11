@@ -517,6 +517,19 @@ Rules that follow from it:
 4. Check `SWITCH_EXIT=0` — and confirm in the same unit, because the GOLDEN RULE still
    applies. `nixos-confirm` is `/run/current-system/sw/bin/nixos-confirm` *after* the switch
    (a bare name in the unit gives exit 127).
+5. **Point the boot target at the new generation too.** `switch-to-configuration switch`
+   changes the *running* system but leaves `/nix/var/nix/profiles/system` (what the
+   bootloader boots) on the previous generation — so a later reboot silently returns to the
+   old config. Hit on 2026-10-11: services1 and services2 both came up running the fixed
+   generation while still booting the pre-fix one. Fix it without rebuilding:
+
+   ```bash
+   sudo nix-env --profile /nix/var/nix/profiles/system --set /run/current-system \
+     && sudo /run/current-system/bin/switch-to-configuration boot
+   ```
+
+   Then check `readlink -f /nix/var/nix/profiles/{system,system-good}` both equal
+   `/run/current-system`, and that the boot default names the new entry.
 
 Traps when setting up the `deploy` account, all hit while doing it: `/home/leigh-admin` is
 mode 700, so `deploy` cannot read the repo or the private flake inputs — copy `whisper-ws`

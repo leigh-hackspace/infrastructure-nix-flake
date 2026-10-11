@@ -116,6 +116,14 @@ session's path, but a sweep can still take out any interactive session — or an
 resolved, treat **every** nix build on services1/services2 as able to kill `leigh-admin`'s
 processes.
 
+**One gap in the escape:** `switch-to-configuration switch` activates the running system but
+does **not** update `/nix/var/nix/profiles/system`, which is what the bootloader boots. Both
+machines came up running the fixed generation while still *booting* the pre-fix one, so a
+reboot would have silently reverted the fix (on services1 that means losing
+`build-users-group` and being sweep-prone again). Re-pointed with `nix-env --profile
+/nix/var/nix/profiles/system --set /run/current-system && /run/current-system/bin/switch-to-configuration boot`;
+the updated recipe in `AGENTS.md` includes that step.
+
 ## Honest gaps
 
 - **`build-users-group = "nixbld"` did not demonstrably stop the sweep.** It is committed as
