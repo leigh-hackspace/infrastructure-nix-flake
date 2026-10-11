@@ -309,7 +309,10 @@ check-build:
 # makes the delegation happen — with the default max-jobs the client builds locally
 # anyway, which is why `just switch` and `just check-build` do not use it: a build
 # that falls back to local is worth more than one that fails because the builder is
-# down.  Needs services2 to be reachable and to serve builds.
+# down.  Currently this cannot work: `nix.distributedBuilds` is false because the
+# builder's build-user cleanup SIGKILLs the ssh connection carrying the delegated
+# build (empty log, exit 1) — see the comment in common/build-farm.nix and
+# docs/nix-build-sigkill-2026-10-11.md.  Re-enable it there first.
 build-remote machine="services1":
     #!/usr/bin/env bash
     set -euo pipefail

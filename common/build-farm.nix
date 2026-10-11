@@ -18,7 +18,10 @@
 # Remote building is opt-in per invocation (`--max-jobs 0`), not global: with
 # `nix.maxJobs > 0` the client builds locally anyway, and forcing it to 0 would make
 # every deploy depend on services2 being reachable. A build that falls back to local is
-# worth more than a build that fails because the builder is down.
+# worth more than a build that fails because the builder is down. It is also currently
+# switched off entirely (`nix.distributedBuilds = false`, see the comment there): the
+# builder's build-user cleanup kills the ssh connection carrying the build, so a
+# delegated build dies with an empty log.
 #
 # Per machine (see the two default.nix files):
 #
@@ -100,7 +103,24 @@ in {
     # nix.conf line the daemon reads stays empty and `--max-jobs 0` fails with
     # "local builds are disabled" even though /etc/nix/machines is correct. Both are
     # needed — the option list and the switch that turns it into the setting.
-    nix.distributedBuilds = cfg.builderHost != null;
+    #
+    # ...and the switch is now off, because remote building cannot work at all while
+    # the build-user cleanup bug lives (docs/nix-build-sigkill-2026-10-11.md): the
+    # builder's cleanup runs `setuid(<invoking uid>); kill(-1, SIGKILL)`, and the
+    # process it kills is the `nix-daemon --stdio` that the delegating machine is
+    # talking to over ssh. Every delegated build therefore died mid-build with an
+    # empty log — services2's journal after a `nixos-rebuild` on services1:
+    #
+    #   nix-daemon[3353]: accepted connection from pid 3597, user leigh-admin (trusted)
+    #   sshd-session[3593]: error: mm_reap: child terminated by signal 9
+    #   systemd[1]: user@1234.service: Main process exited, code=killed, status=9/KILL
+    #
+    # It is not specific to leigh-admin: the cleanup targets whoever the build was
+    # asked for, so any `sshUser` sabotages its own connection. Building locally is
+    # slower and costs disk on services1, but it is the only thing that works; flip
+    # this back to `cfg.builderHost != null` once the cleanup uid is a throwaway one
+    # (the `auto-allocate-uids` follow-up in the post-mortem).
+    nix.distributedBuilds = false;
 
     nix.buildMachines = lib.optionals (cfg.builderHost != null) [
       {

@@ -86,10 +86,16 @@ in {
       headscale = {
         url = "https://${CONFIG.HEADSCALE_DOMAIN}";
         config_path = "${headscaleConfig}";
+        # Was `oidc.headscale_api_key_path` until nixpkgs 26.05: the key is no longer
+        # OIDC-specific (the agent needs it too), so the module moved it under
+        # `headscale` and asserts it is set whenever `oidc` or the agent is.
+        api_key_path = CONFIG.HEADPLANE_API_KEY_FILE;
       };
+      # `pre_authkey_path` is gone in the same rewrite: the agent now persists its own
+      # tailnet identity under `work_dir` (/var/lib/headplane/agent) and
+      # reauthenticates, so it needs no pre-auth key.
       integration.agent = {
         enabled = true;
-        pre_authkey_path = CONFIG.HEADPLANE_PRE_AUTHKEY_FILE;
       };
       oidc = {
         issuer = "https://${CONFIG.AUTHENTIK_DOMAIN}/application/o/headplane/";
@@ -101,8 +107,6 @@ in {
         # Might needed when integrating with Authentik.
         # token_endpoint_auth_method = "client_secret_basic";
         token_endpoint_auth_method = "client_secret_post";
-
-        headscale_api_key_path = CONFIG.HEADPLANE_API_KEY_FILE;
         # redirect_uri = "https://${CONFIG.HEADSCALE_DOMAIN}/admin/oidc/callback";
       };
     };
