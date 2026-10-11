@@ -49,6 +49,16 @@ in {
         default = null;
         description = "Host to delegate builds to. Empty unless set.";
       };
+      speedFactor = lib.mkOption {
+        type = lib.types.int;
+        default = 20;
+        description = "Builder speed factor. services2 is preferred over local builds.";
+      };
+      maxJobs = lib.mkOption {
+        type = lib.types.int;
+        default = 8;
+        description = "Jobs the builder may run at once (its core count).";
+      };
     };
   };
 
@@ -68,17 +78,16 @@ in {
     users.users.leigh-admin.extraGroups =
       lib.optionals (cfg.serveBuilds || cfg.builderHost != null) ["nixbld"];
 
-    nix.buildMachines = lib.optionals (cfg.builderHost != null) [
-      {
-        hostName = cfg.builderHost;
-        system = "x86_64-linux";
-        sshUser = "leigh-admin";
-        sshKey = "/home/leigh-admin/.ssh/agent-hop-key";
-        # services2 is faster per job than services1 (8c/16t) and has the disk, so
-        # it is preferred when both are available.
-        speedFactor = 20;
-        maxJobs = 8;
-      }
-    ];
+    # The setting the daemon actually reads. NixOS's `nix.buildMachines` option
+    # writes /etc/nix/machines, and this Nix version does not read that file: a build
+    # with --max-jobs 0 failed with "local builds are disabled" even though the
+    # machines file was correct, so the nix.conf `builders` line is what counts.
+    #
+    # Format: <url> <speedFactor> <maxJobs>. sshKey has to be in the URL because the
+    # daemon runs as root and the key lives in leigh-admin's home.
+    nix.settings.builders = lib.optionalString (cfg.builderHost != null) (
+      "ssh://leigh-admin@${cfg.builderHost}?sshKey=/home/leigh-admin/.ssh/agent-hop-key "
+      + "${toString cfg.speedFactor} ${toString cfg.maxJobs}"
+    );
   };
 }
