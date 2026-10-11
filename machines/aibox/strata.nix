@@ -125,6 +125,15 @@ let
     nativeGguf
     "--ple-gguf"
     pleGguf
+    # Explicit, not the default it replaces. 0.1.42 added a start-up probe (#1425, #1549,
+    # #1629): when the default `direct` measures below 15 000 rows/s the engine switches the
+    # 28.8 GB n-gram table to `mmap` by itself - and only *warns* when `--ple-io` was passed.
+    # mmap means the page cache holds a 28.8 GB table on a box that runs with ~5 GiB
+    # available, and STRATA.md's "do not chase the PLE table" still holds (waitA 0.24 ms: no
+    # I/O stall in the profile). So: keep the measured unbuffered path, let the probe run for
+    # its log line, and take away its power to change the config.
+    "--ple-io"
+    "direct"
     "--expert-profile"
     expertProfile
     "--expert-cache"

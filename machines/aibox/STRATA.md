@@ -485,6 +485,76 @@ So the remaining paths are hardware and engine kernels, not config: an eGPU
 better AVX2 IQ2 dequant in the CPU expert kernels. **Nothing from this section
 was deployed** — the control is the deployed config.
 
+## Update: engine 0.1.42 — 2026-10-11
+
+0.1.40.2 → **0.1.42** (`strata-package.nix`, rev `61b3fb5`; the two releases between are the
+0.1.40.3/.4 hotfixes and 0.1.41). Checked before bumping, from the source at both tags:
+
+- **The pinned llama.cpp is unchanged** (`LLAMA_CPP_COMMIT = 3cf03257…` in `setup.py` at both
+  tags), so the ggml/i-quant side is byte-for-byte what 0.1.40.2 built against.
+- **`data/` is unchanged** (`git diff v0.1.40.2 v0.1.42 -- data` is empty), so
+  `expert-profile.bin` and `draft_vocab.bin` are the same bytes: **no re-prep** of the pack or
+  the MTP runtime.
+- **The build interface is unchanged**: same cmake options, same `strata` / `strata-device` /
+  `hip_mapped_alias` targets (the HIP test targets are still built whenever HIP is on, so the
+  `strata-alias-check` install line stands), same `serve/ tools/ data/` layout, same run-config
+  keys and engine flags. The serve layer's new `jsonschema` use is optional (imported on first
+  use in `serve/structured.py`), so `serverPython` still needs no new package.
+- **gfx1030 is still only "unvalidated"** (`cmake/hip_backend.cmake`) and gfx1035 is still
+  refused, so `HSA_OVERRIDE_GFX_VERSION=10.3.0` and the gfx1030 build stay.
+
+### The answers do not move (the two new defaults are CUDA-only)
+
+0.1.41 and 0.1.42 each shipped an answer-changing default, and neither is compiled in for HIP:
+
+- `STRATA_ROUTE_TAIL_SKIP=7` (0.1.42, +13-16 % decode on one NVIDIA GPU) —
+  `const bool tail_default_ok = false; // HIP and SYCL stay as they were`
+  (`src/program/generate.cpp:8078`).
+- the measured PCIe share that replaces the start-up probe's number — the block that arms it is
+  inside `#if !defined(STRATA_USE_HIP)` (`generate.cpp:2683`), so aibox keeps the probe's 0.55.
+- 0.1.41's CPU prefill share (the one that would have changed bits here) — "the layer split,
+  batch slots and HIP stay off" (`src/prefill/prefill.cpp:162-167`).
+
+So the `--pcie-frac` sweep and the plateau numbers above stay the record, and there is no
+"the answers changed under us" entry to write.
+
+### Still open upstream: the gfx1030 verify timeout
+
+Nothing in 0.1.41/0.1.42 touches the #267/#884/#1103 root cause (the ROCm barrier packet), and
+`STRATA_HIP_ADAPT_KERNEL_COPY` is still read (`generate.cpp:171-181`), so **both env
+mitigations stay enabled**. What did improve is the containment around a stall:
+
+- **The serve layer now ends a frozen engine** (#1317/#1407): silent for
+  `STRATA_ENGINE_STALL_S` (default 90 s) *and* no CPU/disk progress *and* the GPU idle → the
+  engine is ended and restarted, so the request fails instead of the box holding a wedged GPU
+  forever. It needs `psutil`, which `serverPython` already ships, and an engine that is silent
+  but working is only warned about.
+- **The engine's own step watchdog is more tolerant of slow storage** (#1407): the 60 s
+  `STRATA_WATCHDOG_S` limit now gets up to 10× (`STRATA_WATCHDOG_IO_S`) while the file tier is
+  still being read — the right shape for a box whose 20k-token prompt is ~7 minutes.
+- 0.1.41's #795 work ("crash on a CPU without AVX-512") moved the AVX-512 probe out of the
+  wide-instruction files and now disassembles the kernels in CI. aibox runs the AVX2 expert
+  kernels, so that is exactly the class of bug that could have landed on this box.
+- Upstream now agrees with our explicit expert cache: setup writes a *number*, not `auto`, on a
+  unified-memory APU (#1715).
+
+### One flag added: `--ple-io direct` is now explicit
+
+0.1.42 probes the n-gram table at start (<0.6 s) and, below 15 000 rows/s, switches
+`--ple-io direct` to `mmap` itself — silently unless `--ple-io` was passed, in which case it
+only warns (`generate.cpp:3090-3113`). `mmap` means the page cache holds the 28.8 GB table on a
+box that runs with ~5 GiB available, and the profile has never shown a PLE I/O stall
+(`waitA` 0.24 ms). The unit therefore passes `--ple-io direct` explicitly: the probe still runs
+and still logs, it just cannot change the measured config.
+
+### Deploying
+
+Built and committed here; the switch restarts the engine, and the request in flight at that
+moment is the only casualty (as with the 0.1.40.x bumps). The number to compare against is the
+plateau: **225-231 ms/window = 9.4-9.6 tok/s** at 4096 slots, so `strata-tune/run-arms.sh`'s
+control arm is the re-measurement — anything much outside that band is a regression to bisect,
+not a win to enjoy.
+
 ## Pi clients
 
 `~/.pi/agent/models.json` on **aibox** and **services1** (10.3.1.20) was written
