@@ -83,6 +83,18 @@ in {
     users.users.leigh-admin.extraGroups =
       lib.optionals (cfg.serveBuilds || cfg.builderHost != null) ["nixbld"];
 
+    # ...and being *accepted* is not the same as being *trusted*. With
+    # `require-sigs = true` (the default) the builder's daemon refuses to build
+    # input-addressed derivations for a client it does not trust, so every delegated
+    # build died with "you are not privileged to build input-addressed derivations"
+    # (hit 2026-10-11: `nixos-rebuild` on services1 evaluating the sops-secret
+    # derivations, which are built during evaluation and therefore go to the builder).
+    # The `sshUser` above has to be a trusted user on the builder too. Appended to the
+    # default `["root"]`, so this is `root` plus `leigh-admin` on both ends.
+    nix.trustedUsers = lib.optionals (cfg.serveBuilds || cfg.builderHost != null) [
+      "leigh-admin"
+    ];
+
     # `nix.buildMachines` alone is not enough: nix-remote-build.nix sets
     # `nix.settings.builders = null` unless `nix.distributedBuilds` is true, so the
     # nix.conf line the daemon reads stays empty and `--max-jobs 0` fails with
