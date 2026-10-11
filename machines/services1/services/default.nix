@@ -12,7 +12,6 @@
     ./filestore.nix
     ./frigate-monitor.nix
     ./frigate.nix
-    ./gatus.nix
     # Disabled: the GitLab container is not deployed.  Its config is still
     # rendered by lib/config-to-gitlab.nix, which lib/check-config-to-gitlab.nix
     # keeps tested against the attrset in ./gitlab.nix — re-enable this line and
@@ -23,6 +22,9 @@
     ./librespeed.nix
     ./matrix.nix
     ./mattermost.nix
+    # The observability vhosts + the gatus drift guard.  gatus, Prometheus and
+    # Grafana themselves run on services2 (see machines/services2/monitoring.nix
+    # and machines/services2/gatus.nix); this box only terminates TLS for them.
     ./monitoring.nix
     ./mqtt.nix
     ./outline.nix

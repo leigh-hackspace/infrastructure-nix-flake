@@ -20,8 +20,8 @@
   INFRA,
   ...
 }: let
-  CONFIG = import ../config.nix;
-  mkIntVhost = import ../lib/nginx-int-vhost-helper.nix {inherit lib;};
+  CONFIG = import ../../../common/config.nix;
+  mkIntVhost = import ../../../common/nginx/int-vhost.nix {inherit lib;};
 
   # The Dioxus SPA compiled to wasm (pinned wasm-bindgen-cli and the wasm build
   # recipe live in common/crane.nix).  Its gdash-dto path dependency is a

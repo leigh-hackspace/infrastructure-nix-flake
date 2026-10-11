@@ -24,8 +24,8 @@
   INFRA,
   ...
 }: let
-  CONFIG = import ../config.nix;
-  mkIntVhost = import ../lib/nginx-int-vhost-helper.nix {inherit lib;};
+  CONFIG = import ../../../common/config.nix;
+  mkIntVhost = import ../../../common/nginx/int-vhost.nix {inherit lib;};
 
   # The upload limit, in the two places it has to agree: the backend's
   # --max-upload and nginx's client_max_body_size.  Written as bytes so the

@@ -5,8 +5,8 @@
   modulesPath,
   ...
 }: let
-  CONFIG = import ../config.nix;
-  mkSSOVirtualHost = import ../lib/nginx-sso-helper.nix;
+  CONFIG = import ../../../common/config.nix;
+  mkSSOVirtualHost = import ../../../common/nginx/sso-vhost.nix;
 in {
   # sudo smem -r | sort -k 4 -nr | head
   # sudo smem -rs swap | head

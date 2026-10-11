@@ -1,10 +1,15 @@
 # Helper for the LAN-only "*.int.leighhack.org" virtual hosts — the internal
-# counterpart of nginx-sso-helper.nix (which is for public, SSO-protected
-# apps). Every one of these is the same shape: the wildcard ACME cert, forceSSL,
-# and one reverse-proxied location with the recommended proxy settings plus the
+# counterpart of sso-vhost.nix (which is for public, SSO-protected apps).
+# Every one of these is the same shape: the wildcard ACME cert, forceSSL, and one
+# reverse-proxied location with the recommended proxy settings plus the
 # LOCAL_NETWORK ACL.
 #
-#   mkIntVhost = import ./lib/nginx-int-vhost-helper.nix { inherit lib; };
+# Shared, not services1-only: services1 is the TLS terminator for every machine
+# in this network, so a vhost here can proxy to a service running on another box
+# (see the status dashboards in machines/services1/services/status.nix).  That is
+# why this and sso-vhost.nix live in common/ rather than machines/services1/lib/.
+#
+#   mkIntVhost = import common/nginx/int-vhost.nix { inherit lib; };
 #
 #   services.nginx.virtualHosts."foo.int.leighhack.org" = mkIntVhost {
 #     proxyPass = "http://127.0.0.1:8090";

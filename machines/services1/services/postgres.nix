@@ -5,7 +5,7 @@
   modulesPath,
   ...
 }: let
-  CONFIG = import ../config.nix;
+  CONFIG = import ../../../common/config.nix;
   slackWebhookUrl = lib.strings.trim (builtins.readFile (config.sopsSecretText "slack_url"));
   pgPass = lib.strings.trim (builtins.readFile (config.sopsSecretText "pg_pass"));
   # Define a single data structure for DB names and passwords.

@@ -278,11 +278,17 @@ check:
     echo "=== config-to-gitlab assertions"
     nix eval --impure --raw -f machines/services1/lib/check-config-to-gitlab.nix
     echo "=== printer-state tables (exporter <-> dashboards/alerts)"
-    nix eval --impure --raw -f machines/services1/lib/check-printer-states.nix
+    nix eval --impure --raw -f common/check-printer-states.nix
+    # The gatus endpoint guard is a module assertion in
+    # machines/services1/services/monitoring.nix, so the `nix flake check` above
+    # already runs it: every https *.int endpoint in common/monitoring-endpoints.nix
+    # must be a vhost services1 serves.  Worth naming here because the guard now
+    # lives on a different machine from gatus itself, so it is easy to forget which
+    # eval catches a drift.
     echo "=== alejandra --check"
     just fmt-check
 
-# Deploy-readiness: build both machines' system derivations without touching the
+# Deploy-readiness: build every machine's system derivation without touching the
 # running system.  `nix flake check` only *evaluates*, so a module that evaluates
 # but fails to build (bad package, bad derivation arg, broken SPA bundle) still
 # reaches `just switch`.  dry-build does the whole build and stops before
@@ -297,7 +303,17 @@ check-build:
         echo "=== nixos-rebuild dry-build $m"
         nixos-rebuild dry-build --flake ".#$m"
     done
-    echo "both systems build"
+    echo "all three systems build"
+
+# Offload a build to services2 (common/build-farm.nix).  `--max-jobs 0` is what
+# makes the delegation happen — with the default max-jobs the client builds locally
+# anyway, which is why `just switch` and `just check-build` do not use it: a build
+# that falls back to local is worth more than one that fails because the builder is
+# down.  Needs services2 to be reachable and to serve builds.
+build-remote machine="services1":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    nixos-rebuild build --flake ".#{{machine}}" --max-jobs 0
 
 # Start an unauthenticated filestore on 127.0.0.1 for poking at the API/UI by
 # hand. --no-auth is only honoured on a loopback bind, so this can never expose

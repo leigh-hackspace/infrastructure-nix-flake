@@ -3,10 +3,10 @@
   lib,
   ...
 }: let
-  CONFIG = import ../config.nix;
+  CONFIG = import ../../../common/config.nix;
   ZIGBEE2MQTT_UID = 8124;
-  mkSSOVirtualHost = import ../lib/nginx-sso-helper.nix;
-  mkIntVhost = import ../lib/nginx-int-vhost-helper.nix {inherit lib;};
+  mkSSOVirtualHost = import ../../../common/nginx/sso-vhost.nix;
+  mkIntVhost = import ../../../common/nginx/int-vhost.nix {inherit lib;};
 in {
   users.users.zigbee2mqtt = {
     uid = ZIGBEE2MQTT_UID;

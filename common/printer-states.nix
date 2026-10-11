@@ -2,13 +2,13 @@
 #
 # moonraker-exporter emits `moonraker_klippy_state` / `moonraker_print_state` with
 # the state as a `state=` tag and the *index into its own table* as the value.
-# The Grafana value mappings (services/monitoring-dashboards.nix) and the
-# Prometheus alert rules (services/monitoring.nix) used to restate those tables by
-# hand — three copies kept in step by a comment, which is exactly the drift
-# docs/repo-audit-2026-10-07.md §3.6 calls out.  They are generated from the
+# The Grafana value mappings (machines/services2/monitoring-dashboards.nix) and the
+# Prometheus alert rules (machines/services2/monitoring.nix) used to restate those
+# tables by hand — three copies kept in step by a comment, which is exactly the
+# drift docs/repo-audit-2026-10-07.md §3.6 calls out.  They are generated from the
 # exporter instead:
 #
-#   PRINTER = import ../lib/printer-states.nix;
+#   PRINTER = import ../../common/printer-states.nix;
 #
 #   PRINTER.klippy.labels    # [ "startup" "ready" ... ]
 #   PRINTER.klippy.mapping   # { "0" = "startup"; "1" = "ready"; ... }  Grafana
@@ -24,7 +24,7 @@
 # so an accidental reorder in the Rust arrays is a check failure, not a dashboard
 # that silently relabels every printer.
 let
-  source = builtins.readFile ../../../moonraker-exporter/src/main.rs;
+  source = builtins.readFile ../moonraker-exporter/src/main.rs;
 
   # builtins.match is POSIX ERE: anchored over the whole file, no `\[` escape (the
   # bracket expressions `[[]` and `[].]` match the literal brackets), and `.`

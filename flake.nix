@@ -75,6 +75,7 @@
           ./common/sops.nix
           ./common/containers.nix
           ./common/crane-args.nix
+          ./common/build-farm.nix
           ./common/nas.nix
           ./common/tools.nix
           ./common/users.nix
@@ -83,10 +84,11 @@
         ];
       };
 
-      # The second services box: a clone of services1 on AMD/Radeon hardware
-      # with no services enabled yet (see machines/services2/README.md).  Its
-      # module list is services1's minus containers/crane; add those back
-      # alongside the first real service rather than up front.
+      # The second services box: a clone of services1 on AMD/Radeon hardware.  It
+      # runs the observability stack (gatus, Prometheus, Grafana) and its own
+      # status dashboard — see machines/services2/README.md and
+      # common/monitoring-endpoints.nix for why monitoring is here rather than on
+      # services1.
       services2 = nixpkgs.lib.nixosSystem {
         inherit system;
         pkgs = import nixpkgs {
@@ -102,6 +104,9 @@
           nixos-utils.nixosModules.rollback
 
           ./common/sops.nix
+          ./common/containers.nix
+          ./common/crane-args.nix
+          ./common/build-farm.nix
           ./common/nas.nix
           ./common/tools.nix
           ./common/users.nix
@@ -128,6 +133,7 @@
           ./common/sops.nix
           ./common/containers.nix
           ./common/crane-args.nix
+          ./common/build-farm.nix
           ./common/nas.nix
           ./common/tools.nix
           ./common/users.nix

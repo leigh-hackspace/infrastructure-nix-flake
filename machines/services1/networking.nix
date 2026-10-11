@@ -5,7 +5,7 @@
   modulesPath,
   ...
 }: let
-  CONFIG = import ./config.nix;
+  CONFIG = import ../../common/config.nix;
 in {
   # # Enable networking
   # networking.networkmanager.enable = true;

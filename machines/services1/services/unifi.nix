@@ -3,9 +3,9 @@
   config,
   ...
 }: let
-  CONFIG = import ../config.nix;
+  CONFIG = import ../../../common/config.nix;
   UNIFI_UID = 8901;
-  mkIntVhost = import ../lib/nginx-int-vhost-helper.nix {inherit lib;};
+  mkIntVhost = import ../../../common/nginx/int-vhost.nix {inherit lib;};
   mongoPass = lib.strings.trim (builtins.readFile (config.sopsSecretText "unifi_db_password"));
 in {
   users.users.unifi = {

@@ -2,10 +2,10 @@
 #
 # Assertions over ./printer-states.nix — the klippy / print_stats state tables
 # that are read out of moonraker-exporter/src/main.rs and used to generate the
-# Grafana value mappings (services/monitoring-dashboards.nix) and the Prometheus
-# alert numbers (services/monitoring.nix).  Run it with:
+# Grafana value mappings (machines/services2/monitoring-dashboards.nix) and the
+# Prometheus alert numbers (machines/services2/monitoring.nix).  Run it with:
 #
-#   nix eval --impure --raw -f machines/services1/lib/check-printer-states.nix
+#   nix eval --impure --raw -f common/check-printer-states.nix
 #
 # It prints "ok" or throws.  `just check` runs it.  Three things are covered:
 #
@@ -24,8 +24,8 @@
 let
   PRINTER = import ./printer-states.nix;
 
-  monitoring = builtins.readFile ../services/monitoring.nix;
-  dashboards = builtins.readFile ../services/monitoring-dashboards.nix;
+  monitoring = builtins.readFile ../machines/services2/monitoring.nix;
+  dashboards = builtins.readFile ../machines/services2/monitoring-dashboards.nix;
 
   has = sub: src: builtins.replaceStrings [sub] [""] src != src;
 

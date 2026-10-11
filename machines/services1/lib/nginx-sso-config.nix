@@ -2,7 +2,7 @@
   lib,
   sopsSecretText,
 }: let
-  CONFIG = import ../config.nix;
+  CONFIG = import ../../../common/config.nix;
 
   readSecret = name: lib.strings.trim (builtins.readFile (sopsSecretText name));
 in

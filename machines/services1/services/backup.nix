@@ -4,7 +4,7 @@
   config,
   ...
 }: let
-  CONFIG = import ../config.nix;
+  CONFIG = import ../../../common/config.nix;
   slackWebhookUrl = lib.strings.trim (builtins.readFile (config.sopsSecretText "slack_url"));
 in {
   # # List all backups

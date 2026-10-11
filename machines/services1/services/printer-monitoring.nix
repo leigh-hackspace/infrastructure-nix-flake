@@ -4,8 +4,12 @@
 # servers running Klipper + Moonraker. Moonraker exposes no /metrics
 # endpoint, so the `moonraker-exporter` tool (Rust source:
 # ../../../moonraker-exporter, zero external crates) polls each printer's
-# Moonraker API on :7125 and re-exports the metrics for the local Prometheus
-# (scrape job "moonraker", configured in monitoring.nix) to scrape.
+# Moonraker API on :7125 and re-exports the metrics for Prometheus to scrape
+# (scrape job "moonraker", configured in machines/services2/monitoring.nix).
+#
+# It binds 0.0.0.0 because Prometheus now runs on services2, and a scrape from
+# another box cannot reach a loopback bind.  Same reasoning as the exporters in
+# common/exporters.nix.
 #
 # Targets are fixed IPs on purpose so the exporter never depends on DNS.
 # Historically this was required because the two Pis were cloned from one SD
@@ -51,7 +55,7 @@ in {
     wants = ["network-online.target"];
 
     serviceConfig = {
-      ExecStart = "${exporter}/bin/moonraker-exporter --listen 127.0.0.1:9701 ${printerArgs}";
+      ExecStart = "${exporter}/bin/moonraker-exporter --listen 0.0.0.0:9701 ${printerArgs}";
       DynamicUser = true;
       ProtectSystem = "strict";
       ProtectHome = true;

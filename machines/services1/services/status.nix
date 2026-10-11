@@ -3,11 +3,11 @@
   lib,
   ...
 }: let
-  CONFIG = import ../config.nix;
-  mkSSOVirtualHost = import ../lib/nginx-sso-helper.nix;
-  mkIntVhost = import ../lib/nginx-int-vhost-helper.nix {inherit lib;};
+  CONFIG = import ../../../common/config.nix;
+  mkSSOVirtualHost = import ../../../common/nginx/sso-vhost.nix;
+  mkIntVhost = import ../../../common/nginx/int-vhost.nix {inherit lib;};
 
-  AIBOX_IP = "10.3.1.32";
+  HOSTS = import ../../../common/hosts.nix;
 
   # LAN restart token, shared with aibox via the sops secret
   # status_dashboard_lan_token.
@@ -52,11 +52,22 @@ in {
     # restart buttons work over the SSO vhost.
 
     "aibox.status.leighhack.org" = mkSSOVirtualHost {
-      proxyPass = "http://${AIBOX_IP}:8088";
+      proxyPass = "http://${HOSTS.aibox}:8088";
     };
 
     "aibox-status.int.leighhack.org" = mkIntVhost {
-      proxyPass = "http://${AIBOX_IP}:8088";
+      proxyPass = "http://${HOSTS.aibox}:8088";
+      extraConfig = lanTokenHeader lanToken;
+    };
+
+    # --- services2's dashboard (proxied from 10.3.1.21) -------------------
+    # LAN-only.  There is no public vhost for services2: the public
+    # *.leighhack.org names need an explicit record in the DigitalOcean zone
+    # (dns-sync only manages the *.int ones), and services2 has no public IP, so
+    # a public name would point at this box anyway.  Restart buttons work over the
+    # LAN vhost via the token header.
+    "services2-status.int.leighhack.org" = mkIntVhost {
+      proxyPass = "http://${HOSTS.services2}:8088";
       extraConfig = lanTokenHeader lanToken;
     };
   };

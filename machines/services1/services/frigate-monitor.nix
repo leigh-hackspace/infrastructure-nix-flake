@@ -3,8 +3,8 @@
   lib,
   ...
 }: let
-  CONFIG = import ../config.nix;
-  mkIntVhost = import ../lib/nginx-int-vhost-helper.nix {inherit lib;};
+  CONFIG = import ../../../common/config.nix;
+  mkIntVhost = import ../../../common/nginx/int-vhost.nix {inherit lib;};
 
   AIBOX_IP = "10.3.1.32";
 in {

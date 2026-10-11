@@ -4,7 +4,7 @@
   lib,
   ...
 }: let
-  CONFIG = import ../config.nix;
+  CONFIG = import ../../../common/config.nix;
   UPLOAD_LOCATION = "/srv/affine/storage";
   CONFIG_LOCATION = "/srv/affine/config";
   DB_DATABASE = "affine";

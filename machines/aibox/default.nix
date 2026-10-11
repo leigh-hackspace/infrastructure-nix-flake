@@ -12,7 +12,7 @@ flakeInputs: {
     ./frigate-monitor.nix
     ./hardware-configuration.nix
     ./immich.nix
-    ./monitoring.nix
+    ../../common/exporters.nix
     ./netboot.nix
     ./networking.nix
     # PARKED (see docs/repo-audit-2026-10-07.md §1.4): the GTX 1060 was removed

@@ -45,8 +45,8 @@
   };
 
   # Every *.int.leighhack.org name this nginx serves (vhost names + aliases).
-  # Shared with the gatus endpoint check: see lib/int-vhost-names.nix.
-  intVhostNames = import ./lib/int-vhost-names.nix {inherit lib;};
+  # Shared with the gatus endpoint check: see common/nginx/int-vhost-names.nix.
+  intVhostNames = import ../../common/nginx/int-vhost-names.nix {inherit lib;};
   intNames = intVhostNames config.services.nginx.virtualHosts;
 in {
   environment.etc."dns-sync/expected-int-names".text =

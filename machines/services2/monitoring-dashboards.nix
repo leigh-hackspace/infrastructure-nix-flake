@@ -11,7 +11,7 @@ let
   # The klippy / print_stats state tables, read out of the exporter's own Rust
   # arrays (lib/printer-states.nix).  The panels and the Prometheus alert rules
   # both come from there, so the number -> label tables cannot drift.
-  PRINTER = import ../lib/printer-states.nix;
+  PRINTER = import ../../common/printer-states.nix;
 
   DS = {
     type = "prometheus";

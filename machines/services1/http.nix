@@ -10,10 +10,10 @@
 # Outside/Inside IPv6               2001:8b0:1d14:225:d::1020
 # curl -X GET -H "Authorization: Bearer dop_v1_blah" "https://api.digitalocean.com/v2/domains/leighhack.org/records?name=gw.int.leighhack.org"
 let
-  CONFIG = import ./config.nix;
+  CONFIG = import ../../common/config.nix;
   nginxSsoConfig = import ./lib/nginx-sso-config.nix;
-  mkSSOVirtualHost = import ./lib/nginx-sso-helper.nix;
-  mkIntVhost = import ./lib/nginx-int-vhost-helper.nix {inherit lib;};
+  mkSSOVirtualHost = import ../../common/nginx/sso-vhost.nix;
+  mkIntVhost = import ../../common/nginx/int-vhost.nix {inherit lib;};
 in {
   # Necessary for secret access
   users.groups.secrets.members = ["nginx"];

@@ -4,7 +4,7 @@
   config,
   ...
 }: let
-  CONFIG = import ../config.nix;
+  CONFIG = import ../../../common/config.nix;
 in {
   # Necessary for secret access
   users.groups.secrets.members = ["mattermost"];

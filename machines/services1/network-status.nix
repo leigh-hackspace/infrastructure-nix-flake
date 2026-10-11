@@ -19,6 +19,11 @@
 #
 # Exposed at network-info.int.leighhack.org (nginx vhost in http.nix,
 # ACL-restricted to the local network).
+#
+# It listens on 0.0.0.0 rather than loopback: Prometheus on services2 scrapes this
+# service's /metrics, and a scrape from another box cannot reach a loopback bind.
+# Access control is the vhost ACL, not the bind — the JSON API has always been
+# unauthenticated, and the tailnet is already allowed by LOCAL_NETWORK.
 {
   config,
   lib,
@@ -74,7 +79,7 @@ in {
       ExecStart = lib.concatStringsSep " " [
         "${networkStatus}/bin/network-status"
         "--bind"
-        "127.0.0.1"
+        "0.0.0.0"
         "--port"
         "8091"
         "--static-dir"

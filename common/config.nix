@@ -1,7 +1,15 @@
+# Network-wide facts shared by every machine: runtime secret paths, the domains
+# the SSO/apps redirect to, the nginx ACL for the internal vhosts, and the
+# Postgres pg_hba table.
+#
+# This used to live in machines/services1/config.nix, which meant a second box
+# could not use any of it — the ACL and the pg_hba rules describe the network, not
+# one machine.  Machine addresses are in ./hosts.nix.
+#
+# Runtime secret files, provisioned by sops-nix from secrets/secrets.yaml
+# (see sops.nix). Secrets embedded into configs at build time are read via
+# config.sopsSecretText instead (see common/sops.nix).
 {
-  # Runtime secret files, provisioned by sops-nix from secrets/secrets.yaml
-  # (see sops.nix). Secrets embedded into configs at build time are read via
-  # config.sopsSecretText instead (see common/sops.nix).
   ENV_FILE = "/run/secrets/env_file";
   HTTP_BASIC_AUTH_FILE = "/run/secrets/http_basic_auth";
   WIREGUARD_KEY_FILE = "/run/secrets/wg_key";

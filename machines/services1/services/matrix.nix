@@ -4,7 +4,7 @@
   config,
   ...
 }: let
-  CONFIG = import ../config.nix;
+  CONFIG = import ../../../common/config.nix;
   fqdn = "matrix.leighhack.org";
   baseUrl = "https://matrix.leighhack.org";
   clientConfig."m.homeserver".base_url = baseUrl;

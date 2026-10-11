@@ -4,7 +4,7 @@
   INFRA,
   ...
 }: let
-  CONFIG = import ../config.nix;
+  CONFIG = import ../../../common/config.nix;
 in {
   nixpkgs.overlays = [
     (final: prev: {
