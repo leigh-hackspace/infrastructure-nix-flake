@@ -15,13 +15,14 @@
 # root, so the generation the rollback timer would switch to cannot be collected by
 # `--delete-older-than` on the `system` profile.
 #
-# Remote building is opt-in per invocation (`--max-jobs 0`), not global: with
-# `nix.maxJobs > 0` the client builds locally anyway, and forcing it to 0 would make
-# every deploy depend on services2 being reachable. A build that falls back to local is
-# worth more than a build that fails because the builder is down. It is also currently
-# switched off entirely (`nix.distributedBuilds = false`, see the comment there): the
-# builder's build-user cleanup kills the ssh connection carrying the build, so a
-# delegated build dies with an empty log.
+# Remote building is ON by default and is not merely opt-in: in nix 2.34 the scheduler
+# prefers an available external builder for every build ("Default preference is a remote
+# build", derivation-building-goal.cc) and only falls back to local when no builder can do
+# it. `--max-jobs 0` therefore does not enable delegation — it removes the local fallback.
+# So a plain `nix build` / `just switch` on services1 compiles on services2 and copies the
+# result back; if services2 is down nix builds locally instead. To go back to local-only,
+# set `nix.distributedBuilds = false` (which also makes `--max-jobs 0` fail with "local
+# builds are disabled", since nothing is left to delegate to).
 #
 # Per machine (see the two default.nix files):
 #
@@ -76,17 +77,21 @@ in {
     nix.gc.options = "--delete-older-than 30d";
     nix.optimise.automatic = cfg.gc;
 
-    # The nix daemon serves builds for `allowed-users`, which defaults to
-    # `root @nixbld`, and `builders` is a restricted setting — a non-trusted user's
-    # `nix build` ignores it. So leigh-admin has to be in nixbld on *both* ends: the
-    # machine that delegates (so the daemon is used at all) and the machine that
-    # accepts (so the hop is accepted). It is not in nixbld by default on any machine
-    # (common/users.nix), and there is no `nix.serveUsers` option in current nixpkgs —
-    # that was the old nix-serve knob.
-    users.users.leigh-admin.extraGroups =
-      lib.optionals (cfg.serveBuilds || cfg.builderHost != null) ["nixbld"];
+    # NOTE: deliberately *no* `nixbld` membership here, on either end of the hop.
+    #
+    # An earlier version of this file put leigh-admin in nixbld "so the daemon is
+    # used at all" and "so the hop is accepted". Both reasons were wrong: this
+    # network runs `allowed-users = *`, which is what accepts a client, and
+    # `/nix/var/nix` is root-only, so a non-root nix reaches the store through the
+    # daemon socket whether or not its user is in nixbld.
+    #
+    # What the membership really did was make leigh-admin a *candidate build UID*
+    # (nix runs each build as a member of `build-users-group` and SIGKILLs that UID
+    # before and after the build), and so every build on services1 and services2
+    # killed the admin's entire session. Read common/nixbld.nix before adding any
+    # account to that group; the assertion there now rejects this config.
 
-    # ...and being *accepted* is not the same as being *trusted*. With
+    # Being *accepted* is not the same as being *trusted*. With
     # `require-sigs = true` (the default) the builder's daemon refuses to build
     # input-addressed derivations for a client it does not trust, so every delegated
     # build died with "you are not privileged to build input-addressed derivations"
@@ -102,25 +107,17 @@ in {
     # `nix.settings.builders = null` unless `nix.distributedBuilds` is true, so the
     # nix.conf line the daemon reads stays empty and `--max-jobs 0` fails with
     # "local builds are disabled" even though /etc/nix/machines is correct. Both are
-    # needed — the option list and the switch that turns it into the setting.
+    # needed — the option list and the switch that turns it into the setting. See the
+    # header for what turning it on implies (remote is preferred, not opt-in).
     #
-    # ...and the switch is now off, because remote building cannot work at all while
-    # the build-user cleanup bug lives (docs/nix-build-sigkill-2026-10-11.md): the
-    # builder's cleanup runs `setuid(<invoking uid>); kill(-1, SIGKILL)`, and the
-    # process it kills is the `nix-daemon --stdio` that the delegating machine is
-    # talking to over ssh. Every delegated build therefore died mid-build with an
-    # empty log — services2's journal after a `nixos-rebuild` on services1:
-    #
-    #   nix-daemon[3353]: accepted connection from pid 3597, user leigh-admin (trusted)
-    #   sshd-session[3593]: error: mm_reap: child terminated by signal 9
-    #   systemd[1]: user@1234.service: Main process exited, code=killed, status=9/KILL
-    #
-    # It is not specific to leigh-admin: the cleanup targets whoever the build was
-    # asked for, so any `sshUser` sabotages its own connection. Building locally is
-    # slower and costs disk on services1, but it is the only thing that works; flip
-    # this back to `cfg.builderHost != null` once the cleanup uid is a throwaway one
-    # (the `auto-allocate-uids` follow-up in the post-mortem).
-    nix.distributedBuilds = false;
+    # This was off from 2026-10-11 to 2026-10-12, because the builder's build-user cleanup
+    # was SIGKILLing the very `nix serve --stdio` the delegating machine was talking
+    # to (every delegated build died with an empty log, and services2's journal
+    # filled up with `user@1234.service: status=9/KILL`). Cause and fix:
+    # common/nixbld.nix. With the cleanup UID a throwaway nixbld account again the
+    # sweep has nothing of ours to hit, on either end of the hop — verified with a
+    # delegated build and a `--max-jobs 0` build, both clean.
+    nix.distributedBuilds = cfg.builderHost != null;
 
     nix.buildMachines = lib.optionals (cfg.builderHost != null) [
       {

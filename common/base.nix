@@ -8,30 +8,27 @@
 # audit counted ~15 identical settings — so a change made on one machine silently
 # did not happen on the other.
 {
+  imports = [./nixbld.nix];
+
   # Both machines run nixos-rebuild from this flake's git tree.
   nix.settings.experimental-features = [
     "nix-command"
     "flakes"
   ];
 
-  # Build as a nixbld user, never as the person running the build.
+  # Build as a nixbld account, never as the person running the build.
   #
-  # Current nixpkgs defaults `build-users-group` to "" (see nix-daemon.nix: "No such
-  # group would exist within the sandbox, so chowning to it would fail") because it
-  # pairs that with `sandbox = true` + the `auto-allocate-uids` experimental feature,
-  # which allocates UIDs inside the sandbox. This repo does not enable that feature,
-  # and services1/services2 set `sandbox = "relaxed"` (needed for the llama.cpp
-  # build), so with the empty default nix has no uid to drop to: build steps and
-  # their cleanup run as the invoking user.
+  # This is the setting that decides which UID a build runs as, and the UID is what
+  # nix SIGKILLs before and after every build (`killUser()`: `setuid(uid);
+  # kill(-1, SIGKILL)`). Left empty on a root daemon the default is `nixbld` too —
+  # it is spelled out here so the intent survives a nixpkgs default change, since
+  # getting it wrong is docs/nix-build-sigkill-2026-10-11.md: with no build UID the
+  # build (and its cleanup sweep) runs as the invoking user.
   #
-  # That is not merely untidy. When a build is interrupted or fails, nix's build-user
-  # cleanup runs `setuid(uid); kill(-1, SIGKILL)` to sweep leftover processes. With uid
-  # = the invoking user, that SIGKILLs every process they own: tmux, the Zed remote
-  # server, `user@1234.service`, and any service with `User=leigh-admin` — which is how
-  # a `nixos-rebuild` came to kill the terminal it was typed in.
-  #
-  # The 32 nixbld accounts already exist (nix.nrBuildUsers), so this only redirects the
-  # cleanup onto them.
+  # The mirror image of that rule is the part that actually bit: the group is the
+  # *pool of build UIDs*, so any real account added to it becomes the UID every
+  # build destroys. That invariant is asserted and policed in ./nixbld.nix — read
+  # it before touching either file.
   nix.settings.build-users-group = "nixbld";
 
   # GOLDEN RULE: the auto-rollback timer rolls back to the last *confirmed*
