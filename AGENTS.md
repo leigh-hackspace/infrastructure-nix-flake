@@ -16,9 +16,9 @@ Guidance for AI agents working in this repository. Read this before making chang
 
 - `flake.nix` — the flake. Inputs include private repos via
   `git+file:///home/leigh-admin/Projects/...` (gocardless-tools, pi-room-sys).
-  Machines: `services1` (the main services box, 10.3.1.20), `services2` (a
-  clone of services1 with no services yet, 10.3.1.21 — see
-  `machines/services2/README.md`) and `aibox`.
+  Machines: `services1` (the main services box, 10.3.1.20), `services2` (the
+  observability box — gatus, Prometheus, Grafana — and the network's build
+  machine, 10.3.1.21 — see `machines/services2/README.md`) and `aibox`.
 - `docs/` — narrative write-ups, post-mortems and audits (gtx1060 saga,
   sso-redesign, filestore gotchas, the repo audit). They live here rather than
   next to the modules so the flake source stays config only; module comments
@@ -26,7 +26,17 @@ Guidance for AI agents working in this repository. Read this before making chang
 - `common/` — shared modules imported by both machines (`tools.nix`,
   `users.nix`, `sops.nix`, plus `crane.nix` — the shared crane build helpers,
   see the Rust builds section — and `frontend-build-spa.sh`, the one SPA build
-  recipe all three Dioxus frontends call).
+  recipe all three Dioxus frontends call). Network-wide facts live here too, not
+  per machine: `config.nix` (the LOCAL_NETWORK ACL, the pg_hba table, the SSO
+  domains — it used to be `machines/services1/config.nix`, which is what stopped a
+  second box serving any vhost), `hosts.nix` (one table of machine addresses, read
+  by the nginx proxies, the Prometheus scrape targets and the gatus checks so they
+  cannot disagree), `nginx/` (`sso-vhost.nix`, `int-vhost.nix`,
+  `int-vhost-names.nix`), `exporters.nix` (the per-box metrics exporters),
+  `build-farm.nix` (GC + remote building) and `monitoring-endpoints.nix` (the gatus
+  endpoint data). `common/nginx/` and `common/config.nix` are shared because
+  services1 is the TLS terminator for the whole network: a vhost defined there can
+  proxy to a service running on another box.
 - `common-rs/` — shared **in-repo** Rust crates used as cargo path dependencies:
   `json` (hand-rolled parser: dns-sync, moonraker-exporter), `oidc` (authentik
   login + `Infra` group gate: filestore, gocardless-dashboard), `preview` (the
@@ -363,6 +373,10 @@ The short version, and the parts that are easy to get wrong:
   public key authorized for the `leigh-admin` user in `common/users.nix`
   (commit 729b1e1). Use it to hop from any flake machine to any other
   (aibox ↔ services1) without a password.
+- **services2 is the exception:** it has the authorized_keys entry but not the
+  private key, so you can hop *in* to 10.3.1.21 but it cannot hop *out* (and it has
+  no GitHub key, so it cannot fetch either — get commits onto it as a `git bundle`
+  from services1). See `machines/services2/README.md`.
 - Connect as **`leigh-admin`, never `root`** — root SSH is not keyed on
   either machine (verified both directions). `leigh-admin` has passwordless
   sudo, so run `sudo nixos-rebuild ...` / `sudo nixos-confirm` after
@@ -383,14 +397,15 @@ The short version, and the parts that are easy to get wrong:
 - Deploy with the justfile: `just switch` / `just boot`
   (`sudo nixos-rebuild switch --flake .`).
 - **Check before you deploy:** `just check` (flake evaluation, the config
-  assertions in `machines/services1/lib/check-*.nix` and `alejandra --check`
-  over every tracked `.nix`) and, when anything is built rather than just
-  evaluated, `just check-build` (`nixos-rebuild dry-build` for both machines —
-  it compiles everything and activates nothing). `just test` runs the cargo
-  tests, `just clippy` the lints, `just filestore-test` the browser suite.
+  assertions in `machines/services1/lib/check-*.nix` and `common/check-printer-states.nix`,
+  and `alejandra --check` over every tracked `.nix`) and, when anything is built rather
+  than just evaluated, `just check-build` (`nixos-rebuild dry-build` for all three
+  machines — it compiles everything and activates nothing). `just test` runs the cargo
+  tests, `just clippy` the lints, `just filestore-test` the browser suite, and
+  `just build-remote` offloads a build to services2 (see `common/build-farm.nix`).
 - **GOLDEN RULE — confirm immediately after every switch/boot:**
-  `system.autoRollback.enable = true` is set on **both** machines
-  (services1 _and_ aibox, via nixos-utils). The `auto-rollback.timer` rolls
+  `system.autoRollback.enable = true` is set on **all three** machines
+  (services1, services2 and aibox, via nixos-utils). The `auto-rollback.timer` rolls
   the machine back to the last confirmed-good generation if the current one
   is not confirmed, and it acts within a minute or two of the switch. So:
   1. Run `sudo nixos-confirm` **immediately** after `switch`/`boot`
@@ -604,3 +619,13 @@ The grid is infinitely scrollable — there is **no "load more" button**; the
   lime changed, but regenerate it too if blue is ever re-imaged. The
   `hackspace` user's password and `authorized_keys` are also shared by the
   clone; rotate them if the two boxes shouldn't be interchangeable.
+
+- **services2: hop key and swap** — `machines/services2/README.md` claimed the
+  shared machine-hop key was in place; it is not. Only `authorized_keys` is
+  installed there (by `common/users.nix`), so you can hop *in* to 10.3.1.21 but
+  not *out* — it cannot ssh to services1, and it has no GitHub key either, so
+  commits reach it as a `git bundle` from services1. Install
+  `~/.ssh/agent-hop-key` deliberately if you want it to fetch on its own; do not
+  copy a private key as a side effect of a deploy. services2 also has no swap
+  partition (services1 has 18 GB), which is fine at the current load but worth
+  matching before it runs anything heavier.

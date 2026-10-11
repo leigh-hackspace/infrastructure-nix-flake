@@ -5,23 +5,47 @@ AMD Ryzen 7 5700G (Cezanne Radeon iGPU), Intel I211 NIC, 250 GB Kingston NVMe,
 16 GB RAM. Installed 2026-10-10, replacing the Windows install that shipped on
 the NVMe.
 
-## State: clone with no services (yet)
+## What it runs
 
-This machine intentionally runs **nothing**: the module list in `flake.nix` is
-services1's minus containers/crane, and `./networking.nix` has the LAN/VLAN
-wiring but none of services1's NAT, WireGuard or `extraHosts`. When the box is
-given services, mirror the change on services1 as well (shared code belongs in
-`common/`, per AGENTS.md) and add the missing network pieces then.
+The observability stack, and its own status dashboard:
 
-What it already has, so it can take over at any point:
+- `./gatus.nix` — the endpoint checks and the Slack alerting.
+- `./monitoring.nix` — Prometheus (9091) + Grafana (3000) and the alert rules.
+- `./status.nix` — services2's own dashboard, proxied by services1 as
+  `services2-status.int.leighhack.org`.
+- `common/exporters.nix` — the per-box exporters, so this box is measured too.
 
-- `common/base.nix`, `common/tools.nix`, `common/users.nix`, `common/sops.nix`,
-  the NAS mounts (`common/nas.nix`, the same three exports as services1) and the
-  auto-rollback timer.
-- The shared `machine-hop-key`, so `ssh -i ~/.ssh/agent-hop-key
-  leigh-admin@10.3.1.21` works with no password.
-- The sops age key at `/var/lib/sops-nix/key.txt`, so `common/sops.nix`'s
-  secrets decrypt at boot like on the other machines.
+Monitoring lives here rather than on services1 for one reason: **the box that
+answers "is this thing down" must not be the box being asked.** Gatus on services1
+could never report services1 as down, and a services1 failure took the alerting with
+it — including the checks for everything else on the LAN. The endpoint list is data in
+`common/monitoring-endpoints.nix`; the drift guard that goes with it stays on services1,
+where the vhosts are.
+
+It is also the network's build machine (`common/build-farm.nix`): 211 GB of free store
+against services1's 84%-full root, and no services worth protecting from a build.
+
+The vhosts stay on services1, which terminates TLS for the whole network, so they are in
+`machines/services1/services/monitoring.nix` and `machines/services1/services/status.nix`
+and proxy here. That is the one dependency this box cannot remove: if services1 is down
+the dashboards are unreachable even though gatus is still alerting to Slack.
+
+Things that bind `0.0.0.0` because the proxy/scrape comes from another box: Grafana
+(`http_addr`), gatus, Prometheus, the exporters, and services2's status dashboard.
+
+## What it does not have
+
+- No services1-style NAT, WireGuard or `extraHosts` in `./networking.nix`. Fine for a
+  box that hosts no apps; mirror services1's pieces here if it ever does.
+- **No `~/.ssh/agent-hop-key`.** The README previously claimed the shared machine-hop key
+  was in place; it is not — only `authorized_keys` is installed (by `common/users.nix`),
+  which lets you hop *in* but not *out*. So services2 cannot ssh to services1, and it has
+  no GitHub key either: get commits onto it with a `git bundle` from services1, or install
+  the key deliberately.
+- No swap partition (services1 has 18 GB). Not a problem at the current load; worth
+  matching if this box starts running anything heavier.
+- `just check` cannot run here: it evaluates aibox, which needs the `whisper-ws` and
+  `pi-room-sys` checkouts under `~/Projects/`. Run checks from services1.
 
 ## Network
 
@@ -52,6 +76,8 @@ check` / `just check` do evaluate aibox, so those need the checkouts under
 
 There is no `system-good` generation yet, so `auto-rollback` is inert until the
 first `nixos-confirm` (which `just switch` runs for you).
+
+(Done 2026-10-11: the first confirm ran on the deploy that moved monitoring here.)
 
 ## Install notes (2026-10-10)
 
