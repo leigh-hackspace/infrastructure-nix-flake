@@ -16,6 +16,21 @@
       # Private key: ~/.ssh/agent-hop-key (copy to the other machines).
       "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICtr1ewQo09xFMODjPXlPXXvjuW94zQCMqhrpKAT/yGI machine-hop-key"
     ];
+
+    # Lingering must be on, or an agent session takes tmux down with it.
+    #
+    # The agent's shell runs in `user@1234.service/tmux-spawn-*.scope` — inside the
+    # user manager's cgroup, not the ssh session's — and tmux itself is in the login
+    # session's scope. When the harness times out a long tool call it SIGKILLs the
+    # shell, sshd reports `mm_reap: child terminated by signal 9`, the login session
+    # closes, and with lingering off logind stops `user@1234.service` — which SIGKILLs
+    # everything in that cgroup: the tmux server, the shell, and any build still
+    # running in it. That is why `nixos-rebuild switch`/`boot` looked like the culprit:
+    # they are just the commands long enough to hit the harness limit.
+    #
+    # With lingering on the user manager survives the session teardown, so tmux and a
+    # detached build survive too.
+    linger = true;
   };
 
   # # Define a user account. Don't forget to set a password with ‘passwd’.
