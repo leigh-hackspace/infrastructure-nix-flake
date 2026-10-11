@@ -24,8 +24,9 @@ Guidance for AI agents working in this repository. Read this before making chang
   next to the modules so the flake source stays config only; module comments
   point into them when they need the backstory.
 - `common/` — shared modules imported by both machines (`tools.nix`,
-  `users.nix`, `sops.nix`, plus `crane.nix` — the shared crane build helpers,
-  see the Rust builds section — and `frontend-build-spa.sh`, the one SPA build
+  `users.nix`, `sops.nix`, `nixbld.nix` — the build-user-group invariant, see
+  the "Nix build users" section — plus `crane.nix` — the shared crane build
+  helpers, see the Rust builds section — and `frontend-build-spa.sh`, the one SPA build
   recipe all three Dioxus frontends call). Network-wide facts live here too, not
   per machine: `config.nix` (the LOCAL_NETWORK ACL, the pg_hba table, the SSO
   domains — it used to be `machines/services1/config.nix`, which is what stopped a
@@ -453,96 +454,65 @@ switch --flake .#<machine> && sudo nixos-confirm'` (the `cd`
   switch to nixfmt.
 
 
-## Never build as the interactive admin (services1, 2026-10-11)
+## Nix build users: `nixbld` is a target, not a grant
 
-Full story and evidence: **`docs/nix-build-sigkill-2026-10-11.md`**. The short version:
+**Resolved 2026-10-12.** The 2026-10-11 incident — every nix build on services1 and
+services2 SIGKILLing the admin's entire process set — was caused by this repo putting
+`leigh-admin` in the `nixbld` group. `build-users-group` is not a permissions group, it is
+the **pool of UIDs nix runs builds as**: nix takes a member of it for each build and, both
+before and after that build, runs `setuid(uid); kill(-1, SIGKILL)` (`killUser()`) to sweep
+the build's leftovers. A real account in that group therefore loses every process it owns
+to every build on the machine — which is why the sweep looked indifferent to who asked, to
+whether the build succeeded, and to which box it ran on. Full story, the nix 2.34.7 source
+references, and the evidence: **`docs/nix-build-sigkill-2026-10-11.md`**. The invariant,
+its assertion and its self-healing timer live in **`common/nixbld.nix`**.
 
-`nix-daemon`'s build-user cleanup is `setuid(uid); kill(-1, SIGKILL)`. On services1 the uid
-resolved to **1234 (`leigh-admin`)**, so any build that was interrupted or failed SIGKILLed
-every process the admin owned: the shell it was typed in, tmux, the Zed remote server,
-`user@1234.service`, and `network-status.service`. It killed a human's terminal too, so it
-was never an agent-harness problem.
+Rules that follow:
 
-Rules that follow from it:
+- **Never put a real account in `nixbld`.** Not for a build farm, not "so the daemon
+  accepts this client": that is `nix.settings.allowed-users` (already `*`) plus
+  `nix.trustedUsers`, and `/nix/var/nix` is root-only so a non-root nix reaches the daemon
+  socket either way. `common/nixbld.nix` fails the eval if the config asks for it, and its
+  `nixbld-guard.timer` undoes an imperative `usermod -aG nixbld` / `gpasswd -a` within
+  fifteen minutes and writes the reason to the journal. If a session ever dies during a
+  build again, `journalctl -u nixbld-guard` is the first thing to read.
+- **Ordinary deploys are safe again**: `just switch` / `just boot` as `leigh-admin`, with
+  the GOLDEN RULE confirm chained in the same invocation (that is all `just` does). The
+  `deploy`-account recipe below is history — do not reach for it.
+- **Interrupting a build is harmless** (it always was, in the sense that nothing needed a
+  reboot or a rollback to recover; that advice stands). The sweep now lands on a
+  throwaway `nixbldN` uid that owns nothing.
+- **Remote building is on and is now the default path.** With
+  `nix.distributedBuilds = true` nix 2.34 *prefers* the external builder for every build
+  and only falls back to local when no builder is available — `--max-jobs 0` does not
+  enable delegation, it removes the local fallback. So a plain `nix build` / `just switch`
+  on services1 builds on services2 and copies the result back. Flip
+  `nix.distributedBuilds = false` in `common/build-farm.nix` to go back to local-only.
+- `network-status.service` still runs as `User=leigh-admin`. That is no longer a sweep
+  amplifier (uid 1234 is not a build uid any more), but a LAN dashboard should not run as
+  the admin — see "Known follow-ups".
 
-- **Never run a build as the interactive admin in a remote session.** Builds go through the
-  `deploy` account recipe below, or a unit whose lifetime is not tied to the tool call.
-- **Never run a `switch` as root to dodge it.** The sweep is `kill(-1)`; with uid 0 that
-  reaches every process on the machine, not one user's.
-- **Never reboot or roll back to "recover".** An interrupted build breaks nothing, and
-  `build-users-group` is absent from `nix.conf` in every generation, so an older generation
-  behaves identically.
-- **Always pair `systemd-run` with `--no-block`.** Without it `systemd-run` waits for a
-  oneshot unit to *finish*, so the tool call blocks for the whole build, the harness kills
-  it, and that interruption is exactly what fires the sweep. This is why the first few
-  "run it in a scope" attempts changed nothing.
-- `nix.settings.build-users-group = "nixbld"` is set in `common/base.nix` as correct
-  hygiene, but **it did not stop the sweep when tested** — do not rely on it alone.
-- **Assume any nix build on services1/services2 can kill `leigh-admin`'s processes.** Sweeps
-  were seen after a *successful* build and after a build authored by a *different* uid, so
-  the cleanup targets uid 1234 regardless of the client and needs no failure. The `deploy`
-  account gets a build finished; it is not a cure.
-- **aibox does not have this problem.** Verified 2026-10-11: a successful local build there
-  produced zero SIGKILLs. It sets `sandbox = true` (only services1/services2 override to
-  `relaxed`, for the llama.cpp build) and nothing on it runs as `leigh-admin`, so a sweep
-  could only kill an interactive shell, not a service. The `sandbox = "relaxed"`
-  correlation is the remaining clue for the real fix — see
-  `docs/nix-build-sigkill-2026-10-11.md`.
+### Building in a detached unit (optional, for long builds)
 
-### Deploying when every build kills the session
+Not needed for the sweep any more; still the tidy way to run a build that must outlive the
+tool call that started it, because `systemd-run` without `--no-block` waits for a oneshot
+to *finish* and a harness timeout then interrupts the build:
 
-1. Build as a **different user** (a `deploy` account with its own copy of the repo) from a
-   **root-launched unit with `--no-block`**, writing to a log:
+```bash
+sudo systemd-run --no-block --unit=deploy-build --collect --service-type=oneshot \
+  --property=DynamicUser=no --property=TimeoutStartSec=3600 \
+  --setenv=PATH=/run/current-system/sw/bin --setenv=HOME=/root \
+  /run/current-system/sw/bin/bash -c \
+    'cd ~/Projects/infrastructure-nix-flake && nixos-rebuild switch --flake .#services1 \
+       > /tmp/deploy.log 2>&1; echo SWITCH_EXIT=$? >> /tmp/deploy.log; \
+       nixos-confirm >> /tmp/deploy.log 2>&1; echo CONFIRM_EXIT=$? >> /tmp/deploy.log; \
+       readlink -f /run/current-system /nix/var/nix/profiles/system >> /tmp/deploy.log'
+```
 
-   ```bash
-   sudo systemd-run --no-block --unit=deploy-build --collect --service-type=oneshot \
-     --property=DynamicUser=no --property=User=deploy --property=TimeoutStartSec=3600 \
-     --setenv=PATH=/run/current-system/sw/bin --setenv=HOME=/home/deploy \
-     /run/current-system/sw/bin/bash -c \
-       'cd /home/deploy/repo && /run/current-system/sw/bin/nixos-rebuild build --flake .#services1 > /home/deploy/build.log 2>&1; echo EXIT=$? >> /home/deploy/build.log'
-   ```
-
-2. Poll the log with short calls; on success it prints the new system path.
-3. **Activate from the built closure** — no build, so nothing to interrupt:
-
-   ```bash
-   sudo systemd-run --no-block --unit=deploy-activate --collect \
-     --property=DynamicUser=no --property=TimeoutStartSec=600 \
-     /run/current-system/sw/bin/bash -c \
-       '/nix/store/<new-system>/bin/switch-to-configuration switch > /tmp/activate.log 2>&1; \
-        echo SWITCH_EXIT=$? >> /tmp/activate.log; \
-        /run/current-system/sw/bin/nixos-confirm >> /tmp/activate.log 2>&1'
-   ```
-
-4. Check `SWITCH_EXIT=0` — and confirm in the same unit, because the GOLDEN RULE still
-   applies. `nixos-confirm` is `/run/current-system/sw/bin/nixos-confirm` *after* the switch
-   (a bare name in the unit gives exit 127).
-5. **Point the boot target at the new generation too.** `switch-to-configuration switch`
-   changes the *running* system but leaves `/nix/var/nix/profiles/system` (what the
-   bootloader boots) on the previous generation — so a later reboot silently returns to the
-   old config. Hit on 2026-10-11: services1 and services2 both came up running the fixed
-   generation while still booting the pre-fix one. Fix it without rebuilding:
-
-   ```bash
-   sudo nix-env --profile /nix/var/nix/profiles/system --set /run/current-system \
-     && sudo /run/current-system/bin/switch-to-configuration boot
-   ```
-
-   Then check `readlink -f /nix/var/nix/profiles/{system,system-good}` both equal
-   `/run/current-system`, and that the boot default names the new entry.
-
-Traps when setting up the `deploy` account, all hit while doing it: `/home/leigh-admin` is
-mode 700, so `deploy` cannot read the repo or the private flake inputs — copy `whisper-ws`
-and `pi-room-sys` into its home and repoint the *copied* `flake.nix` at them
-(content-identical, so the built store path is the same); `nixos-rebuild` needs `git` on
-PATH; and a non-trusted user cannot build an input-addressed derivation, so a throwaway
-"what uid does the build run as?" probe needs trust that was not granted.
-
-Also worth fixing: `network-status.service` runs as `User=leigh-admin` — that is what turned
-a uid-wide kill into a **service** outage (it restarted seven times) instead of only a dead
-terminal, and a LAN dashboard should not run as the admin. Blocked on the hop key it needs
-(`~/.ssh/agent-hop-key` to reach the router): a dedicated user needs that key in sops, or a
-dedicated router key.
+Chaining `nixos-confirm` inside the unit keeps the GOLDEN RULE intact. `nixos-rebuild
+switch` does link `/nix/var/nix/profiles/system`, so the boot target follows the switch;
+that only needs the manual `nix-env --profile ... --set` fix when activating a closure by
+hand with `switch-to-configuration switch` (see the post-mortem).
 ## Nix commands (local dev)
 
 The flake is pure and its sources come from the git tree, so everything
@@ -738,20 +708,38 @@ The grid is infinitely scrollable — there is **no "load more" button**; the
   partition (services1 has 18 GB), which is fine at the current load but worth
   matching before it runs anything heavier.
 
-- **services1: build-farm landed, remote building still unverified** — the generation
-  activated on 2026-10-11 has `nix.distributedBuilds`, `linger` and
-  `build-users-group = "nixbld"` live (`/etc/nix/nix.conf` has a `builders` line). Note that
-  `build-users-group` did **not** stop the SIGKILL sweep when tested — see
-  `docs/nix-build-sigkill-2026-10-11.md` — so do not treat it as protection. `just
-  build-remote` has not been exercised end to end since the switch; verify it with one
-  `--max-jobs 0` build before relying on it.
+- **Remote building is verified working (2026-10-12)** — with the `nixbld` fix in
+  `common/nixbld.nix` deployed to services1 and services2, a delegated build and a
+  `--max-jobs 0` build both completed on services2 and copied back to services1, with no
+  SIGKILL sweep on either box. It is now the default path rather than opt-in (nix 2.34
+  prefers an available builder; see the "Nix build users" section). Worth knowing that
+  services2 was found running a *newer* generation than its git tree (its checkout was
+  two commits behind `origin/main` after the 2026-10-11 deploys were done from a dirty
+  tree) — check `git log -1` there before blaming a config change for behaviour.
+- **The `deploy` account is dead weight** — `useradd`ed on 2026-10-11 as a workaround for
+  the build-user bug (build as a uid that owns nothing), with its own copy of the repo and
+  the private flake inputs under `/home/deploy`. The bug is fixed, so nothing needs it;
+  it is not declarative and a switch will not recreate it. Remove it
+  (`userdel -r deploy`) unless something turns out to depend on it.
 - **The `deploy` account is an imperative escape hatch** — created with `useradd` on
   2026-10-11 to deploy while every build killed the admin's session, with its own copy of
   the repo and the private flake inputs under `/home/deploy` (see the deploy recipe in the
   section above). It is not declarative and a switch will not recreate it. Decide whether to
   make it managed config or remove it once builds as `leigh-admin` are trusted again.
 - **`network-status.service` runs as `User=leigh-admin`** — it should have its own user.
-  It is what turned the uid-wide kill into a *service* outage (SIGKILLed and restarted
-  seven times) rather than just a dead terminal, and a LAN dashboard running as the admin
-  is its own problem. Blocked on the hop key the unit needs (`~/.ssh/agent-hop-key` to
+  During the 2026-10-11 incident that is what turned the uid-wide kill into a *service*
+  outage (SIGKILLed and restarted seven times) rather than just a dead terminal; the sweep
+  can no longer reach uid 1234, but a LAN dashboard running as the admin is still its own
+  problem. Blocked on the hop key the unit needs (`~/.ssh/agent-hop-key` to
   reach the router): a dedicated user needs that key in sops, or a dedicated router key.
+
+- **Two public status vhosts have no DNS record** (found 2026-10-12 while sanity-checking
+  after the `nixbld` fix). `machines/services1/services/status.nix` defines the SSO vhosts
+  `status.leighhack.org` and `aibox.status.leighhack.org`, and
+  `common/monitoring-endpoints.nix` monitors `https://status.leighhack.org`, but both names
+  are NXDOMAIN in the DigitalOcean zone, so they are unreachable and that gatus check
+  cannot be passing. The `*.int` dashboards are fine
+  (`services1-status.int` / `services2-status.int` / `aibox-status.int` / `network-info.int`
+  all serve 200) — dns-sync only manages the `*.int` CNAMEs, public names are added by hand
+  in DO DNS, and these two were never. Either add the records (public apps CNAME →
+  `nginx.leighhack.org`) or drop the vhosts and the endpoint.

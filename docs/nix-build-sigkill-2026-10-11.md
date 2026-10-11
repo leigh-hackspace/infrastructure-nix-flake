@@ -10,6 +10,86 @@ The box was never broken. The system kept serving (nginx, sshd, podman, the dash
 no bad generation was ever activated. What was broken was the **ability to deploy**: the
 only way to apply a fix was to run a build, and every build killed the session running it.
 
+## Resolution (2026-10-12): it was this repo's own `nixbld` membership
+
+The root cause is closed, and it was not a nixpkgs default, not `sandbox = "relaxed"`, and
+not the agent harness. On 2026-10-11 `common/build-farm.nix` grew
+
+```nix
+users.users.leigh-admin.extraGroups =
+  lib.optionals (cfg.serveBuilds || cfg.builderHost != null) ["nixbld"];
+```
+
+with the comment that the daemon needs the client in `nixbld` "so the daemon is used at all"
+and "so the hop is accepted". Both halves of that are false (below), and the membership is
+not a grant — it is a **target**.
+
+In nix 2.34.7 (`src/libstore/unix/user-lock.cc`, `src/libstore/unix/build/*.cc`):
+
+```cpp
+bool useBuildUsers(const LocalSettings & settings) {
+    return (settings.buildUsersGroup != "" || settings.autoAllocateUids) && isRootUser();
+}
+```
+
+so with a root `nix-daemon` (which NixOS always runs) and a non-empty `build-users-group`,
+every build goes through `acquireUserLock()`. `SimpleUserLock::acquire()` then walks
+`getGroupMembers(buildUsersGroup)` — **every member of the group, in `/etc/group` order** —
+and takes the first whose lockfile under `/nix/var/nix/userpool` is free. That uid is the
+build uid, and nix sweeps it twice:
+
+- `DerivationBuilderImpl::prepareUser()` calls `killSandbox(false)` → `killUser(uid)`
+  **before the build even starts**, and
+- `~DerivationBuilderImpl` / `unix::killUser(buildUser->getUID())` again when it ends.
+
+`killUser()` is `setuid(uid); kill(-1, SIGKILL)` (`src/libutil/unix/processes.cc`).
+`leigh-admin` is uid 1234 and sorts before `nixbld1` in `/etc/group`, so it *was* the first
+free candidate: every build on services1 and services2 ran as uid 1234 and SIGKILLed uid
+1234's whole process set — twice per build, success or failure, no interruption required.
+
+Three things in this document were therefore wrong, and each one cost time:
+
+| Claim above | Reality |
+|---|---|
+| "nix had no build uid; it resolved to the invoking user" | It had a build uid and picked it out of `nixbld`. `build-users-group = "nixbld"` was live and working — it just had the wrong member list. |
+| "The cleanup only runs when a build is interrupted or failed" | `prepareUser()` sweeps at the start of **every** build. The harness timeouts were an amplifier (more interrupted builds, and the client dying was visible), not the cause. |
+| "aibox is unaffected because `sandbox = true`, not `relaxed`" | `getent group nixbld` on aibox is `nixbld1..nixbld32` and nothing else. Nothing there was ever a build uid. `sandbox` is irrelevant to the sweep. |
+
+The two claims that made the membership look safe:
+
+- `nix.settings.allowed-users = "*"` is already set on every machine, so the daemon accepts
+  every local user; membership adds nothing to *acceptance*.
+- `/nix/var/nix` is `root:root 0755`, and `openStore()` (`src/libstore/store-registration.cc`)
+  only picks `LocalStore` when `access(stateDir, R_OK|W_OK) == 0` — otherwise it falls to the
+  daemon socket. A non-root nix therefore always goes through the daemon, group member or
+  not. What a client actually needs to ask for input-addressed builds is `nix.trustedUsers`,
+  which build-farm.nix sets.
+
+The smoking gun, found afterwards: `/nix/var/nix/userpool/1234` existed on **both** services1
+(touched 04:19) and services2 (02:35) — nix had been using uid 1234 as a build user all day,
+hours *before* `build-users-group` was even set. After removing the membership, the same
+probe build logs `found build user 'nixbld1'` and `killing all processes running as uid
+'30001'`.
+
+### What was changed
+
+- `common/build-farm.nix`: the membership is gone, and `nix.distributedBuilds` is back on
+  (delegated builds were dying because the builder's sweep killed the `nix serve --stdio`
+  the delegating machine was talking to — see the log at the end of "How it was escaped").
+- `common/nixbld.nix` (new): an assertion that no non-`nixbldN` account may claim the group,
+  plus `nixbld-guard.timer`, which prunes `/etc/group` every 15 minutes and logs why. The
+  assertion is what makes `just check` refuse the config; the timer is what makes an
+  imperative `usermod -aG nixbld` on a live box survive only minutes.
+- `common/base.nix`: the comment corrected — the setting was never the fix, the member list
+  is the whole story.
+
+Deployed to services1 and services2 on 2026-10-12 and verified: `nixbld` has exactly its 32
+pool accounts on both; a build allocates `nixbld1` and sweeps uid 30001; a successful build,
+an interrupted build and a `--max-jobs 0` delegated build all completed with **zero**
+`status=9/KILL` entries on either box; the guard was tested by re-adding `leigh-admin`
+imperatively (it removed it again and logged the reason). aibox never had the membership and
+has not been redeployed — it only gains the guard, so its next deploy picks it up.
+
 ## Root cause
 
 `strace` on `nix-daemon`, for signal syscalls, caught the kill directly:
@@ -37,6 +117,11 @@ or why the cleanup fired at all.
 
 ### Why nix had no build user
 
+> **Superseded — see "Resolution" above.** There *was* a build user all along; it was
+> `leigh-admin`, because that account had been added to `nixbld`. What follows is what was
+> believed at the time and is kept because it is what sent the investigation off course for
+> an hour.
+
 Current nixpkgs ships these together in `nix-daemon.nix`:
 
 ```nix
@@ -55,6 +140,11 @@ services1/services2 override `sandbox = "relaxed"` (needed for the llama.cpp bui
 nix had no uid of its own to build or clean up as.
 
 ### Why the cleanup fired
+
+> **Superseded.** It fires at the start of every build (`prepareUser()` → `killSandbox()`),
+> so no interruption is needed. The correlation below is real but it is a symptom: an
+> interrupted build is just the case where the client also dies, which is what made it look
+> like the trigger.
 
 The cleanup only runs when a build is **interrupted or failed**. The daemon's own journal
 puts it immediately after the interruption, every time:
@@ -92,6 +182,10 @@ running containers and the NAS-mount boot sequence for no change in behaviour.
 
 ## How it was escaped
 
+> **Historical.** This is how services1 was unblocked before the cause was found. The cure
+> is in "Resolution" above; the `deploy` account and the activate-from-closure dance are no
+> longer needed and `AGENTS.md` says so.
+
 The sweep kills a **uid**. So: build as a uid that owns nothing, from a unit that cannot be
 interrupted, then activate the already-built closure (activation does no build).
 
@@ -126,10 +220,10 @@ the updated recipe in `AGENTS.md` includes that step.
 
 ## Honest gaps
 
-- **`build-users-group = "nixbld"` did not demonstrably stop the sweep.** It is committed as
-  correct hygiene (nix should not build as an interactive admin), but a build started after
-  it was live still resolved the uid to 1234. The mechanism that picks 1234 is not fully
-  closed; the box was unblocked by keeping the build away from that uid entirely.
+- **`build-users-group = "nixbld"` did not demonstrably stop the sweep.** ~~The mechanism
+  that picks 1234 is not fully closed~~ — **closed 2026-10-12**: it is
+  `SimpleUserLock::acquire()` walking the group's members, and 1234 was a member. The
+  setting was never the protection; the member list is. See "Resolution" above.
 - **"nixpkgs changed the default two weeks ago" is inference.** Only the current nixpkgs is
   in the store, so it could not be diffed against the previous pin. The `build-users-group =
   ""` + `auto-allocate-uids` pairing is directly read from the module.
@@ -138,6 +232,11 @@ the updated recipe in `AGENTS.md` includes that step.
   will not recreate it.
 
 ## Why aibox is unaffected (verified 2026-10-11)
+
+> **Superseded.** The `sandbox = true` vs `relaxed` theory is wrong: aibox is unaffected
+> because nothing on it is a member of `nixbld`, so it never had a build uid that mattered.
+> The `relaxed` override on services1/services2 is a separate (real) weakening of the build
+> sandbox, but it has nothing to do with this sweep.
 
 aibox has the same nix (2.34.8) and the same empty `build-users-group`, but a **successful**
 local build there produced **zero** SIGKILLs:
@@ -169,6 +268,9 @@ aibox imports `common/base.nix`, so its next deploy will also pick up
 
 ## So it cannot happen again
 
+> Items 1–4 are the workaround era and are kept for the record; item 6 is the actual fix and
+> is now done.
+
 Ordered by how much they would have shortened this.
 
 1. **Never build as the interactive admin.** Builds go through a dedicated uid (the `deploy`
@@ -182,10 +284,10 @@ Ordered by how much they would have shortened this.
 5. **`network-status.service` should not run as `User=leigh-admin`.** It is what turned a
    uid-wide kill into a service outage (it restarted seven times). Blocked on the hop key
    it needs: a dedicated user would need that key in sops, or a dedicated router key.
-6. **Finish the real fix.** Either make build users actually take effect (the
-   `sandbox = "relaxed"` interaction is the unexamined part), or enable
-   `auto-allocate-uids`, so nix has a throwaway uid and the empty `build-users-group`
-   default is harmless — which is what nixpkgs assumes.
+6. **~~Finish the real fix.~~ Done 2026-10-12** — build users *did* take effect; the group
+   just contained a real account. `common/nixbld.nix` asserts the group stays a pool of
+   throwaway uids and polices it on a timer. `auto-allocate-uids` is still not enabled and
+   is still not needed.
 7. **`nix-gc` was failing the whole time** with an option string `nix-collect-garbage`
    doesn't accept (`--max-age`); fixed in the same pass.
 
@@ -195,7 +297,14 @@ Symptoms: a build/switch kills the terminal mid-way; `journalctl` shows
 `mm_reap: child terminated by signal 9` then `user@1234.service: ... status=9/KILL`, and
 nix-daemon shows `interrupted by the user` just before.
 
-1. Do **not** reboot or roll back — nothing is broken and all generations behave the same.
-2. Do **not** run the switch as root. The sweep is `setuid(uid); kill(-1, SIGKILL)`; with
-   uid 0 that reaches every process on the machine rather than one user's.
-3. Use the build-as-`deploy` / activate-from-closure recipe in `AGENTS.md`.
+1. **Read `journalctl -u nixbld-guard` first.** If something put a real account back in
+   `nixbld`, the guard logged it (and undid it). `getent group nixbld | cut -d: -f4` should
+   list only `nixbld1..nixbld32`; `nix --debug build` on a one-line drv prints the uid it
+   picked (`found build user '…'`) and the uid it is about to sweep.
+2. Do **not** reboot or roll back — nothing is broken and all generations behave the same.
+3. Do **not** run the switch as root *to dodge a sweep you have not yet explained*. The
+   sweep is `setuid(uid); kill(-1, SIGKILL)`; with uid 0 it reaches every process on the
+   machine. (A root *deploy* is fine and normal — the daemon picks the build uid, not the
+   client.)
+4. `sudo gpasswd -d <account> nixbld` is the immediate unblock; the config in
+   `common/nixbld.nix` is the durable answer.
