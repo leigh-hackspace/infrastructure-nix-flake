@@ -40,8 +40,11 @@ Things that bind `0.0.0.0` because the proxy/scrape comes from another box: Graf
 - **No `~/.ssh/agent-hop-key`.** The README previously claimed the shared machine-hop key
   was in place; it is not — only `authorized_keys` is installed (by `common/users.nix`),
   which lets you hop *in* but not *out*. So services2 cannot ssh to services1, and it has
-  no GitHub key either: get commits onto it with a `git bundle` from services1, or install
-  the key deliberately.
+  no GitHub key of its own: reach GitHub from it with `ssh -A` from services1 (agent
+  forwarding — the key must be *in* the agent, `ssh-add ~/.ssh/id_ed25519`), or install the
+  key deliberately. Its own `nix.conf` also lives on a read-only symlink into the store, so
+  a stateful edit needs replacing that symlink with a real file (see
+  `docs/nix-build-sigkill-2026-10-11.md`).
 - No swap partition (services1 has 18 GB). Not a problem at the current load; worth
   matching if this box starts running anything heavier.
 - `just check` cannot run here: it evaluates aibox, which needs the `whisper-ws` and

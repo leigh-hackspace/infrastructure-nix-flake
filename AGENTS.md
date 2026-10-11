@@ -374,9 +374,26 @@ The short version, and the parts that are easy to get wrong:
   (commit 729b1e1). Use it to hop from any flake machine to any other
   (aibox ↔ services1) without a password.
 - **services2 is the exception:** it has the authorized_keys entry but not the
-  private key, so you can hop *in* to 10.3.1.21 but it cannot hop *out* (and it has
-  no GitHub key, so it cannot fetch either — get commits onto it as a `git bundle`
-  from services1). See `machines/services2/README.md`.
+  private key, so you can hop *in* to 10.3.1.21 but it cannot hop *out*. See
+  `machines/services2/README.md`.
+- **Git from a box with no key of its own: use agent forwarding.** services2 has no
+  GitHub key, but its sshd allows forwarding, so `-A` carries services1's agent to it:
+
+  ```bash
+  ssh -A -i ~/.ssh/agent-hop-key leigh-admin@10.3.1.21 \
+    'cd ~/Projects/infrastructure-nix-flake && git fetch && git reset --hard origin/main'
+  ```
+
+  Two things must be true, and neither is the default:
+  1. **The key GitHub accepts has to be *in* the agent.** Run `ssh-add ~/.ssh/id_ed25519`
+     first. The agent sshd creates per session starts without it, and a forwarded key
+     GitHub rejects is indistinguishable from forwarding no key at all: `ssh -T
+     git@github.com` succeeds on services1 but the remote gets `Permission denied
+     (publickey)`. Check `ssh-add -l` before suspecting the forwarding.
+  2. **The connection must pass `-A`** (forwarding is off by default).
+
+  `ssh -T git@github.com` from the remote is the one-line test. A `git bundle` from
+  services1 is the fallback when forwarding is unavailable.
 - Connect as **`leigh-admin`, never `root`** — root SSH is not keyed on
   either machine (verified both directions). `leigh-admin` has passwordless
   sudo, so run `sudo nixos-rebuild ...` / `sudo nixos-confirm` after
@@ -461,6 +478,12 @@ Rules that follow from it:
   "run it in a scope" attempts changed nothing.
 - `nix.settings.build-users-group = "nixbld"` is set in `common/base.nix` as correct
   hygiene, but **it did not stop the sweep when tested** — do not rely on it alone.
+- **aibox does not have this problem.** Verified 2026-10-11: a successful local build there
+  produced zero SIGKILLs. It sets `sandbox = true` (only services1/services2 override to
+  `relaxed`, for the llama.cpp build) and nothing on it runs as `leigh-admin`, so a sweep
+  could only kill an interactive shell, not a service. The `sandbox = "relaxed"`
+  correlation is the remaining clue for the real fix — see
+  `docs/nix-build-sigkill-2026-10-11.md`.
 
 ### Deploying when every build kills the session
 
@@ -691,10 +714,10 @@ The grid is infinitely scrollable — there is **no "load more" button**; the
 - **services2: hop key and swap** — `machines/services2/README.md` claimed the
   shared machine-hop key was in place; it is not. Only `authorized_keys` is
   installed there (by `common/users.nix`), so you can hop *in* to 10.3.1.21 but
-  not *out* — it cannot ssh to services1, and it has no GitHub key either, so
-  commits reach it as a `git bundle` from services1. Install
-  `~/.ssh/agent-hop-key` deliberately if you want it to fetch on its own; do not
-  copy a private key as a side effect of a deploy. services2 also has no swap
+  not *out* — it cannot ssh to services1, and it has no GitHub key of its own. Fetch
+  there with `ssh -A` (agent forwarding; see the SSH section) rather than copying a
+  private key around. Install `~/.ssh/agent-hop-key` deliberately if you want it to hop
+  out; do not copy a private key as a side effect of a deploy. services2 also has no swap
   partition (services1 has 18 GB), which is fine at the current load but worth
   matching before it runs anything heavier.
 

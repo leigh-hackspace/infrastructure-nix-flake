@@ -120,6 +120,36 @@ because that is guidance; this file is the story.
   at copied inputs. It is a deliberate escape hatch, not managed config, and a future switch
   will not recreate it.
 
+## Why aibox is unaffected (verified 2026-10-11)
+
+aibox has the same nix (2.34.8) and the same empty `build-users-group`, but a **successful**
+local build there produced **zero** SIGKILLs:
+
+```
+kills before: 0
+BUILD4=0        # nix build --impure --expr 'with import <nixpkgs> {}; runCommand ...'
+kills: 0
+```
+
+(Earlier probes on aibox failed with `executing '...bash': No such file or directory` — the
+sandbox needs the builder to come from the store, so a bare `/run/current-system/sw/bin/bash`
+is not in the build closure. Those failures are not evidence either way; the `runCommand`
+build is, because it actually ran and succeeded.)
+
+Two differences, either of which is sufficient:
+
+1. **`sandbox = true`, not `relaxed`.** Only services1 and services2 override the NixOS
+default, to `relaxed`, for the llama.cpp build. The sweep appears only on the machines with
+`relaxed` — which is the strongest remaining clue about *why* nix resolves the cleanup uid to
+the invoking user there. This is the thread to pull for the real fix.
+2. **Nothing on aibox runs as `leigh-admin`.** `ps -eo user` shows zero `leigh-admin`
+processes and no unit sets `User=leigh-admin`, so even if the sweep did fire it could only
+kill an interactive shell — never a service. services1 lost `network-status` precisely
+because that unit runs as the admin.
+
+aibox imports `common/base.nix`, so its next deploy will also pick up
+`build-users-group = "nixbld"` (harmless; not the fix).
+
 ## So it cannot happen again
 
 Ordered by how much they would have shortened this.
