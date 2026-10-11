@@ -251,6 +251,10 @@ in {
     settings = {
       server = {
         http_port = 3000;
+        # Must bind 0.0.0.0, not the module default (localhost): the vhost is on
+        # services1, which terminates TLS for the network, so the proxy comes from
+        # another box. Same reasoning as the exporters in common/exporters.nix.
+        http_addr = "0.0.0.0";
         root_url = "https://grafana.int.leighhack.org";
       };
       security = {
