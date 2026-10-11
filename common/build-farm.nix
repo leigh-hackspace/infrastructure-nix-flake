@@ -58,11 +58,15 @@ in {
     nix.gc.options = "--max-age 30d";
     nix.optimise.automatic = cfg.gc;
 
-    # The nix daemon accepts builds from `allowed-users`, which defaults to
-    # `root @nixbld`. leigh-admin is in wheel but not nixbld on any machine, so the
-    # builder has to put it in nixbld for the hop to be accepted. (There is no
-    # `nix.serveUsers` option in current nixpkgs — that was the old nix-serve knob.)
-    users.users.leigh-admin.extraGroups = lib.optionals cfg.serveBuilds ["nixbld"];
+    # The nix daemon serves builds for `allowed-users`, which defaults to
+    # `root @nixbld`, and `builders` is a restricted setting — a non-trusted user's
+    # `nix build` ignores it. So leigh-admin has to be in nixbld on *both* ends: the
+    # machine that delegates (so the daemon is used at all) and the machine that
+    # accepts (so the hop is accepted). It is not in nixbld by default on any machine
+    # (common/users.nix), and there is no `nix.serveUsers` option in current nixpkgs —
+    # that was the old nix-serve knob.
+    users.users.leigh-admin.extraGroups =
+      lib.optionals (cfg.serveBuilds || cfg.builderHost != null) ["nixbld"];
 
     nix.buildMachines = lib.optionals (cfg.builderHost != null) [
       {
