@@ -435,6 +435,60 @@ switch --flake .#<machine> && sudo nixos-confirm'` (the `cd`
   and `.vscode/settings.json`, so editor and CI agree. Do not hand-format or
   switch to nixfmt.
 
+## Long commands from an agent (why `switch`/`boot` kill the session)
+
+**Do not run `just switch` or `just boot` from an agent tool call on the machine the
+agent is running on.** They kill the agent's own session, including the tmux server
+hosting it.
+
+What actually happens (traced 2026-10-11 from the journal):
+
+1. The agent shell runs in
+   `user.slice/user-1234.slice/user@1234.service/tmux-spawn-*.scope` — inside the **user
+   manager's** cgroup, not the ssh session's. The tmux server is in the login session's
+   scope (`session-NN.scope`).
+2. A tool call has a hard per-call limit (a few minutes). When a build exceeds it, the
+   harness **SIGKILLs the whole user-session cgroup**, not just the shell:
+   `sshd-session: mm_reap: child terminated by signal 9`, then
+   `user@1234.service: Main process exited, code=killed, status=9/KILL`, and it SIGKILLs
+   the in-flight `nixos-rebuild`/`nix` processes with it.
+3. Everything in that cgroup dies — tmux, the shell, the build. The activation script is
+   not the culprit; `switch` and `boot` are just the commands long enough to hit the
+   limit.
+
+`users.users.leigh-admin.linger = true` (now set in `common/users.nix`) does **not** fix
+this. Lingering keeps the user manager alive when a *login session* ends, but here the
+user manager itself is the thing being killed, so tmux still dies.
+
+The safe way to run a long build is a **root-launched transient scope**, which lands in
+`system.slice` and is outside the cgroup the harness kills:
+
+```bash
+sudo systemd-run --unit=agent-build --collect --service-type=oneshot \
+  --property=DynamicUser=no --property=User=leigh-admin \
+  --property=TimeoutStartSec=3600 \
+  /run/current-system/sw/bin/bash -c \
+    'cd ~/Projects/infrastructure-nix-flake && /run/current-system/sw/bin/nix flake check > ~/agent-build.log 2>&1'
+# then poll ~/agent-build.log with short tool calls
+```
+
+Four traps in that form, all hit while debugging:
+
+- `TimeoutStartSec=0` does **not** mean "no timeout" for a oneshot — it times out
+  immediately. Use a large number.
+- `systemd-run` sets `DynamicUser=yes` by default, so the service cannot write a log in
+  `/tmp` owned by root or read the repo. Set `DynamicUser=no`.
+- The service gets a minimal PATH: `nixos-rebuild`, `nix` and `cat` are all "command not
+  found". Use absolute paths (`/run/current-system/sw/bin/...`).
+- Run it as **`leigh-admin`, not root**: Nix's flake fetcher refuses a git repo not owned
+  by the current user (`libgit2 error code = 7`), and `git config --global --add
+  safe.directory` does not satisfy it. But a service running as `leigh-admin` cannot write
+  the bootloader, so this pattern is for **builds only** — the `switch`/`boot` activation
+  itself still has to happen in a human's terminal.
+
+Short calls (`just check`, `just fmt`, ssh, curl) are fine; anything that may compile for
+minutes belongs in a transient scope or in the user's own shell.
+
 ## Nix commands (local dev)
 
 The flake is pure and its sources come from the git tree, so everything
@@ -629,3 +683,13 @@ The grid is infinitely scrollable — there is **no "load more" button**; the
   copy a private key as a side effect of a deploy. services2 also has no swap
   partition (services1 has 18 GB), which is fine at the current load but worth
   matching before it runs anything heavier.
+
+- **services1: pending activation** — the build-farm (`nix.distributedBuilds`) and
+  `linger` commits are committed but not yet active on services1: the agent's
+  `switch`/`boot` attempts were killed mid-build (see "Long commands from an
+  agent"), so `/run/current-system` is still the generation before them and
+  `/etc/nix/nix.conf` still has an empty `builders` line. Remote building is
+  verified working on the builder side (services2 accepts the hop,
+  `leigh-admin` is in `nixbld` there, and both host keys are in
+  `/root/.ssh/known_hosts` on services1); it needs one real `just switch` in a
+  human's terminal to take effect.
