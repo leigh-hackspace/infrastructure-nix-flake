@@ -78,16 +78,26 @@ in {
     users.users.leigh-admin.extraGroups =
       lib.optionals (cfg.serveBuilds || cfg.builderHost != null) ["nixbld"];
 
-    # The setting the daemon actually reads. NixOS's `nix.buildMachines` option
-    # writes /etc/nix/machines, and this Nix version does not read that file: a build
-    # with --max-jobs 0 failed with "local builds are disabled" even though the
-    # machines file was correct, so the nix.conf `builders` line is what counts.
-    #
-    # Format: <url> <speedFactor> <maxJobs>. sshKey has to be in the URL because the
-    # daemon runs as root and the key lives in leigh-admin's home.
-    nix.settings.builders = lib.optionalString (cfg.builderHost != null) (
-      "ssh://leigh-admin@${cfg.builderHost}?sshKey=/home/leigh-admin/.ssh/agent-hop-key "
-      + "${toString cfg.speedFactor} ${toString cfg.maxJobs}"
-    );
+    # `nix.buildMachines` alone is not enough: nix-remote-build.nix sets
+    # `nix.settings.builders = null` unless `nix.distributedBuilds` is true, so the
+    # nix.conf line the daemon reads stays empty and `--max-jobs 0` fails with
+    # "local builds are disabled" even though /etc/nix/machines is correct. Both are
+    # needed — the option list and the switch that turns it into the setting.
+    nix.distributedBuilds = cfg.builderHost != null;
+
+    nix.buildMachines = lib.optionals (cfg.builderHost != null) [
+      {
+        hostName = cfg.builderHost;
+        system = "x86_64-linux";
+        sshUser = "leigh-admin";
+        # sshKey has to be spelled out: the daemon runs as root, so it does not look
+        # in leigh-admin's home by itself.
+        sshKey = "/home/leigh-admin/.ssh/agent-hop-key";
+        # services2 is faster per job than services1 (8c/16t) and has the disk, so it
+        # is preferred when both are available.
+        speedFactor = cfg.speedFactor;
+        maxJobs = cfg.maxJobs;
+      }
+    ];
   };
 }
