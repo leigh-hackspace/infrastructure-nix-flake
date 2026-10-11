@@ -435,33 +435,52 @@ switch --flake .#<machine> && sudo nixos-confirm'` (the `cd`
   and `.vscode/settings.json`, so editor and CI agree. Do not hand-format or
   switch to nixfmt.
 
-## Long commands from an agent (why `switch`/`boot` kill the session)
+## Why a nix build killed the terminal (fixed 2026-10-11)
 
-**Do not run `just switch` or `just boot` from an agent tool call on the machine the
-agent is running on.** They kill the agent's own session, including the tmux server
-hosting it.
+**Symptom:** any `nixos-rebuild`/`nix build` of this flake on services1 — `switch`,
+`boot`, `build`, even `dry-activate` — SIGKILLed every process owned by `leigh-admin`
+within a couple of seconds: the shell, tmux, the Zed remote server, `user@1234.service`,
+and `network-status.service`. It killed a human's terminal too, so it was never an
+agent-harness problem.
 
-What actually happens (traced 2026-10-11 from the journal):
+**Root cause**, found by strace-ing `nix-daemon` for signal syscalls:
 
-1. The agent shell runs in
-   `user.slice/user-1234.slice/user@1234.service/tmux-spawn-*.scope` — inside the **user
-   manager's** cgroup, not the ssh session's. The tmux server is in the login session's
-   scope (`session-NN.scope`).
-2. A tool call has a hard per-call limit (a few minutes). When a build exceeds it, the
-   harness **SIGKILLs the whole user-session cgroup**, not just the shell:
-   `sshd-session: mm_reap: child terminated by signal 9`, then
-   `user@1234.service: Main process exited, code=killed, status=9/KILL`, and it SIGKILLs
-   the in-flight `nixos-rebuild`/`nix` processes with it.
-3. Everything in that cgroup dies — tmux, the shell, the build. The activation script is
-   not the culprit; `switch` and `boot` are just the commands long enough to hit the
-   limit.
+```
+1750194 clone(...) = 1750544
+1750544 kill(-1, SIGKILL)               = 0     # every process this uid may signal
+1750194 ... CLD_EXITED, si_pid=1750544, si_uid=1234
+```
 
-`users.users.leigh-admin.linger = true` (now set in `common/users.nix`) does **not** fix
-this. Lingering keeps the user manager alive when a *login session* ends, but here the
-user manager itself is the thing being killed, so tmux still dies.
+`kill(-1, SIGKILL)` is nix's build-user cleanup (`setuid(uid); kill(-1, SIGKILL)`), run
+when a build is interrupted or fails. It is meant to sweep a throwaway `nixbld` uid. Here
+it swept **uid 1234**, because nix had no build user to drop to:
 
-The safe way to run a long build is a **root-launched transient scope**, which lands in
-`system.slice` and is outside the cgroup the harness kills:
+- current nixpkgs defaults `build-users-group = ""`, pairing that with `sandbox = true`
+  and the `auto-allocate-uids` experimental feature;
+- this repo never enabled `auto-allocate-uids` (only `nix-command`/`flakes`), and
+  services1/services2 set `sandbox = "relaxed"` for the llama.cpp build.
+
+No build users + no auto-allocated uids + relaxed sandbox ⇒ builds and their cleanup run
+as the invoking user. `common/base.nix` now sets `nix.settings.build-users-group =
+"nixbld"` (the 32 accounts already exist), which redirects the sweep onto nixbld.
+
+**Why only now:** the nixpkgs pin moved to 2026-09-27 about two weeks ago, and the cleanup
+only fires on an *interrupted or failed* build — which is exactly what an agent tool call
+that exceeds its per-call limit produces. The first switch that day finished cleanly and
+killed nothing; every kill after it followed an interrupted build.
+
+**Two things that were NOT the cause,** both convincing in the journal:
+
+- *The activation script.* `dry-activate` changes nothing and still killed the session,
+  and `$system/activate` contains no `kill` at all.
+- *OOM / systemd-oomd / auto-rollback.* Memory and swap were idle, `systemd-oomd` logged
+  nothing, and `auto-rollback.timer` had self-deactivated hours earlier.
+
+`users.users.leigh-admin.linger = true` (`common/users.nix`) is still worth having, but it
+did not help: the user manager is killed directly, not through a session teardown.
+
+**Still true:** a tool call has a hard per-call limit, and a build longer than that gets
+its process killed. Run long builds in a root-launched transient scope and poll a log:
 
 ```bash
 sudo systemd-run --unit=agent-build --collect --service-type=oneshot \
@@ -469,25 +488,25 @@ sudo systemd-run --unit=agent-build --collect --service-type=oneshot \
   --property=TimeoutStartSec=3600 \
   /run/current-system/sw/bin/bash -c \
     'cd ~/Projects/infrastructure-nix-flake && /run/current-system/sw/bin/nix flake check > ~/agent-build.log 2>&1'
-# then poll ~/agent-build.log with short tool calls
 ```
 
 Four traps in that form, all hit while debugging:
 
 - `TimeoutStartSec=0` does **not** mean "no timeout" for a oneshot — it times out
   immediately. Use a large number.
-- `systemd-run` sets `DynamicUser=yes` by default, so the service cannot write a log in
-  `/tmp` owned by root or read the repo. Set `DynamicUser=no`.
-- The service gets a minimal PATH: `nixos-rebuild`, `nix` and `cat` are all "command not
-  found". Use absolute paths (`/run/current-system/sw/bin/...`).
+- `systemd-run` sets `DynamicUser=yes` by default, so the service cannot read the repo or
+  write a log. Set `DynamicUser=no`.
+- The service gets a minimal PATH: `nixos-rebuild`, `nix`, `pgrep`, `sleep` and `cat` are
+  all "command not found". Use absolute paths (`/run/current-system/sw/bin/...`).
 - Run it as **`leigh-admin`, not root**: Nix's flake fetcher refuses a git repo not owned
   by the current user (`libgit2 error code = 7`), and `git config --global --add
-  safe.directory` does not satisfy it. But a service running as `leigh-admin` cannot write
-  the bootloader, so this pattern is for **builds only** — the `switch`/`boot` activation
+  safe.directory` does not satisfy it. A service running as `leigh-admin` cannot write the
+  bootloader, so this pattern is for **builds only** — the `switch`/`boot` activation
   itself still has to happen in a human's terminal.
 
-Short calls (`just check`, `just fmt`, ssh, curl) are fine; anything that may compile for
-minutes belongs in a transient scope or in the user's own shell.
+Also worth fixing: `network-status.service` runs as `User=leigh-admin`, which is what
+turned a uid-wide SIGKILL into a service outage as well as a dead terminal. A dashboard
+should not run as the admin.
 
 ## Nix commands (local dev)
 
@@ -684,12 +703,18 @@ The grid is infinitely scrollable — there is **no "load more" button**; the
   partition (services1 has 18 GB), which is fine at the current load but worth
   matching before it runs anything heavier.
 
-- **services1: pending activation** — the build-farm (`nix.distributedBuilds`) and
-  `linger` commits are committed but not yet active on services1: the agent's
-  `switch`/`boot` attempts were killed mid-build (see "Long commands from an
-  agent"), so `/run/current-system` is still the generation before them and
-  `/etc/nix/nix.conf` still has an empty `builders` line. Remote building is
-  verified working on the builder side (services2 accepts the hop,
-  `leigh-admin` is in `nixbld` there, and both host keys are in
-  `/root/.ssh/known_hosts` on services1); it needs one real `just switch` in a
-  human's terminal to take effect.
+- **services1: pending activation** — the build-farm (`nix.distributedBuilds`),
+  `linger` and `nix.settings.build-users-group = "nixbld"` commits are committed but
+  not yet active on services1: the agent's `switch`/`boot` attempts were killed
+  mid-build by the very bug they were meant to fix (see "Why a nix build killed the
+  terminal"), so `/run/current-system` is still the generation before them and
+  `/etc/nix/nix.conf` still has an empty `builders` line **and** an empty
+  `build-users-group`. Until that generation is live, any interrupted nix build on
+  services1 still SIGKILLs every `leigh-admin` process. Remote building is verified
+  working on the builder side (services2 accepts the hop, `leigh-admin` is in `nixbld`
+  there, and both host keys are in `/root/.ssh/known_hosts` on services1); it needs one
+  real `just switch` in a human's terminal to take effect.
+- **`network-status.service` runs as `User=leigh-admin`** — it should have its own user.
+  It is what turned the uid-wide SIGKILL above into a service outage (the unit was
+  SIGKILLed and restarted seven times) rather than just a dead terminal, and a public-ish
+  dashboard running as the admin is its own problem.
