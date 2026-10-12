@@ -226,7 +226,7 @@ fn run() -> R<()> {
         ttl: Duration::from_secs(opt.ttl),
         read_only: opt.read_only,
         switch_url: if opt.switch_url.is_empty() {
-            format!("https://{host}")
+            default_switch_url(&host)
         } else {
             opt.switch_url.clone()
         },
@@ -303,6 +303,16 @@ impl Default for Opts {
             no_auth: false,
         }
     }
+}
+
+/// Where the "Switch UI" button points.
+///
+/// **http, not https.** The 2510G's web management serves plain HTTP — measured
+/// on 10.3.1.2, `http://` answers 200 while `https://` does not complete a TLS
+/// handshake at all — and this is only ever a link out of the page, so there is
+/// no reason to pay for a redirect that the device cannot give us.
+fn default_switch_url(host: &str) -> String {
+    format!("http://{host}")
 }
 
 fn usage() -> String {
@@ -934,6 +944,13 @@ mod tests {
         assert_eq!(q.get("v").map(String::as_str), Some("a+b"));
         let q = parse_query("/api/vlan/5/rename?v=AD+Lab");
         assert_eq!(q.get("v").map(String::as_str), Some("AD Lab"));
+    }
+
+    /// The switch has no HTTPS listener, so the link out of the page must not
+    /// assume one.
+    #[test]
+    fn the_switch_ui_link_is_http() {
+        assert_eq!(default_switch_url("10.3.1.2"), "http://10.3.1.2");
     }
 
     #[test]

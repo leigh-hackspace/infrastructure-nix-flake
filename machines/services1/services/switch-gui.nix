@@ -95,7 +95,10 @@ in {
         "--ttl"
         (toString cacheTtlSecs)
         "--switch-url"
-        "https://${HOSTS.switch}"
+        # The switch's own web UI is **http only** — measured: `http://10.3.1.2`
+        # answers 200, `https://10.3.1.2` does not connect at all.  It is only
+        # ever a link out of the page, but a dead button is still a bug.
+        "http://${HOSTS.switch}"
       ];
 
       # The switch login, its password and the OIDC client pair.  systemd reads

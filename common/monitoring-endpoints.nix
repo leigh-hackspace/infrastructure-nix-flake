@@ -297,6 +297,15 @@
     })
 
     # --- Network Switches ------------------------------------------
+    # The ProCurve core switch's GUI (switch-gui).  Checked on `/healthz`, not
+    # `/`: an unauthenticated request to the app is a 302 into authentik, which
+    # the default "any 2xx" condition would read as down.  `/healthz` is the
+    # one route that is public by design.
+    (mkHttp {
+      name = "Core Switch GUI";
+      url = "https://switch.int.leighhack.org/healthz";
+      group = "Network Switches";
+    })
     (mkPing {
       name = "Switch1";
       url = "switch1.int.leighhack.org";

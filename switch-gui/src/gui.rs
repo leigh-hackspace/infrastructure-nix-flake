@@ -537,7 +537,7 @@ mod tests {
             email: None,
             read_only: false,
             cache_age_secs: 3,
-            switch_url: "https://10.3.1.2",
+            switch_url: "http://10.3.1.2",
         };
         f(p)
     }
@@ -593,7 +593,7 @@ mod tests {
             email: None,
             read_only: false,
             cache_age_secs: 0,
-            switch_url: "https://10.3.1.2",
+            switch_url: "http://10.3.1.2",
         };
         let html = dashboard(&page);
         assert!(!html.contains("onload=\"alert"));
@@ -614,7 +614,7 @@ mod tests {
             email: None,
             read_only: false,
             cache_age_secs: 0,
-            switch_url: "https://10.3.1.2",
+            switch_url: "http://10.3.1.2",
         };
         let html = dashboard(&mgr);
         assert!(!html.contains(" disabled "));
@@ -632,7 +632,7 @@ mod tests {
             email: None,
             read_only: true,
             cache_age_secs: 0,
-            switch_url: "https://10.3.1.2",
+            switch_url: "http://10.3.1.2",
         };
         let html = dashboard(&q);
         assert!(!html.contains("Set VLAN"));
@@ -653,7 +653,7 @@ mod tests {
             email: None,
             read_only: false,
             cache_age_secs: 0,
-            switch_url: "https://10.3.1.2",
+            switch_url: "http://10.3.1.2",
         };
         let html = dashboard(&p);
         assert!(html.contains("Some commands failed"));
@@ -679,7 +679,7 @@ mod tests {
             email: Some("cjdell@leighhack.org"),
             read_only: false,
             cache_age_secs: 0,
-            switch_url: "https://10.3.1.2",
+            switch_url: "http://10.3.1.2",
         };
         let html = dashboard(&p);
         assert!(html.contains("signed in as cjdell &lt;cjdell@leighhack.org&gt;"));
@@ -704,7 +704,7 @@ mod tests {
             email: None,
             read_only: false,
             cache_age_secs: 0,
-            switch_url: "https://10.3.1.2",
+            switch_url: "http://10.3.1.2",
         };
         let html = dashboard(&page);
         assert!(html.contains("state of Trk1, inherited"));
