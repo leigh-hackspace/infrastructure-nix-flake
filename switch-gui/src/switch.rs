@@ -86,7 +86,13 @@ impl Switch {
         let wants_enable =
             sw.cfg.enable_login.is_some() || sw.cfg.enable_password.is_some();
         if wants_enable && !sw.privilege.is_manager() {
-            sw.enable()?;
+            // A failed `enable` must not kill the session.  The dashboard is
+            // still useful read-only, and letting a stale Manager password turn
+            // a write outage into a total outage is the worse failure.  The
+            // page already explains why the controls are disabled.
+            if let Err(e) = sw.enable() {
+                eprintln!("switch-gui: `enable` refused, staying read-only: {e}");
+            }
         }
         Ok(sw)
     }
@@ -180,6 +186,39 @@ impl Switch {
         let out = strip_echo(&acc, cmd);
         check_cli_error(&out, cmd)?;
         Ok(out)
+    }
+
+    /// Send a sequence of configuration commands.
+    ///
+    /// This firmware only accepts configuration **inside config mode**: at the
+    /// Manager Exec prompt `port 1 name x` answers `Invalid input: port`.  Both
+    /// `config` and `configure terminal` get there (measured on 10.3.1.2: the
+    /// prompt goes `switch1#` → `switch1(config)#`), and `exit` comes back out.
+    ///
+    /// The session always leaves config mode, including when a command is
+    /// refused — a cached console left sitting in `(config)#` would make the
+    /// next *read* command fail in a way that looks like a parsing bug.
+    pub fn apply(&mut self, cmds: &[String]) -> R<()> {
+        if !self.privilege.is_manager() {
+            return Err("the session is not in the Manager context".to_string());
+        }
+        self.command("config")?;
+        let mut failed: Option<String> = None;
+        for cmd in cmds {
+            if let Err(e) = self.command(cmd) {
+                failed = Some(e);
+                break;
+            }
+        }
+        let left = self.command("exit");
+        match (failed, left) {
+            (None, Ok(_)) => Ok(()),
+            (None, Err(e)) => Err(format!(
+                "applied, but leaving config mode failed ({e}) — the console was dropped"
+            )),
+            (Some(f), Ok(_)) => Err(f),
+            (Some(f), Err(e)) => Err(format!("{f}; and leaving config mode failed: {e}")),
+        }
     }
 }
 
@@ -464,9 +503,14 @@ fn check_auth(out: &str) -> R<()> {
 /// Refuse a command the CLI did not accept, rather than parsing its error text
 /// as if it were a table.
 fn check_cli_error(out: &str, cmd: &str) -> R<()> {
+    // The exact strings this firmware prints.  `Ambiguous input` is easy to
+    // miss and easy to hit — `show port name` answers with it — and a refusal
+    // that is not recognised here is reported to the operator as a command that
+    // worked, which for a write is the worst possible failure.
     for marker in [
         "Invalid input",
         "Incomplete input",
+        "Ambiguous input",
         "Ambiguous command",
         "Unknown command",
     ] {

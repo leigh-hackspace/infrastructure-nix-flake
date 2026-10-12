@@ -31,10 +31,12 @@
 # to the same device or a shared password.  Sign-in is authentik gated on the
 # `Infra` group instead, and the switch's own credentials stay on the server.
 #
-# Writes need the Manager context.  The `agent` account this network uses is an
-# Operator (read-only) one, so unless SWITCH_GUI_ENABLE_LOGIN/_PASSWORD name a
-# Manager account the page renders every control disabled and answers any write
-# with an explanation — which is the honest outcome, not a bug to work around.
+# Writes need the Manager context, and `agent` has it: `enable` is a second
+# login on this firmware and the same credentials answer it, so the enable pair
+# defaults to the login pair and the controls are live. `--read-only` is the way
+# to ask for Operator instead. Configuration only applies inside config mode
+# (`Switch::apply` enters it), and nothing here saves to NVRAM, so a change is
+# in RAM until someone writes it and a reboot undoes it.
 {
   config,
   lib,

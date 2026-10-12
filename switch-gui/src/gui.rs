@@ -215,10 +215,9 @@ pub fn dashboard(p: &Page) -> String {
     }
     if !p.is_manager && !p.read_only {
         h.push_str(
-            "<div class=\"note err\"><b>Read-only session.</b> The switch put this login in the \
-             Operator context, which cannot configure anything. Set \
-             <code>SWITCH_GUI_ENABLE_LOGIN</code> and <code>SWITCH_GUI_ENABLE_PASSWORD</code> \
-             to a Manager account to enable the buttons.</div>",
+            "<div class=\"note err\"><b>Read-only session.</b> The switch refused `enable`, so this \
+             login is in the Operator context and cannot configure anything. The enable \
+             credentials default to the login account, so this means they were refused.</div>",
         );
     }
 

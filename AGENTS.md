@@ -187,11 +187,15 @@ Guidance for AI agents working in this repository. Read this before making chang
   would mean taking reqwest and tokio. LAN-only vhost
   `switch.int.leighhack.org` → `127.0.0.1:8097`, packaging in
   `machines/services1/services/switch-gui.nix`.
-  **Read-only in practice:** the `agent` switch account is an Operator (read-only)
-  CLI context, so `configure` is rejected and the GUI detects this, disables
-  every control and says why; writes need `SWITCH_GUI_ENABLE_LOGIN/_PASSWORD`
-  naming a Manager account (`enable` re-asks for a login name — it is a second
-  login, not a password unlock). `switch-gui/README.md` documents the CLI's
+  **`agent` is a Manager, not read-only:** `enable` on this firmware is a
+  *second login* — it re-asks for a login name, not just a password — and the
+  same `agent` credentials are accepted, taking the prompt from `switch1>` to
+  `switch1#`. The app therefore defaults its enable credentials to the login
+  credentials (`--read-only` is the switch that asks for Manager not at all),
+  and writes run **inside config mode**: at the plain Manager Exec prompt every
+  configuration command answers `Invalid input`, so `Switch::apply` sends
+  `config` first and `exit` after. Nothing saves to NVRAM, so a reboot undoes
+  any change. `switch-gui/README.md` documents the CLI's
   traps (LF-only line endings, the banner swallowing input, `-- MORE --` paging
   with `NAWS` ignored, ANSI screen painting, trunk members having no rows) and
   the finding that **`Can't reach RADIUS server.` is this firmware's generic
@@ -801,10 +805,19 @@ The grid is infinitely scrollable — there is **no "load more" button**; the
 - **switch-gui: the write commands are unverified** — `src/commands.rs` builds
   `port <n> name "…"`, `port <n> vlan <id>`, `vlan <id> name "…"`,
   `no vlan <id>`, `vlan <id> tagged <ports>` from the platform's command
-  reference and unit-tests them, but nothing was ever sent to the switch: the
-  only account available is Operator/read-only. Expect to correct the syntax on
-  first use with a Manager account; the switch's own `Invalid input:` text is
-  surfaced verbatim, and every attempt is in the audit log.
+  reference and unit-tests them, but none has been sent to the switch. The
+  Manager context is reachable (see the switch-gui entry above), so the first
+  real use is the test; the switch's own `Invalid input:` text is surfaced
+  verbatim, every attempt is in the audit log, and a refused command now fails
+  the request instead of reporting "applied". Nothing in the app writes NVRAM,
+  so **a change lives in RAM until someone saves it** — say so before trusting
+  one, and expect to correct the syntax on first use.
+- **The RADIUS shared secret was printed into a session transcript on
+  2026-10-12** (reading `show running-config` on the switch to root-cause the
+  login noise; a masking filter that expected `key:` missed the actual
+  `radius-server key <secret>` form). Rotate it on both ends — the switch
+  (`radius-server key`) and the authentik RADIUS outpost — and note that the
+  same command also exposes the local user hashes.
 - **`Can't reach RADIUS server.` from the switch means "RADIUS refused this
   login", and the cause is a password mismatch** (root-caused 2026-10-12; an
   earlier note here blaming EAP/MS-CHAP attribute mapping was wrong). Evidence:
@@ -818,11 +831,23 @@ The grid is infinitely scrollable — there is **no "load more" button**; the
   "happens from time to time": it happens on every login, and only shows when
   you are watching. Corroborating timing: a wrong password produces it in under
   two seconds, where a real network timeout costs ~5 s per retry.
-  The one-line fix is to set the authentik `agent` password to match the switch
-  (or drop RADIUS from that account's auth order) — both need a Manager account
-  on the switch, which `agent` is not (`show radius`, `show config` and `show
-  aaa` are all refused in Operator context). Until then every switch login logs
-  a failure in authentik, so `login_failed` alerting there is permanently noisy
-  because of this. Separately: `RadiusProvider` pk 7 (application `Switches`) has
-  `authentication_flow = None` and the flow actually used is
-  `radius-authentication-flow` — not the cause here, but worth tidying.
+  The fix is to set the authentik `agent` password to match the switch (or drop
+  RADIUS from that account's auth order). **Confirmed from the device itself**
+  once in the Manager context — `show running-config` reads:
+
+  ```text
+  aaa authentication telnet login  radius local
+  aaa authentication telnet enable radius local
+  radius-server host 10.3.1.36
+  ```
+
+  so both the login *and* the `enable` second login go RADIUS-then-local, which
+  means every GUI refresh (which logs in and enables) logs **two** failures in
+  authentik. `show aaa` and `show radius` are not commands on this firmware —
+  the earlier note here saying they were "refused in Operator context" was
+  wrong twice over: `agent` is a Manager after `enable`, and the commands simply
+  do not exist. Until this is fixed, `login_failed` alerting in authentik is
+  permanently noisy because of this. Separately: `RadiusProvider` pk 7
+  (application `Switches`) has `authentication_flow = None` and the flow
+  actually used is `radius-authentication-flow` — not the cause here, but worth
+  tidying.

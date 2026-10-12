@@ -166,13 +166,34 @@ fn run() -> R<()> {
             .unwrap_or(20),
     );
 
+    let login = need("SWITCH_GUI_LOGIN")?;
+    let password = need("SWITCH_GUI_PASSWORD")?;
+
+    // `enable` on this firmware is a second login, and the **same account**
+    // works: `agent`/`agent` takes the prompt from `switch1>` to `switch1#`
+    // (verified on 10.3.1.2, and the switch's own `aaa authentication telnet
+    // enable radius local` says the enable path is authenticated the same way
+    // as the login path).  So the enable pair defaults to the login pair and
+    // writes work without a second secret; naming a genuinely different Manager
+    // account is still possible with SWITCH_GUI_ENABLE_LOGIN/_PASSWORD.
+    //
+    // `--read-only` asks for the Manager context not at all, so the session
+    // cannot write even if the switch would let it.
+    let escalate = !opt.read_only;
+    let enable_login = escalate.then(|| {
+        get("SWITCH_GUI_ENABLE_LOGIN").unwrap_or_else(|| login.clone())
+    });
+    let enable_password = escalate.then(|| {
+        get("SWITCH_GUI_ENABLE_PASSWORD").unwrap_or_else(|| password.clone())
+    });
+
     let switch_cfg = switch::Config {
         host: host.clone(),
         port,
-        login: need("SWITCH_GUI_LOGIN")?,
-        password: need("SWITCH_GUI_PASSWORD")?,
-        enable_login: get("SWITCH_GUI_ENABLE_LOGIN"),
-        enable_password: get("SWITCH_GUI_ENABLE_PASSWORD"),
+        login,
+        password,
+        enable_login,
+        enable_password,
         timeout: cli_timeout,
     };
 
@@ -533,12 +554,9 @@ fn apply(stream: &TcpStream, shared: &Shared, user: &str, what: &str, cmds: R<Ve
         return text(stream, 403, &msg);
     }
     if !shared.privilege().is_manager() {
-        let msg = "the switch put this session in the Operator (read-only) context, so it will \
-                   not accept configuration — set SWITCH_GUI_ENABLE_LOGIN and \
-                   SWITCH_GUI_ENABLE_PASSWORD to a Manager account"
-            .to_string();
-        shared.audit(user, what, &msg);
-        return text(stream, 403, &msg);
+        let msg = "the switch refused `enable`, so this session is in the Operator context and cannot configure it. The enable credentials default to the login account, which is a Manager here, so this means they were refused outright.";
+        shared.audit(user, what, msg);
+        return text(stream, 403, msg);
     }
 
     let body = match shared.run(&cmds) {
@@ -891,10 +909,14 @@ impl Shared {
             *guard = Some(switch::Switch::connect(&self.cfg.switch)?);
         }
         let sw = guard.as_mut().unwrap();
-        for cmd in cmds {
-            sw.command(cmd)?;
+        let out = sw.apply(cmds);
+        if out.is_err() {
+            // A refused command can leave the console part-way through config
+            // mode, and the next caller would read that as a broken parser.
+            // Drop the session and let the next use reconnect.
+            *guard = None;
         }
-        Ok(())
+        out
     }
 
     /// The delete command for a VLAN, checked against the cached membership.

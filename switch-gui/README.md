@@ -25,8 +25,9 @@ single one of them has the whole picture:
 | `show trunks`          | port **names** (`NAS2 Port 1`) and trunk group/type             |
 | `show interfaces`      | per-port byte/frame/error counters                              |
 
-`show port name` and `show ports` do **not** exist in the Operator context, so
-`show trunks` is the only source of a port name — and only for ports in a trunk.
+`show port name` and `show ports` do **not** exist on this firmware at all (as
+Manager, `show port name` answers `Ambiguous input: port`), so `show trunks` is
+the only source of a port name — and only for ports in a trunk.
 
 ## Signing in
 
@@ -93,23 +94,32 @@ port was measured (`switch::inherit_trunk_states`).
 (`2,993,652...`), so counters are kept as strings. A port's real total is not
 recoverable from this view.
 
-## Privilege: why the buttons are disabled
+## Privilege: `enable`, and why writes need config mode
 
 The switch has two CLI contexts and the prompt character tells you which:
-`switch1>` is Operator (read-only), `switch1#` is Manager. `agent` is an
-**Operator** account: `configure`, `show ports`, `show port name` and
-`show running-config` are all rejected with `Invalid input: …`, and there is
-nothing to write with.
+`switch1>` is Operator (read-only), `switch1#` is Manager.
 
-`enable` is not a password prompt — it re-asks for a **login name** and then a
-password, i.e. it is a second login. To enable writes, set
-`SWITCH_GUI_ENABLE_LOGIN`/`SWITCH_GUI_ENABLE_PASSWORD` to a Manager account; the
-GUI detects the context on every connect, disables the controls and explains
-itself when it is stuck in Operator.
+**`enable` is not a password prompt — it re-asks for a login name and then a
+password**, i.e. it is a second login. The `agent` account answers that second
+login with its own credentials and reaches the Manager context, so the app
+defaults `SWITCH_GUI_ENABLE_LOGIN`/`_PASSWORD` to the login account rather than
+naming a separate one. `--read-only` asks for Manager not at all, so the session
+cannot write even though the account could.
+
+**Configuration only works inside config mode.** At the plain Manager Exec
+prompt `port 1 name x` answers `Invalid input: port`; `config` (or
+`configure terminal`) takes you to `switch1(config)#`, and `exit` comes back.
+`Switch::apply` therefore sends `config`, the commands, then `exit` — always the
+`exit`, including after a refusal, because a cached console left in `(config)#`
+would make the next *read* look like a parser bug.
+
+Nothing here writes NVRAM (no `write`, no `copy running-config startup-config`),
+so **every change is in RAM and a reboot undoes it**. Say that out loud before
+trusting one.
 
 The command strings in `src/commands.rs` follow the platform's reference and are
-**unit-tested but not executed against the switch**, because no Manager account
-was available while writing this. Anything the switch dislikes comes back as its
+**unit-tested but not yet executed against the switch**. Anything the switch
+dislikes comes back as its
 own `Invalid input:` text, which the UI surfaces verbatim.
 
 ## "Can't reach RADIUS server"
@@ -148,10 +158,20 @@ access; the message is noise from a source you are not actually using.
 An earlier version of this note blamed an EAP/MS-CHAP attribute mapping. That was
 wrong: the reject is a normal Access-Reject from a password check.
 
-Fixing it needs a Manager account on the switch (to change the auth order or the
-local password — `show radius`, `show aaa` and `show config` are all refused in
-Operator context), or setting the authentik `agent` password to match. Until
-then, expect one `login_failed` event in authentik per switch login.
+Fixing it means either setting the authentik `agent` password to match the
+switch's local one or dropping RADIUS from the auth order. The device config,
+read in the Manager context, is:
+
+```text
+aaa authentication telnet login  radius local
+aaa authentication telnet enable radius local
+radius-server host 10.3.1.36
+```
+
+so the login *and* the `enable` second login each log a `login_failed` in
+authentik — a GUI refresh does two. (`show radius` and `show aaa` are not
+commands on this firmware; the config is only in `show running-config`, which
+also exposes the shared secret, so do not paste it anywhere you will keep.)
 
 Two consequences worth knowing:
 

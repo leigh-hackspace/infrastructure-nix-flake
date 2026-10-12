@@ -1,13 +1,13 @@
 //! Turning a GUI action into ProCurve CLI lines, and refusing the ones that
 //! should not be sent.
 //!
-//! The commands follow the older ProCurve CLI this firmware speaks (there is no
-//! `configure terminal` — the Manager Exec context takes configuration
-//! directly).  **They are written from the platform's command reference, not
-//! from an executed session**: the account available on this switch is an
-//! Operator (read-only) one, which is why the GUI reports its privilege and
-//! shows the exact lines it is about to send.  Anything the switch rejects
-//! comes back as its own `Invalid input: …` text, surfaced verbatim.
+//! The commands follow the older ProCurve CLI this firmware speaks.  They run
+//! inside **config mode** (`Switch::apply` enters it first) — at the plain
+//! Manager Exec prompt every one of them answers `Invalid input`.  **They are
+//! written from the platform's command reference, not from an executed
+//! session**, so the first real use is the test; anything the switch rejects
+//! comes back as its own `Invalid input: …` text, surfaced verbatim, and the
+//! change is never saved to NVRAM, so a reboot undoes it.
 //!
 //! Two guard rails are enforced here rather than trusted to the browser:
 //! VLAN 1 cannot be deleted, and a VLAN that still has ports cannot be deleted
