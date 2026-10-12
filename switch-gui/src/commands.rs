@@ -4,14 +4,15 @@
 //! The commands follow the older ProCurve CLI this firmware speaks.  They run
 //! inside **config mode** (`Switch::apply` enters it first) — at the plain
 //! Manager Exec prompt every one of them answers `Invalid input` — and the
-//! per-port ones go one level further, into `interface <n>`, because at config
-//! level `port 5 name "x"` is refused.
+//! per-port ones use the one-shot `interface <n> <setting>` form, because at
+//! config level `port 5 name "x"` is refused and entering the interface level
+//! properly wedges the read (see [`interface`]).
 //!
 //! `name` / `enable` / `disable` are confirmed against the switch's own `?`
-//! output at `switch1(eth-5)#`. The VLAN commands come from the platform's
-//! command reference and have **not been executed**; anything the switch
-//! dislikes comes back as its own `Invalid input: …` text, surfaced verbatim,
-//! and nothing here writes NVRAM, so a reboot undoes the change.
+//! output and by applying a no-op rename. The VLAN commands come from the
+//! platform's command reference and have **not been executed**; anything the
+//! switch dislikes comes back as its own `Invalid input: …` text, surfaced
+//! verbatim, and nothing here writes NVRAM, so a reboot undoes the change.
 //!
 //! Two guard rails are enforced here rather than trusted to the browser:
 //! VLAN 1 cannot be deleted, and a VLAN that still has ports cannot be deleted
@@ -111,24 +112,26 @@ fn quoted(value: &str) -> String {
 }
 
 /// `port 5 name "NAS2 Port 1"`
-/// Enter the interface context for `port`, run `body`, leave again.
+/// `interface <port> <setting>` — the **one-shot** form.
 ///
-/// This firmware has **no flat `port <n> …` form** for these settings: at
-/// config level `port 5 name "x"` answers `Invalid input: name` (measured on
-/// 10.3.1.2). They live one level down, at `switch1(eth-5)#`, which the CLI's
-/// own help confirms (`name`, `enable`, `disable`, `speed-duplex`, …).
-fn interface(port: &str, body: Vec<String>) -> Vec<String> {
-    let mut cmds = vec![format!("interface {port}")];
-    cmds.extend(body);
-    cmds.push("exit".to_string());
-    cmds
+/// This firmware has no flat `port <n> …` form for these settings: at config
+/// level `port 5 name "x"` answers `Invalid input: name` (measured on 10.3.1.2).
+/// The CLI's help says `interface` enters the interface level *or executes one
+/// command for that level*, and the one-shot form is the one to use: it leaves
+/// the session at `switch1(config)#`, which the prompt matcher knows.
+///
+/// Entering the level was tried and is not workable here — at
+/// `switch1(eth-5)#` the CLI repaints its bottom row with enough ANSI that the
+/// read never saw a buffer ending cleanly on a prompt and timed out at 20 s.
+fn interface(port: &str, setting: &str) -> Vec<String> {
+    vec![format!("interface {port} {setting}")]
 }
 
-/// `interface 5` then `name "NAS2 Port 1"`.
+/// `interface 5 name "NAS2 Port 1"`.
 pub fn port_name(port: &str, name: &str) -> R<Vec<String>> {
     check_port(port)?;
     check_label(name, MAX_PORT_NAME, "Port name")?;
-    Ok(interface(port, vec![format!("name {}", quoted(name))]))
+    Ok(interface(port, &format!("name {}", quoted(name))))
 }
 
 /// Move an access port to another VLAN: `vlan 20 untagged 5`.
@@ -142,11 +145,11 @@ pub fn port_vlan(port: &str, vlan: u32) -> R<Vec<String>> {
     Ok(vec![format!("vlan {vlan} untagged {port}")])
 }
 
-/// `interface 9` then `enable` / `disable`.
+/// `interface 9 enable` / `interface 9 disable`.
 pub fn port_state(port: &str, enabled: bool) -> R<Vec<String>> {
     check_port(port)?;
     let verb = if enabled { "enable" } else { "disable" };
-    Ok(interface(port, vec![verb.to_string()]))
+    Ok(interface(port, verb))
 }
 
 /// Create or rename a VLAN — the same command does both on this platform.
@@ -242,11 +245,7 @@ mod tests {
     fn port_commands() {
         assert_eq!(
             port_name("5", "NAS2 Port 1").unwrap(),
-            vec![
-                "interface 5".to_string(),
-                r#"name "NAS2 Port 1""#.to_string(),
-                "exit".to_string(),
-            ]
+            vec![r#"interface 5 name "NAS2 Port 1""#.to_string()]
         );
         assert_eq!(
             port_vlan("Trk1", 225).unwrap(),
@@ -254,11 +253,11 @@ mod tests {
         );
         assert_eq!(
             port_state("9", false).unwrap(),
-            vec![
-                "interface 9".to_string(),
-                "disable".to_string(),
-                "exit".to_string(),
-            ]
+            vec!["interface 9 disable".to_string()]
+        );
+        assert_eq!(
+            port_state("9", true).unwrap(),
+            vec!["interface 9 enable".to_string()]
         );
     }
 
