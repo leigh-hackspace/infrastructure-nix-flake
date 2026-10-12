@@ -483,12 +483,39 @@ switch --flake .#<machine> && sudo nixos-confirm'` (the `cd`
 - **New files must be `git add`-ed** before they are visible to the flake
   (flake sources come from the git tree; untracked files are excluded).
 - Do not commit unless asked. Staging (`git add`) is fine and often required.
+- **Long jobs are polled, never slept through** — no `sleep` over 30 s in a tool call.
+  See "Long jobs: poll, don't sleep".
 - Formatting: the whole tree is alejandra-clean and `just fmt` keeps it that way
   (`just fmt-check`, run by `just check`, fails otherwise). Alejandra is the only
   formatter — it is in the devshell and configured in both `.zed/settings.json`
   and `.vscode/settings.json`, so editor and CI agree. Do not hand-format or
   switch to nixfmt.
 
+
+## Long jobs: poll, don't sleep
+
+**No `sleep` longer than 30 seconds in a tool call.** A long sleep is a blind wait: it
+reports nothing until it ends, so a job that failed in its first second still costs the
+whole wait. There is no point sitting through five minutes for a build that has already
+failed — the error is only useful if it is read as soon as it appears.
+
+- Poll instead. Read the state, act on what it says, re-read on the next tool call. The
+  loop is the agent, not `sleep` in the shell.
+- Cheap polls, one per tool call: `systemctl is-active <unit>`,
+  `systemctl show -p Result --value -p ActiveState <unit>`, `journalctl -u <unit> -n 50`,
+  `pgrep -f <pattern>`, `tail -1 /tmp/deploy.log`, `pvesm status | grep nas2-nfs`,
+  `curl -fsS -m 5 <url>`, `nixos-rebuild dry-run --flake .#<machine>`.
+- Bound every wait so a hang reports as a failure rather than as a tool-call timeout:
+  `curl -m 5`, `ssh -o ConnectTimeout=5`, `timeout 60 ...`. A poll that times out *is* the
+  answer.
+- Short sleeps are fine when they are the only way to catch a transition (a timer that
+  fires in a few seconds, a service settling after a restart, a retry backoff). The rule is
+  about waiting for a *result* that could have been read immediately.
+- Anything that genuinely takes minutes goes in a detached unit writing to a log (see
+  "Building in a detached unit"), then gets polled: check whether the process is still
+  running, read the log, and stop the moment it exits — not at the estimated duration.
+  Polling also catches the failure modes a sleep hides: a build that dies immediately, a
+  unit that exits 0 but did nothing, a remote builder that silently falls back to local.
 
 ## Nix build users: `nixbld` is a target, not a grant
 
@@ -544,6 +571,9 @@ sudo systemd-run --no-block --unit=deploy-build --collect --service-type=oneshot
        nixos-confirm >> /tmp/deploy.log 2>&1; echo CONFIRM_EXIT=$? >> /tmp/deploy.log; \
        readlink -f /run/current-system /nix/var/nix/profiles/system >> /tmp/deploy.log'
 ```
+
+Poll `/tmp/deploy.log` and the unit state after starting it (`systemctl is-active
+deploy-build`, `journalctl -u deploy-build`), do not sleep to the expected finish time.
 
 Chaining `nixos-confirm` inside the unit keeps the GOLDEN RULE intact. `nixos-rebuild
 switch` does link `/nix/var/nix/profiles/system`, so the boot target follows the switch;
