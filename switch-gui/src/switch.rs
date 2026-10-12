@@ -171,7 +171,57 @@ impl Switch {
 
     /// Run one CLI command and return its response, paging and cleaning.
     pub fn command(&mut self, cmd: &str) -> R<String> {
-        self.tn.send_line(cmd)?;
+        // The CLI is known to swallow input while it repaints (the login banner
+        // does it, and config mode does it on entry).  When that happens the
+        // command is never read, so it is never echoed and the read waits the
+        // full timeout for a response that will not come.  The echo is the only
+        // proof the console took the line, so check for it and send once more.
+        let mut acc = String::new();
+        let mut last_err: Option<String> = None;
+        for attempt in 0..2 {
+            if attempt > 0 {
+                thread::sleep(SETTLE);
+            }
+            self.tn.send_line(cmd)?;
+            match self.read_response(cmd) {
+                // Echoed back: the console read it, so its response is real.
+                Ok(text) if text.contains(cmd) => {
+                    acc = text;
+                    last_err = None;
+                    break;
+                }
+                Ok(text) => {
+                    acc = text;
+                    if attempt == 1 {
+                        break;
+                    }
+                }
+                // No response at all is the swallowed-input case, not (yet) a
+                // failure worth reporting: the line never reached the parser.
+                Err(e) => {
+                    last_err = Some(e);
+                    if attempt == 1 {
+                        return last_err;
+                    }
+                }
+            }
+        }
+        if let Some(e) = last_err {
+            return Err(e);
+        }
+        let out = strip_echo(&acc, cmd);
+        // Check the raw response as well as the cleaned one.  This CLI paints
+        // the prompt, the echoed command and the refusal on a single line, and
+        // anything the cleaner drops would take an `Invalid input:` with it —
+        // which for a write means reporting "applied" for a command the switch
+        // never ran.
+        check_cli_error(&acc, cmd)?;
+        check_cli_error(&out, cmd)?;
+        Ok(out)
+    }
+
+    /// Read one command's response, paging through `-- MORE --` as needed.
+    fn read_response(&mut self, cmd: &str) -> R<String> {
         let mut acc = String::new();
         let mut pages = 0usize;
         loop {
@@ -203,15 +253,7 @@ impl Switch {
             }
             self.tn.send_raw(" ")?;
         }
-        let out = strip_echo(&acc, cmd);
-        // Check the raw response as well as the cleaned one.  This CLI paints
-        // the prompt, the echoed command and the refusal on a single line, and
-        // anything the cleaner drops would take an `Invalid input:` with it —
-        // which for a write means reporting "applied" for a command the switch
-        // never ran.
-        check_cli_error(&acc, cmd)?;
-        check_cli_error(&out, cmd)?;
-        Ok(out)
+        Ok(acc)
     }
 
     /// Send a sequence of configuration commands.
