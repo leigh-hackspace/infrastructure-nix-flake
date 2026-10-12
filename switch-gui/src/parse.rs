@@ -1,10 +1,17 @@
 //! Parsers for the ProCurve CLI's fixed-width tables.
 //!
-//! Every fixture in the tests below is real output from the switch at
-//! 10.3.1.2 (J9280A 2510G-48, Y.11.44), captured over Telnet — including the
-//! two things that make naive splitting wrong: `AD Lab` (a VLAN name with a
-//! space in it) and `5-Trk3` (a trunk member appearing in the counters table
-//! under a compound name).
+//! Every fixture in the tests below is real output captured over Telnet from a
+//! switch in this network, and there are two firmwares to satisfy:
+//!
+//! * `10.3.1.2` / `10.3.1.3` — J9280A 2510G-48, **Y.11.44**
+//! * `10.3.1.4` — J4903A 2824, **I.10.107**
+//!
+//! They are not the same tables. The 2824's `show vlan` has a `Voice` column
+//! the 2510 does not, and its `show spanning-tree` puts `Cost`, `Priority` and
+//! `State` in the same `|`-block as the port instead of the second one. Both
+//! are caught by fixtures. What makes naive splitting wrong either way: `AD Lab`
+//! (a VLAN name with a space in it) and `5-Trk3` (a trunk member appearing in
+//! the counters table under a compound name).
 //!
 //! The rule used throughout: **split from the right when a column can contain
 //! spaces**, and never index by character offset.  Fixed-width slicing breaks
@@ -92,6 +99,36 @@ fn gutter(s: &str) -> Option<usize> {
     s.find("  ")
 }
 
+/// How many columns come after the `Name` column in the `show vlan` header.
+///
+/// The two firmwares disagree:
+///
+/// ```text
+///   VLAN ID Name                 Status       Jumbo            (Y.11.44)
+///   802.1Q VLAN ID Name         Status       Voice Jumbo       (I.10.107)
+/// ```
+///
+/// `Name` is the only column that can hold a space (`AD Lab`), so the row is
+/// read from the right and the count has to come from the header: assuming two
+/// trailing columns makes the I.10.107 row's `Status` read as `No` and drops
+/// every VLAN on that switch.
+fn name_trailing(out: &str) -> usize {
+    for line in out.lines() {
+        let f: Vec<&str> = line.split_whitespace().collect();
+        // A header, not a row: `Name : DEFAULT` from `show vlan <id>` has the
+        // word but is not the table.
+        if !(line.contains("Name") && line.contains("Jumbo")) {
+            continue;
+        }
+        if let Some(i) = f.iter().position(|x| *x == "Name") {
+            if f.len() > i + 1 {
+                return f.len() - i - 1;
+            }
+        }
+    }
+    2
+}
+
 /// The table of `show vlan`:
 ///
 /// ```text
@@ -101,6 +138,7 @@ fn gutter(s: &str) -> Option<usize> {
 ///   232     AD Lab               Port-based   No
 /// ```
 pub fn vlans(out: &str) -> Vec<Vlan> {
+    let trailing = name_trailing(out);
     let mut rows = Vec::new();
     for line in out.lines() {
         let t = line.trim_end();
@@ -108,8 +146,8 @@ pub fn vlans(out: &str) -> Vec<Vlan> {
             continue;
         }
         let fields: Vec<&str> = t.split_whitespace().collect();
-        // id, name (>=1 word), status, jumbo
-        if fields.len() < 4 {
+        // id, name (>=1 word), then the trailing columns
+        if fields.len() < trailing + 2 {
             continue;
         }
         let id: u32 = match fields[0].parse() {
@@ -117,14 +155,14 @@ pub fn vlans(out: &str) -> Vec<Vlan> {
             Err(_) => continue,
         };
         let jumbo = fields[fields.len() - 1].to_string();
-        let status = fields[fields.len() - 2].to_string();
+        let status = fields[fields.len() - trailing].to_string();
         if !jumbo.eq_ignore_ascii_case("yes") && !jumbo.eq_ignore_ascii_case("no") {
             continue;
         }
         if !status.contains("based") && !status.contains("Protocol") {
             continue;
         }
-        let name = fields[1..fields.len() - 2].join(" ");
+        let name = fields[1..fields.len() - trailing].join(" ");
         rows.push(Vlan {
             id,
             name,
@@ -277,31 +315,56 @@ pub fn trunks(out: &str) -> Vec<TrunkMember> {
 /// A trunk group's row has **no Type column** — the left side is just `Trk1` —
 /// and its member ports are not listed at all, so `show trunks` is what puts
 /// ports 5, 6, 47 and 48 on the page.
+///
+/// Which `|`-block holds `State` is firmware-dependent, so it is read off the
+/// header rather than assumed: Y.11.44 puts `Cost/Priority/State` in the second
+/// block, I.10.107 puts `Cost/Priority/State` in the first one with the port.
+/// Assuming the second block reads every 2824 port's state as `128` (its
+/// priority) — see the fixture below.
+///
+/// The state is always the **last** column of its block, which is what survives
+/// a row whose later columns are empty (`2 ... Disabled   |`).
 pub fn stp_ports(out: &str) -> Vec<StpPort> {
+    let block = stp_state_block(out);
     let mut rows = Vec::new();
     for line in out.lines() {
         if !line.contains('|') {
             continue;
         }
         let parts: Vec<&str> = line.split('|').map(|p| p.trim()).collect();
-        if parts.len() < 2 {
-            continue;
-        }
         let left: Vec<&str> = parts[0].split_whitespace().collect();
-        if left.is_empty() || left.len() > 2 || !is_port_token(left[0]) {
+        if left.is_empty() || !is_port_token(left[0]) {
             continue;
         }
-        let mid: Vec<&str> = parts[1].split_whitespace().collect();
-        if mid.len() < 3 {
+        let cols: Vec<&str> = parts
+            .get(block)
+            .map(|b| b.split_whitespace().collect())
+            .unwrap_or_default();
+        if cols.is_empty() {
             continue;
         }
         rows.push(StpPort {
             port: left[0].to_string(),
             media: left.get(1).copied().unwrap_or_default().to_string(),
-            state: mid[2].to_string(),
+            state: cols[cols.len() - 1].to_string(),
         });
     }
     rows
+}
+
+/// The `|`-block index containing the `State` column, from the header row.
+fn stp_state_block(out: &str) -> usize {
+    for line in out.lines() {
+        if !line.contains('|') || !line.contains("State") {
+            continue;
+        }
+        for (i, block) in line.split('|').enumerate() {
+            if block.split_whitespace().any(|f| f == "State") {
+                return i;
+            }
+        }
+    }
+    1
 }
 
 /// A port or trunk-group token as the CLI prints it: `1`, `48`, `Trk3`,
@@ -505,6 +568,58 @@ mod tests {
 
     /// `Base MAC Addr` and `Serial Number` only ever appear in the right-hand
     /// column, so a single-column parser silently reports them empty.
+    /// Real `show vlan` output from the 2824 at 10.3.1.4 (I.10.107), which has
+    /// a `Voice` column the 2510 does not.
+    const SHOW_VLAN_2824: &str = r#" Status and Counters - VLAN Information
+
+  Maximum VLANs to support : 256
+  Primary VLAN : DEFAULT
+  Management VLAN :
+
+  802.1Q VLAN ID Name         Status       Voice Jumbo
+  -------------- ------------ ------------ ----- -----
+  1              DEFAULT      Port-based   No    No
+  225            Shared       Port-based   No    No
+  232            AD Lab       Port-based   No    No
+"#;
+
+    #[test]
+    fn the_voice_column_does_not_shift_the_name() {
+        let v = vlans(SHOW_VLAN_2824);
+        assert_eq!(v.len(), 3, "the Voice column made every row fail");
+        assert_eq!((v[0].id, v[0].name.as_str()), (1, "DEFAULT"));
+        assert_eq!((v[2].id, v[2].name.as_str()), (232, "AD Lab"));
+        assert_eq!(v[1].status, "Port-based");
+        assert_eq!(v[1].jumbo, "No");
+    }
+
+    /// Real `show spanning-tree` port rows from the 2824: `Cost`, `Priority`
+    /// and `State` are in the same `|`-block as the port, so the state is the
+    /// last field of the first block, not the third field of the second.
+    const SHOW_STP_2824: &str = r#"  Port  Type      Cost      Priority State      | Designated Bridge
+  ----- --------- --------- -------- ---------- + -----------------
+  1     100/1000T 200000    128      Forwarding | 001635-bb31e0
+  5     100/1000T 20000     128      Disabled   |
+"#;
+
+    #[test]
+    fn stp_rows_on_the_2824_layout() {
+        let s = stp_ports(SHOW_STP_2824);
+        assert_eq!(s.len(), 2);
+        assert_eq!((s[0].port.as_str(), s[0].state.as_str()), ("1", "Forwarding"));
+        assert_eq!(s[0].media, "100/1000T");
+        assert_eq!((s[1].port.as_str(), s[1].state.as_str()), ("5", "Disabled"));
+    }
+
+    /// Without the header the parser falls back to the Y.11.44 layout, which is
+    /// what the fixture above is.
+    #[test]
+    fn stp_state_block_comes_from_the_header() {
+        assert_eq!(stp_state_block(SHOW_STP), 1);
+        assert_eq!(stp_state_block(SHOW_STP_2824), 0);
+        assert_eq!(stp_state_block("no header"), 1);
+    }
+
     #[test]
     fn the_right_hand_column_is_read_too() {
         let kv = key_values(SHOW_SYSTEM);

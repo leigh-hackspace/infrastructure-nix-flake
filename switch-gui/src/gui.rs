@@ -13,8 +13,35 @@
 
 use crate::model::Snapshot;
 
+/// One switch as the page lists it — the same row serves the index and the nav
+/// bar on every dashboard, so the two cannot disagree about which switches exist.
+///
+/// Built from the *cache*, never from a fresh read: the index is a directory of
+/// switches, and a page that reads all three on every hit would pay six-plus
+/// Telnet round-trips per switch just to say how many ports each one has.
+#[derive(Debug, Clone)]
+pub struct SwitchRow {
+    pub name: String,
+    pub host: String,
+    pub current: bool,
+    pub system_name: String,
+    pub location: String,
+    pub software: String,
+    pub ports: usize,
+    pub vlans: usize,
+    pub cache_age_secs: u64,
+    /// The last read failure, when the cache is empty. A switch that is down has
+    /// to be visible here, or the page looks like a switch with no ports.
+    pub error: Option<String>,
+}
+
 pub struct Page<'a> {
+    /// The configured name of the switch this page is about (`switch2`), used as
+    /// the title when the switch has no `System Name` of its own.
+    pub name: &'a str,
     pub snap: &'a Snapshot,
+    /// Every configured switch, for the nav bar.
+    pub rows: &'a [SwitchRow],
     /// `Operator (read-only)` or `Manager`.
     pub privilege: &'static str,
     pub is_manager: bool,
@@ -85,6 +112,9 @@ overflow:auto;font-size:12px}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px 12px}
 .card b{display:block;color:var(--dim);font-size:11px;font-weight:600;
 text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px}
+nav{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 14px}
+nav a.badge{text-decoration:none}
+nav .cur{border-color:var(--accent);color:var(--fg)}
 "#;
 
 const SCRIPT: &str = r#"
@@ -92,7 +122,7 @@ async function act(url, msg){
   if(msg && !confirm(msg)) return false;
   const box = document.getElementById('note');
   try{
-    const r = await fetch(url, {method:'POST'});
+    const r = await fetch(url + '?switch=' + encodeURIComponent(SW), {method:'POST'});
     const t = await r.text();
     box.className = 'note ' + (r.ok ? 'ok' : 'err');
     box.textContent = t || (r.ok ? 'done' : 'failed');
@@ -105,42 +135,128 @@ async function act(url, msg){
 function refresh(){ act('/api/refresh'); return false; }
 "#;
 
+/// The page script, with the switch it belongs to.
+///
+/// Every endpoint is per switch, so every request has to say which one. A page
+/// showing `switch3` that posted to the default switch would rename a port on
+/// the wrong device — the one mistake this cannot walk back.
+fn script(name: &str) -> String {
+    format!("const SW = '{}';{SCRIPT}", name.replace(['\'', '\\'], ""))
+}
+
 /// The banner `act()` writes its result into.  It starts hidden: the page is
 /// rendered before any action has happened, and the script fills it in.
 fn note_slot() -> String {
     "<div class=\"note ok\" id=\"note\" hidden></div>".to_string()
 }
 
-fn shell(title: &str, body: String) -> String {
+fn shell(title: &str, body: String, name: &str) -> String {
     format!(
         "<!doctype html><html><head><meta charset=\"utf-8\"><title>{title}</title>\
          <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
-         <style>{STYLE}</style><script>{SCRIPT}</script></head><body>{body}</body></html>"
+         <style>{STYLE}</style><script>{script}</script></head><body>{body}</body></html>",
+        script = script(name)
     )
 }
 
 /// The signed-out page.  Kept separate from the dashboard so a failed login
 /// never renders a half-populated switch view.
-pub fn login(url: &str, group: &str, host: &str, error: Option<&str>) -> String {
+pub fn login(url: &str, group: &str, switches: &str, error: Option<&str>) -> String {
     let err = match error {
         Some(e) => format!("<div class=\"note err\">{}</div>", esc(e)),
         None => String::new(),
     };
     shell(
-        "Switch · sign in",
+        "Switches · sign in",
         format!(
             "<div style=\"max-width:520px;margin:8vh auto\">\
-             <h1>network switch</h1>\
-             <p class=\"muted\">Ports and VLANs on the ProCurve at {host}. \
+             <h1>network switches</h1>\
+             <p class=\"muted\">Ports and VLANs on {switches}. \
              Sign in with an authentik account in the <b>{group}</b> group.</p>\
              {err}\
              <p><a class=\"badge\" href=\"{}\">Sign in with authentik</a></p>\
              </div>",
             esc(url),
-            group = esc(group),
-            host = esc(host)
+            switches = esc(switches),
+            group = esc(group)
         ),
+        "",
     )
+}
+
+/// The switch list, as the nav bar on every page.
+fn nav(rows: &[SwitchRow]) -> String {
+    let mut h = String::from("<nav>");
+    for r in rows {
+        let label = esc(&r.name);
+        if r.current {
+            h.push_str(&format!("<span class=\"badge cur\">{label}</span>"));
+        } else {
+            h.push_str(&format!(
+                "<a class=\"badge\" href=\"/switch/{}\">{label}</a>",
+                esc(&r.name)
+            ));
+        }
+    }
+    h.push_str("</nav>");
+    h
+}
+
+/// The landing page: one row per switch, so a switch that is down is visible
+/// before anyone has to click into it and find an empty table.
+///
+/// It reads the cache only. The numbers are the ones the last refresh produced,
+/// and the page says how old they are — a landing page that re-reads every
+/// switch would cost six-plus Telnet round-trips each, on a CPU that pages its
+/// own output.
+pub fn index(rows: &[SwitchRow], user: &str, email: Option<&str>) -> String {
+    let mut h = String::new();
+    h.push_str(
+        "<header><div><h1>network switches</h1><div class=\"muted\">ProCurve, read over Telnet</div></div>\
+         <div class=\"spacer\"></div>\
+         <a href=\"/logout\"><button>Sign out</button></a></header>",
+    );
+    h.push_str(&format!(
+        "<div class=\"muted\" style=\"margin:-8px 0 14px\">signed in as {}{}</div>",
+        esc(user),
+        match email {
+            Some(e) => format!(" &lt;{}&gt;", esc(e)),
+            None => String::new(),
+        }
+    ));
+    h.push_str("<table><tr><th>Switch</th><th>Address</th><th>System</th><th>Location</th>\
+                 <th>Revision</th><th class=\"n\">Ports</th><th class=\"n\">VLANs</th>\
+                 <th>Cache</th></tr>");
+    for r in rows {
+        let counts = if r.ports == 0 && r.error.is_some() {
+            ("—".to_string(), "—".to_string())
+        } else {
+            (r.ports.to_string(), r.vlans.to_string())
+        };
+        let cache = if r.error.is_some() {
+            format!("<span class=\"err\">{}</span>", esc(&r.error.clone().unwrap_or_default()))
+        } else if r.cache_age_secs == u64::MAX {
+            "not read yet".to_string()
+        } else {
+            format!("{}s", r.cache_age_secs)
+        };
+        h.push_str(&format!(
+            "<tr><td><b><a href=\"/switch/{name}\">{name}</a></b></td><td class=\"muted\">{host}</td>\
+             <td>{sys}</td><td class=\"muted\">{loc}</td><td class=\"muted\">{rev}</td>\
+             <td class=\"n\">{ports}</td><td class=\"n\">{vlans}</td><td class=\"muted\">{cache}</td></tr>",
+            name = esc(&r.name),
+            host = esc(&r.host),
+            sys = esc(if r.system_name.is_empty() { "—" } else { &r.system_name }),
+            loc = esc(if r.location.is_empty() { "—" } else { &r.location }),
+            rev = esc(if r.software.is_empty() { "—" } else { &r.software }),
+            ports = esc(&counts.0),
+            vlans = esc(&counts.1),
+            cache = cache,
+        ));
+    }
+    h.push_str("</table>");
+    h.push_str("<p class=\"muted\">switch-gui · read over Telnet, written with the ProCurve CLI.</p>");
+    shell("network switches", h, "")
 }
 
 pub fn dashboard(p: &Page) -> String {
@@ -171,7 +287,7 @@ pub fn dashboard(p: &Page) -> String {
          <a href=\"/logout\"><button>Sign out</button></a>\
          </header>",
         esc(if s.system.name.is_empty() {
-            "switch1"
+            p.name
         } else {
             &s.system.name
         }),
@@ -206,6 +322,8 @@ pub fn dashboard(p: &Page) -> String {
     ));
 
     h.push_str(&note_slot());
+    h.push_str(&nav(p.rows));
+    h.push_str(&nav(p.rows));
 
     if !s.warnings.is_empty() {
         h.push_str("<div class=\"note err\"><b>Some commands failed</b><ul>");
@@ -246,10 +364,21 @@ pub fn dashboard(p: &Page) -> String {
     h.push_str(&port_table(p));
     h.push_str(&console_box(p.is_manager));
 
-    format!(
-        "{h}<p class=\"muted\">switch-gui · read over Telnet, written with the ProCurve CLI. \
-         <a href=\"/api/snapshot\">JSON</a> · <a href=\"/api/audit\">audit log</a></p>",
-        h = h
+    // Wrapped in the shell: without it the page has no stylesheet and no script,
+    // so every `act()` button on it is inert.
+    shell(
+        &format!("{} · switch-gui", if s.system.name.is_empty() {
+            p.name
+        } else {
+            &s.system.name
+        }),
+        format!(
+            "{h}<p class=\"muted\">switch-gui · read over Telnet, written with the ProCurve CLI. \
+             <a href=\"/api/snapshot?switch={name}\">JSON</a> · <a href=\"/api/audit\">audit log</a></p>",
+            h = h,
+            name = esc(p.name)
+        ),
+        p.name,
     )
 }
 
@@ -525,12 +654,35 @@ mod tests {
         s
     }
 
+    /// A nav bar with the three switches, so a test can check the page knows
+    /// which one it is showing.
+    fn rows(current: &str) -> Vec<SwitchRow> {
+        ["switch1", "switch2", "switch3"]
+            .iter()
+            .map(|n| SwitchRow {
+                name: n.to_string(),
+                host: format!("10.3.1.{}", n[6..].parse::<u32>().unwrap()),
+                current: *n == current,
+                system_name: String::new(),
+                location: String::new(),
+                software: String::new(),
+                ports: 0,
+                vlans: 0,
+                cache_age_secs: 0,
+                error: None,
+            })
+            .collect()
+    }
+
     /// The snapshot is borrowed by the Page, so it is built outside the closure
     /// and kept alive by the caller.
     fn with_page<T>(f: impl FnOnce(Page) -> T) -> T {
         let s = fixture();
+        let r = rows("switch1");
         let p = Page {
+            name: "switch1",
             snap: &s,
+            rows: &r,
             privilege: "Operator (read-only)",
             is_manager: false,
             user: "cjdell",
@@ -560,7 +712,7 @@ mod tests {
             assert!(html.contains("read-only"));
             assert!(html.contains("cache 3s"));
             assert!(html.contains("signed in as cjdell"));
-            assert!(html.contains("https://10.3.1.2"));
+            assert!(html.contains("http://10.3.1.2"));
             // The trunk group and its type, merged out of `show trunks`.
             assert!(html.contains("Trk3 · LACP"));
         });
@@ -586,7 +738,9 @@ mod tests {
         p.name = r#"" onload="alert(1)"#.to_string();
         s.ports.insert("1".into(), p);
         let page = Page {
+            name: "switch1",
             snap: &s,
+            rows: &[],
             privilege: "Manager",
             is_manager: true,
             user: "cjdell",
@@ -607,7 +761,9 @@ mod tests {
         });
         let s = fixture();
         let mgr = Page {
+            name: "switch1",
             snap: &s,
+            rows: &[],
             privilege: "Manager",
             is_manager: true,
             user: "cjdell",
@@ -625,7 +781,9 @@ mod tests {
     fn read_only_hides_the_controls() {
         let s = fixture();
         let q = Page {
+            name: "switch1",
             snap: &s,
+            rows: &[],
             privilege: "Operator (read-only)",
             is_manager: false,
             user: "cjdell",
@@ -646,7 +804,9 @@ mod tests {
         let mut s = fixture();
         s.warnings.push("show trunks: Invalid input: trunks".into());
         let p = Page {
+            name: "switch1",
             snap: &s,
+            rows: &[],
             privilege: "Manager",
             is_manager: true,
             user: "cjdell",
@@ -664,7 +824,7 @@ mod tests {
     /// shows has to be the one the server enforces (it comes from config).
     #[test]
     fn login_page_names_the_required_group() {
-        let html = login("https://id/x", "Network-Admins", "10.3.1.2", None);
+        let html = login("https://id/x", "Network-Admins", "switch1 (10.3.1.2)", None);
         assert!(html.contains("<b>Network-Admins</b>"));
     }
 
@@ -672,7 +832,9 @@ mod tests {
     fn the_signed_in_user_and_email_are_shown() {
         let s = fixture();
         let p = Page {
+            name: "switch1",
             snap: &s,
+            rows: &[],
             privilege: "Manager",
             is_manager: true,
             user: "cjdell",
@@ -697,7 +859,9 @@ mod tests {
         p.link_up = Some(true);
         s.ports.insert("47".into(), p);
         let page = Page {
+            name: "switch1",
             snap: &s,
+            rows: &[],
             privilege: "Manager",
             is_manager: true,
             user: "cjdell",
@@ -710,17 +874,17 @@ mod tests {
         assert!(html.contains("state of Trk1, inherited"));
     }
 
-    /// The address on the sign-in page comes from config, so it cannot go stale
-    /// when the switch moves.
+    /// The switches on the sign-in page come from config, so they cannot go
+    /// stale when one moves — and the list is the same one the nav bar shows.
     #[test]
     fn login_page_shows_the_switch_address() {
-        let html = login("https://id/x", "Infra", "10.9.9.9", None);
-        assert!(html.contains("ProCurve at 10.9.9.9"));
+        let html = login("https://id/x", "Infra", "switch3 (10.9.9.9)", None);
+        assert!(html.contains("switch3 (10.9.9.9)"));
     }
 
     #[test]
     fn login_page_does_not_leak_the_dashboard() {
-        let html = login("https://id/x", "Infra", "10.3.1.2", Some("not in Infra"));
+        let html = login("https://id/x", "Infra", "switch3 (10.3.1.4)", Some("not in Infra"));
         assert!(html.contains("not in Infra"));
         assert!(html.contains("Sign in with authentik"));
         assert!(!html.contains("Ports</h2>"));
@@ -730,8 +894,44 @@ mod tests {
     /// the assertion is about the error div, not the substring.
     #[test]
     fn login_page_without_an_error() {
-        let html = login("https://id/x", "Infra", "10.3.1.2", None);
+        let html = login("https://id/x", "Infra", "switch3 (10.3.1.4)", None);
         assert!(!html.contains("<div class=\"note err\">"));
         assert!(html.contains("Sign in with authentik"));
+    }
+
+    /// The page script has to carry the switch it is showing, or a click on
+    /// `switch3` posts to whichever switch happens to be first in the list.
+    #[test]
+    fn the_script_names_the_switch_it_is_showing() {
+        let s = fixture();
+        let r = rows("switch3");
+        let p = Page {
+            name: "switch3",
+            snap: &s,
+            rows: &r,
+            privilege: "Manager",
+            is_manager: true,
+            user: "cjdell",
+            email: None,
+            read_only: false,
+            cache_age_secs: 0,
+            switch_url: "http://10.3.1.4",
+        };
+        let html = dashboard(&p);
+        assert!(html.contains("const SW = 'switch3'"));
+        assert!(html.contains("'?switch=' + encodeURIComponent(SW)"));
+        assert!(html.contains("href=\"/switch/switch2\""));
+        assert!(!html.contains("href=\"/switch/switch3\""), "the current switch is not a link");
+    }
+
+    /// A switch that is down has to show up on the landing page as an error, not
+    /// as a row of zeroes.
+    #[test]
+    fn the_index_page_shows_which_switch_is_down() {
+        let mut r = rows("switch1");
+        r[2].error = Some("timed out".to_string());
+        let html = index(&r, "cjdell", None);
+        assert!(html.contains("href=\"/switch/switch3\""));
+        assert!(html.contains("timed out"));
     }
 }

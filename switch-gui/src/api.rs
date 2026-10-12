@@ -104,6 +104,8 @@ fn array(items: &[String]) -> String {
 pub fn snapshot_json(s: &Snapshot) -> String {
     let mut root = Obj::new();
 
+    root.str("switch", &s.switch);
+
     let mut sys = Obj::new();
     sys.str("name", &s.system.name)
         .str("location", &s.system.location)
@@ -179,6 +181,7 @@ mod tests {
 
     fn fixture() -> Snapshot {
         let mut s = Snapshot::default();
+        s.switch = "switch3".into();
         s.system.name = "switch1".into();
         s.system.contact = r#"a "quoted" \ backslash"#.into();
         s.vlans.push(Vlan {
@@ -219,6 +222,7 @@ mod tests {
             v.at(&["system", "name"]).and_then(|x| x.as_str()),
             Some("switch1")
         );
+        assert_eq!(v.at(&["switch"]).and_then(|x| x.as_str()), Some("switch3"));
         assert_eq!(
             v.at(&["system", "contact"]).and_then(|x| x.as_str()),
             Some(r#"a "quoted" \ backslash"#)

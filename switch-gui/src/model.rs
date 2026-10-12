@@ -146,6 +146,9 @@ impl Port {
 /// Everything the dashboard shows, plus how old it is.
 #[derive(Debug, Clone, Default)]
 pub struct Snapshot {
+    /// Which switch this snapshot came from. With three switches a JSON snapshot
+    /// that does not name its switch cannot be told apart from another one's.
+    pub switch: String,
     pub system: SystemInfo,
     pub vlans: Vec<Vlan>,
     pub ports: BTreeMap<String, Port>,

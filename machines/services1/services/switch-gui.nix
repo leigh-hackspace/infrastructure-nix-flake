@@ -1,11 +1,23 @@
-# switch-gui: ports and VLANs on the ProCurve core switch, in a browser.
+# switch-gui: ports and VLANs on the network's ProCurve switches, in a browser.
 #
 # Rust source in ../../../switch-gui (zero external crates; the Telnet client,
 # the CLI parsers and the HTTP side are all in-tree, the latter on the shared
-# common-rs/web).  It reads the switch's configuration over Telnet — merging the
+# common-rs/web).  It reads each switch's configuration over Telnet — merging the
 # four `show` tables that split a port's name, link state and VLAN membership
-# across them — and serves one page at switch.int.leighhack.org on
-# 127.0.0.1:8097.
+# across them — and serves one page per switch at switch.int.leighhack.org on
+# 127.0.0.1:8097 (`/` lists them, `/switch/switch2` is one switch).
+#
+# Three switches, from `common/hosts.nix`: switch1 (10.3.1.2), switch2
+# (10.3.1.3) and switch3 (10.3.1.4).  The first two are the same model (J9280A
+# 2510G-48, Y.11.44); switch3 is a J4903A 2824 on I.10.107, which is why the
+# parsers read their column layout off the header rather than assuming it, and
+# why the client answers its `Press any key to continue` gate before typing a
+# login name (see switch-gui/README.md).
+#
+# One login serves all three: the same `agent` account is a Manager on each, so
+# there is one credential pair and one Telnet session per switch — the CLI is one
+# console per device, and the mutex is per switch, so a slow read on the 2824
+# cannot hold up a page for a switch that answered normally.
 #
 # The credentials live in one sops secret, a KEY=value file (not a template),
 # created on 2026-10-12 — see `switch_gui_env_file` in ../sops.nix.  Keys:
@@ -52,11 +64,21 @@
   port = 8097;
   hostname = "switch.int.leighhack.org";
 
-  # How stale the cached snapshot may get before a page load re-reads the
-  # switch.  A full read is six-plus Telnet round-trips against a 1990s CPU
-  # that pages its own output, so this is the difference between a snappy page
-  # and a sluggish one; the Refresh button forces it.
+  # How stale a cached snapshot may get before a page load re-reads a switch.
+  # A full read is six-plus Telnet round-trips against a 1990s CPU that pages its
+  # own output — and on switch3 every table pages, so a read is nearer a second
+  # than a tenth — so this is the difference between a snappy page and a sluggish
+  # one; the Refresh button forces it.
   cacheTtlSecs = 30;
+
+  # The switches as `name=address` pairs.  The names are the switches' own
+  # `System Name` (which is also what the GUI's URLs use), so this table, the
+  # gatus checks and the pages agree.
+  switches = [
+    "switch1=${HOSTS.switch1}"
+    "switch2=${HOSTS.switch2}"
+    "switch3=${HOSTS.switch3}"
+  ];
 
   switchGui = CRANE.cached {
     pname = "switch-gui";
@@ -69,17 +91,17 @@
   };
 in {
   systemd.services.switch-gui = INFRA.mkNeverGiveUp {
-    description = "switch-gui: port and VLAN management for the ProCurve switch";
+    description = "switch-gui: port and VLAN management for the ProCurve switches";
     wantedBy = ["multi-user.target"];
     after = ["network-online.target"];
     wants = ["network-online.target"];
 
-    # Non-secret wiring.  The switch address comes from common/hosts.nix so the
-    # GUI, the vhost and any future gatus check agree, and it is an address
-    # rather than a name on purpose: this is a tool for debugging the network,
-    # so it must not resolve anything.
+    # Non-secret wiring.  The switch addresses come from common/hosts.nix so the
+    # GUI, the gatus checks and the switches' own `System Name` agree, and they
+    # are addresses rather than names on purpose: this is a tool for debugging the
+    # network, so it must not resolve anything.
     environment = {
-      SWITCH_GUI_HOST = HOSTS.switch;
+      SWITCH_GUI_SWITCHES = lib.strings.concatStringsSep "," switches;
       SWITCH_GUI_PORT = "23";
       SWITCH_GUI_REQUIRED_GROUP = "Infra";
       SWITCH_GUI_OIDC_REDIRECT = "https://${hostname}/auth/callback";
@@ -97,11 +119,11 @@ in {
         "127.0.0.1:${toString port}"
         "--ttl"
         (toString cacheTtlSecs)
-        "--switch-url"
-        # The switch's own web UI is **http only** — measured: `http://10.3.1.2`
-        # answers 200, `https://10.3.1.2` does not connect at all.  It is only
-        # ever a link out of the page, but a dead button is still a bug.
-        "http://${HOSTS.switch}"
+        # The link to each switch's own management UI is built from its address
+        # inside the app (`default_switch_url`), and it is **http, not https** —
+        # measured on 10.3.1.2: `http://` answers 200, `https://` does not
+        # complete a handshake at all.  It is only ever a link out of the page,
+        # but a dead button is still a bug.
         # Writes are off in this deployment.  The Manager context is reached and
         # `config` is accepted, but the command after it is never echoed by the
         # console, so nothing has been proven to apply — see switch-gui/README.md

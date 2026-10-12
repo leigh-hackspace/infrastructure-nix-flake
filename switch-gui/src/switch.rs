@@ -17,8 +17,12 @@
 //!    the prompt and terminated by `ESC E`; [`strip_echo`] removes it so callers
 //!    parse only the response.
 //!
+//! The 2824 at 10.3.1.4 adds a fourth, and it is the one that bites a client
+//! written against the 2510G: its banner ends with `Press any key to continue`
+//! and the CLI will not ask for a login name until it gets one (see [`KEY_GATE`]).
+//!
 //! The session is not thread-safe by design (a Telnet session is one console)
-//! and the server keeps exactly one behind a mutex.
+//! and the server keeps exactly one per switch behind a mutex.
 
 use std::collections::BTreeMap;
 use std::thread;
@@ -46,6 +50,15 @@ const LOGIN_PROMPT: &str = "Please Enter Login Name";
 const PASSWORD_PROMPT: &str = "Please Enter Password";
 const MORE_MARK: &str = "-- MORE --";
 const MORE_END: &str = "Control-C";
+/// The 2824's banner ends with this, and the CLI will not ask for a login name
+/// until it gets a keypress. The 2510G (Y.11.44) does not print it at all.
+///
+/// It matters because the keypress is taken from whatever is already typed: a
+/// login name sent before the gate loses its first character, so `agent` arrives
+/// as `gent`, RADIUS refuses it, and the switch reports its generic
+/// authentication failure. The client has to answer the gate, not assume the
+/// login prompt is next.
+const KEY_GATE: &str = "Press any key to continue";
 /// A 48-port table is ~4 pages at the CLI's 22-row page; this is headroom for
 /// `show mac-addresses`-sized output, and a guard against a marker we fail to
 /// clear turning into a hang.
@@ -53,6 +66,10 @@ const MAX_PAGES: usize = 200;
 
 #[derive(Clone)]
 pub struct Config {
+    /// What the GUI calls this switch (`switch1`, `switch2`, ...). Every error
+    /// names it: with three switches a failure that does not say which one is
+    /// not actionable.
+    pub name: String,
     pub host: String,
     pub port: u16,
     pub login: String,
@@ -64,12 +81,21 @@ pub struct Config {
     /// How long to wait for any one prompt.  RADIUS is on the other end of the
     /// login and authentik is not always quick, so this is generous.
     pub timeout: Duration,
+    /// How long a login may take, which has to be longer than `timeout`: the
+    /// switch tries RADIUS first and its retry ladder is ~5 s per attempt, so a
+    /// refused login — which is every `agent` login here, see [`check_auth`] — can
+    /// hold the console for 15-25 s before it falls back to its local account
+    /// database and prints the prompt. At 20 s that read times out on `switch3`.
+    pub login_timeout: Duration,
 }
 
 pub struct Switch {
     tn: Telnet,
     cfg: Config,
     pub privilege: Privilege,
+    /// What the login said that is worth showing on the page without failing the
+    /// session — the RADIUS noise, see [`check_auth`].
+    pub note: Option<String>,
 }
 
 impl Switch {
@@ -79,15 +105,30 @@ impl Switch {
         let intro = strip_ansi(&tn.read_until(
             |raw| {
                 let t = strip_ansi(raw);
-                t.contains(LOGIN_PROMPT) || ends_at_prompt(&t)
+                t.contains(LOGIN_PROMPT) || ends_at_prompt(&t) || ends_at_key_gate(&t)
             },
             cfg.timeout,
         )?);
+
+        // Answer the 2824's key gate, then read the prompt it was holding up.
+        let intro = if ends_at_key_gate(&intro) {
+            tn.send_raw(" ")?;
+            strip_ansi(&tn.read_until(
+                |raw| {
+                    let t = strip_ansi(raw);
+                    t.contains(LOGIN_PROMPT) || ends_at_prompt(&t)
+                },
+                cfg.timeout,
+            )?)
+        } else {
+            intro
+        };
 
         let mut sw = Switch {
             tn,
             cfg: cfg.clone(),
             privilege: Privilege::Operator,
+            note: None,
         };
         if intro.contains(LOGIN_PROMPT) {
             sw.login()?;
@@ -97,15 +138,17 @@ impl Switch {
             sw.privilege = prompt_privilege(&intro);
         }
 
-        let wants_enable =
-            sw.cfg.enable_login.is_some() || sw.cfg.enable_password.is_some();
+        let wants_enable = sw.cfg.enable_login.is_some() || sw.cfg.enable_password.is_some();
         if wants_enable && !sw.privilege.is_manager() {
             // A failed `enable` must not kill the session.  The dashboard is
             // still useful read-only, and letting a stale Manager password turn
             // a write outage into a total outage is the worse failure.  The
             // page already explains why the controls are disabled.
             if let Err(e) = sw.enable() {
-                eprintln!("switch-gui: `enable` refused, staying read-only: {e}");
+                eprintln!(
+                    "switch-gui: {} refused `enable`, staying read-only: {e}",
+                    sw.cfg.name
+                );
             }
         }
         Ok(sw)
@@ -115,15 +158,24 @@ impl Switch {
         self.tn.send_line(&self.cfg.login)?;
         self.tn.read_until(
             |raw| strip_ansi(raw).contains(PASSWORD_PROMPT),
-            self.cfg.timeout,
+            self.cfg.login_timeout,
         )?;
         self.tn.send_line(&self.cfg.password)?;
         let out = strip_ansi(&self.tn.read_until(
             |raw| ends_at_prompt(&strip_ansi(raw)),
-            self.cfg.timeout,
+            self.cfg.login_timeout,
         )?);
-        check_auth(&out)?;
+        self.note_auth(&out)?;
         self.privilege = prompt_privilege(&out);
+        Ok(())
+    }
+
+    /// Run the auth check and keep whatever the switch said as a note, so the
+    /// page can show the RADIUS noise on a session that is actually working.
+    fn note_auth(&mut self, out: &str) -> R<()> {
+        if let Some(n) = check_auth(out)? {
+            self.note = Some(n);
+        }
         Ok(())
     }
 
@@ -144,21 +196,21 @@ impl Switch {
                 let t = strip_ansi(raw);
                 t.contains(LOGIN_PROMPT) || t.contains(PASSWORD_PROMPT) || ends_at_prompt(&t)
             },
-            self.cfg.timeout,
+            self.cfg.login_timeout,
         )?);
         if out.contains(LOGIN_PROMPT) {
             self.tn.send_line(&login)?;
             self.tn.read_until(
                 |raw| strip_ansi(raw).contains(PASSWORD_PROMPT),
-                self.cfg.timeout,
+                self.cfg.login_timeout,
             )?;
         }
         self.tn.send_line(&password)?;
         let out = strip_ansi(&self.tn.read_until(
             |raw| ends_at_prompt(&strip_ansi(raw)),
-            self.cfg.timeout,
+            self.cfg.login_timeout,
         )?);
-        check_auth(&out)?;
+        self.note_auth(&out)?;
         self.privilege = prompt_privilege(&out);
         if !self.privilege.is_manager() {
             return Err(
@@ -236,8 +288,9 @@ impl Switch {
                 )
                 // Name the command in every failure: `apply` sends several in a
                 // row and a bare timeout from the socket does not say which one
-                // the console stopped answering.
-                .map_err(|e| format!("while sending `{cmd}`: {e}"))?;
+                // the console stopped answering — and with three switches it does
+                // not say which switch either.
+                .map_err(|e| format!("{}: while sending `{cmd}`: {e}", self.cfg.name))?;
             let chunk = strip_ansi(&chunk);
             let paged = waits_for_key(&chunk);
             acc.push_str(&strip_more(&chunk));
@@ -298,9 +351,22 @@ impl Switch {
 /// warning rather than aborting the refresh: `show trunks` not existing on
 /// some firmware should cost the trunk column, not the whole page.
 pub fn read_snapshot(sw: &mut Switch) -> R<Snapshot> {
-    let mut snap = Snapshot::default();
+    // Which switch this snapshot came from, in the initializer so the rest of the
+    // build can still start from `Default::default()`.
+    let mut snap = Snapshot {
+        switch: sw.cfg.name.clone(),
+        ..Default::default()
+    };
+    // The login's RADIUS noise, if there was any: not a failure, but the page
+    // should show it rather than imply the login went through authentik.
+    if let Some(w) = &sw.note {
+        snap.warnings.push(w.clone());
+    }
+    // Copied out before the closure: capturing `sw.cfg.name` would hold an
+    // immutable borrow of the session across every `sw.command(...)` call.
+    let name = sw.cfg.name.clone();
     let warn = |w: &str, e: String, warnings: &mut Vec<String>| {
-        eprintln!("switch: {w} failed: {e}");
+        eprintln!("switch-gui: {name} {w} failed: {e}");
         warnings.push(format!("{w}: {e}"));
     };
 
@@ -508,6 +574,17 @@ fn is_prompt(line: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || "-_.()".contains(c))
 }
 
+/// True when the CLI is sitting on the 2824's `Press any key to continue` gate:
+/// the banner is finished and the login prompt is behind it. Blank lines are
+/// skipped for the same reason `ends_at_prompt` skips them.
+fn ends_at_key_gate(s: &str) -> bool {
+    s.lines()
+        .rev()
+        .find(|l| !l.trim().is_empty())
+        .map(|l| l.trim_end().ends_with(KEY_GATE))
+        .unwrap_or(false)
+}
+
 /// True when the response is finished: the last non-empty line is a prompt.
 ///
 /// Blank lines are skipped rather than accepted — the CLI pads its output with
@@ -570,11 +647,8 @@ fn strip_echo(text: &str, cmd: &str) -> String {
 }
 
 /// Refuse a login that did not work, in the words the switch used.
-fn check_auth(out: &str) -> R<()> {
+fn check_auth(out: &str) -> R<Option<String>> {
     if out.contains("User authentication failure") {
-        // This is what the firmware prints when RADIUS answers "no" as well as
-        // when it does not answer: the same line covers a wrong password and a
-        // dead authentik, so say both.
         return Err(
             "the switch refused the login (\"User authentication failure\") — wrong \
              credentials, or its RADIUS server rejected/unanswered them"
@@ -582,13 +656,29 @@ fn check_auth(out: &str) -> R<()> {
         );
     }
     if out.contains("Can't reach RADIUS server") {
+        // It is this firmware's generic "authentication failed" text, not a
+        // network timeout: it arrives in under two seconds. The switch then falls
+        // back to its own local account database, so when a prompt follows the
+        // session is usable and this is a note, not a failure — which is what
+        // happens on every `agent` login here (the switch's local password is not
+        // authentik's). Refusing the connect on it would make the GUI unusable on
+        // a switch that is answering normally; that is what happened on `switch3`
+        // before this was a note.
+        if ends_at_prompt(out) {
+            return Ok(Some(
+                "switch says: Can't reach RADIUS server. — its generic 'authentication \
+                 failed' text; it fell back to its local account database and let this \
+                 session in"
+                    .to_string(),
+            ));
+        }
         return Err(
             "the switch could not reach its RADIUS server — the login was never checked \
              against authentik"
                 .to_string(),
         );
     }
-    Ok(())
+    Ok(None)
 }
 
 /// Refuse a command the CLI did not accept, rather than parsing its error text
@@ -668,6 +758,19 @@ mod tests {
         // A marker that has already been paged past is mid-text, not a stop.
         let paged = "-- MORE --, next page: Space, next line: Enter, quit: Control-C  17  y\nswitch1>";
         assert!(!waits_for_key(paged));
+    }
+
+    /// The 2824's banner ends on the key gate, and the login prompt only appears
+    /// after a key arrives — on the same line as the gate, which is why the
+    /// capture below reads as one run-on line.
+    #[test]
+    fn the_key_gate_is_a_gate_only_when_it_is_the_last_thing_printed() {
+        let gated = "Please register your products now at:  www.ProCurve.com\n\n\nPress any key to continue";
+        assert!(ends_at_key_gate(gated));
+        // Once the key arrives the prompt is what the client is waiting for.
+        let past = "Press any key to continuePlease Enter Login Name: agent";
+        assert!(!ends_at_key_gate(past));
+        assert!(!ends_at_key_gate("  1  DEFAULT\nswitch1>"));
     }
 
     #[test]
@@ -818,9 +921,22 @@ mod tests {
         assert!(check_auth("User authentication failure.")
             .unwrap_err()
             .contains("refused the login"));
+        // No prompt behind it: the login did not happen.
         assert!(check_auth("Can't reach RADIUS server.")
             .unwrap_err()
             .contains("RADIUS"));
         assert!(check_auth("switch1>").is_ok());
+    }
+
+    /// The case that happens on every `agent` login: RADIUS refuses, the switch
+    /// prints its generic authentication-failed text, then its local account
+    /// database lets the session in. The session works, so this is a note the page
+    /// shows, not a dead connect.
+    #[test]
+    fn radius_noise_with_a_prompt_behind_it_is_a_note_not_a_failure() {
+        let out = "Can't reach RADIUS server.\nCan't reach RADIUS server.\nswitch3>";
+        let note = check_auth(out).unwrap().expect("a note");
+        assert!(note.contains("Can't reach RADIUS server."), "quotes what it said");
+        assert!(note.contains("local account database"));
     }
 }

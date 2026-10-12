@@ -10,10 +10,16 @@
   aibox = "10.3.1.32";
   router = "10.3.1.1";
   nas = "10.3.1.6";
-  # The ProCurve 2510G-48 core switch (J9280A, Y.11.44).  Not a flake machine
-  # and not a host entry either: it is managed over Telnet, which is why
-  # machines/services1/services/switch-gui.nix proxies it over HTTPS instead.
-  # Fixed address like everything else here — switch-gui must not depend on the
+  # The three ProCurve switches. Not flake machines and not host entries either:
+  # they are managed over Telnet, which is why
+  # machines/services1/services/switch-gui.nix proxies them over HTTPS.
+  # Fixed addresses like everything else here — switch-gui must not depend on the
   # DNS it is also used to debug.
-  switch = "10.3.1.2";
+  #
+  # The names are the switches' own `System Name` (`show system`), which is also
+  # what switch-gui's URLs use (`/switch/switch2`), so this table, the GUI and
+  # the gatus checks cannot disagree about which switch is which.
+  switch1 = "10.3.1.2"; # J9280A 2510G-48, Y.11.44 — the core switch
+  switch2 = "10.3.1.3"; # J9280A 2510G-48, Y.11.44
+  switch3 = "10.3.1.4"; # J4903A 2824, I.10.107 — Workshop
 }

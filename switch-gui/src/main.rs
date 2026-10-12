@@ -1,23 +1,31 @@
-//! switch-gui — ports and VLANs on the ProCurve at 10.3.1.2, in a browser.
+//! switch-gui — ports and VLANs on the network's ProCurve switches, in a browser.
+//!
+//! Three switches, one page each: `switch1` (10.3.1.2, J9280A 2510G-48, Y.11.44),
+//! `switch2` (10.3.1.3, the same model) and `switch3` (10.3.1.4, a J4903A 2824 on
+//! I.10.107). `/` lists them and `/switch/<name>` is one switch's dashboard.
 //!
 //! Why it exists: neither the switch's own web UI nor SNMP says "which VLAN is
 //! port 17 on" without four commands, and the switch authenticates against
 //! RADIUS so there is no useful shared login.  This reads the whole
 //! configuration over Telnet, merges the four tables that split it up
-//! ([`switch`]), and serves one page.
+//! ([`switch`]), and serves one page per switch.
 //!
 //! Three decisions worth knowing before changing anything:
 //!
 //! * **The switch state is cached, not fetched per request.** A full read is
 //!   six-plus Telnet round-trips against a 1990s-era CPU that pages its own
 //!   output; loading the page live would take seconds and would serialise
-//!   behind every other reader.  So there is one snapshot behind a mutex,
-//!   refreshed when it goes stale (`--ttl`) or when the Refresh button posts
-//!   `/api/refresh`.  The page always says how old the numbers are, and a
-//!   failed refresh keeps the last good snapshot rather than showing nothing.
-//! * **One Telnet session, behind a mutex.** The CLI is a console: two
-//!   concurrent command streams interleave their output.  Every read and write
-//!   goes through `Shared::cli`, which is why the cache buys latency.
+//!   behind every other reader.  So there is one snapshot **per switch** behind
+//!   its own mutex, refreshed when it goes stale (`--ttl`) or when the Refresh
+//!   button posts `/api/refresh`.  The page always says how old the numbers are,
+//!   and a failed refresh keeps the last good snapshot rather than showing
+//!   nothing.
+//! * **One Telnet session per switch, behind its own mutex.** The CLI is a
+//!   console: two concurrent command streams interleave their output.  Every
+//!   read and write for a switch goes through that switch's `Slot::cli`.  The
+//!   mutex is per switch, not global, so a slow read on the 2824 cannot hold up
+//!   a page for a switch that answered normally, and a switch that is down or
+//!   rebooting cannot take the other two with it.
 //! * **Sign-in is authentik, gated on the `Infra` group** ([`oidc`]), because
 //!   the switch itself authenticates against RADIUS and a local account here
 //!   would be a second, weaker door to the same device.  `--dev-user` and
@@ -54,17 +62,19 @@ type R<T> = std::result::Result<T, String>;
 
 const DEFAULT_ENV: &str = "/var/lib/secrets/switch-gui.env";
 const AUDIT_MAX: usize = 200;
+/// The switches, as `name=address` pairs. The names are what the URLs use
+/// (`/switch/switch2`), so they are the same as the switches' own `System Name`.
+const DEFAULT_SWITCHES: &str = "switch1=10.3.1.2,switch2=10.3.1.3,switch3=10.3.1.4";
 /// Cookie holding the OAuth `state` between `/auth/login` and `/auth/callback`.
 const STATE_COOKIE: &str = "switch_login_state";
 
 #[derive(Clone)]
 struct Config {
-    switch: switch::Config,
+    /// The switches this instance serves, in the order the index lists them.
+    switches: Vec<switch::Config>,
     bind: String,
     ttl: Duration,
     read_only: bool,
-    /// Where the switch's own management UI lives, linked from the page.
-    switch_url: String,
     /// Sign in as this user without OIDC (loopback binds only).  `--no-auth`
     /// sets it to `dev`, so one option is enough to get a local session.
     dev_user: Option<String>,
@@ -72,21 +82,40 @@ struct Config {
 
 struct AuditEntry {
     at: u64,
+    /// Which switch the action went to. With three switches an audit line that
+    /// does not name one is not evidence of anything.
+    switch: String,
     user: String,
     action: String,
     result: String,
 }
 
-struct Shared {
-    cfg: Config,
-    /// The one CLI session.  `None` until the first connect; any failure puts
-    /// `None` back so the next request reconnects — the switch ages idle
-    /// consoles out, and another operator opening the console can drop us.
+/// One switch's state: its own console and its own cache.
+///
+/// Per switch rather than shared, for two reasons. The CLI is one console per
+/// switch, so a mutex shared across switches would make a slow read on the 2824
+/// (which pages every table) hold up a page for a switch that answered normally.
+/// And a switch that is down must not take the other two with it: each slot
+/// keeps its own last good snapshot, so the index still shows what it knew.
+struct Slot {
+    cfg: switch::Config,
+    ttl: Duration,
+    /// `None` until the first connect; any failure puts `None` back so the next
+    /// request reconnects — the switch ages idle consoles out, and another
+    /// operator opening the console can drop us.
     cli: Mutex<Option<switch::Switch>>,
     cache: Mutex<Option<Snapshot>>,
     /// When the cached snapshot was taken.  Kept beside the snapshot rather
     /// than inside it so a failed refresh leaves the old one usable.
     cached_at: Mutex<Option<Instant>>,
+    /// The last read failure, kept so the index can show a switch as down rather
+    /// than as a switch with no ports.
+    error: Mutex<Option<String>>,
+}
+
+struct Shared {
+    cfg: Config,
+    slots: Vec<Slot>,
     oidc: Option<Oidc>,
     audit: Mutex<VecDeque<AuditEntry>>,
 }
@@ -128,7 +157,7 @@ fn run() -> R<()> {
                     .parse()
                     .map_err(|_| format!("--ttl needs a number of seconds, got `{v}`"))?
             }
-            "--switch-url" => opt.switch_url = val(flag)?,
+            "--switches" => opt.switches = val(flag)?,
             "--dev-user" => opt.dev_user = Some(val(flag)?),
             "--read-only" => opt.read_only = true,
             "--no-auth" => opt.no_auth = true,
@@ -153,7 +182,13 @@ fn run() -> R<()> {
             .ok_or_else(|| format!("{k} is not set (in the environment or in {})", opt.env_file))
     };
 
-    let host = get("SWITCH_GUI_HOST").unwrap_or_else(|| "10.3.1.2".to_string());
+    let spec = if opt.switches.is_empty() {
+        get("SWITCH_GUI_SWITCHES").unwrap_or_else(|| DEFAULT_SWITCHES.to_string())
+    } else {
+        opt.switches.clone()
+    };
+    let pairs = parse_switches(&spec)?;
+    // One Telnet port for all of them: every ProCurve CLI here answers on 23.
     let port: u16 = match get("SWITCH_GUI_PORT") {
         Some(v) => v
             .parse()
@@ -164,6 +199,15 @@ fn run() -> R<()> {
         get("SWITCH_GUI_CLI_TIMEOUT")
             .and_then(|v| v.parse().ok())
             .unwrap_or(20),
+    );
+    // Longer than the command timeout, because a login goes out to RADIUS first
+    // and the retry ladder can hold the console for 15-25 s before the switch
+    // falls back to its local account database and prints the prompt. At 20 s this
+    // read times out on `switch3`.
+    let login_timeout = Duration::from_secs(
+        get("SWITCH_GUI_LOGIN_TIMEOUT")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(45),
     );
 
     let login = need("SWITCH_GUI_LOGIN")?;
@@ -187,15 +231,20 @@ fn run() -> R<()> {
         get("SWITCH_GUI_ENABLE_PASSWORD").unwrap_or_else(|| password.clone())
     });
 
-    let switch_cfg = switch::Config {
-        host: host.clone(),
-        port,
-        login,
-        password,
-        enable_login,
-        enable_password,
-        timeout: cli_timeout,
-    };
+    let switches: Vec<switch::Config> = pairs
+        .into_iter()
+        .map(|(name, host)| switch::Config {
+            name,
+            host,
+            port,
+            login: login.clone(),
+            password: password.clone(),
+            enable_login: enable_login.clone(),
+            enable_password: enable_password.clone(),
+            timeout: cli_timeout,
+            login_timeout,
+        })
+        .collect();
 
     // OIDC is on as soon as a client id and secret are present.
     let oidc_cfg = match (
@@ -242,41 +291,46 @@ fn run() -> R<()> {
     }
 
     let cfg = Config {
-        switch: switch_cfg,
+        switches,
         bind: opt.bind.clone(),
         ttl: Duration::from_secs(opt.ttl),
         read_only: opt.read_only,
-        switch_url: if opt.switch_url.is_empty() {
-            default_switch_url(&host)
-        } else {
-            opt.switch_url.clone()
-        },
         dev_user: opt
             .dev_user
             .clone()
             .or_else(|| opt.no_auth.then(|| "dev".to_string())),
     };
 
+    let slots: Vec<Slot> = cfg
+        .switches
+        .iter()
+        .map(|s| Slot::new(s.clone(), cfg.ttl))
+        .collect();
+
     let shared = Arc::new(Shared {
         cfg,
-        cli: Mutex::new(None),
-        cache: Mutex::new(None),
-        cached_at: Mutex::new(None),
+        slots,
         oidc: oidc_cfg.map(Oidc::new),
         audit: Mutex::new(VecDeque::new()),
     });
 
-    // Fail fast if the switch is unreachable, but do not die: a switch that is
-    // rebooting must not stop the service, and the page reports the error.
-    match shared.snapshot(true) {
-        Ok(s) => eprintln!(
-            "switch-gui: read {} VLANs and {} ports from {} ({})",
-            s.vlans.len(),
-            s.ports.len(),
-            host,
-            shared.privilege().label()
-        ),
-        Err(e) => eprintln!("switch-gui: initial read failed (will keep retrying): {e}"),
+    // Fail fast if a switch is unreachable, but do not die: a switch that is
+    // rebooting must not stop the service, and the page reports the error. One
+    // switch that does not answer must not stop the others being read here.
+    for slot in &shared.slots {
+        match slot.snapshot(true) {
+            Ok(s) => eprintln!(
+                "switch-gui: {} read {} VLANs and {} ports ({})",
+                slot.cfg.name,
+                s.vlans.len(),
+                s.ports.len(),
+                slot.privilege().label()
+            ),
+            Err(e) => eprintln!(
+                "switch-gui: initial read failed for {} (will keep retrying): {e}",
+                slot.cfg.name
+            ),
+        }
     }
 
     let listener = TcpListener::bind(shared.cfg.bind.as_str())
@@ -303,7 +357,7 @@ struct Opts {
     bind: String,
     env_file: String,
     ttl: u64,
-    switch_url: String,
+    switches: String,
     dev_user: Option<String>,
     read_only: bool,
     no_auth: bool,
@@ -318,7 +372,7 @@ impl Default for Opts {
             bind: "127.0.0.1:8097".to_string(),
             env_file: DEFAULT_ENV.to_string(),
             ttl: 30,
-            switch_url: String::new(),
+            switches: String::new(),
             dev_user: None,
             read_only: false,
             no_auth: false,
@@ -336,24 +390,74 @@ fn default_switch_url(host: &str) -> String {
     format!("http://{host}")
 }
 
+/// `switch1=10.3.1.2,switch2=10.3.1.3` into `(name, address)` pairs.
+///
+/// The name is what the URLs use (`/switch/switch2`), so it is checked for the
+/// characters that would make a path ambiguous, and duplicates are refused: two
+/// switches sharing a name would share one page, and the audit log would not say
+/// which one a command went to.
+fn parse_switches(spec: &str) -> R<Vec<(String, String)>> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    for item in spec.split(',') {
+        let item = item.trim();
+        if item.is_empty() {
+            continue;
+        }
+        let (name, host) = item
+            .split_once('=')
+            .ok_or_else(|| format!("`{item}` is not `name=address`"))?;
+        let name = name.trim();
+        let host = host.trim();
+        if name.is_empty() || host.is_empty() {
+            return Err(format!("`{item}` has an empty name or address"));
+        }
+        if !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+        {
+            return Err(format!("switch name `{name}` cannot be used in a URL"));
+        }
+        if out.iter().any(|(n, _)| n == name) {
+            return Err(format!("switch name `{name}` is used twice"));
+        }
+        out.push((name.to_string(), host.to_string()));
+    }
+    if out.is_empty() {
+        return Err("no switches given (SWITCH_GUI_SWITCHES)".to_string());
+    }
+    Ok(out)
+}
+
+/// The switch list as the sign-in page shows it.
+fn switch_list(shared: &Shared) -> String {
+    shared
+        .slots
+        .iter()
+        .map(|s| format!("{} ({})", s.cfg.name, s.cfg.host))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 fn usage() -> String {
     let d = Opts::default();
     format!(
         "\
-switch-gui — ports and VLANs on the network switch, in a browser
+switch-gui — ports and VLANs on the network switches, in a browser
 
-  --bind <addr:port>    listen address            (default {default_bind})
-  --env-file <path>     KEY=value secret file     (default {default_env})
-  --ttl <secs>          re-read the switch after this long (default {default_ttl})
-  --switch-url <url>    link to the switch's own UI
-  --read-only           never send a configuration command
-  --dev-user <name>     skip sign-in (loopback binds only)
-  --no-auth             accept any request (loopback binds only)
+  --bind <addr:port>     listen address            (default {default_bind})
+  --env-file <path>      KEY=value secret file     (default {default_env})
+  --ttl <secs>           re-read a switch after this long (default {default_ttl})
+  --switches <list>      name=address pairs, comma separated
+                         (default {default_switches})
+  --read-only            never send a configuration command
+  --dev-user <name>      skip sign-in (loopback binds only)
+  --no-auth              accept any request (loopback binds only)
 
 Required environment: SWITCH_GUI_LOGIN, SWITCH_GUI_PASSWORD
-Optional:             SWITCH_GUI_HOST (10.3.1.2), SWITCH_GUI_PORT (23),
+Optional:             SWITCH_GUI_SWITCHES ({default_switches}), SWITCH_GUI_PORT (23),
                       SWITCH_GUI_ENABLE_LOGIN, SWITCH_GUI_ENABLE_PASSWORD,
-                      SWITCH_GUI_CLI_TIMEOUT (20), SWITCH_GUI_REQUIRED_GROUP (Infra),
+                      SWITCH_GUI_CLI_TIMEOUT (20), SWITCH_GUI_LOGIN_TIMEOUT (45),
+                      SWITCH_GUI_REQUIRED_GROUP (Infra),
                       SWITCH_GUI_OIDC_CLIENT_ID, SWITCH_GUI_OIDC_CLIENT_SECRET,
                       SWITCH_GUI_OIDC_AUTHORIZE, SWITCH_GUI_OIDC_TOKEN,
                       SWITCH_GUI_OIDC_INTROSPECT, SWITCH_GUI_OIDC_REDIRECT,
@@ -362,6 +466,7 @@ Optional:             SWITCH_GUI_HOST (10.3.1.2), SWITCH_GUI_PORT (23),
         default_bind = d.bind,
         default_env = DEFAULT_ENV,
         default_ttl = d.ttl,
+        default_switches = DEFAULT_SWITCHES,
     )
 }
 
@@ -447,19 +552,33 @@ fn serve(mut stream: TcpStream, shared: &Shared) -> R<()> {
         );
     }
 
+    // Which switch this request is about: the path for a page, the `switch`
+    // query for an action. An unknown name is a 404 rather than a quiet fallback
+    // to the first switch — a mistyped URL that acts on the wrong device is the
+    // one mistake this cannot walk back. An empty name (the index page, or a
+    // request that names nothing) means the first configured switch.
+    let name = match path.strip_prefix("/switch/") {
+        Some(n) => n.to_string(),
+        None => query.get("switch").cloned().unwrap_or_default(),
+    };
+    let Some(slot) = shared.slot(&name) else {
+        return text(stream, 404, &format!("no switch named `{name}`"));
+    };
+
     match (req.method.as_str(), path.as_str()) {
-        ("GET", "/") | ("GET", "/index.html") => page(stream, shared, &session),
+        ("GET", "/") | ("GET", "/index.html") => index_page(stream, shared, &session),
+        ("GET", p) if p.starts_with("/switch/") => page(stream, shared, slot, &session),
         ("GET", "/api/snapshot") => {
-            let snap = shared.snapshot(false)?;
+            let snap = slot.snapshot(false)?;
             json(stream, 200, &api::snapshot_json(&snap))
         }
-        ("POST", "/api/refresh") => match shared.snapshot(true) {
+        ("POST", "/api/refresh") => match slot.snapshot(true) {
             Ok(s) => {
-                shared.audit(&user, "refresh", "ok");
+                shared.audit(&slot.cfg.name, &user, "refresh", "ok");
                 text(stream, 200, &format!("refreshed: {} ports", s.ports.len()))
             }
             Err(e) => {
-                shared.audit(&user, "refresh", &format!("error: {e}"));
+                shared.audit(&slot.cfg.name, &user, "refresh", &format!("error: {e}"));
                 text(stream, 502, &format!("refresh failed: {e}"))
             }
         },
@@ -483,7 +602,7 @@ fn serve(mut stream: TcpStream, shared: &Shared) -> R<()> {
                 },
                 _ => return text(stream, 404, "no such action"),
             };
-            apply(stream, shared, &user, &format!("port {port} {verb}"), cmds)
+            apply(stream, shared, slot, &user, &format!("port {port} {verb}"), cmds)
         }
         ("POST", p) if p.starts_with("/api/vlan/") => {
             let rest = &p["/api/vlan/".len()..];
@@ -497,7 +616,7 @@ fn serve(mut stream: TcpStream, shared: &Shared) -> R<()> {
             };
             let cmds = match verb {
                 "rename" => commands::vlan_rename(id_num, query.get("v").map(|s| s.as_str()).unwrap_or("")),
-                "delete" => shared.check_delete(id_num),
+                "delete" => slot.check_delete(id_num),
                 "tagged" => {
                     let ports = query.get("ports").cloned().unwrap_or_default();
                     let add = match query.get("v").map(|s| s.as_str()) {
@@ -508,82 +627,124 @@ fn serve(mut stream: TcpStream, shared: &Shared) -> R<()> {
                 }
                 _ => return text(stream, 404, "no such action"),
             };
-            apply(stream, shared, &user, &format!("vlan {id_num} {verb}"), cmds)
+            apply(stream, shared, slot, &user, &format!("vlan {id_num} {verb}"), cmds)
         }
         ("POST", "/api/command") => {
             let cmd = query.get("cmd").cloned().unwrap_or_default();
-            run_read_command(stream, shared, &user, &cmd)
+            run_read_command(stream, shared, slot, &user, &cmd)
         }
         ("GET", "/api/audit") => json(stream, 200, &shared.audit_json()),
         _ => text(stream, 404, "not found"),
     }
 }
 
-/// The dashboard: the cache, refreshed first if it has gone stale.
-fn page(stream: &TcpStream, shared: &Shared, session: &oidc::Session) -> R<()> {
-    let snap = shared.snapshot(false)?;
-    let privilege = shared.privilege();
+/// The landing page: the switch list, from the cache only.
+///
+/// It does not read. A page that read all three switches on every hit would pay
+/// six-plus Telnet round-trips each against CPUs that page their own output, and
+/// the numbers it shows are the ones the last refresh produced — the page says
+/// how old they are.
+fn index_page(stream: &TcpStream, shared: &Shared, session: &oidc::Session) -> R<()> {
+    let rows = shared.rows("");
+    html(
+        stream,
+        200,
+        &gui::index(&rows, &session.username, session.email.as_deref()),
+    )
+}
+
+/// The dashboard: that switch's cache, refreshed first if it has gone stale.
+fn page(stream: &TcpStream, shared: &Shared, slot: &Slot, session: &oidc::Session) -> R<()> {
+    let snap = slot.snapshot(false)?;
+    let privilege = slot.privilege();
+    let rows = shared.rows(&slot.cfg.name);
+    let url = default_switch_url(&slot.cfg.host);
     let page = gui::Page {
+        name: &slot.cfg.name,
         snap: &snap,
+        rows: &rows,
         privilege: privilege.label(),
         is_manager: privilege.is_manager() && !shared.cfg.read_only,
         user: &session.username,
         email: session.email.as_deref(),
         read_only: shared.cfg.read_only,
-        cache_age_secs: shared.cache_age().as_secs(),
-        switch_url: &shared.cfg.switch_url,
+        cache_age_secs: slot.cache_age().as_secs(),
+        switch_url: &url,
     };
     html(stream, 200, &gui::dashboard(&page))
 }
 
 /// Validate, refuse, send, audit.  Every write path ends here.
-fn apply(stream: &TcpStream, shared: &Shared, user: &str, what: &str, cmds: R<Vec<String>>) -> R<()> {
+fn apply(
+    stream: &TcpStream,
+    shared: &Shared,
+    slot: &Slot,
+    user: &str,
+    what: &str,
+    cmds: R<Vec<String>>,
+) -> R<()> {
     let cmds = match cmds {
         Ok(c) => c,
         // Rejected before reaching the switch: the caller's input was wrong,
         // so 400 with the reason rather than a 500.
         Err(e) => {
-            shared.audit(user, what, &format!("refused: {e}"));
+            shared.audit(&slot.cfg.name, user, what, &format!("refused: {e}"));
             return text(stream, 400, &e);
         }
     };
     if shared.cfg.read_only {
         let msg = "this instance runs with --read-only".to_string();
-        shared.audit(user, what, &msg);
+        shared.audit(&slot.cfg.name, user, what, &msg);
         return text(stream, 403, &msg);
     }
-    if !shared.privilege().is_manager() {
+    if !slot.privilege().is_manager() {
         let msg = "the switch refused `enable`, so this session is in the Operator context and cannot configure it. The enable credentials default to the login account, which is a Manager here, so this means they were refused outright.";
-        shared.audit(user, what, msg);
+        shared.audit(&slot.cfg.name, user, what, msg);
         return text(stream, 403, msg);
     }
 
-    let body = match shared.run(&cmds) {
+    let body = match slot.run(&cmds) {
         Ok(()) => (200, format!("applied: {}", cmds.join(" ; "))),
         Err(e) => (502, format!("switch refused: {e}")),
     };
-    shared.audit(user, what, &body.1);
+    shared.audit(&slot.cfg.name, user, what, &body.1);
     // The configuration may have changed either way — a failure halfway
     // through a plan is still a change — so force a re-read.
-    shared.invalidate();
+    slot.invalidate();
     text(stream, body.0, &body.1)
 }
 
-fn run_read_command(stream: &TcpStream, shared: &Shared, user: &str, raw: &str) -> R<()> {
+fn run_read_command(
+    stream: &TcpStream,
+    shared: &Shared,
+    slot: &Slot,
+    user: &str,
+    raw: &str,
+) -> R<()> {
     let cmd = match commands::read_command(raw) {
         Ok(c) => c,
         Err(e) => {
-            shared.audit(user, &format!("console: {raw}"), &format!("refused: {e}"));
+            shared.audit(
+                &slot.cfg.name,
+                user,
+                &format!("console: {raw}"),
+                &format!("refused: {e}"),
+            );
             return text(stream, 400, &e);
         }
     };
-    match shared.command(&cmd) {
+    match slot.command(&cmd) {
         Ok(out) => {
-            shared.audit(user, &format!("console: {cmd}"), "ok");
+            shared.audit(&slot.cfg.name, user, &format!("console: {cmd}"), "ok");
             text(stream, 200, &out)
         }
         Err(e) => {
-            shared.audit(user, &format!("console: {cmd}"), &format!("error: {e}"));
+            shared.audit(
+                &slot.cfg.name,
+                user,
+                &format!("console: {cmd}"),
+                &format!("error: {e}"),
+            );
             text(stream, 502, &e)
         }
     }
@@ -597,13 +758,29 @@ fn route_auth(
     cookie_header: &str,
 ) -> R<()> {
     if path == "/healthz" {
-        let ok = shared.cache.lock().map(|g| g.is_some()).unwrap_or(false);
-        let body = format!(
-            "{{\"ok\":{ok},\"cacheAge\":{},\"privilege\":\"{}\"}}",
-            shared.cache_age().as_secs(),
-            shared.privilege().label()
+        // The check is about this app, not about the switches: each switch
+        // reports its own state, and one switch being rebooted should not make
+        // the GUI read as down. `ok` means at least one switch has a snapshot.
+        let items: Vec<String> = shared
+            .slots
+            .iter()
+            .map(|s| {
+                format!(
+                    "{{\"name\":\"{}\",\"host\":\"{}\",\"ok\":{},\"cacheAge\":{},\"privilege\":\"{}\"}}",
+                    crate::jsonw::escape(&s.cfg.name),
+                    crate::jsonw::escape(&s.cfg.host),
+                    s.has_cache(),
+                    s.cache_age().as_secs(),
+                    s.privilege().label()
+                )
+            })
+            .collect();
+        let ok = shared.slots.iter().any(|s| s.has_cache());
+        return json(
+            stream,
+            if ok { 200 } else { 503 },
+            &format!("{{\"ok\":{ok},\"switches\":[{}]}}", items.join(",")),
         );
-        return json(stream, if ok { 200 } else { 503 }, &body);
     }
 
     let Some(oidc) = &shared.oidc else {
@@ -630,7 +807,7 @@ fn route_auth(
                 return html(
                     stream,
                     401,
-                    &gui::login("/auth/login", oidc.required_group(), &shared.cfg.switch.host, Some(&err)),
+                    &gui::login("/auth/login", oidc.required_group(), &switch_list(shared), Some(&err)),
                 );
             };
             let state = cookie_value(cookie_header, STATE_COOKIE).unwrap_or_default();
@@ -639,7 +816,7 @@ fn route_auth(
             let clear = format!("{STATE_COOKIE}=\"\"; Path=/; Max-Age=0");
             match oidc.finish_login(code, &state) {
                 Ok((session_cookie, session)) => {
-                    shared.audit(&session.username, "login", "ok");
+                    shared.audit("", &session.username, "login", "ok");
                     redirect(
                         stream,
                         302,
@@ -654,13 +831,13 @@ fn route_auth(
                     )
                 }
                 Err(e) => {
-                    shared.audit("?", "login", &format!("denied: {}", e.0));
+                    shared.audit("", "?", "login", &format!("denied: {}", e.0));
                     // The reason (e.g. "not a member of Infra") is worth
                     // showing, and comes from authentik or from our own gate.
                     html(
                         stream,
                         401,
-                        &gui::login("/auth/login", oidc.required_group(), &shared.cfg.switch.host, Some(&e.0)),
+                        &gui::login("/auth/login", oidc.required_group(), &switch_list(shared), Some(&e.0)),
                     )
                 }
             }
@@ -763,6 +940,94 @@ impl Shared {
         }
     }
 
+    /// The slot for a switch name. An empty name means the first configured
+    /// switch, which is what a request with no `switch` parameter gets.
+    fn slot(&self, name: &str) -> Option<&Slot> {
+        if name.is_empty() {
+            return self.slots.first();
+        }
+        self.slots.iter().find(|s| s.cfg.name == name)
+    }
+
+    /// The switch list for the index page and the nav bar.
+    ///
+    /// Cache only, never a read: this is on every page, and reading three
+    /// switches to draw a nav bar would cost more than the page it is on.
+    fn rows(&self, current: &str) -> Vec<gui::SwitchRow> {
+        self.slots
+            .iter()
+            .map(|s| {
+                let snap = s
+                    .cache
+                    .lock()
+                    .ok()
+                    .and_then(|g| g.as_ref().cloned())
+                    .unwrap_or_default();
+                gui::SwitchRow {
+                    name: s.cfg.name.clone(),
+                    host: s.cfg.host.clone(),
+                    current: s.cfg.name == current,
+                    system_name: snap.system.name.clone(),
+                    location: snap.system.location.clone(),
+                    software: snap.system.software.clone(),
+                    ports: snap.ports.len(),
+                    vlans: snap.vlans.len(),
+                    cache_age_secs: s.cache_age().as_secs(),
+                    error: s.error.lock().ok().and_then(|g| g.clone()),
+                }
+            })
+            .collect()
+    }
+
+    fn audit(&self, switch: &str, user: &str, action: &str, result: &str) {
+        let at = now_secs();
+        if let Ok(mut g) = self.audit.lock() {
+            if g.len() >= AUDIT_MAX {
+                g.pop_front();
+            }
+            g.push_back(AuditEntry {
+                at,
+                switch: switch.to_string(),
+                user: user.to_string(),
+                action: action.to_string(),
+                result: result.to_string(),
+            });
+        }
+    }
+
+    fn audit_json(&self) -> String {
+        let Ok(g) = self.audit.lock() else {
+            return "[]".to_string();
+        };
+        let items: Vec<String> = g
+            .iter()
+            .map(|e| {
+                format!(
+                    "{{\"at\":{},\"switch\":\"{}\",\"user\":\"{}\",\"action\":\"{}\",\"result\":\"{}\"}}",
+                    e.at,
+                    crate::jsonw::escape(&e.switch),
+                    crate::jsonw::escape(&e.user),
+                    crate::jsonw::escape(&e.action),
+                    crate::jsonw::escape(&e.result)
+                )
+            })
+            .collect();
+        format!("[{}]", items.join(","))
+    }
+}
+
+impl Slot {
+    fn new(cfg: switch::Config, ttl: Duration) -> Slot {
+        Slot {
+            cfg,
+            ttl,
+            cli: Mutex::new(None),
+            cache: Mutex::new(None),
+            cached_at: Mutex::new(None),
+            error: Mutex::new(None),
+        }
+    }
+
     fn privilege(&self) -> Privilege {
         self.cli
             .lock()
@@ -779,6 +1044,10 @@ impl Shared {
             .unwrap_or(Duration::from_secs(u64::MAX))
     }
 
+    fn has_cache(&self) -> bool {
+        self.cache.lock().map(|g| g.is_some()).unwrap_or(false)
+    }
+
     /// Forget the snapshot and the session, forcing a reconnect and a re-read.
     fn invalidate(&self) {
         if let Ok(mut g) = self.cached_at.lock() {
@@ -789,43 +1058,9 @@ impl Shared {
         }
     }
 
-    fn audit(&self, user: &str, action: &str, result: &str) {
-        let at = now_secs();
-        if let Ok(mut g) = self.audit.lock() {
-            if g.len() >= AUDIT_MAX {
-                g.pop_front();
-            }
-            g.push_back(AuditEntry {
-                at,
-                user: user.to_string(),
-                action: action.to_string(),
-                result: result.to_string(),
-            });
-        }
-    }
-
-    fn audit_json(&self) -> String {
-        let Ok(g) = self.audit.lock() else {
-            return "[]".to_string();
-        };
-        let items: Vec<String> = g
-            .iter()
-            .map(|e| {
-                format!(
-                    "{{\"at\":{},\"user\":\"{}\",\"action\":\"{}\",\"result\":\"{}\"}}",
-                    e.at,
-                    crate::jsonw::escape(&e.user),
-                    crate::jsonw::escape(&e.action),
-                    crate::jsonw::escape(&e.result)
-                )
-            })
-            .collect();
-        format!("[{}]", items.join(","))
-    }
-
     /// The cached snapshot, refreshed when older than the TTL (or on demand).
     fn snapshot(&self, force: bool) -> R<Snapshot> {
-        if !force && self.cache_age() <= self.cfg.ttl {
+        if !force && self.cache_age() <= self.ttl {
             if let Some(snap) = self.cache.lock().ok().and_then(|g| g.as_ref().cloned()) {
                 return Ok(snap);
             }
@@ -851,30 +1086,41 @@ impl Shared {
                 .lock()
                 .map_err(|_| "the CLI lock was poisoned".to_string())?;
             if guard.is_none() {
-                *guard = Some(switch::Switch::connect(&self.cfg.switch)?);
+                *guard = Some(switch::Switch::connect(&self.cfg)?);
             }
             let sw = guard.as_mut().unwrap();
             let mut snap = switch::read_snapshot(sw)?;
             if snap.ports.is_empty() && !snap.warnings.is_empty() {
                 last = snap.warnings.join("; ");
                 if attempt == 0 {
-                    eprintln!("switch-gui: read failed on the cached session ({last}); reconnecting");
+                    eprintln!(
+                        "switch-gui: {} read failed on the cached session ({last}); reconnecting",
+                        self.cfg.name
+                    );
                     drop(guard);
                     self.invalidate();
                     continue;
                 }
             }
             snap.taken_at_secs = now_secs();
+            // A successful read clears the outage: the index must not keep
+            // showing a switch as down after it came back.
+            if let Ok(mut g) = self.error.lock() {
+                *g = None;
+            }
             return Ok(snap);
         }
+        if let Ok(mut g) = self.error.lock() {
+            *g = Some(last.clone());
+        }
         Err(if last.is_empty() {
-            "could not read the switch".to_string()
+            format!("could not read {}", self.cfg.name)
         } else {
             last
         })
     }
 
-    /// Run one command on the shared session, reconnecting once if the switch
+    /// Run one command on this switch's session, reconnecting once if the switch
     /// had dropped the console out from under us.
     fn command(&self, cmd: &str) -> R<String> {
         let mut guard = self
@@ -885,12 +1131,15 @@ impl Shared {
             match sw.command(cmd) {
                 Ok(out) => return Ok(out),
                 Err(e) => {
-                    eprintln!("switch-gui: `{cmd}` failed on the cached session ({e}); reconnecting");
+                    eprintln!(
+                        "switch-gui: {} `{cmd}` failed on the cached session ({e}); reconnecting",
+                        self.cfg.name
+                    );
                 }
             }
         }
         *guard = None;
-        let mut sw = switch::Switch::connect(&self.cfg.switch)?;
+        let mut sw = switch::Switch::connect(&self.cfg)?;
         let out = sw.command(cmd)?;
         *guard = Some(sw);
         Ok(out)
@@ -905,7 +1154,7 @@ impl Shared {
             .lock()
             .map_err(|_| "the CLI lock was poisoned".to_string())?;
         if guard.is_none() {
-            *guard = Some(switch::Switch::connect(&self.cfg.switch)?);
+            *guard = Some(switch::Switch::connect(&self.cfg)?);
         }
         let sw = guard.as_mut().unwrap();
         let out = sw.apply(cmds);
@@ -1004,5 +1253,38 @@ mod tests {
         assert!(u.contains("--read-only"));
         assert!(u.contains("SWITCH_GUI_ENABLE_PASSWORD"));
         assert!(u.contains("127.0.0.1:8097"));
+        assert!(u.contains("--switches"));
+        assert!(u.contains(DEFAULT_SWITCHES));
+    }
+
+    #[test]
+    fn the_switch_list_is_name_address_pairs() {
+        let p = parse_switches(DEFAULT_SWITCHES).unwrap();
+        assert_eq!(p.len(), 3);
+        assert_eq!(p[0], ("switch1".to_string(), "10.3.1.2".to_string()));
+        assert_eq!(p[2], ("switch3".to_string(), "10.3.1.4".to_string()));
+    }
+
+    /// The name is the URL, so a name that cannot be put in one is refused at
+    /// startup rather than halfway through a request.
+    #[test]
+    fn a_switch_name_that_cannot_be_a_url_is_refused() {
+        assert!(parse_switches("switch 2=10.3.1.3").is_err());
+        assert!(parse_switches("switch2=").is_err());
+        assert!(parse_switches("switch2").is_err());
+        assert!(parse_switches("").is_err());
+        // A duplicate would give two switches one page, and the audit log would
+        // not say which one a command went to.
+        assert!(parse_switches("switch1=10.3.1.2,switch1=10.3.1.3").is_err());
+    }
+
+    #[test]
+    fn the_switch_list_is_the_default_when_nothing_is_given() {
+        // Whitespace and empty items are tolerated: this is a shell-supplied
+        // string, and `"switch1=10.3.1.2, switch2=10.3.1.3"` is what someone
+        // will actually write.
+        let p = parse_switches(" switch1=10.3.1.2 , switch2=10.3.1.3 , ").unwrap();
+        assert_eq!(p.len(), 2);
+        assert_eq!(p[1].1, "10.3.1.3");
     }
 }

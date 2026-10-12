@@ -308,17 +308,17 @@
     })
     (mkPing {
       name = "Switch1";
-      url = "switch1.int.leighhack.org";
+      url = HOSTS.switch1;
       group = "Network Switches";
     })
     (mkPing {
       name = "Switch2";
-      url = "switch2.int.leighhack.org";
+      url = HOSTS.switch2;
       group = "Network Switches";
     })
     (mkPing {
       name = "Switch3";
-      url = "switch3.int.leighhack.org";
+      url = HOSTS.switch3;
       group = "Network Switches";
     })
   ];

@@ -173,20 +173,34 @@ Guidance for AI agents working in this repository. Read this before making chang
   wherever they point (the NAS uses them) — the guarantee is "no traversal from
   the API", not "nothing outside the share is reachable". See `filestore/src/fsutil.rs`.
 - `switch-gui/` — top-level Rust tool (zero external crates) that manages the
-  **ProCurve core switch** (J9280A 2510G-48, `Y.11.44`, `10.3.1.2` —
-  `common/hosts.nix` → `switch`) from a browser. The switch speaks only Telnet,
-  so the tool ships its own minimal Telnet client (`src/telnet.rs`), parses the
-  CLI's fixed-width tables (`src/parse.rs`) and merges the four `show` commands
-  that split a port's name, link state and VLAN membership between them.
+  **three ProCurve switches** from a browser: `switch1` (J9280A 2510G-48,
+  `Y.11.44`, `10.3.1.2`), `switch2` (same model, `10.3.1.3`) and `switch3`
+  (J4903A 2824, `I.10.107`, `10.3.1.4`) — all three in `common/hosts.nix` under
+  those names, which are also each device's own `System Name` and the names the
+  GUI's URLs use (`/switch/switch2`). The switches speak only Telnet, so the tool
+  ships its own minimal Telnet client (`src/telnet.rs`), parses the CLI's
+  fixed-width tables (`src/parse.rs`) and merges the four `show` commands that
+  split a port's name, link state and VLAN membership between them.
   Server-rendered dashboard on the shared `common-rs/web` (same shape as
-  status-dashboard), **cached** switch state (`--ttl`, default 30 s, plus a
-  Refresh button) because a full read is six-plus round-trips against a 1990s
-  CPU that pages its own output. Login is OIDC against authentik gated on the
+  status-dashboard): `/` lists the switches and `/switch/<name>` is one switch's
+  page. **The cache and the CLI session are per switch** (`--ttl`, default 30 s,
+  plus a Refresh button) because a full read is six-plus round-trips against a
+  1990s CPU that pages its own output, and because a slow or dead switch must not
+  hold up the other two. Login is OIDC against authentik gated on the
   `Infra` group — hand-written (`src/oidc.rs`, S256 PKCE over `curl`, keeping the
   zero-dependency rule like `dns-sync`'s DO API calls) because `common-rs/oidc`
   would mean taking reqwest and tokio. LAN-only vhost
   `switch.int.leighhack.org` → `127.0.0.1:8097`, packaging in
-  `machines/services1/services/switch-gui.nix`.
+  `machines/services1/services/switch-gui.nix` (the switch list reaches the unit
+  as `SWITCH_GUI_SWITCHES`, built from `common/hosts.nix`).
+  **The 2824 is not the same firmware**, and three things bite a client written
+  against the 2510G: `show vlan` has an extra `Voice` column (so the number of
+  trailing columns must come from the header), `show spanning-tree` puts
+  `Cost/Priority/State` in the same `|`-block as the port, and its banner ends
+  with `Press any key to continue`, which the client must answer before typing a
+  login name — otherwise the first character is eaten by the keypress, `agent`
+  arrives as `gent`, and RADIUS refuses it. All three are caught by fixtures taken
+  from the live devices; see `switch-gui/README.md` ("Two firmwares, one parser").
   **`agent` is a Manager, not read-only:** `enable` on this firmware is a
   *second login* — it re-asks for a login name, not just a password — and the
   same `agent` credentials are accepted, taking the prompt from `switch1>` to
@@ -221,13 +235,14 @@ Guidance for AI agents working in this repository. Read this before making chang
 
 - NAS is TrueNAS at **10.3.1.6**. NFS shares: `/mnt/cameras`,
   `/mnt/filestore`, `/mnt/backups`. It is slow to come up after a power cut.
-- **Core switch** is the ProCurve 2510G-48 at **10.3.1.2** (`common/hosts.nix`),
-  managed over **Telnet only** (no API; the web UI needs a Manager login). Its
-  `agent` login goes out over **RADIUS (authentik)** and falls back to the
-  switch's local account database when RADIUS refuses, which is what makes it
-  print `Can't reach RADIUS server.` on a successful login — see the RADIUS entry
-  under Known follow-ups. `switch-gui/` wraps it in a browser GUI and its README
-  records the CLI's quirks.
+- **Core switches** are the ProCurve 2510G-48s at **10.3.1.2** (`switch1`) and
+  **10.3.1.3** (`switch2`), plus the 2824 at **10.3.1.4** (`switch3`)
+  (`common/hosts.nix`), managed over **Telnet only** (no API; the web UI needs a
+  Manager login). Their `agent` login goes out over **RADIUS (authentik)** and
+  falls back to the switch's local account database when RADIUS refuses, which is
+  what makes it print `Can't reach RADIUS server.` on a successful login — see the
+  RADIUS entry under Known follow-ups. `switch-gui/` wraps them in a browser GUI
+  and its README records the CLI's quirks.
 - **NAS dependency rule:** any service that needs the NAS must declare
   `after = [ "wait-for-nas.service" ]` and `requires = [ "wait-for-nas.service" ]`
   (see `nfs-client.nix`), and must keep restarting forever — the container
@@ -810,10 +825,11 @@ The grid is infinitely scrollable — there is **no "load more" button**; the
   in DO DNS, and these two were never. Either add the records (public apps CNAME →
   `nginx.leighhack.org`) or drop the vhosts and the endpoint.
 
-- **switch-gui: two steps left before it serves anything** — the code, the
-  service and the secret are all in place (`nix eval` of
-  `systemd.services.switch-gui` is clean, 86 unit tests pass, and it has been run
-  read-only against the live switch: 10 VLANs, 50 ports). Done already:
+- **switch-gui: deployed, and serving all three switches** — the code, the
+  service and the secret are all in place (`systemd.services.switch-gui` is live
+  on services1, 100 unit tests pass, and it has been run read-only against the
+  live devices: switch1 10 VLANs / 50 ports, switch2 6 VLANs / 49 ports, switch3
+  6 VLANs / 24 ports). Done already:
   `secrets/secrets.yaml` has the `switch_gui_env_file` key (4 keys:
   `SWITCH_GUI_LOGIN`, `SWITCH_GUI_PASSWORD`, `SWITCH_GUI_OIDC_CLIENT_ID`,
   `SWITCH_GUI_OIDC_CLIENT_SECRET`; the unit uses it as `EnvironmentFile`, so the
@@ -826,9 +842,18 @@ The grid is infinitely scrollable — there is **no "load more" button**; the
   1. **Commit the `secrets/secrets.yaml` change on services1** — it is written
      but uncommitted, and services1/services2 get `git reset` to `origin/main`
      periodically.
-  2. `just dns-sync-sync` after deploying — the vhost is picked up from
-     `services.nginx.virtualHosts` automatically (verified: `switch.int` appears
-     in `/etc/dns-sync/expected-int-names`).
+  2. ~~`just dns-sync-sync` after deploying~~ — done for `switch.int`; the vhost is
+     picked up from `services.nginx.virtualHosts` automatically. The per-switch
+     names `switch1.int` / `switch2.int` / `switch3.int` are **not** dnsmasq
+     records, so the gatus "Network Switches" pings now use the addresses from
+     `common/hosts.nix` rather than those names. If the names are wanted, add them
+     to the router's host overrides (or drop them and keep the IP pings).
+  3. `switch3` answers slowly: a login there can take 15-25 s because RADIUS is
+     tried first and the retry ladder is ~5 s per attempt, so the login reads use a
+     separate timeout (`SWITCH_GUI_LOGIN_TIMEOUT`, default 45 s) rather than the 20 s
+     command timeout — at 20 s the read times out before the prompt arrives. Its
+     login also needs the `Press any key to continue` gate answered first (see the
+     switch-gui section).
   Note the provider's `groups` scope reuses gocardless-dashboard's ScopeMapping
   row rather than owning one: creating a fresh child row through the ORM trips a
   unique-violation on `propertymapping.name` (see the authentik notes).
@@ -881,3 +906,9 @@ The grid is infinitely scrollable — there is **no "load more" button**; the
   (application `Switches`) has `authentication_flow = None` and the flow
   actually used is `radius-authentication-flow` — not the cause here, but worth
   tidying.
+
+  `switch-gui` treats the message as a **note, not a failure, when a prompt
+  follows it** (`src/switch.rs::check_auth`): the session is usable, and refusing
+  the connect on it would make the GUI unusable on a switch that is answering
+  normally — which is what happened on `switch3` before it was a note. The note
+  goes into the snapshot's warnings so the page shows it.
