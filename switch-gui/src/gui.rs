@@ -1,0 +1,737 @@
+//! The dashboard: server-rendered HTML, one small script.
+//!
+//! Same shape as `status-dashboard` — the page is built here so it works with
+//! scripting off, and the only JavaScript is the `act()` helper that POSTs an
+//! action and reports what the switch said.  Actions are `POST`s with their
+//! parameters in the query string and no request body, which is what lets this
+//! use the shared body-less HTTP plumbing in `common-rs/web` (a real body would
+//! mean changing a crate two other servers depend on for no benefit here).
+//!
+//! Everything interpolated is escaped: port names and descriptions are free
+//! text an operator typed into the switch, and they end up inside HTML and
+//! inside `onclick` strings.
+
+use crate::model::Snapshot;
+
+pub struct Page<'a> {
+    pub snap: &'a Snapshot,
+    /// `Operator (read-only)` or `Manager`.
+    pub privilege: &'static str,
+    pub is_manager: bool,
+    pub user: &'a str,
+    /// The signed-in user's address from authentik, when it sent one.
+    pub email: Option<&'a str>,
+    /// Configuration actions are disabled: either the CLI session is read-only
+    /// or `--read-only` was passed.
+    pub read_only: bool,
+    pub cache_age_secs: u64,
+    /// The switch's own management UI, linked for the things this page does not
+    /// do (SNMP, syslogging, the STP bridge settings).
+    pub switch_url: &'a str,
+}
+
+fn esc(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+const STYLE: &str = r#"
+:root{color-scheme:dark;--bg:#14161a;--panel:#1b1e24;--line:#2a2f38;--fg:#e6e9ef;
+--dim:#98a2b3;--ok:#4ade80;--warn:#fbbf24;--err:#f87171;--accent:#60a5fa}
+*{box-sizing:border-box}
+body{margin:0;padding:20px;background:var(--bg);color:var(--fg);
+font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}
+h1{font-size:17px;margin:0 0 4px}h2{font-size:13px;margin:26px 0 8px;color:var(--dim);
+text-transform:uppercase;letter-spacing:.08em}
+a{color:var(--accent)}
+header{display:flex;flex-wrap:wrap;gap:14px;align-items:baseline;
+border-bottom:1px solid var(--line);padding-bottom:12px;margin-bottom:16px}
+.spacer{flex:1}
+.badge{border:1px solid var(--line);border-radius:999px;padding:2px 10px;font-size:12px}
+.badge.ro{color:var(--warn);border-color:#5a4a1d}
+.badge.mgr{color:var(--ok);border-color:#1f4d33}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th,td{padding:5px 9px;border-bottom:1px solid var(--line);text-align:left;
+white-space:nowrap;vertical-align:top}
+th{color:var(--dim);font-weight:600;font-size:11px;text-transform:uppercase}
+td.n{text-align:right;font-variant-numeric:tabular-nums}
+tr:hover td{background:#191c22}
+.up{color:var(--ok)}.down{color:var(--dim)}.err{color:var(--err)}.warn{color:var(--warn)}
+.note{border:1px solid var(--line);border-left-width:3px;border-radius:6px;
+padding:9px 12px;margin:0 0 14px}
+.note.ok{border-left-color:var(--ok)}.note.err{border-left-color:var(--err)}
+.note code{color:var(--fg);background:#0e1013;padding:1px 5px;border-radius:4px;font-size:12px}
+button{background:#22262e;color:var(--fg);border:1px solid var(--line);border-radius:6px;
+padding:4px 10px;font:inherit;font-size:12px;cursor:pointer}
+button:hover{border-color:var(--accent)}
+button.danger:hover{border-color:var(--err);color:var(--err)}
+input[type=text],input[type=number],select{background:#0e1013;color:var(--fg);
+border:1px solid var(--line);border-radius:6px;padding:4px 7px;font:inherit;font-size:12px}
+.row{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.muted{color:var(--dim)}
+pre{background:#0e1013;border:1px solid var(--line);border-radius:6px;padding:10px;
+overflow:auto;font-size:12px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px 12px}
+.card b{display:block;color:var(--dim);font-size:11px;font-weight:600;
+text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px}
+"#;
+
+const SCRIPT: &str = r#"
+async function act(url, msg){
+  if(msg && !confirm(msg)) return false;
+  const box = document.getElementById('note');
+  try{
+    const r = await fetch(url, {method:'POST'});
+    const t = await r.text();
+    box.className = 'note ' + (r.ok ? 'ok' : 'err');
+    box.textContent = t || (r.ok ? 'done' : 'failed');
+    if(r.ok){ setTimeout(()=>location.reload(), 900); }
+  }catch(e){
+    box.className = 'note err'; box.textContent = String(e);
+  }
+  return false;
+}
+function refresh(){ act('/api/refresh'); return false; }
+"#;
+
+/// The banner `act()` writes its result into.  It starts hidden: the page is
+/// rendered before any action has happened, and the script fills it in.
+fn note_slot() -> String {
+    "<div class=\"note ok\" id=\"note\" hidden></div>".to_string()
+}
+
+fn shell(title: &str, body: String) -> String {
+    format!(
+        "<!doctype html><html><head><meta charset=\"utf-8\"><title>{title}</title>\
+         <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
+         <style>{STYLE}</style><script>{SCRIPT}</script></head><body>{body}</body></html>"
+    )
+}
+
+/// The signed-out page.  Kept separate from the dashboard so a failed login
+/// never renders a half-populated switch view.
+pub fn login(url: &str, group: &str, host: &str, error: Option<&str>) -> String {
+    let err = match error {
+        Some(e) => format!("<div class=\"note err\">{}</div>", esc(e)),
+        None => String::new(),
+    };
+    shell(
+        "Switch · sign in",
+        format!(
+            "<div style=\"max-width:520px;margin:8vh auto\">\
+             <h1>network switch</h1>\
+             <p class=\"muted\">Ports and VLANs on the ProCurve at {host}. \
+             Sign in with an authentik account in the <b>{group}</b> group.</p>\
+             {err}\
+             <p><a class=\"badge\" href=\"{}\">Sign in with authentik</a></p>\
+             </div>",
+            esc(url),
+            group = esc(group),
+            host = esc(host)
+        ),
+    )
+}
+
+pub fn dashboard(p: &Page) -> String {
+    let s = p.snap;
+    let mut h = String::new();
+
+    let badge = if p.is_manager {
+        "<span class=\"badge mgr\">Manager</span>"
+    } else {
+        "<span class=\"badge ro\" title=\"The CLI session is in the Operator context: \
+         configuration buttons are disabled\">Operator · read-only</span>"
+    };
+    let ro = if p.read_only {
+        " <span class=\"badge ro\">--read-only</span>"
+    } else {
+        ""
+    };
+
+    h.push_str(&format!(
+        "<header><div><h1>{}</h1><div class=\"muted\">{} · {} · {}</div></div>\
+         <div class=\"spacer\"></div>\
+         {badge}{ro}\
+         <span class=\"badge\">cache {}s</span>\
+         <span class=\"badge\">{}</span>\
+         <button onclick=\"return refresh()\">Refresh</button>\
+         <a href=\"{switch_url}\"><button>Switch UI</button></a>\
+         <a href=\"/logout\"><button>Sign out</button></a>\
+         </header>",
+        esc(if s.system.name.is_empty() {
+            "switch1"
+        } else {
+            &s.system.name
+        }),
+        esc(if s.system.location.is_empty() {
+            "—"
+        } else {
+            &s.system.location
+        }),
+        esc(if s.system.software.is_empty() {
+            "unknown revision"
+        } else {
+            &s.system.software
+        }),
+        esc(if s.system.uptime.is_empty() {
+            "—"
+        } else {
+            &s.system.uptime
+        }),
+        p.cache_age_secs,
+        esc(p.privilege),
+        switch_url = esc(p.switch_url),
+    ));
+    // The user is shown after the header markup so the badge order stays
+    // readable in the source above.
+    h.push_str(&format!(
+        "<div class=\"muted\" style=\"margin:-8px 0 14px\">signed in as {}{}</div>",
+        esc(p.user),
+        match p.email {
+            Some(e) => format!(" &lt;{}&gt;", esc(e)),
+            None => String::new(),
+        }
+    ));
+
+    h.push_str(&note_slot());
+
+    if !s.warnings.is_empty() {
+        h.push_str("<div class=\"note err\"><b>Some commands failed</b><ul>");
+        for w in &s.warnings {
+            h.push_str(&format!("<li>{}</li>", esc(w)));
+        }
+        h.push_str("</ul></div>");
+    }
+    if !p.is_manager && !p.read_only {
+        h.push_str(
+            "<div class=\"note err\"><b>Read-only session.</b> The switch put this login in the \
+             Operator context, which cannot configure anything. Set \
+             <code>SWITCH_GUI_ENABLE_LOGIN</code> and <code>SWITCH_GUI_ENABLE_PASSWORD</code> \
+             to a Manager account to enable the buttons.</div>",
+        );
+    }
+
+    h.push_str("<div class=\"grid\">");
+    for (k, v) in [
+        ("System name", &s.system.name),
+        ("MAC address", &s.system.mac),
+        ("Serial", &s.system.serial),
+        ("ROM", &s.system.rom),
+        ("CPU", &s.system.cpu),
+        ("Contact", &s.system.contact),
+    ] {
+        if !v.is_empty() {
+            h.push_str(&format!(
+                "<div class=\"card\"><b>{k}</b>{}</div>",
+                esc(v)
+            ));
+        }
+    }
+    h.push_str("</div>");
+
+    h.push_str("<h2>VLANs</h2>");
+    h.push_str(&vlan_table(p));
+    h.push_str("<h2>Ports</h2>");
+    h.push_str(&port_table(p));
+    h.push_str(&console_box(p.is_manager));
+
+    format!(
+        "{h}<p class=\"muted\">switch-gui · read over Telnet, written with the ProCurve CLI. \
+         <a href=\"/api/snapshot\">JSON</a> · <a href=\"/api/audit\">audit log</a></p>",
+        h = h
+    )
+}
+
+fn vlan_table(p: &Page) -> String {
+    let s = p.snap;
+    if s.vlans.is_empty() {
+        return "<p class=\"note err\">No VLANs were read.</p>".to_string();
+    }
+    let mut h = String::from(
+        "<table><tr><th>VLAN</th><th>Name</th><th>Status</th><th>Untagged</th>\
+         <th>Tagged</th><th></th></tr>",
+    );
+    for v in &s.vlans {
+        let mut untagged = Vec::new();
+        let mut tagged = Vec::new();
+        for port in s.sorted_ports() {
+            if port.untagged_vlan == Some(v.id) {
+                untagged.push(port.id.as_str());
+            }
+            if port.tagged_vlans.contains(&v.id) {
+                tagged.push(port.id.as_str());
+            }
+        }
+        h.push_str(&format!(
+            "<tr><td class=\"n\"><b>{}</b></td><td>{}</td><td class=\"muted\">{}</td>\
+             <td class=\"muted\">{}</td><td class=\"muted\">{}</td><td>{}</td></tr>",
+            v.id,
+            esc(&v.name),
+            esc(&v.status),
+            esc(&untagged.join(", ")),
+            esc(&tagged.join(", ")),
+            vlan_actions(p, v.id, &v.name)
+        ));
+    }
+    h.push_str("</table>");
+    h
+}
+
+fn vlan_actions(p: &Page, id: u32, name: &str) -> String {
+    if p.read_only {
+        return String::new();
+    }
+    let dis = if p.is_manager { "" } else { " disabled " };
+    let rename = format!(
+        "<input type=\"text\" size=\"10\" id=\"vn{id}\" value=\"{name}\" placeholder=\"new name\">\
+         <button{dis} onclick=\"return act('/api/vlan/{id}/rename?v='+encodeURIComponent(\
+         document.getElementById('vn{id}').value))\">Rename</button>",
+        id = id,
+        name = esc(name)
+    );
+    let del = if id == 1 {
+        String::new()
+    } else {
+        format!(
+            "<button class=\"danger\"{dis} onclick=\"return act('/api/vlan/{id}/delete', \
+             'Delete VLAN {id}? The switch refuses this while ports are still on it.')\">Delete</button>",
+            id = id
+        )
+    };
+    format!("{rename}{del}")
+}
+
+fn port_table(p: &Page) -> String {
+    let s = p.snap;
+    let mut h = String::from(
+        "<table><tr><th>Port</th><th>Name</th><th>Media</th><th>Link</th><th>STP</th>\
+         <th>Trunk</th><th>VLAN (untagged)</th><th>Tagged</th><th class=\"n\">Rx err</th>\
+         <th class=\"n\">Drops</th><th></th></tr>",
+    );
+    for port in s.sorted_ports() {
+        // Built from locals rather than one long format! call: the row has ten
+        // cells and mixing positional with captured arguments is how a column
+        // silently shifts by one.
+        let state = port.stp_state.as_str();
+        let state_cls = if state.is_empty() {
+            "muted"
+        } else if state.eq_ignore_ascii_case("forwarding") {
+            "up"
+        } else {
+            "down"
+        };
+        let state_text = if state.is_empty() { "—" } else { state };
+        let media = if port.media.is_empty() {
+            "—".to_string()
+        } else {
+            port.media.clone()
+        };
+        let name = if port.name.is_empty() {
+            "—".to_string()
+        } else {
+            port.name.clone()
+        };
+        let trunk = if port.trunk_group.is_empty() {
+            "—".to_string()
+        } else {
+            format!("{} · {}", port.trunk_group, port.trunk_type)
+        };
+        let untagged = port
+            .untagged_vlan
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "—".into());
+        let tagged = if port.tagged_vlans.is_empty() {
+            "—".to_string()
+        } else {
+            port.tagged_vlans
+                .iter()
+                .map(|v| v.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let errs = port
+            .counters
+            .as_ref()
+            .map(|c| c.errors_rx.trim().to_string())
+            .unwrap_or_else(|| "—".into());
+        let drops = port
+            .counters
+            .as_ref()
+            .map(|c| c.drops_rx.trim().to_string())
+            .unwrap_or_else(|| "—".into());
+        // Highlight a port with errors rather than burying it in a column.
+        let err_cls = if errs == "0" || errs == "—" { "" } else { " err" };
+        // A trunk member's state belongs to the bundle, and the page has to say
+        // that rather than imply the port was measured.
+        let inherited = if port.stp_state_from.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " title=\"state of {}, inherited: the switch reports trunk members only as a group\"",
+                esc(&port.stp_state_from)
+            )
+        };
+        let (link_cls, link_text) = match port.link_up {
+            Some(true) => ("up", "Up"),
+            Some(false) => ("down", "Down"),
+            None => ("muted", "—"),
+        };
+        h.push_str(&format!(
+            "<tr><td class=\"n\"><b>{id}</b></td><td>{name}</td><td class=\"muted\">{media}</td>\
+             <td class=\"{link_cls}\"{inherited}>{link}</td><td class=\"{state_cls}\"{inherited}>{state}</td>\
+             <td class=\"muted\">{trunk}</td><td>{untagged}</td><td class=\"muted\">{tagged}</td>\
+             <td class=\"n{err_cls}\">{errs}</td><td class=\"n\">{drops}</td><td>{actions}</td></tr>",
+            id = esc(&port.id),
+            name = esc(&name),
+            media = esc(&media),
+            link_cls = link_cls,
+            inherited = inherited,
+            link = link_text,
+            state_cls = state_cls,
+            state = esc(state_text),
+            trunk = esc(&trunk),
+            untagged = esc(&untagged),
+            tagged = esc(&tagged),
+            err_cls = err_cls,
+            errs = esc(&errs),
+            drops = esc(&drops),
+            actions = port_actions(p, port),
+        ));
+    }
+    h.push_str("</table>");
+    h
+}
+
+fn port_actions(p: &Page, port: &crate::model::Port) -> String {
+    if p.read_only {
+        return String::new();
+    }
+    let id = port.id.as_str();
+    let dis = if p.is_manager { "" } else { " disabled " };
+    let mut vlan_opts = String::new();
+    for v in &p.snap.vlans {
+        vlan_opts.push_str(&format!(
+            "<option value=\"{}\">{}</option>",
+            v.id,
+            esc(&format!("{} · {}", v.id, v.name))
+        ));
+    }
+    // The confirm message names the port the way the table does, because the
+    // bare number is the same number on every switch in the rack.
+    let label = esc(&port.label());
+    format!(
+        "<span class=\"row\">\
+         <input type=\"text\" size=\"8\" id=\"pn{id}\" placeholder=\"name\">\
+         <button{dis} onclick=\"return act('/api/port/{id}/name?v='+encodeURIComponent(\
+         document.getElementById('pn{id}').value), 'Rename port {label}?')\">Name</button>\
+         <select id=\"pv{id}\">{opts}</select>\
+         <button{dis} onclick=\"return act('/api/port/{id}/vlan?v='+document.getElementById(\
+         'pv{id}').value, 'Move port {label} to this VLAN?')\">Set VLAN</button>\
+         </span>",
+        id = id,
+        dis = dis,
+        opts = vlan_opts,
+        label = label
+    )
+}
+
+fn console_box(is_manager: bool) -> String {
+    let hint = if is_manager {
+        "Manager session. Only <code>show</code> commands run here; configuration goes \
+         through the buttons so it is audited."
+    } else {
+        "Read-only session: <code>show</code> commands only."
+    };
+    format!(
+        "<h2>Console</h2><p class=\"muted\">{hint}</p>\
+         <div class=\"row\"><input type=\"text\" size=\"48\" id=\"cmd\" value=\"show vlan\" \
+         onkeydown=\"if(event.key==='Enter'){{runCmd();return false;}}\">\
+         <button onclick=\"return runCmd()\">Run</button></div>\
+         <pre id=\"out\" style=\"display:none\"></pre>\
+         <script>async function runCmd(){{const o=document.getElementById('out');\
+         o.style.display='block';o.textContent='…';\
+         const r=await fetch('/api/command?cmd='+encodeURIComponent(\
+         document.getElementById('cmd').value),{{method:'POST'}});\
+         o.textContent=await r.text();}}</script>",
+        hint = hint
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Counters, Port, Vlan};
+
+    /// A snapshot shaped like the real switch: two VLANs (one with a space in
+    /// its name), one forwarding access port in a trunk, one down trunk member.
+    fn fixture() -> Snapshot {
+        let mut s = Snapshot::default();
+        s.system.name = "switch1".into();
+        s.system.software = "Y.11.44".into();
+        s.vlans.push(Vlan {
+            id: 1,
+            name: "DEFAULT".into(),
+            status: "Port-based".into(),
+            jumbo: "No".into(),
+        });
+        s.vlans.push(Vlan {
+            id: 232,
+            name: "AD Lab".into(),
+            status: "Port-based".into(),
+            jumbo: "No".into(),
+        });
+        let mut p1 = Port::new("1");
+        p1.name = "NAS2 Port 1".into();
+        p1.untagged_vlan = Some(1);
+        p1.stp_state = "Forwarding".into();
+        p1.link_up = Some(true);
+        p1.trunk_group = "Trk3".into();
+        p1.trunk_type = "LACP".into();
+        p1.counters = Some(Counters {
+            port: "1".into(),
+            total_bytes: "2,993,652...".into(),
+            total_frames: "1,219,890...".into(),
+            errors_rx: "0".into(),
+            drops_rx: "0".into(),
+            flow_ctrl: "off".into(),
+            bcast_limit: "0".into(),
+        });
+        s.ports.insert("1".into(), p1);
+        let mut p2 = Port::new("2");
+        p2.tagged_vlans = vec![232];
+        p2.stp_state = "Disabled".into();
+        p2.link_up = Some(false);
+        p2.counters = Some(Counters {
+            port: "2".into(),
+            total_bytes: "688,085".into(),
+            total_frames: "1700".into(),
+            errors_rx: "7".into(),
+            drops_rx: "0".into(),
+            flow_ctrl: "off".into(),
+            bcast_limit: "0".into(),
+        });
+        s.ports.insert("2".into(), p2);
+        s
+    }
+
+    /// The snapshot is borrowed by the Page, so it is built outside the closure
+    /// and kept alive by the caller.
+    fn with_page<T>(f: impl FnOnce(Page) -> T) -> T {
+        let s = fixture();
+        let p = Page {
+            snap: &s,
+            privilege: "Operator (read-only)",
+            is_manager: false,
+            user: "cjdell",
+            email: None,
+            read_only: false,
+            cache_age_secs: 3,
+            switch_url: "https://10.3.1.2",
+        };
+        f(p)
+    }
+
+    #[test]
+    fn escaping() {
+        assert_eq!(esc("\"><&"), "&quot;&gt;&lt;&amp;");
+        assert_eq!(esc("<script>"), "&lt;script&gt;");
+        assert_eq!(esc("a'b"), "a&#39;b");
+        assert_eq!(esc("plain"), "plain");
+    }
+
+    #[test]
+    fn dashboard_renders_both_tables() {
+        with_page(|p| {
+            let html = dashboard(&p);
+            assert!(html.contains("AD Lab"), "VLAN name with a space");
+            assert!(html.contains("NAS2 Port 1"));
+            assert!(html.contains("Forwarding"));
+            assert!(html.contains("read-only"));
+            assert!(html.contains("cache 3s"));
+            assert!(html.contains("signed in as cjdell"));
+            assert!(html.contains("https://10.3.1.2"));
+            // The trunk group and its type, merged out of `show trunks`.
+            assert!(html.contains("Trk3 · LACP"));
+        });
+    }
+
+    /// Link state and STP state are different columns and must not be merged:
+    /// a port can be down with STP merely disabled.
+    #[test]
+    fn link_state_is_its_own_column() {
+        with_page(|p| {
+            let html = dashboard(&p);
+            assert!(html.contains(">Up<"));
+            assert!(html.contains(">Down<"));
+        });
+    }
+
+    /// A port name is operator-typed text; it must not be able to close an
+    /// attribute and run something.
+    #[test]
+    fn switch_supplied_text_is_escaped() {
+        let mut s = Snapshot::default();
+        let mut p = Port::new("1");
+        p.name = r#"" onload="alert(1)"#.to_string();
+        s.ports.insert("1".into(), p);
+        let page = Page {
+            snap: &s,
+            privilege: "Manager",
+            is_manager: true,
+            user: "cjdell",
+            email: None,
+            read_only: false,
+            cache_age_secs: 0,
+            switch_url: "https://10.3.1.2",
+        };
+        let html = dashboard(&page);
+        assert!(!html.contains("onload=\"alert"));
+        assert!(html.contains("&quot; onload="));
+    }
+
+    #[test]
+    fn manager_sessions_get_enabled_buttons() {
+        with_page(|p| {
+            assert!(dashboard(&p).contains(" disabled "));
+        });
+        let s = fixture();
+        let mgr = Page {
+            snap: &s,
+            privilege: "Manager",
+            is_manager: true,
+            user: "cjdell",
+            email: None,
+            read_only: false,
+            cache_age_secs: 0,
+            switch_url: "https://10.3.1.2",
+        };
+        let html = dashboard(&mgr);
+        assert!(!html.contains(" disabled "));
+        assert!(!html.contains("Read-only session"));
+    }
+
+    #[test]
+    fn read_only_hides_the_controls() {
+        let s = fixture();
+        let q = Page {
+            snap: &s,
+            privilege: "Operator (read-only)",
+            is_manager: false,
+            user: "cjdell",
+            email: None,
+            read_only: true,
+            cache_age_secs: 0,
+            switch_url: "https://10.3.1.2",
+        };
+        let html = dashboard(&q);
+        assert!(!html.contains("Set VLAN"));
+        assert!(!html.contains("Rename"));
+    }
+
+    /// A failed command must be visible: a page that looks healthy but is
+    /// missing a table is worse than one that says so.
+    #[test]
+    fn warnings_are_shown() {
+        let mut s = fixture();
+        s.warnings.push("show trunks: Invalid input: trunks".into());
+        let p = Page {
+            snap: &s,
+            privilege: "Manager",
+            is_manager: true,
+            user: "cjdell",
+            email: None,
+            read_only: false,
+            cache_age_secs: 0,
+            switch_url: "https://10.3.1.2",
+        };
+        let html = dashboard(&p);
+        assert!(html.contains("Some commands failed"));
+        assert!(html.contains("Invalid input: trunks"));
+    }
+
+    /// The group gate is the login page's whole promise, so the group name it
+    /// shows has to be the one the server enforces (it comes from config).
+    #[test]
+    fn login_page_names_the_required_group() {
+        let html = login("https://id/x", "Network-Admins", "10.3.1.2", None);
+        assert!(html.contains("<b>Network-Admins</b>"));
+    }
+
+    #[test]
+    fn the_signed_in_user_and_email_are_shown() {
+        let s = fixture();
+        let p = Page {
+            snap: &s,
+            privilege: "Manager",
+            is_manager: true,
+            user: "cjdell",
+            email: Some("cjdell@leighhack.org"),
+            read_only: false,
+            cache_age_secs: 0,
+            switch_url: "https://10.3.1.2",
+        };
+        let html = dashboard(&p);
+        assert!(html.contains("signed in as cjdell &lt;cjdell@leighhack.org&gt;"));
+    }
+
+    /// A trunk member's state is the bundle's, and the row has to say so.
+    #[test]
+    fn an_inherited_state_is_labelled() {
+        let mut s = fixture();
+        let mut p = Port::new("47");
+        p.trunk_group = "Trk1".into();
+        p.trunk_type = "LACP".into();
+        p.stp_state = "Forwarding".into();
+        p.stp_state_from = "Trk1".into();
+        p.link_up = Some(true);
+        s.ports.insert("47".into(), p);
+        let page = Page {
+            snap: &s,
+            privilege: "Manager",
+            is_manager: true,
+            user: "cjdell",
+            email: None,
+            read_only: false,
+            cache_age_secs: 0,
+            switch_url: "https://10.3.1.2",
+        };
+        let html = dashboard(&page);
+        assert!(html.contains("state of Trk1, inherited"));
+    }
+
+    /// The address on the sign-in page comes from config, so it cannot go stale
+    /// when the switch moves.
+    #[test]
+    fn login_page_shows_the_switch_address() {
+        let html = login("https://id/x", "Infra", "10.9.9.9", None);
+        assert!(html.contains("ProCurve at 10.9.9.9"));
+    }
+
+    #[test]
+    fn login_page_does_not_leak_the_dashboard() {
+        let html = login("https://id/x", "Infra", "10.3.1.2", Some("not in Infra"));
+        assert!(html.contains("not in Infra"));
+        assert!(html.contains("Sign in with authentik"));
+        assert!(!html.contains("Ports</h2>"));
+    }
+
+    /// The shared script contains the words "note err" (it sets that class), so
+    /// the assertion is about the error div, not the substring.
+    #[test]
+    fn login_page_without_an_error() {
+        let html = login("https://id/x", "Infra", "10.3.1.2", None);
+        assert!(!html.contains("<div class=\"note err\">"));
+        assert!(html.contains("Sign in with authentik"));
+    }
+}

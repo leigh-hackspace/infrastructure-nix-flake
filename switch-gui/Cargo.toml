@@ -1,0 +1,19 @@
+[package]
+name = "switch-gui"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "switch-gui"
+path = "src/main.rs"
+
+# A web GUI for the ProCurve switch's ports and VLANs.
+#
+# Zero external crates, matching dns-sync/network-status: the switch speaks
+# Telnet, which is a plain TCP protocol you can drive with std, and the HTTP
+# side is the shared hand-rolled plumbing in common-rs/web.  The two path
+# dependencies are this repo's own crates, copied in by the Nix build via
+# `sharedCrates`.
+[dependencies]
+common-json = { path = "./common-rs/json" }
+common-web = { path = "./common-rs/web" }
