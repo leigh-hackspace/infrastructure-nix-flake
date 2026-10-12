@@ -184,6 +184,12 @@ impl Switch {
             self.tn.send_raw(" ")?;
         }
         let out = strip_echo(&acc, cmd);
+        // Check the raw response as well as the cleaned one.  This CLI paints
+        // the prompt, the echoed command and the refusal on a single line, and
+        // anything the cleaner drops would take an `Invalid input:` with it —
+        // which for a write means reporting "applied" for a command the switch
+        // never ran.
+        check_cli_error(&acc, cmd)?;
         check_cli_error(&out, cmd)?;
         Ok(out)
     }
@@ -466,15 +472,36 @@ fn prompt_privilege(s: &str) -> Privilege {
 }
 
 /// Remove the echoed `<prompt> <command>` line the CLI puts first.
+/// Remove the echoed command from the response.
+///
+/// The CLI paints the prompt, the command and the **first line of the response**
+/// on one line — `switch1# show version Image stamp: /sw/code/build` — so the
+/// line cannot simply be dropped: that used to swallow the refusal on
+/// `switch1# show foo Invalid input: foo`, and the caller then believed the
+/// command had run.  Cut after the command and keep what follows it.
 fn strip_echo(text: &str, cmd: &str) -> String {
     let mut lines = text.lines();
     let Some(first) = lines.next() else {
         return String::new();
     };
-    if !cmd.is_empty() && first.contains(cmd) {
-        lines.collect::<Vec<_>>().join("\n")
-    } else {
-        text.to_string()
+    if cmd.is_empty() {
+        return text.to_string();
+    }
+    match first.rfind(cmd) {
+        Some(i) => {
+            // `cmd` is ASCII, so the byte just past the match is a char
+            // boundary even when the prompt before it is not.
+            let rest = first[i + cmd.len()..].trim_start();
+            let tail = lines.collect::<Vec<_>>().join("\n");
+            if rest.is_empty() {
+                tail
+            } else if tail.is_empty() {
+                rest.to_string()
+            } else {
+                format!("{rest}\n{tail}")
+            }
+        }
+        None => text.to_string(),
     }
 }
 
@@ -527,6 +554,30 @@ fn check_cli_error(out: &str, cmd: &str) -> R<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The CLI paints prompt, command and response on one line, so the refusal
+    /// lives on the echoed line.  Stripping the echo must not eat it: a write
+    /// whose refusal was discarded was reported to the operator as applied.
+    #[test]
+    fn a_refusal_on_the_echoed_line_survives_the_echo_strip() {
+        let out = "switch1# show foo Invalid input: foo\nswitch1# ";
+        let s = strip_echo(out, "show foo");
+        assert!(s.contains("Invalid input"), "got {s:?}");
+    }
+
+    #[test]
+    fn the_first_response_line_is_kept_after_the_command() {
+        let out = "switch1# show version Image stamp: /sw/code/build\nboot: Primary\n";
+        let s = strip_echo(out, "show version");
+        assert!(s.starts_with("Image stamp: /sw/code/build"), "got {s:?}");
+        assert!(s.contains("boot: Primary"), "got {s:?}");
+    }
+
+    #[test]
+    fn a_bare_echo_leaves_just_the_following_lines() {
+        let out = "switch1# config\nswitch1(config)# ";
+        assert_eq!(strip_echo(out, "config"), "switch1(config)# ");
+    }
 
     #[test]
     fn ansi_sequences_are_removed_but_text_survives() {
