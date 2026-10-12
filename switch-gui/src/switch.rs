@@ -21,12 +21,26 @@
 //! and the server keeps exactly one behind a mutex.
 
 use std::collections::BTreeMap;
+use std::thread;
 use std::time::Duration;
 
 use crate::model::{Counters, Port, Privilege, Snapshot, TrunkMember};
 use crate::parse;
 use crate::telnet::Telnet;
 use crate::R;
+
+/// How long to let the console settle between configuration commands.
+///
+/// The CLI **ignores keystrokes while it repaints** — the same reason it
+/// swallows input after the login banner — so a command typed the instant its
+/// prompt appears can be dropped on the floor, and the read then waits the full
+/// CLI timeout for a response that was never taken. Measured: sending
+/// `interface 5 name "…"` straight after `config` timed out with the buffer
+/// still ending on the *previous* command's prompt, while the same line typed
+/// with a pause in front of it applied cleanly.
+///
+/// Reads do not need it: each one is separated by the table it prints.
+const SETTLE: Duration = Duration::from_millis(400);
 
 const LOGIN_PROMPT: &str = "Please Enter Login Name";
 const PASSWORD_PROMPT: &str = "Please Enter Password";
@@ -211,11 +225,13 @@ impl Switch {
         self.command("config")?;
         let mut failed: Option<String> = None;
         for cmd in cmds {
+            thread::sleep(SETTLE);
             if let Err(e) = self.command(cmd) {
                 failed = Some(e);
                 break;
             }
         }
+        thread::sleep(SETTLE);
         let left = self.command("exit");
         match (failed, left) {
             (None, Ok(_)) => Ok(()),
