@@ -117,10 +117,43 @@ Nothing here writes NVRAM (no `write`, no `copy running-config startup-config`),
 so **every change is in RAM and a reboot undoes it**. Say that out loud before
 trusting one.
 
-The command strings in `src/commands.rs` follow the platform's reference and are
-**unit-tested but not yet executed against the switch**. Anything the switch
-dislikes comes back as its
-own `Invalid input:` text, which the UI surfaces verbatim.
+## The write path, and why it is off
+
+**The deployed service runs `--read-only`.** Reads, the Manager context and
+config mode all work; no write has been made to work, so the buttons are off
+rather than offered on a promise.
+
+What is proven, against the live switch:
+
+- `enable` with the login account reaches `switch1#` (`privilege: Manager`).
+- `config` is sent, echoed and accepted — the console answers `switch1(config)#`.
+- The **next** command is never echoed. `interface 5 name "NAS2 Port 1"` goes
+  out and the read times out with a buffer containing nothing but the CLI's idle
+  repaint and the cursor parked at column 18, i.e. an empty input line. No echo
+  means the parser never saw it.
+- The same bytes typed by hand over `nc` apply cleanly, at 0.15 s and at 2 s
+  after `config`.
+
+Ruled out, each by a deploy and a live attempt: the command syntax (the CLI's
+own `?` at `switch1(eth-5)#` confirms `name`/`enable`/`disable`, and the one-shot
+`interface 5 name "…"` form works manually); entering interface context instead
+of using the one-shot form; a settle delay before the command (400 ms); resending
+when no echo comes back; two Manager sessions contending (tested with the
+service stopped); and the prompt matcher, which accepts `switch1(config)#`.
+
+What is left, and what would settle it: the difference between this app's
+session and `nc` is **telnet option negotiation** — the app answers IAC, `nc`
+sends none. Capture the app's TCP stream (`tcpdump -i any host 10.3.1.2 and
+port 23 -w /tmp/w.pcap` while a write is attempted) and compare it with the same
+exchange from `nc`: if the bytes never leave services1, the client is the
+problem; if they arrive and are unanswered, the switch's console is deciding
+something about this session. Until then, treat every write command in
+`src/commands.rs` as unverified, including the VLAN ones, which have never been
+sent at all.
+
+Anything the switch does refuse comes back as its own `Invalid input:` text,
+surfaced verbatim — that part is tested, and a refusal is no longer reported as
+a success.
 
 ## "Can't reach RADIUS server"
 

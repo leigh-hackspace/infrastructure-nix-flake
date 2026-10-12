@@ -154,7 +154,8 @@ pub fn dashboard(p: &Page) -> String {
          configuration buttons are disabled\">Operator · read-only</span>"
     };
     let ro = if p.read_only {
-        " <span class=\"badge ro\">--read-only</span>"
+        " <span class=\"badge ro\" title=\"Writes are disabled on this deployment \
+         (--read-only): the write path has not been proven against the switch\">writes off</span>"
     } else {
         ""
     };

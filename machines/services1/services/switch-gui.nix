@@ -33,10 +33,11 @@
 #
 # Writes need the Manager context, and `agent` has it: `enable` is a second
 # login on this firmware and the same credentials answer it, so the enable pair
-# defaults to the login pair and the controls are live. `--read-only` is the way
-# to ask for Operator instead. Configuration only applies inside config mode
-# (`Switch::apply` enters it), and nothing here saves to NVRAM, so a change is
-# in RAM until someone writes it and a reboot undoes it.
+# defaults to the login pair. It is nonetheless **disabled here with
+# `--read-only`** — see the ExecStart comment and switch-gui/README.md; the
+# console has never echoed a configuration command back, so no write is proven.
+# Configuration would apply inside config mode (`Switch::apply` enters it), and
+# nothing here saves to NVRAM, so a change is in RAM until someone writes it.
 {
   config,
   lib,
@@ -101,6 +102,12 @@ in {
         # answers 200, `https://10.3.1.2` does not connect at all.  It is only
         # ever a link out of the page, but a dead button is still a bug.
         "http://${HOSTS.switch}"
+        # Writes are off in this deployment.  The Manager context is reached and
+        # `config` is accepted, but the command after it is never echoed by the
+        # console, so nothing has been proven to apply — see switch-gui/README.md
+        # ("The write path, and why it is off").  Reads are unaffected; drop this
+        # flag once a write has been verified live.
+        "--read-only"
       ];
 
       # The switch login, its password and the OIDC client pair.  systemd reads

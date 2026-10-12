@@ -802,16 +802,16 @@ The grid is infinitely scrollable — there is **no "load more" button**; the
   Note the provider's `groups` scope reuses gocardless-dashboard's ScopeMapping
   row rather than owning one: creating a fresh child row through the ORM trips a
   unique-violation on `propertymapping.name` (see the authentik notes).
-- **switch-gui: the write commands are unverified** — `src/commands.rs` builds
-  `port <n> name "…"`, `port <n> vlan <id>`, `vlan <id> name "…"`,
-  `no vlan <id>`, `vlan <id> tagged <ports>` from the platform's command
-  reference and unit-tests them, but none has been sent to the switch. The
-  Manager context is reachable (see the switch-gui entry above), so the first
-  real use is the test; the switch's own `Invalid input:` text is surfaced
-  verbatim, every attempt is in the audit log, and a refused command now fails
-  the request instead of reporting "applied". Nothing in the app writes NVRAM,
-  so **a change lives in RAM until someone saves it** — say so before trusting
-  one, and expect to correct the syntax on first use.
+- **switch-gui: writes are implemented but unproven, so the deployment runs
+  `--read-only`** — `enable` reaches the Manager context and `config` is
+  accepted, but the command after it is never echoed by the console, so nothing
+  has been shown to apply. Syntax, config mode, settle delays, echo-checked
+  resends and session contention were each ruled out with a live attempt;
+  the remaining suspect is telnet option negotiation (the app answers IAC, a
+  hand-driven `nc` does not and works). `switch-gui/README.md` has the evidence
+  and the tcpdump that would settle it. The VLAN commands have never been sent
+  at all. Nothing in the app writes NVRAM, so a change lives in RAM until
+  someone saves it.
 - **The RADIUS shared secret was printed into a session transcript on
   2026-10-12** (reading `show running-config` on the switch to root-cause the
   login noise; a masking filter that expected `key:` missed the actual
