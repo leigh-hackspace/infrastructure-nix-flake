@@ -472,7 +472,6 @@ fn serve(mut stream: TcpStream, shared: &Shared) -> R<()> {
             let v = query.get("v").map(|s| s.as_str()).unwrap_or("");
             let cmds = match verb {
                 "name" => commands::port_name(port, v),
-                "description" => commands::port_description(port, v),
                 "vlan" => match v.parse::<u32>() {
                     Ok(id) => commands::port_vlan(port, id),
                     Err(_) => Err(format!("`{v}` is not a VLAN id")),

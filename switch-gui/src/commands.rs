@@ -3,11 +3,15 @@
 //!
 //! The commands follow the older ProCurve CLI this firmware speaks.  They run
 //! inside **config mode** (`Switch::apply` enters it first) — at the plain
-//! Manager Exec prompt every one of them answers `Invalid input`.  **They are
-//! written from the platform's command reference, not from an executed
-//! session**, so the first real use is the test; anything the switch rejects
-//! comes back as its own `Invalid input: …` text, surfaced verbatim, and the
-//! change is never saved to NVRAM, so a reboot undoes it.
+//! Manager Exec prompt every one of them answers `Invalid input` — and the
+//! per-port ones go one level further, into `interface <n>`, because at config
+//! level `port 5 name "x"` is refused.
+//!
+//! `name` / `enable` / `disable` are confirmed against the switch's own `?`
+//! output at `switch1(eth-5)#`. The VLAN commands come from the platform's
+//! command reference and have **not been executed**; anything the switch
+//! dislikes comes back as its own `Invalid input: …` text, surfaced verbatim,
+//! and nothing here writes NVRAM, so a reboot undoes the change.
 //!
 //! Two guard rails are enforced here rather than trusted to the browser:
 //! VLAN 1 cannot be deleted, and a VLAN that still has ports cannot be deleted
@@ -20,7 +24,6 @@ use crate::R;
 /// Longest port name this platform accepts (the switch enforces its own limit
 /// too; failing here gives a readable message instead of `Invalid input`).
 const MAX_PORT_NAME: usize = 15;
-const MAX_DESCRIPTION: usize = 70;
 const MAX_VLAN_NAME: usize = 64;
 
 /// A physical port (`1`..`54`) or trunk group (`Trk1`..`Trk8`).
@@ -108,35 +111,42 @@ fn quoted(value: &str) -> String {
 }
 
 /// `port 5 name "NAS2 Port 1"`
+/// Enter the interface context for `port`, run `body`, leave again.
+///
+/// This firmware has **no flat `port <n> …` form** for these settings: at
+/// config level `port 5 name "x"` answers `Invalid input: name` (measured on
+/// 10.3.1.2). They live one level down, at `switch1(eth-5)#`, which the CLI's
+/// own help confirms (`name`, `enable`, `disable`, `speed-duplex`, …).
+fn interface(port: &str, body: Vec<String>) -> Vec<String> {
+    let mut cmds = vec![format!("interface {port}")];
+    cmds.extend(body);
+    cmds.push("exit".to_string());
+    cmds
+}
+
+/// `interface 5` then `name "NAS2 Port 1"`.
 pub fn port_name(port: &str, name: &str) -> R<Vec<String>> {
     check_port(port)?;
     check_label(name, MAX_PORT_NAME, "Port name")?;
-    Ok(vec![format!("port {port} name {}", quoted(name))])
+    Ok(interface(port, vec![format!("name {}", quoted(name))]))
 }
 
-/// `port 5 description "uplink to services1"`
-pub fn port_description(port: &str, text: &str) -> R<Vec<String>> {
-    check_port(port)?;
-    check_label(text, MAX_DESCRIPTION, "Description")?;
-    Ok(vec![format!(
-        "port {port} description {}",
-        quoted(text)
-    )])
-}
-
-/// Move an access port to another VLAN: sets the PVID and makes the port
-/// untagged in that VLAN.
+/// Move an access port to another VLAN: `vlan 20 untagged 5`.
+///
+/// A port can be untagged in only one VLAN, so this does move it. **Tagged
+/// memberships are left alone**, which on a trunk is the opposite of what you
+/// want — the GUI offers this for access ports only.
 pub fn port_vlan(port: &str, vlan: u32) -> R<Vec<String>> {
     check_port(port)?;
     check_vlan(vlan)?;
-    Ok(vec![format!("port {port} vlan {vlan}")])
+    Ok(vec![format!("vlan {vlan} untagged {port}")])
 }
 
-/// `port 5 enabled` / `port 5 disabled`.
+/// `interface 9` then `enable` / `disable`.
 pub fn port_state(port: &str, enabled: bool) -> R<Vec<String>> {
     check_port(port)?;
-    let state = if enabled { "enabled" } else { "disabled" };
-    Ok(vec![format!("port {port} {state}")])
+    let verb = if enabled { "enable" } else { "disable" };
+    Ok(interface(port, vec![verb.to_string()]))
 }
 
 /// Create or rename a VLAN — the same command does both on this platform.
@@ -232,19 +242,23 @@ mod tests {
     fn port_commands() {
         assert_eq!(
             port_name("5", "NAS2 Port 1").unwrap(),
-            vec![r#"port 5 name "NAS2 Port 1""#.to_string()]
+            vec![
+                "interface 5".to_string(),
+                r#"name "NAS2 Port 1""#.to_string(),
+                "exit".to_string(),
+            ]
         );
         assert_eq!(
             port_vlan("Trk1", 225).unwrap(),
-            vec!["port Trk1 vlan 225".to_string()]
+            vec!["vlan 225 untagged Trk1".to_string()]
         );
         assert_eq!(
             port_state("9", false).unwrap(),
-            vec!["port 9 disabled".to_string()]
-        );
-        assert_eq!(
-            port_description("1", "uplink to services1").unwrap(),
-            vec![r#"port 1 description "uplink to services1""#.to_string()]
+            vec![
+                "interface 9".to_string(),
+                "disable".to_string(),
+                "exit".to_string(),
+            ]
         );
     }
 
@@ -318,8 +332,6 @@ mod tests {
         // The platform's own limit, and the length of the names already on the
         // switch (`Switch2 Port 47`).
         assert!(port_name("5", &"x".repeat(15)).is_ok());
-        assert!(port_description("5", &"x".repeat(70)).is_ok());
-        assert!(port_description("5", &"x".repeat(71)).is_err());
     }
 
     #[test]
