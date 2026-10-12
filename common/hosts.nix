@@ -10,4 +10,10 @@
   aibox = "10.3.1.32";
   router = "10.3.1.1";
   nas = "10.3.1.6";
+  # The ProCurve 2510G-48 core switch (J9280A, Y.11.44).  Not a flake machine
+  # and not a host entry either: it is managed over Telnet, which is why
+  # machines/services1/services/switch-gui.nix proxies it over HTTPS instead.
+  # Fixed address like everything else here — switch-gui must not depend on the
+  # DNS it is also used to debug.
+  switch = "10.3.1.2";
 }

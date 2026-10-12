@@ -51,6 +51,15 @@
       mode = "0440";
     };
 
+    # Switch login + password and the switch-gui OIDC client pair, as a
+    # KEY=value file consumed by systemd's EnvironmentFile (see
+    # services/switch-gui.nix, which lists the keys).  Read by PID 1 only: the
+    # service runs as a dynamic user and never opens it.
+    switch_gui_env_file = {
+      group = "secrets";
+      mode = "0440";
+    };
+
     # Synapse authentik config (services/matrix.nix)
     synapse_authentik = {
       group = "secrets";
