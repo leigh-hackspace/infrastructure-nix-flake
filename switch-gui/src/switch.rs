@@ -199,10 +199,10 @@ impl Switch {
                 // No response at all is the swallowed-input case, not (yet) a
                 // failure worth reporting: the line never reached the parser.
                 Err(e) => {
-                    last_err = Some(e);
                     if attempt == 1 {
-                        return last_err;
+                        return Err(e);
                     }
+                    last_err = Some(e);
                 }
             }
         }
