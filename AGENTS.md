@@ -172,6 +172,31 @@ Guidance for AI agents working in this repository. Read this before making chang
   canonicalised at startup, but symlinks **inside** the share are followed
   wherever they point (the NAS uses them) — the guarantee is "no traversal from
   the API", not "nothing outside the share is reachable". See `filestore/src/fsutil.rs`.
+- `switch-gui/` — top-level Rust tool (zero external crates) that manages the
+  **ProCurve core switch** (J9280A 2510G-48, `Y.11.44`, `10.3.1.2` —
+  `common/hosts.nix` → `switch`) from a browser. The switch speaks only Telnet,
+  so the tool ships its own minimal Telnet client (`src/telnet.rs`), parses the
+  CLI's fixed-width tables (`src/parse.rs`) and merges the four `show` commands
+  that split a port's name, link state and VLAN membership between them.
+  Server-rendered dashboard on the shared `common-rs/web` (same shape as
+  status-dashboard), **cached** switch state (`--ttl`, default 30 s, plus a
+  Refresh button) because a full read is six-plus round-trips against a 1990s
+  CPU that pages its own output. Login is OIDC against authentik gated on the
+  `Infra` group — hand-written (`src/oidc.rs`, S256 PKCE over `curl`, keeping the
+  zero-dependency rule like `dns-sync`'s DO API calls) because `common-rs/oidc`
+  would mean taking reqwest and tokio. LAN-only vhost
+  `switch.int.leighhack.org` → `127.0.0.1:8097`, packaging in
+  `machines/services1/services/switch-gui.nix`.
+  **Read-only in practice:** the `agent` switch account is an Operator (read-only)
+  CLI context, so `configure` is rejected and the GUI detects this, disables
+  every control and says why; writes need `SWITCH_GUI_ENABLE_LOGIN/_PASSWORD`
+  naming a Manager account (`enable` re-asks for a login name — it is a second
+  login, not a password unlock). `switch-gui/README.md` documents the CLI's
+  traps (LF-only line endings, the banner swallowing input, `-- MORE --` paging
+  with `NAWS` ignored, ANSI screen painting, trunk members having no rows) and
+  the finding that **`Can't reach RADIUS server.` is this firmware's generic
+  "authentication failed" message** — see the RADIUS entry under Known
+  follow-ups for the root cause.
 - `machines/services1/` — the services box:
   - `hardware-configuration.nix` — NFS mounts for the NAS and their explicit
     automount units (see gotcha below).
@@ -192,6 +217,13 @@ Guidance for AI agents working in this repository. Read this before making chang
 
 - NAS is TrueNAS at **10.3.1.6**. NFS shares: `/mnt/cameras`,
   `/mnt/filestore`, `/mnt/backups`. It is slow to come up after a power cut.
+- **Core switch** is the ProCurve 2510G-48 at **10.3.1.2** (`common/hosts.nix`),
+  managed over **Telnet only** (no API; the web UI needs a Manager login). Its
+  `agent` login goes out over **RADIUS (authentik)** and falls back to the
+  switch's local account database when RADIUS refuses, which is what makes it
+  print `Can't reach RADIUS server.` on a successful login — see the RADIUS entry
+  under Known follow-ups. `switch-gui/` wraps it in a browser GUI and its README
+  records the CLI's quirks.
 - **NAS dependency rule:** any service that needs the NAS must declare
   `after = [ "wait-for-nas.service" ]` and `requires = [ "wait-for-nas.service" ]`
   (see `nfs-client.nix`), and must keep restarting forever — the container
@@ -743,3 +775,54 @@ The grid is infinitely scrollable — there is **no "load more" button**; the
   all serve 200) — dns-sync only manages the `*.int` CNAMEs, public names are added by hand
   in DO DNS, and these two were never. Either add the records (public apps CNAME →
   `nginx.leighhack.org`) or drop the vhosts and the endpoint.
+
+- **switch-gui: two steps left before it serves anything** — the code, the
+  service and the secret are all in place (`nix eval` of
+  `systemd.services.switch-gui` is clean, 86 unit tests pass, and it has been run
+  read-only against the live switch: 10 VLANs, 50 ports). Done already:
+  `secrets/secrets.yaml` has the `switch_gui_env_file` key (4 keys:
+  `SWITCH_GUI_LOGIN`, `SWITCH_GUI_PASSWORD`, `SWITCH_GUI_OIDC_CLIENT_ID`,
+  `SWITCH_GUI_OIDC_CLIENT_SECRET`; the unit uses it as `EnvironmentFile`, so the
+  service runs as a `DynamicUser` and never opens it), and authentik has an
+  **`switch-gui` OIDC provider (pk 35)** copied from gocardless-dashboard —
+  strict redirect `https://switch.int.leighhack.org/auth/callback`, the three
+  OpenID mappings plus a `groups` scope, and the same flows/signing key. Verified
+  by a real S256 PKCE `/authorize` request: 302 into the auth flow, where a bogus
+  client id gets 400. Still to do:
+  1. **Commit the `secrets/secrets.yaml` change on services1** — it is written
+     but uncommitted, and services1/services2 get `git reset` to `origin/main`
+     periodically.
+  2. `just dns-sync-sync` after deploying — the vhost is picked up from
+     `services.nginx.virtualHosts` automatically (verified: `switch.int` appears
+     in `/etc/dns-sync/expected-int-names`).
+  Note the provider's `groups` scope reuses gocardless-dashboard's ScopeMapping
+  row rather than owning one: creating a fresh child row through the ORM trips a
+  unique-violation on `propertymapping.name` (see the authentik notes).
+- **switch-gui: the write commands are unverified** — `src/commands.rs` builds
+  `port <n> name "…"`, `port <n> vlan <id>`, `vlan <id> name "…"`,
+  `no vlan <id>`, `vlan <id> tagged <ports>` from the platform's command
+  reference and unit-tests them, but nothing was ever sent to the switch: the
+  only account available is Operator/read-only. Expect to correct the syntax on
+  first use with a Manager account; the switch's own `Invalid input:` text is
+  surfaced verbatim, and every attempt is in the audit log.
+- **`Can't reach RADIUS server.` from the switch means "RADIUS refused this
+  login", and the cause is a password mismatch** (root-caused 2026-10-12; an
+  earlier note here blaming EAP/MS-CHAP attribute mapping was wrong). Evidence:
+  `ak-outpost-radius-outpost` logs `Access-Request` with `ip: 10.3.1.2`, so the
+  switch reaches authentik; authentik then writes `login_failed` events with
+  `client_ip: 10.3.1.2`, `username: agent`, rejected by the **identification
+  stage** — i.e. bad credentials. authentik really does have an active `agent`
+  user, but its password is not the switch's local `agent` password, so RADIUS
+  always refuses and the switch **falls back to its own local account database**
+  and lets you in, printing the misleading message on the way. That is why it
+  "happens from time to time": it happens on every login, and only shows when
+  you are watching. Corroborating timing: a wrong password produces it in under
+  two seconds, where a real network timeout costs ~5 s per retry.
+  The one-line fix is to set the authentik `agent` password to match the switch
+  (or drop RADIUS from that account's auth order) — both need a Manager account
+  on the switch, which `agent` is not (`show radius`, `show config` and `show
+  aaa` are all refused in Operator context). Until then every switch login logs
+  a failure in authentik, so `login_failed` alerting there is permanently noisy
+  because of this. Separately: `RadiusProvider` pk 7 (application `Switches`) has
+  `authentication_flow = None` and the flow actually used is
+  `radius-authentication-flow` — not the cause here, but worth tidying.

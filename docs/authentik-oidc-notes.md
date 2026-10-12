@@ -85,3 +85,59 @@ not a bug.
 ## Database
 
 `docker exec authentik-postgresql-1 psql -U authentik -d authentik`
+
+## ORM names on 2026.8.1 (several things renamed since the snippets above)
+
+`ak shell` on 2026.8.1 differs from the older snippets in this file. Hit while
+creating the `switch-gui` provider (pk 35) on 2026-10-12:
+
+- `OAuthProvider` → **`OAuth2Provider`** (still in
+  `authentik.providers.oauth2.models`; `Provider.__subclasses__()` is the quick
+  way to find a renamed model).
+- `redirect_urls` → **`redirect_uris`**, and it is a list of `RedirectURI`
+  dataclasses, not strings:
+  `RedirectURI(url=…, matching_mode=RedirectURIMatchingMode.STRICT,
+  redirect_uri_type=RedirectURIType.AUTHORIZATION)`.
+- `Event.type` → **`Event.action`** (filter with `action__in=["login",
+  "login_failed"]`; `type` raises `FieldError` listing the real fields).
+- `Flow.binding_set` → **`Flow.bindings`**.
+- `Application` has **no `launch_url`** — it is `meta_launch_url` (plus
+  `meta_description`, `meta_icon`, …).
+- `User.active` → `User.is_active`; `RadiusProvider` has no `slug`.
+- Duration fields still must be `key=value` (`minutes=5`), and copying them from
+  a working provider is the safe move.
+
+**`client_secret` is readable through the ORM** even though the UI treats it as
+write-only. So never dump a whole provider (`values()` / `print(obj)`) into a
+terminal or a log you will keep — read the specific fields you need. A provider
+dump is a secret leak; rotate anything you have exposed.
+
+**A fresh `groups` ScopeMapping cannot be made the way this file used to say.**
+`PropertyMapping.objects.create(name=…)` followed by `ScopeMapping(pk=pm.pk,
+scope_name="groups").save()` dies on
+`duplicate key value violates unique constraint "authentik_core_propertymapping_name_…_uniq"`
+with `Key (name)=() already exists` — the child write lands an empty name, and
+empty-named rows already exist. Reusing an existing `groups` ScopeMapping row is
+fine (providers already share the OpenID default mappings), so that is what
+`switch-gui` does. Creating one properly means the web UI or the real API.
+
+## Debugging RADIUS (the switch/AP logins, not the web UI)
+
+The outpost is its own container: `docker logs ak-outpost-radius-outpost`. It
+logs every packet at **info**, which is the fastest way to tell "the NAS/switch
+never reached us" from "we refused it":
+
+```
+{"code":"Access-Request","event":"Radius Request","ip":"10.3.1.2", …}
+```
+
+The outcome is not in that line — look for the matching `login_failed` event
+(`Event.objects.filter(action="login_failed", client_ip="10.3.1.2")`); its
+`context` names the stage that rejected, and `model_name:
+"identificationstage"` means plain bad credentials. Note that a RADIUS login
+never produces the interactive flow's `rad_*` context keys, so grepping events
+for `rad` finds nothing.
+
+`RadiusProvider` (pk 7, application `Switches`) has `authentication_flow = None`
+yet the flow used is `radius-authentication-flow` — resolved from the outpost,
+not the provider, so do not read that `None` as "no flow is running".
