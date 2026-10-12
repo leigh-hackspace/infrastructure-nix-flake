@@ -175,13 +175,19 @@ impl Switch {
         let mut acc = String::new();
         let mut pages = 0usize;
         loop {
-            let chunk = self.tn.read_until(
-                |raw| {
-                    let t = strip_ansi(raw);
-                    waits_for_key(&t) || ends_at_prompt(&t)
-                },
-                self.cfg.timeout,
-            )?;
+            let chunk = self
+                .tn
+                .read_until(
+                    |raw| {
+                        let t = strip_ansi(raw);
+                        waits_for_key(&t) || ends_at_prompt(&t)
+                    },
+                    self.cfg.timeout,
+                )
+                // Name the command in every failure: `apply` sends several in a
+                // row and a bare timeout from the socket does not say which one
+                // the console stopped answering.
+                .map_err(|e| format!("while sending `{cmd}`: {e}"))?;
             let chunk = strip_ansi(&chunk);
             let paged = waits_for_key(&chunk);
             acc.push_str(&strip_more(&chunk));
