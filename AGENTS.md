@@ -265,6 +265,26 @@ Guidance for AI agents working in this repository. Read this before making chang
 
 - NAS is TrueNAS at **10.3.1.6**. NFS shares: `/mnt/cameras`,
   `/mnt/filestore`, `/mnt/backups`. It is slow to come up after a power cut.
+  `leigh-admin` has **passwordless sudo** there (verified 2026-10-13). Set it as the
+  middleware **user record** (`sudo_commands_nopasswd = ["ALL"]`, via the REST API on
+  `/run/middleware/middlewared.sock`), not by editing `/etc/sudoers`: middleware
+  regenerates that file from `middlewared/etc_files/local/sudoers.mako` at boot, so a
+  hand edit is wiped by the next `etc.generate('user')` — and the generated file has no
+  `#includedir`, so a `/etc/sudoers.d` drop-in is never read either.
+- **The borg backup server** is an **Incus container** on the NAS named `borg-server`
+  (out-of-flake, like the rest of the NAS): `sudo incus exec borg-server -- <cmd>`.
+  The repo dataset `/mnt/sas-10k/backups` is mounted in it as `/backups`, and its
+  **proxy device forwards host 3022 → container 22**, which is the port the
+  `borgbackup` job in `machines/services1/services/backup.nix` uses. The `backups`
+  user inside it has no forced command in `authorized_keys` (a single key,
+  `backups@services1.int.leighhack.org`). borg there is a **standalone PyInstaller
+  binary** at `/usr/local/bin/borg` — the image has no pip — so upgrading means
+  dropping in the GitHub release asset (`borg-linux-glibc235-x86_64-gh`) and keeping
+  the previous copy for rollback. Upgraded to **1.4.5** on 2026-10-13 (was 1.4.3; the
+  container image is Ubuntu noble, serial `20251210_07:42`). Keep the server on the same
+  1.4.x line as the client: nixpkgs ships borg **1.4.5** on services1, and a borg 2.x
+  `serve` cannot talk to a 1.4 client, so the 2.0.0bx releases are not an option while
+  the job is a 1.4 client.
 - **Core switches** are the ProCurve 2510G-48s at **10.3.1.2** (`switch1`) and
   **10.3.1.3** (`switch2`), plus the 2824 at **10.3.1.4** (`switch3`)
   (`common/hosts.nix`), managed over **Telnet only** (no API; the web UI needs a
@@ -1065,3 +1085,14 @@ The grid is infinitely scrollable — there is **no "load more" button**; the
   the connect on it would make the GUI unusable on a switch that is answering
   normally — which is what happened on `switch3` before it was a note. The note
   goes into the snapshot's warnings so the page shows it.
+
+- **borg: the 2026-10-12 job run failed and nothing recorded why** (found 2026-10-13
+  while upgrading the server). `services1-backup-srv-2026-10-12T00:00:01.failed` is in
+  the repo, and the journal for that run shows only two "file changed while we backed it
+  up" warnings (`/srv/unifi/logs/tasks.log`, `/srv/frigate/config/frigate.db-wal`) before
+  `status=1/FAILURE`. borg exits 1 for a fatal error and 2 for warnings, so there was a
+  real error that the journal did not capture; the runs on 10-11 and 10-13 are clean.
+  Two things never done here: no `borg check` has been run against the repo (422 GB
+  compressed, ~1.0M chunks), and nothing monitors the borg server —
+  `common/monitoring-endpoints.nix` has no check for `nas2.int:3022`, so a dead
+  `borg-server` container would only show up as a failed nightly job.
