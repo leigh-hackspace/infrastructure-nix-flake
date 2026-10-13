@@ -1,0 +1,6 @@
+# cargo writes the workspace's build output to crates/target; this is here for
+# the times someone points CARGO_TARGET_DIR at the crate instead.
+/target/
+/frontend/target/
+/frontend/dist/
+/tmp/

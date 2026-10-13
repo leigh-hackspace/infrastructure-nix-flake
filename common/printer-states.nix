@@ -16,7 +16,7 @@
 #   PRINTER.print.*          # same three, for print_stats.state
 #
 # The source of truth is the two `const ... &[&str]` arrays in
-# moonraker-exporter/src/main.rs.  If they change *contents*, the panels and the
+# crates/moonraker-exporter/src/main.rs.  If they change *contents*, the panels and the
 # alert numbers follow on the next switch.  If they change *shape*, evaluation
 # throws here rather than quietly rendering a dashboard with no mappings.
 #
@@ -24,7 +24,7 @@
 # so an accidental reorder in the Rust arrays is a check failure, not a dashboard
 # that silently relabels every printer.
 let
-  source = builtins.readFile ../moonraker-exporter/src/main.rs;
+  source = builtins.readFile ../crates/moonraker-exporter/src/main.rs;
 
   # builtins.match is POSIX ERE: anchored over the whole file, no `\[` escape (the
   # bracket expressions `[[]` and `[].]` match the literal brackets), and `.`
@@ -37,7 +37,7 @@ let
     then
       builtins.throw ''
         printer-states.nix: could not find `const ${name}: &[&str] = &[...]` in
-        moonraker-exporter/src/main.rs.  The Grafana mappings and the Prometheus
+        crates/moonraker-exporter/src/main.rs.  The Grafana mappings and the Prometheus
         alert numbers are generated from that array, so it has to keep that name
         and shape (see lib/printer-states.nix).
       ''

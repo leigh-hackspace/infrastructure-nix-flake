@@ -1,7 +1,7 @@
 # check-printer-states.nix
 #
 # Assertions over ./printer-states.nix — the klippy / print_stats state tables
-# that are read out of moonraker-exporter/src/main.rs and used to generate the
+# that are read out of crates/moonraker-exporter/src/main.rs and used to generate the
 # Grafana value mappings (machines/services2/monitoring-dashboards.nix) and the
 # Prometheus alert numbers (machines/services2/monitoring.nix).  Run it with:
 #
@@ -56,7 +56,7 @@ let
         && t.code.${builtins.elemAt t.labels i} == i)
       (builtins.genList (i: i) n);
   in
-    need (n > 0) "${kind}: no states parsed out of moonraker-exporter/src/main.rs"
+    need (n > 0) "${kind}: no states parsed out of crates/moonraker-exporter/src/main.rs"
     && need (builtins.all labelOk t.labels)
     "${kind}: a state label is not [a-z_]+: ${builtins.toJSON t.labels}"
     && need unique "${kind}: duplicate state label in ${builtins.toJSON t.labels}"

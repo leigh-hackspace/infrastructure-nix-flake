@@ -1,0 +1,12 @@
+[package]
+name = "status-dashboard"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "status-dashboard"
+path = "src/main.rs"
+
+[dependencies]
+common-json = { path = "../common-rs/json" }
+common-web = { path = "../common-rs/web" }

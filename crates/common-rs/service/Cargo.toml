@@ -1,0 +1,11 @@
+[package]
+name = "common-service"
+version = "0.1.0"
+edition = "2021"
+
+# The startup plumbing shared by the services in this repo: reading the flags and
+# the systemd `EnvironmentFile` a unit hands over, and deciding whether the address
+# they were told to bind is a loopback one.  Path dependency: see common/crane.nix
+# for how the shared source reaches the Nix build.
+
+[dependencies]

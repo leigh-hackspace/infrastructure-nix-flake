@@ -1,0 +1,5 @@
+# These crates are workspace members: cargo writes build output to the workspace
+# root's target/ and keeps one lock file there, so neither appears in here.  This
+# is here for the times someone builds one of them on its own.
+/target/
+Cargo.lock

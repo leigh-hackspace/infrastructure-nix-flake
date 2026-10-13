@@ -3,7 +3,7 @@
 # 3d-blue (10.3.14.62) and 3d-lime (10.3.14.61) are Raspberry Pi 3 print
 # servers running Klipper + Moonraker. Moonraker exposes no /metrics
 # endpoint, so the `moonraker-exporter` tool (Rust source:
-# ../../../moonraker-exporter, zero external crates) polls each printer's
+# ../../../crates/moonraker-exporter, zero external crates) polls each printer's
 # Moonraker API on :7125 and re-exports the metrics for Prometheus to scrape
 # (scrape job "moonraker", configured in machines/services2/monitoring.nix).
 #
@@ -24,12 +24,11 @@
   INFRA,
   ...
 }: let
-  exporter = CRANE.cached {
+  exporter = CRANE.crate {
     pname = "moonraker-exporter";
     version = "0.1.0";
-    src = ../../../moonraker-exporter;
-    cargoLock = CRANE.lockFile ../../../moonraker-exporter/Cargo.lock;
-    # `common-json` path dependency (see common-rs/ and common/crane.nix).
+    member = "moonraker-exporter";
+    # `common-json` path dependency (see crates/common-rs/ and common/crane.nix).
     sharedCrates = ["json"];
   };
 

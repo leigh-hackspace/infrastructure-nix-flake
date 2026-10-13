@@ -3,6 +3,22 @@
 Provides the configuration for various servers running Leigh Hackspack
 infrastructure.
 
+## Layout
+
+```text
+crates/        every Rust crate; one cargo workspace (crates/Cargo.toml)
+  common-rs/     the shared in-tree crates (json, oidc, web, pg, service, …)
+  <program>/     one directory per service or tool; its Dioxus SPA in frontend/
+common/        Nix modules shared by every machine (crane helpers, hosts, nginx)
+machines/      one directory per machine; services/ one file per service
+secrets/       sops-encrypted
+docs/          write-ups, post-mortems and audits — the backstory modules point to
+```
+
+Build anything in `crates/` with `cargo build -p <name>` from there; `just test`
+and `just clippy` run the whole workspace. `AGENTS.md` documents the conventions
+and the build cache.
+
 ## Applying Config
 
 ```bash

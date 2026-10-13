@@ -1,0 +1,73 @@
+# The workspace root for every native (x86_64) Rust crate in this repo.
+#
+# Layout: one directory per program directly in here, the shared libraries under
+# `common-rs/`.  A program depends on a shared crate with a plain relative path
+# (`common-json = { path = "../common-rs/json" }`), which is what makes the whole
+# tree one cargo project: `cargo check`/`cargo test` from here sees every crate,
+# rust-analyzer needs no per-directory setup, and there is one `target/` and one
+# `Cargo.lock` for the whole workspace.
+#
+# (This replaces an older arrangement where each crate was its own workspace and
+# the shared crates were reached through a git-ignored `common-rs` symlink inside
+# each crate directory.  Those symlinks are gone for the native crates; the only
+# ones left are inside the wasm SPAs' `frontend/` directories, for the reason
+# below.)
+#
+# ## Why the Dioxus SPAs are not members
+#
+# Each `frontend/` is a **separate workspace** with its own `Cargo.lock` (its own
+# `[workspace]` table is what opts it out).  It is compiled for
+# `wasm32-unknown-unknown` against a `wasm-bindgen` pinned to match the CLI the
+# flake uses (see `common/crane.nix`), and it must not be resolved in the same
+# lockfile as the native crates: a workspace resolves one version graph for both
+# the host and the wasm target, so a host-only feature unification would move
+# `wasm-bindgen` out from under the pinned CLI and the SPA build would die on a
+# schema-version error.  Being separate workspaces is also what lets `cargo build
+# --workspace` here stay a host build.
+#
+# A SPA still shares code with its server — the `dto` crates and `common-rs/preview`
+# — through a path dependency, and cargo insists a package belongs to exactly one
+# workspace, so those two are *copied* into the SPA's directory by a git-ignored
+# symlink (`frontend/dto -> ../dto`) locally and by `sharedCrates` in the Nix
+# build.  Same file, two materialisations, so the SPA and the API cannot disagree.
+#
+# ## Building one crate
+#
+#   cargo build -p filestore          # from this directory
+#   cargo test  --workspace           # every native crate
+#
+# The Nix build does the same thing: `src` is this directory and each service is
+# selected with `-p` (see `common/crane.nix`).
+[workspace]
+resolver = "2"
+members = [
+  # shared libraries
+  "common-rs/build-spa",
+  "common-rs/json",
+  "common-rs/oidc",
+  "common-rs/pg",
+  "common-rs/preview",
+  "common-rs/service",
+  "common-rs/web",
+  # programs
+  "dns-sync",
+  "filestore",
+  "frigate-monitor",
+  "gocardless-dashboard",
+  "gocardless-dashboard/dto",
+  "moonraker-exporter",
+  "network-status",
+  "status-dashboard",
+  "switch-gui",
+  "switch-gui/dto",
+]
+# Belt and braces: each SPA's own `[workspace]` table is what actually opts it
+# out, and this list says the same thing from the other side.  Cargo refuses a
+# package that sits inside a workspace directory without being a member or being
+# excluded, so if the two ever disagree the failure is loud rather than silent.
+exclude = [
+  "filestore/frontend",
+  "frigate-monitor/frontend",
+  "gocardless-dashboard/frontend",
+  "switch-gui/frontend",
+]

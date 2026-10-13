@@ -1,9 +1,9 @@
 # switch-gui: ports and VLANs on the network's ProCurve switches, in a browser.
 #
-# Rust source in ../../../switch-gui.  It reads each switch's configuration over
+# Rust source in ../../../crates/switch-gui.  It reads each switch's configuration over
 # Telnet — merging the five `show` tables that split a port's name, link state and
 # VLAN membership across them — and serves a Dioxus SPA (compiled to wasm here
-# from ../../../switch-gui/frontend and embedded by build.rs — no bundle is
+# from ../../../crates/switch-gui/frontend and embedded by build.rs — no bundle is
 # committed) at switch.int.leighhack.org on 127.0.0.1:8097.
 #
 # ## Where the page's data comes from
@@ -120,44 +120,40 @@
   # `dist/`, which is git-ignored build output that would otherwise be copied
   # into the store as an input.
   frontendSrc = pkgs.runCommand "switch-gui-frontend-src" {} ''
-    cp -r ${../../../switch-gui/frontend} $out
+    cp -r ${../../../crates/switch-gui/frontend} $out
     # Store paths are read-only and cp -r preserves the mode, so make the copy
     # writable before adding the dto crate (a symlink in the working tree,
     # materialised here; the flake source cannot carry it).
     chmod -R u+rwX $out
     rm -rf $out/dist $out/target $out/dto
-    cp -r ${../../../switch-gui/dto} $out/dto
+    cp -r ${../../../crates/switch-gui/dto} $out/dto
   '';
   frontendDist = CRANE.wasmSpa {
     pname = "switch-gui-web";
     version = "0.1.0";
     src = frontendSrc;
-    cargoLock = CRANE.lockFile ../../../switch-gui/frontend/Cargo.lock;
+    cargoLock = CRANE.lockFile ../../../crates/switch-gui/frontend/Cargo.lock;
     wasmName = "switch_gui_web";
   };
 
-  # The binary.  Its build.rs embeds the SPA, so the bundle is a build-hook input
-  # rather than a cargo dependency: the args handed to `CRANE.deps` stay clean, so
-  # a SPA-only change does not rebuild the binary's dependency tree (see the two
-  # notes on `CRANE.cached` in common/crane.nix).
-  switchGuiArgs = {
+  # The binary.  Its build.rs embeds the SPA, which makes the bundle a build-hook
+  # input rather than a cargo dependency — no problem, because the dependency
+  # derivation is the workspace-wide one and never sees these hooks (see `crate`
+  # in common/crane.nix), so a SPA-only change does not rebuild the binary's
+  # dependency tree.
+  switchGui = CRANE.crate {
     pname = "switch-gui";
     version = "0.1.0";
-    src = ../../../switch-gui;
-    cargoLock = CRANE.lockFile ../../../switch-gui/Cargo.lock;
+    member = "switch-gui";
     # `common-json` (the `show` table readers), `common-web` (the HTTP plumbing),
     # `common-oidc` (authentik login + the Infra gate), `common-pg` (the pool and
     # the sea-query→sqlx glue) and `common-build-spa` (build.rs).  `dto` is a real
     # directory inside the crate, so it needs no entry.
-    sharedCrates = ["json" "web" "oidc" "pg" "build-spa"];
+    sharedCrates = ["json" "web" "oidc" "pg" "service" "build-spa"];
+    # Point build.rs at the nix-built bundle instead of the (uncommitted)
+    # frontend/dist in the source tree.
+    preBuild = "export SWITCH_GUI_DIST=${frontendDist}";
   };
-  switchGui = CRANE.cached (switchGuiArgs
-    // {
-      cargoArtifacts = CRANE.deps switchGuiArgs;
-      # Point build.rs at the nix-built bundle instead of the (uncommitted)
-      # frontend/dist in the source tree.
-      preBuild = "export SWITCH_GUI_DIST=${frontendDist}";
-    });
 in {
   systemd.services.switch-gui = INFRA.mkNeverGiveUp {
     description = "switch-gui: port and VLAN management for the ProCurve switches";

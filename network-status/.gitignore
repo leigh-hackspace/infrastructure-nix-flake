@@ -1,5 +1,0 @@
-# Rust build output
-/target/
-
-# Frontend build dependencies (regenerated with `npm install`; never committed)
-frontend/node_modules/

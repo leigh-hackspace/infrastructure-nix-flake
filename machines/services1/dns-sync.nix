@@ -1,7 +1,8 @@
 # DNS-sync tooling: keeps the router's dnsmasq and DigitalOcean DNS in step
 # with the *.int.leighhack.org vhosts this box's nginx serves.
 #
-# Rust source: ../../dns-sync (zero external crates, see status-dashboard/).
+# Rust source: ../../crates/dns-sync (zero external crates, see
+# crates/status-dashboard/).
 #
 # The source of truth is `services.nginx.virtualHosts` (all vhost names plus
 # their serverAliases that end in .int.leighhack.org — those are the DNS
@@ -35,12 +36,11 @@
   CRANE,
   ...
 }: let
-  dnsSync = CRANE.cached {
+  dnsSync = CRANE.crate {
     pname = "dns-sync";
     version = "0.1.0";
-    src = ../../dns-sync;
-    cargoLock = CRANE.lockFile ../../dns-sync/Cargo.lock;
-    # `common-json` path dependency (see common-rs/ and common/crane.nix).
+    member = "dns-sync";
+    # `common-json` path dependency (see crates/common-rs/ and common/crane.nix).
     sharedCrates = ["json"];
   };
 

@@ -2,7 +2,7 @@
 #
 # `pkgs.rustPlatform.buildRustPackage` recompiles the whole dependency tree on
 # every source change, which is the slow part of iterating on these crates.
-# Crane splits each build into a cached dependency derivation (keyed only on the
+# Crane splits a build into a cached dependency derivation (keyed only on the
 # Cargo.toml/Cargo.lock/.cargo config — the sources are replaced with stubs)
 # plus the crate itself, so editing one .rs file only recompiles that crate
 # against the cached artifacts.
@@ -11,19 +11,42 @@
 # `specialArgs` as `CRANE` (imported once in flake.nix) — modules do not
 # re-import it themselves:
 #
-#   CRANE.cached {
+#   CRANE.crate {
 #     pname = "dns-sync";
 #     version = "0.1.0";
-#     src = ../../dns-sync;
-#     cargoLock = CRANE.lockFile ../../dns-sync/Cargo.lock;
+#     member = "dns-sync";
 #   };
 #
-# Two differences from the old call style worth remembering:
+# ## Everything native is one cargo workspace
 #
-# - crane takes `cargoLock` as a *path*, not nixpkgs' `cargoLock.lockFile`
-#   attrset;
-# - crane vendors the crates itself (per crate, fixed-output, cached) instead of
-#   using `cargoDeps`, so no `fetchCargoVendor` hash needs maintaining.
+# `crates/` is a single cargo workspace (crates/Cargo.toml), so there is one lock
+# file and one dependency graph for all eight programs.  That has two consequences
+# here, and the helpers exist to keep the second one from costing anything:
+#
+# 1. there is one dependency derivation for the whole fleet (`workspaceArtifacts`):
+#    before the workspace, filestore, gocardless-dashboard, frigate-monitor and
+#    switch-gui each compiled their own copy of reqwest, because each had its own
+#    lock file and therefore its own vendor dir.  Now it is compiled once;
+# 2. cargo loads *every* member's manifest to build any of them (and refuses a
+#    manifest whose target files are missing), so a member cannot be built from its
+#    own directory — the source tree has to carry the whole workspace.  Naively
+#    that would mean every .rs edit rebuilds all eight programs.  `memberSrc`
+#    avoids it: the tree carries the other members as crane's *stubs* (manifests
+#    only, which is all cargo needs from them) and the real code of just the member
+#    being built, so a crate's derivation still depends on that crate's source and
+#    nothing else.
+#
+# The wasm SPAs under `crates/<app>/frontend` are deliberately *not* part of the
+# workspace (they are built for another target against a pinned wasm-bindgen; the
+# reason is written out in crates/Cargo.toml), so they keep their own lock files,
+# their own dependency derivation, and the `sharedCrates` copy trick — see
+# `wasmSpa`.
+#
+# Two differences from the pre-crane call style worth remembering:
+#
+# - crane takes `cargoLock` as a *path*, not nixpkgs' `cargoLock.lockFile` attrset;
+# - crane vendors the crates itself (fixed-output, cached) instead of using
+#   `cargoDeps`, so no `fetchCargoVendor` hash needs maintaining.
 {
   pkgs,
   crane,
@@ -32,41 +55,140 @@
   craneLib = crane.mkLib pkgs;
 
   # Read a Cargo.lock at evaluation time and re-emit it as a content-keyed store
-  # file. Handing crane a lock file that lives inside the crate's own source
-  # directory makes the vendor and dummy-source derivations depend on the whole
-  # source tree, so *any* edit (even a comment in a .rs file) invalidates the
-  # dependency cache — exactly the rebuild we are trying to avoid. Keyed on the
-  # lock contents, only a dependency change forces a rebuild.
+  # file. Handing crane a lock file that lives inside the source directory makes
+  # the vendor and dummy-source derivations depend on the whole source tree, so
+  # *any* edit (even a comment in a .rs file) invalidates the dependency cache —
+  # exactly the rebuild we are trying to avoid. Keyed on the lock contents, only a
+  # dependency change forces a rebuild.
   lockFile = p: pkgs.writeText "Cargo.lock" (builtins.readFile p);
 
-  # --- shared in-repo crates (common-rs/) ------------------------------------
-  #
-  # Some crates share code through cargo *path* dependencies (`dns-sync` and
-  # `moonraker-exporter` use `common-json`, `filestore` and
-  # `gocardless-dashboard` use `common-oidc`).  The dependency is written
-  # `path = "./common-rs/<name>"` and the crate directory carries a git-ignored
-  # `common-rs` symlink to the repo's `common-rs/`, so `cargo build` works in
-  # the crate's own directory like any other workspace.  A Nix build is handed
-  # one crate's source tree, which cannot contain anything above the tree, so
-  # the source passed to crane gets the real shared crates copied inside it —
-  # the same trick the gocardless-dashboard frontend uses for its `dto`
-  # dependency.
-  #
-  # The dependency build is given stub sources instead of the real shared code:
-  # the path dependencies only have to resolve there, and keying the stubs on
-  # the shared crates' manifests (read at eval time) means a dependency change
-  # in a shared crate invalidates the cache while editing shared code does not.
-  # Passing the real shared sources through the dependency build would make a
-  # one-line change in common-rs recompile every vendored dependency.
-  sharedCrateDir = name: "${../common-rs}/${name}";
-  sharedCrateManifest = name: ../common-rs + "/${name}/Cargo.toml";
+  # --- the native cargo workspace ---------------------------------------------
+  workspaceRoot = ../crates;
 
-  # `src` with the named shared crates copied in (real sources).
+  # The SPAs, relative to the workspace root.  They are excluded from the native
+  # source tree: not workspace members, built for wasm32 with their own lock file,
+  # and a change to a SPA manifest must not invalidate the native dependency cache.
+  spaMembers = [
+    "filestore/frontend"
+    "frigate-monitor/frontend"
+    "gocardless-dashboard/frontend"
+    "switch-gui/frontend"
+  ];
+
+  relativeToWorkspace = path: lib.removePrefix (toString workspaceRoot + "/") (toString path);
+
+  workspaceSrc = lib.cleanSourceWith {
+    src = workspaceRoot;
+    filter = path: _type: let
+      rel = relativeToWorkspace path;
+    in
+      !lib.any (d: rel == d || lib.hasPrefix (d + "/") rel) spaMembers;
+  };
+
+  workspaceLock = lockFile (workspaceRoot + "/Cargo.lock");
+
+  # The one dependency derivation every native crate builds against.
   #
-  # The git-ignored `common-rs` symlink a crate carries for local cargo work is
-  # part of the git tree once staged, and `cp -a` copies it as a *symlink* —
-  # pointing at a path that does not exist inside the store tree.  So clear it
-  # out first and build the directory from scratch.
+  # `buildDepsOnly` replaces every member's sources with stubs, so this is keyed on
+  # the workspace's manifests and lock file alone: no .rs edit reaches it.  Because
+  # the lock file is shared there is exactly one store path here for the whole
+  # fleet, which is the point — it is what stops each program recompiling its own
+  # copy of the dependency tree.
+  #
+  # The flip side of one lock file: changing a dependency *anywhere* invalidates it
+  # for everyone. That is the price of a workspace and it is the same price cargo
+  # charges locally.
+  workspaceArtifacts = craneLib.buildDepsOnly {
+    src = workspaceSrc;
+    cargoLock = workspaceLock;
+    doCheck = false;
+  };
+
+  # The source tree one member is built from: the workspace with stub sources
+  # everywhere except `member` (and the shared crates it reads).
+  #
+  # The stubs are not a shortcut around cargo's rules, they *are* the rules — the
+  # workspace manifest has to list every member and each member's manifest has to
+  # parse, but nothing requires the members that are not being compiled to have any
+  # code.  Keeping them as stubs is what preserves per-crate build caching now that
+  # the crates share a lock file.
+  memberSrc = {
+    pname,
+    member,
+    sharedCrates ? [],
+  }: let
+    copies =
+      lib.concatMapStringsSep "\n" (c: ''
+        rm -rf $out/common-rs/${c}
+        mkdir -p $out/common-rs
+        cp -a ${workspaceRoot}/common-rs/${c} $out/common-rs/${c}
+      '')
+      sharedCrates;
+  in
+    pkgs.runCommand "${pname}-src" {} ''
+      mkdir -p $out
+      cp -a ${craneLib.mkDummySrc {src = workspaceSrc;}}/. $out/
+      # Store paths are read-only and cp -a preserves the mode, so make the copy
+      # writable before replacing anything in it.
+      chmod -R u+w $out
+      rm -rf $out/${member}
+      cp -a ${workspaceRoot}/${member} $out/${member}
+      ${copies}
+    '';
+
+  # A workspace member built against the shared cached deps.
+  #
+  # `member` is the path under `crates/`; `pname` is the cargo package name passed
+  # to `cargo build -p`, which selects this program out of the workspace.  They are
+  # the same string for every crate here, but saying both keeps the two jobs
+  # separate if that ever stops being true.
+  #
+  # `sharedCrates` names the `common-rs/` crates the member reads by path: they are
+  # already in the tree as stubs (enough for cargo to resolve them), and this is
+  # what swaps in the real code.  A member that reads none needs nothing.
+  #
+  # Pass `cargoArtifacts` only to override the shared dependency derivation. It is
+  # worth knowing about: a build hook that references another derivation (e.g. a
+  # preBuild pointing build.rs at a sibling SPA) is *not* an input to the
+  # dependencies here, so a SPA-only change never rebuilds a binary's deps.
+  #
+  # `doCheck = false`: the unit tests run in `just test` / `just clippy` (the
+  # whole workspace in one pass), not inside the Nix build, which keeps a deploy
+  # from failing on a test and the dependency cache independent of the test tree.
+  crate = {
+    pname,
+    version,
+    member,
+    sharedCrates ? [],
+    cargoArtifacts ? workspaceArtifacts,
+    ...
+  } @ args:
+    craneLib.buildPackage (removeAttrs args [
+        "member"
+        "sharedCrates"
+        "cargoArtifacts"
+      ]
+      // {
+        inherit pname version cargoArtifacts;
+        src = memberSrc {
+          inherit pname member sharedCrates;
+        };
+        cargoLock = workspaceLock;
+        cargoBuildCommand = "cargoWithProfile build -p ${pname}";
+        doCheck = false;
+      });
+
+  # --- the wasm SPAs ------------------------------------------------------------
+  #
+  # A SPA is its own cargo workspace with its own lock file, so it gets its own
+  # dependency derivation, and its shared path dependencies have to be copied into
+  # its source tree: the git-ignored symlink a developer has locally
+  # (`frontend/dto -> ../dto`, see common/shared-rs-links.sh) cannot travel in a
+  # flake source, and a symlink outside the tree could not be copied into the store
+  # either way.
+  #
+  # `sharedCrates` here names crates under `common-rs/`; a crate that lives inside
+  # the app's own tree (a `dto`) is copied by the module that builds it, as before.
   withSharedCrates = {
     pname,
     src,
@@ -75,7 +197,7 @@
     copies =
       lib.concatMapStringsSep "\n" (n: ''
         mkdir -p $out/common-rs
-        cp -a ${sharedCrateDir n} $out/common-rs/${n}
+        cp -a ${workspaceRoot}/common-rs/${n} $out/common-rs/${n}
       '')
       names;
   in
@@ -88,82 +210,6 @@
       rm -rf $out/common-rs
       ${copies}
     '';
-
-  # `src` with the named shared crates copied in as stubs: real manifests, empty
-  # sources, for the dependency build only.
-  withStubbedSharedCrates = {
-    pname,
-    src,
-    names,
-  }: let
-    stubs =
-      lib.concatMapStringsSep "\n" (n: ''
-        mkdir -p $out/common-rs/${n}/src
-        cp ${pkgs.writeText "${pname}-${n}-stub-Cargo.toml" (builtins.readFile (sharedCrateManifest n))} \
-          $out/common-rs/${n}/Cargo.toml
-        : > $out/common-rs/${n}/src/lib.rs
-      '')
-      names;
-  in
-    pkgs.runCommand "${pname}-deps-src" {} ''
-      mkdir -p $out
-      cp -a ${src}/. $out/
-      chmod -R u+w $out
-      rm -rf $out/common-rs
-      ${stubs}
-    '';
-
-  # `args.sharedCrates = ["oidc"]` selects the right source tree for the call:
-  # real shared code for the crate build, stubs for the dependency build.
-  resolveShared = {
-    args,
-    stub,
-  }: let
-    names = args.sharedCrates or [];
-    wrapped =
-      if names == []
-      then args
-      else if stub
-      then
-        removeAttrs (args
-          // {
-            src = withStubbedSharedCrates {
-              inherit (args) pname src;
-              inherit names;
-            };
-          }) ["sharedCrates"]
-      else
-        removeAttrs (args
-          // {
-            src = withSharedCrates {
-              inherit (args) pname src;
-              inherit names;
-            };
-          }) ["sharedCrates"];
-  in
-    wrapped;
-
-  # The cached dependency derivation on its own. Only Cargo.toml, Cargo.lock and
-  # any .cargo/config.toml feed it (the sources are stubbed), so it survives
-  # every edit to the crate itself.
-  deps = args:
-    craneLib.buildDepsOnly (resolveShared {
-        inherit args;
-        stub = true;
-      }
-      // {doCheck = false;});
-
-  # A crate built against cached deps. Pass `cargoArtifacts` explicitly when the
-  # crate's own build has hooks that reference another derivation (e.g. a preBuild
-  # pointing build.rs at a sibling SPA): those would otherwise become inputs of
-  # the dependency build and invalidate the cache whenever that derivation
-  # changes, even though cargo never sees them as dependencies.
-  cached = args:
-    craneLib.buildPackage (resolveShared {
-        inherit args;
-        stub = false;
-      }
-      // {doCheck = false;});
 
   # wasm-bindgen-cli pinned to 0.2.128 — the exact wasm-bindgen version every SPA
   # is compiled against (see the frontend Cargo.locks). The CLI and the
@@ -194,10 +240,6 @@
   # no wasm linker, so wasm-ld comes from pkgs.lld) and the output is
   # post-processed by wasm-bindgen. Both the cached deps and the crate are built
   # for the wasm target, otherwise the cache would be for the wrong target.
-  #
-  # sharedCrates works here too: a SPA that reads a shared in-repo crate (filestore
-  # uses common-rs/preview for its preview table) has the real crate copied into its
-  # source tree, since the git-ignored symlink is not part of the flake source.
   wasmSpa = {
     pname,
     version,
@@ -206,9 +248,20 @@
     # cargo's underscored package name, i.e. the .wasm file cargo emits
     wasmName,
     sharedCrates ? [],
-  }:
-    cached {
-      inherit pname version src cargoLock sharedCrates;
+  }: let
+    names = sharedCrates;
+    resolved =
+      if names == []
+      then src
+      else
+        withSharedCrates {
+          inherit pname src names;
+        };
+  in
+    craneLib.buildPackage {
+      inherit pname version cargoLock;
+      src = resolved;
+      doCheck = false;
       nativeBuildInputs = [wasmBindgenCli pkgs.lld];
       cargoBuildCommand = "cargoWithProfile build --target wasm32-unknown-unknown";
       preBuild = "export CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_LINKER=wasm-ld";
@@ -219,5 +272,15 @@
       '';
     };
 in {
-  inherit craneLib cached deps lockFile wasmBindgenCli wasmSpa;
+  inherit
+    craneLib
+    crate
+    lockFile
+    spaMembers
+    wasmBindgenCli
+    wasmSpa
+    workspaceArtifacts
+    workspaceRoot
+    workspaceSrc
+    ;
 }

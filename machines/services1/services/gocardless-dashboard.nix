@@ -1,11 +1,11 @@
 # gocardless-dashboard: GoCardless Pro sync + operator web UI (Rust; source
-# in ../../../gocardless-dashboard).
+# in ../../../crates/gocardless-dashboard).
 #
 # A Rust binary that every sync interval (default 15 min) pulls customers,
 # mandates, subscriptions, payments, refunds and payouts from the GoCardless
 # Pro API into a local PostgreSQL database (gocardless_dashboard, created by
 # postgres.nix), and serves a Dioxus SPA (compiled to wasm here from
-# ../../../gocardless-dashboard/frontend and embedded by build.rs — no bundle is
+# ../../../crates/gocardless-dashboard/frontend and embedded by build.rs — no bundle is
 # committed) on 127.0.0.1:8095.
 #
 # Login is OIDC against authentik restricted to the `Infra` group; the
@@ -27,41 +27,39 @@
   # recipe live in common/crane.nix).  Its gdash-dto path dependency is a
   # symlink in the source tree, so materialise a real copy for the sandbox.
   frontendSrc = pkgs.runCommand "gocardless-dashboard-frontend-src" {} ''
-    cp -r ${../../../gocardless-dashboard/frontend} $out
+    cp -r ${../../../crates/gocardless-dashboard/frontend} $out
     # Store paths are read-only and cp -r preserves the mode, so make the
     # copy writable before adding the dto crate (the gdash-dto path
     # dependency; a symlink in the working tree, materialised here).
     chmod -R u+rwX $out
     rm -rf $out/dto
-    cp -r ${../../../gocardless-dashboard/dto} $out/dto
+    cp -r ${../../../crates/gocardless-dashboard/dto} $out/dto
   '';
   frontendDist = CRANE.wasmSpa {
     pname = "gocardless-dashboard-web";
     version = "0.1.0";
     src = frontendSrc;
-    cargoLock = CRANE.lockFile ../../../gocardless-dashboard/frontend/Cargo.lock;
+    cargoLock = CRANE.lockFile ../../../crates/gocardless-dashboard/frontend/Cargo.lock;
     wasmName = "gocardless_dashboard_web";
   };
 
-  # The binary.  Its build.rs embeds the SPA, so the SPA is a build-hook input
-  # rather than a cargo dependency: the args used for the cached deps are kept
-  # clean so a SPA-only change does not rebuild the binary's dependency tree.
-  dashboardArgs = {
+  # The binary.  Its build.rs embeds the SPA, which makes the SPA a build-hook
+  # input rather than a cargo dependency — no problem, because the dependency
+  # derivation is the workspace-wide one and never sees these hooks (see `crate`
+  # in common/crane.nix), so a SPA-only change still does not rebuild the
+  # binary's dependency tree.
+  dashboard = CRANE.crate {
     pname = "gocardless-dashboard";
     version = "0.1.0";
-    src = ../../../gocardless-dashboard;
-    cargoLock = CRANE.lockFile ../../../gocardless-dashboard/Cargo.lock;
+    member = "gocardless-dashboard";
     # `common-oidc` + `common-build-spa` + `common-pg` path dependencies (see
-    # common-rs/ and common/crane.nix).
-    sharedCrates = ["oidc" "build-spa" "pg"];
+    # crates/common-rs/ and common/crane.nix).  `dto` is a real directory inside
+    # the crate, so it needs no entry.
+    sharedCrates = ["oidc" "service" "build-spa" "pg"];
+    # Point build.rs at the nix-built bundle instead of the (uncommitted)
+    # frontend/dist in the source tree.
+    preBuild = "export GOCARDLESS_DASHBOARD_DIST=${frontendDist}";
   };
-  dashboard = CRANE.cached (dashboardArgs
-    // {
-      cargoArtifacts = CRANE.deps dashboardArgs;
-      # Point build.rs at the nix-built bundle instead of the (uncommitted)
-      # frontend/dist in the source tree.
-      preBuild = "export GOCARDLESS_DASHBOARD_DIST=${frontendDist}";
-    });
 in {
   # Runs as root (like the other CONFIG.ENV_FILE consumers): /run/secrets is
   # root:keys 0710, so only root can reach the secret files inside it.

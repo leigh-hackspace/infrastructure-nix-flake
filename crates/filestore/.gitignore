@@ -1,0 +1,15 @@
+# cargo writes the workspace's build output to crates/target; this is here for
+# the times someone points CARGO_TARGET_DIR at the crate instead.
+/target/
+
+# The wasm SPA bundle: built by the flake (or frontend/build.sh), never committed.
+/frontend/target/
+/frontend/dist/
+
+# The SPA is its own cargo workspace and reaches the shared crates through a
+# symlink a developer creates with `just shared-rs` and the Nix build replaces
+# with a real copy (see common/shared-rs-links.sh and common/crane.nix).
+/frontend/common-rs
+
+# Playwright for the headless browser suite (installed by tests/run.sh).
+/tests/node_modules/

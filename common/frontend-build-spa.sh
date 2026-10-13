@@ -9,7 +9,7 @@
 # must produce exactly the same dist/.  Nothing here is committed.
 #
 # Usage (run from inside a frontend/ directory):
-#   ../../common/frontend-build-spa.sh <wasm-package-name>
+#   ../../../common/frontend-build-spa.sh <wasm-package-name>
 set -euo pipefail
 
 if [ $# -ne 1 ]; then

@@ -1,6 +1,6 @@
 # frigate-monitor: persistent scene-change monitor for the main_space camera
-# (Rust source: ../frigate-monitor, single external crate: `image`; the web
-# UI is a Dioxus SPA, compiled to wasm here from ../frigate-monitor/frontend
+# (Rust source: ../../crates/frigate-monitor, single external crate: `image`; the web
+# UI is a Dioxus SPA, compiled to wasm here from ../../crates/frigate-monitor/frontend
 # and embedded into the binary by its build.rs — no bundle is committed).
 #
 # Grabs a snapshot of the Frigate RTSP substream on services1 every N
@@ -30,33 +30,30 @@
   # The Dioxus SPA compiled to wasm (this replaces the frontend/dist that used to
   # be committed to the git tree).  The pinned wasm-bindgen-cli and the wasm build
   # recipe live in common/crane.nix.
-  frontendSrc = ../../frigate-monitor/frontend;
+  frontendSrc = ../../crates/frigate-monitor/frontend;
   frontendDist = CRANE.wasmSpa {
     pname = "frigate-monitor-web";
     version = "0.1.0";
     src = frontendSrc;
-    cargoLock = CRANE.lockFile ../../frigate-monitor/frontend/Cargo.lock;
+    cargoLock = CRANE.lockFile ../../crates/frigate-monitor/frontend/Cargo.lock;
     wasmName = "frigate_monitor_web";
   };
 
-  # The binary.  Its build.rs embeds the SPA, so the SPA is a build-hook input
-  # rather than a cargo dependency: the args used for the cached deps are kept
-  # clean so a SPA-only change does not rebuild the binary's dependency tree.
-  frigateMonitorArgs = {
+  # The binary.  Its build.rs embeds the SPA, which makes the SPA a build-hook
+  # input rather than a cargo dependency — no problem, because the dependency
+  # derivation is the workspace-wide one and never sees these hooks (see
+  # `crate` in common/crane.nix), so a SPA-only change still does not rebuild the
+  # binary's dependency tree.
+  frigateMonitor = CRANE.crate {
     pname = "frigate-monitor";
     version = "0.2.0";
-    src = ../../frigate-monitor;
-    cargoLock = CRANE.lockFile ../../frigate-monitor/Cargo.lock;
-    # `common-build-spa` path dependency (see common-rs/ and common/crane.nix).
-    sharedCrates = ["build-spa"];
+    member = "frigate-monitor";
+    # `common-build-spa` path dependency (see crates/common-rs/ and common/crane.nix).
+    sharedCrates = ["build-spa" "json"];
+    # Point build.rs at the nix-built bundle instead of the (uncommitted)
+    # frontend/dist in the source tree.
+    preBuild = "export FRIGATE_MONITOR_DIST=${frontendDist}";
   };
-  frigateMonitor = CRANE.cached (frigateMonitorArgs
-    // {
-      cargoArtifacts = CRANE.deps frigateMonitorArgs;
-      # Point build.rs at the nix-built bundle instead of the (uncommitted)
-      # frontend/dist in the source tree.
-      preBuild = "export FRIGATE_MONITOR_DIST=${frontendDist}";
-    });
 in {
   options.services.frigate-monitor = {
     enable = lib.mkEnableOption "the main_space scene-change monitor";

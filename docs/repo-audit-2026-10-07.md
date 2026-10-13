@@ -171,20 +171,30 @@ work in a Nix build — see the comment there).
   (`common-web`): request-head parsing, `Request::path()` (query string
   stripped), `respond`/`reason_phrase`, `percent_decode`.  The two copies had
   drifted and the merged behaviour fixes both drifts — see the crate header.
-  **Not** shared on purpose: the routing tables and `json_str` (byte-identical,
-  but sharing it means deciding on a JSON API first).  `mime_of` in
+  **Not** shared on purpose: the routing tables.  `mime_of` in
   `common-rs/build-spa` and network-status' content-type table are still
   separate lists.
 
 How the path dependencies work (new, worth knowing before adding a crate):
-`path = "./common-rs/<name>"` in each `Cargo.toml`, plus a **git-ignored
-symlink** `common-rs -> ../common-rs` in the crate directory (same convention
-as `gocardless-dashboard/frontend/dto`). `just shared-rs` (or entering
-`nix develop`) creates the symlinks; `CRANE.cached`/`CRANE.deps` take
-`sharedCrates = ["oidc"]` and copy the real crates (crate build) or stub crates
-with real manifests (dependency build) into the source tree, so a shared-crate
-*edit* does not invalidate the vendored-dependency cache while a shared-crate
-dependency *change* does.
+`path = "../common-rs/<name>"` in each `Cargo.toml`.  `crates/` is one cargo
+workspace, so a shared crate is reached by a plain relative path and no symlink
+is involved.  `CRANE.crate` takes `sharedCrates = ["oidc"]` and copies the real
+crates into the member's source tree over the stubs the dependency build left
+there, so a shared-crate *edit* does not invalidate the vendored-dependency
+cache while a shared-crate dependency *change* does.
+
+> **Superseded 2026-10-13.** The two paragraphs above describe the layout as it
+> stood at audit time.  Everything Rust moved under `crates/` and became **one
+> cargo workspace** (`crates/Cargo.toml`): one lock file, one `target/`, and
+> `cargo --workspace` covering the fleet.  That removed the per-crate
+> `common-rs -> ../common-rs` symlinks this section told you to create — the only
+> symlinks left are inside the wasm SPAs' `frontend/` directories, which stay
+> separate workspaces on purpose (the reason is at the top of `crates/Cargo.toml`).
+> `CRANE.cached`/`CRANE.deps` became `CRANE.crate`, and the dependency derivation
+> is now shared by every native crate rather than built per crate.  The
+> `json_str` item below the fold did get shared too: it is `common_json::quoted`,
+> with `error_object` beside it.  See the "Rust builds (crane)" section of
+> `AGENTS.md` for what is true now.
 
 ---
 

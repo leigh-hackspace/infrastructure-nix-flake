@@ -1,0 +1,31 @@
+[package]
+name = "frigate-monitor-web"
+version = "0.1.0"
+edition = "2021"
+
+# Web (wasm) SPA for frigate-monitor. Built with `./build.sh` into dist/,
+# which is committed and embedded into the frigate-monitor binary by its
+# build.rs (Nix builds never compile this — same rule as network-status).
+[lib]
+name = "frigate_monitor_web"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+dioxus = { version = "0.7.10", features = ["web"] }
+serde = { version = "1", features = ["derive"] }
+gloo-net = "0.6"
+wasm-bindgen = "0.2"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+
+# This SPA is its own cargo workspace, deliberately: it is built for
+# wasm32-unknown-unknown against a wasm-bindgen pinned to match the CLI the flake
+# uses, and it must not share the native workspace's lock file (one graph would
+# unify host and wasm deps and move wasm-bindgen out from under that CLI).  The
+# reason is written out in crates/Cargo.toml; the empty table below is what keeps
+# cargo from adopting this directory into the native workspace.
+[workspace]

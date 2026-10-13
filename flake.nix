@@ -183,7 +183,7 @@
     # wasm32-unknown-unknown std library, so `cargo build --target
     # wasm32-unknown-unknown` needs no rustup or network — see rustc.nix's
     # `--target` list. `dist/` is git-ignored and rebuilt by the flake; run
-    # `cd frigate-monitor/frontend && nix develop --command bash build.sh`
+    # `cd crates/frigate-monitor/frontend && nix develop --command bash build.sh`
     # to iterate, or just `just build-frontend` (below).
     devShells.${system}.default = let
       pkgs = import nixpkgs {inherit system;};

@@ -6,7 +6,7 @@ Guidance for AI agents working in this repository. Read this before making chang
 
 - **Use Rust for new programs/tools.** Do not write new services, daemons,
   scripts-as-programs, or CLI tools in Python (or other languages) without a
-  strong reason. See `status-dashboard/` (top level) for the
+  strong reason. See `crates/status-dashboard/` for the
   house style: built with
   `pkgs.rustPlatform.buildRustPackage` + `cargoLock`.
 - Shell one-liners inside NixOS `ExecStart`/activation scripts are fine for
@@ -38,25 +38,42 @@ Guidance for AI agents working in this repository. Read this before making chang
   endpoint data). `common/nginx/` and `common/config.nix` are shared because
   services1 is the TLS terminator for the whole network: a vhost defined there can
   proxy to a service running on another box.
-- `common-rs/` — shared **in-repo** Rust crates used as cargo path dependencies:
-  `json` (hand-rolled parser: dns-sync, moonraker-exporter), `oidc` (authentik
-  login + `Infra` group gate: filestore, gocardless-dashboard), `preview` (the
-  filestore preview table: extension → what a browser can render it as, read by
-  **both** the API and the SPA so they cannot disagree) and `build-spa` (the
-  `build.rs` that embeds a Dioxus bundle: all three SPA apps). Each consuming
-  crate has a **git-ignored** `common-rs -> ../common-rs` symlink and depends on
-  `path = "./common-rs/<name>"`; `just shared-rs` (or entering `nix develop`)
-  creates the symlinks, and the service modules pass `sharedCrates = ["oidc"]`
-  etc. so the Nix build copies the crates in. Same convention as
-  `gocardless-dashboard/frontend/dto`. `CRANE.wasmSpa` takes `sharedCrates` too,
-  for a SPA that reads one (filestore's).
-- `dns-sync/` — top-level Rust tool (zero external crates) that keeps the
+- `crates/` — **every Rust crate lives under here**, and `crates/Cargo.toml` makes
+  the native ones **one cargo workspace**: one `Cargo.lock`, one `target/`, and
+  `cargo build|test|clippy --workspace` (or `-p <name>`) from `crates/` covers the
+  whole fleet, which is what rust-analyzer wants too. The programs are top-level
+  directories here; the shared libraries are `crates/common-rs/`.
+- `crates/common-rs/` — the shared **in-repo** crates, plain path dependencies
+  (`common-json = { path = "../common-rs/json" }`, no symlinks needed):
+  `json` (hand-rolled parser **and** the string/error-object emitters the
+  hand-built API bodies use: dns-sync, moonraker-exporter, status-dashboard,
+  network-status, frigate-monitor, switch-gui), `oidc` (authentik login + `Infra`
+  group gate: filestore, gocardless-dashboard, switch-gui), `web` (the HTTP/1.1
+  plumbing the tiny_http services share: request head, query/cookie parsing,
+  responses), `pg` (the pool, the schema runner, the sea-query→sqlx glue and the
+  row readers), `service` (the startup plumbing that is not the service: the flag
+  reader, the `EnvironmentFile` parser, and the loopback test that gates every
+  `--no-auth`), `preview` (the filestore preview table: extension → what a browser
+  can render it as, read by **both** the API and the SPA so they cannot disagree)
+  and `build-spa` (the `build.rs` that embeds a Dioxus bundle: all four SPA apps).
+  **New shared code goes here, not into a second copy in the second crate** — the
+  reason `service` and `json`'s emitters exist is that both had already drifted
+  between three callers.
+  The four Dioxus SPAs are **not** workspace members: each `frontend/` is its own
+  workspace (own `Cargo.lock`, wasm32, pinned wasm-bindgen) and reaches its shared
+  wire types through a **git-ignored** symlink (`frontend/dto -> ../dto`,
+  filestore's `frontend/common-rs`) that `just shared-rs` (or entering `nix
+  develop`) creates; the Nix build materialises a real copy instead, via
+  `sharedCrates = ["oidc"]` etc. — a symlink cannot travel in a flake source. The
+  reason none of this is a symlink for the *native* crates, and why the SPAs are
+  excluded, is written out at the top of `crates/Cargo.toml`.
+- `crates/dns-sync/` — Rust tool (zero external crates) that keeps the
   router's dnsmasq and DigitalOcean DNS in step with the `*.int.leighhack.org`
   nginx vhosts. Wired in via `machines/services1/dns-sync.nix`, which also
   renders the expected-name list to `/etc/dns-sync/expected-int-names`.
   Run with `just dns-sync-check` / `just dns-sync-sync` / `just dns-sync-prune`
   (router + DO facts below).
-- `frigate-monitor/` — top-level Rust tool (one external crate: `image`) on
+- `crates/frigate-monitor/` — Rust tool (one external crate: `image`) on
   aibox that snapshots the Frigate `main_space` RTSP stream every 10 s and
   records an event when a static change appears and the area _settles_ — a
   region must differ from the background and be completely still for N
@@ -70,7 +87,7 @@ Guidance for AI agents working in this repository. Read this before making chang
   `frigate-monitor.int.leighhack.org` (LAN-only; see
   `machines/aibox/frigate-monitor.nix` and
   `machines/services1/services/frigate-monitor.nix`).
-- `gocardless-dashboard/` — GoCardless Pro sync + operator dashboard on
+- `crates/gocardless-dashboard/` — GoCardless Pro sync + operator dashboard on
   services1: a Rust binary syncs customers/mandates/subscriptions/payments/
   refunds/payouts from the GoCardless Pro API into local Postgres
   (`gocardless_dashboard`) every 15 min, and serves a Dioxus SPA (frontend/,
@@ -97,7 +114,7 @@ Guidance for AI agents working in this repository. Read this before making chang
   error on failure; it used to be a single fire-and-forget fetch with the error
   swallowed, so one failed request left it stuck on “loading…” until the page
   was reloaded.
-- `network-status/` — the router network dashboard (served at
+- `crates/network-status/` — the router network dashboard (served at
   `network-info.int.leighhack.org`). The Rust binary (`src/`, zero external
   crates) ssh's to the router every 5s, keeps a rolling history, serves the
   JSON API (`/api/snapshot`, `/api/history`, `/api/config`) and static files
@@ -107,7 +124,7 @@ Guidance for AI agents working in this repository. Read this before making chang
   npm deps aren't nixpkgs-cached, so the SPA is not rebuilt in Nix): after
   editing the SPA, run `npm install && npm run build` in `frontend/` and commit
   the result.
-- `filestore/` — top-level Rust tool (axum + reqwest) on services1: a web file
+- `crates/filestore/` — Rust tool (axum + reqwest) on services1: a web file
   browser over the NAS `filestore` share. Serves the JSON API (`/api/list`,
   `/api/search`, `/api/mkdir|create|rename|copy|delete|upload|download|zip|preview`,
   `/api/whoami`) on 127.0.0.1:8096 plus a Dioxus SPA (frontend/, wasm-built by
@@ -127,7 +144,7 @@ Guidance for AI agents working in this repository. Read this before making chang
   audio, PDF and text — only types a browser can render itself, since there is no
   server-side converter, so `image/tiff`/`image/heic`/AVI and Office documents are
   deliberately not previewable.  The icon grid shows a **thumbnail** for image rows
-  (`filestore/src/thumb.rs`): generated on demand and cached in temporary storage
+  (`crates/filestore/src/thumb.rs`): generated on demand and cached in temporary storage
   (`--thumb-cache`, `/run/filestore-thumbs` on services1 — tmpfs, so it is gone on a
   reboot), resized to `--thumb-max-side` (128 px) and bounded by `--thumb-cache-max`
   (256M, oldest entries pruned).  Freshness is structural, not invalidation: the cache
@@ -172,7 +189,7 @@ Guidance for AI agents working in this repository. Read this before making chang
   canonicalised at startup, but symlinks **inside** the share are followed
   wherever they point (the NAS uses them) — the guarantee is "no traversal from
   the API", not "nothing outside the share is reachable". See `filestore/src/fsutil.rs`.
-- `switch-gui/` — top-level Rust tool that manages the
+- `crates/switch-gui/` — Rust tool that manages the
   **three ProCurve switches** from a browser: `switch1` (J9280A 2510G-48,
   `Y.11.44`, `10.3.1.2`), `switch2` (same model, `10.3.1.3`) and `switch3`
   (J4903A 2824, `I.10.107`, `10.3.1.4`) — all three in `common/hosts.nix` under
@@ -259,7 +276,7 @@ Guidance for AI agents working in this repository. Read this before making chang
   - `containers.nix` — podman + the "never give up" restart policy for all
     `podman-*` services.
   - `services/` — one file per service; `status.nix` wires up the status
-    dashboard (shared Rust code in top-level `status-dashboard/`, shared
+    dashboard (shared Rust code in `crates/status-dashboard/`, shared
     module in `common/status-dashboard.nix`, run on both machines;
     services1 reverse-proxies both as `status.*` / `aibox.status.*`).
   - `lib/` — nginx SSO helpers (`nginx-sso-helper.nix` etc.).
@@ -733,40 +750,47 @@ The Rust crates are packaged through **crane** (`github:ipetkov/crane`, shared
 helper in `common/crane.nix`) rather than `pkgs.rustPlatform.buildRustPackage`, so
 the dependency tree is compiled once into a cached derivation and a source-only
 edit recompiles just the crate: measured on filestore, ~4 min cold vs ~50 s for a
-one-line change.
+one-line change. `crane` reaches modules through the flake's `specialArgs`.
 
-Call style is `CRANE.cached { pname; version; src; cargoLock; }` — crane takes
-`cargoLock` as a path, not nixpkgs' `cargoLock.lockFile` attrset, and vendors the
-crates itself, so there is no `cargoDeps` hash to maintain. `crane` reaches modules
-through the flake's `specialArgs`.
+Call style is `CRANE.crate { pname; version; member; sharedCrates; }` — one
+workspace member, built with `cargo build -p <pname>`. `crane` takes `cargoLock`
+as a path, not nixpkgs' `cargoLock.lockFile` attrset, and vendors the crates
+itself, so there is no `cargoDeps` hash to maintain.
 
-Two things decide whether the cache actually holds:
+**Because `crates/` is one cargo workspace there is one dependency derivation for
+the whole fleet** (`CRANE.workspaceArtifacts`), which is the main win: before the
+workspace, filestore, gocardless-dashboard, frigate-monitor and switch-gui each
+compiled their own copy of reqwest, because each had its own lock file and so its
+own vendor dir. The two things that keep the per-crate build times anyway:
 
-- Pass the lock file through `CRANE.lockFile` (a `writeText` keyed on the file's
-  **contents**). Handing crane a lock file that lives inside the crate's own source
-  directory makes the vendor and dummy-src derivations depend on the whole source
-  tree, so any edit — even a comment in a `.rs` file — invalidates the dependency
-  build.
-- Keep anything that references another derivation out of the args used for
-  `CRANE.deps`. A `preBuild` that points `build.rs` at the wasm bundle becomes an
-  input of the dependency derivation, so a SPA-only change would rebuild the
-  binary's deps. The service files therefore build a clean `args` set for the deps
-  and add the hook only on the crate build.
-- Shared in-repo crates go through `sharedCrates = ["<name>"]` (in both the
-  `CRANE.deps` args and the `CRANE.cached` args). The build gets the real
-  `common-rs/<name>` copied into the source tree; the dependency build gets a
-  **stub** (real `Cargo.toml`, empty `src/lib.rs`) keyed on that manifest's
-  contents. So editing shared code does not recompile the vendored deps, while
-  changing a shared crate's dependencies does. Never put the symlink itself in
-  git — the flake source is the git tree, and a dangling symlink outside the
-  crate's own tree cannot be copied into the store.
+- **The source tree is the workspace with stub sources everywhere except the
+  member being built** (`memberSrc`, built from `craneLib.mkDummySrc`). Cargo
+  cannot build one member without loading every member's manifest — and it refuses
+  a manifest whose declared targets are missing — so the tree has to carry the
+  whole workspace. Stubs are what stop that meaning every `.rs` edit rebuilds all
+  eight programs: cargo sees the other members' manifests and no code.
+- **The lock file reaches crane through `CRANE.lockFile`** (a `writeText` keyed on
+  its **contents**), so the vendor derivation is keyed on dependencies rather than
+  on the source tree. Changing a dependency anywhere invalidates the shared dep
+  build for everyone — that is the price of a workspace, and the same price cargo
+  charges locally.
+
+`sharedCrates = ["<name>"]` names the `crates/common-rs/<name>` crates the member
+reads: they are already in the tree as stubs (enough for cargo to *resolve* them)
+and this swaps in the real code. **A crate that reads none must pass none** —
+listing one it does not depend on makes its source an input of the build, so
+editing it triggers a rebuild that changes nothing. `dto`-style crates that live
+inside the app's own tree need no entry.
+
+A `preBuild` that points `build.rs` at a wasm bundle is *not* an input to the
+shared dependency derivation (the hooks are never passed to `buildDepsOnly`), so a
+SPA-only change still does not rebuild a binary's deps. Pass `cargoArtifacts` only
+to override the shared derivation deliberately.
 
 Local Rust workflow: `nix develop` (cargo/rustc/rustfmt/**clippy** + the pinned
-wasm-bindgen-cli, no network on entry) creates the path-dependency symlinks for
-you. `just test` runs the unit tests (`common-rs/json`, `common-rs/oidc` have
-them; the app crates mostly do not), `just clippy` lints every crate (warnings
-are reported, not fatal — there are ~15 pre-existing ones), `just shared-rs`
-just recreates the symlinks.
+wasm-bindgen-cli, no network on entry) creates the SPAs' path-dependency symlinks
+for you. `just test` and `just clippy` are `cargo test|clippy --workspace` from
+`crates/` — one command, every crate. `just shared-rs` recreates the SPA symlinks.
 
 The pinned `wasm-bindgen-cli` (0.2.128, which must match the wasm-bindgen crate in
 each frontend's Cargo.lock exactly) and the wasm build recipe live in
@@ -774,8 +798,12 @@ each frontend's Cargo.lock exactly) and the wasm build recipe live in
 
 ## SPA frontends — local development
 
-The same recipe applies to all four Dioxus SPAs (`frigate-monitor/frontend/`,
-`filestore/frontend/`, `gocardless-dashboard/frontend/`, `switch-gui/frontend/`):
+The same recipe applies to all four Dioxus SPAs
+(`crates/frigate-monitor/frontend/`, `crates/filestore/frontend/`,
+`crates/gocardless-dashboard/frontend/`, `crates/switch-gui/frontend/`): each is
+**its own cargo workspace**, not a member of the native one (see
+`crates/Cargo.toml`), which is why it has its own `Cargo.lock` and why its shared
+path dependencies arrive by symlink/copy rather than by relative path:
 each is built to wasm and embedded into its service as `frontendDist` (see
 `machines/aibox/frigate-monitor.nix`, `machines/services1/services/filestore.nix`,
 `machines/services1/services/gocardless-dashboard.nix` and
@@ -788,11 +816,12 @@ nix develop            # toolchain: cargo/rustc/rustfmt + lld + just + git + ale
 just build-frontend                    # all four SPAs
 just build-frontend filestore          # just one
 # or, equivalently, per frontend:
-cd frigate-monitor/frontend && nix develop --command bash build.sh
+cd crates/frigate-monitor/frontend && nix develop --command bash build.sh
 ```
 
-(`network-status/frontend/` is the exception — SolidJS + npm, and its `dist/` is
-committed; see the network-status bullet above and `just network-status-frontend`.)
+(`crates/network-status/frontend/` is the exception — SolidJS + npm, and its
+`dist/` is committed; see the network-status bullet above and
+`just network-status-frontend`.)
 
 The devshell is self-contained: `nix develop` ships the pinned
 `wasm-bindgen-cli 0.2.128` as a derivation (`CRANE.wasmBindgenCli`, the same one
@@ -818,6 +847,36 @@ The grid is infinitely scrollable — there is **no "load more" button**; the
 `onscroll` handler appends the next page when the bottom is within ~600px.
 
 ## Known follow-ups
+
+## Known follow-ups
+
+- **`crates/` + the cargo workspace, and the `--no-auth` loopback bug it fixed
+  (2026-10-13)** — every Rust crate moved under `crates/` and the native ones
+  became one cargo workspace (`crates/Cargo.toml`): one `Cargo.lock`, one
+  `target/`, `cargo --workspace` for test/clippy, and one shared dependency
+  derivation instead of eight. The SPAs stayed separate workspaces and kept their
+  symlinks; the reason is at the top of `crates/Cargo.toml`.
+  While moving it I deduplicated the startup plumbing into a new
+  `crates/common-rs/service`, and **that is where the bug was**: filestore's
+  `is_loopback` ended in `host.starts_with("127.")`, so `--no-auth` — the escape
+  hatch whose *only* guard is "this bind is loopback" — accepted
+  `--bind 127.example.com`, a hostname anyone with a DNS zone can point at a
+  routable interface. Verified against the deployed binary before the change
+  (accepted, and it went on to try to bind) and after (refused). switch-gui had
+  already written the careful version, which is the one now shared: parse the host
+  as an `IpAddr` and ask `is_loopback()`, accept `localhost` by name and nothing
+  else that will not parse. `common_service::is_loopback` carries the tests that
+  were scattered across the three callers, including `127.example.com`,
+  `127.0.0.1.evil.com` and `::1234`.
+  Also shared out at the same time: `common_json::quoted`/`error_object` (four
+  copies of a JSON string escaper existed, one of them — frigate-monitor's — not
+  escaping control characters at all) and the `pg` row readers (`text`/`opt_text`/
+  `integer`/`opt_integer`, duplicated between switch-gui's two DB modules).
+  Nothing here is deployed yet: the tree builds clean for all three machines
+  (`nixos-rebuild build` for services1 and aibox, `dry-build` for services2),
+  `cargo test --workspace` is green with no new clippy warnings, and the filestore
+  binary built from it was run by hand through the loopback gate above.
+
 
 - ~~aibox NAS mounts~~ — resolved by commit 1811d93 ("Make aibox startup
   more reliable", deployed 2026-08-26): aibox now mirrors services1

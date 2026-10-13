@@ -1,8 +1,8 @@
 # filestore: web file browser for /mnt/filestore (Rust; source in
-# ../../../filestore).
+# ../../../crates/filestore).
 #
 # An axum binary that serves a Dioxus SPA (compiled to wasm here from
-# ../../../filestore/frontend and embedded by build.rs — no bundle is
+# ../../../crates/filestore/frontend and embedded by build.rs — no bundle is
 # committed) on 127.0.0.1:8096, exposing the /mnt/filestore tree: browse,
 # multi-select, right-click menus, drag-and-drop upload (files and folders),
 # move/copy, rename, delete, new folder/file, previews (image, video, audio, PDF
@@ -45,31 +45,28 @@
   frontendDist = CRANE.wasmSpa {
     pname = "filestore-web";
     version = "0.1.0";
-    src = ../../../filestore/frontend;
-    cargoLock = CRANE.lockFile ../../../filestore/frontend/Cargo.lock;
+    src = ../../../crates/filestore/frontend;
+    cargoLock = CRANE.lockFile ../../../crates/filestore/frontend/Cargo.lock;
     wasmName = "filestore_web";
     sharedCrates = ["preview"];
   };
 
-  # The binary.  Its build.rs embeds the SPA, so the SPA is a build-hook input
-  # rather than a cargo dependency: the args used for the cached deps are kept
-  # clean so a SPA-only change does not rebuild the binary's dependency tree.
-  filestoreArgs = {
+  # The binary.  Its build.rs embeds the SPA, which makes the SPA a build-hook
+  # input rather than a cargo dependency — no problem, because the dependency
+  # derivation is the workspace-wide one and never sees these hooks (see `crate`
+  # in common/crane.nix), so a SPA-only change still does not rebuild the
+  # binary's dependency tree.
+  filestore = CRANE.crate {
     pname = "filestore";
     version = "0.1.0";
-    src = ../../../filestore;
-    cargoLock = CRANE.lockFile ../../../filestore/Cargo.lock;
+    member = "filestore";
     # `common-oidc`, `common-build-spa` and `common-preview` path dependencies
-    # (see common-rs/ and common/crane.nix).
-    sharedCrates = ["oidc" "build-spa" "preview"];
+    # (see crates/common-rs/ and common/crane.nix).
+    sharedCrates = ["oidc" "service" "build-spa" "preview"];
+    # Point build.rs at the nix-built bundle instead of the (uncommitted)
+    # frontend/dist in the source tree.
+    preBuild = "export FILESTORE_DIST=${frontendDist}";
   };
-  filestore = CRANE.cached (filestoreArgs
-    // {
-      cargoArtifacts = CRANE.deps filestoreArgs;
-      # Point build.rs at the nix-built bundle instead of the (uncommitted)
-      # frontend/dist in the source tree.
-      preBuild = "export FILESTORE_DIST=${frontendDist}";
-    });
 in {
   # The backing store is the /mnt/filestore NFS share on the NAS, so the
   # service must wait for the NAS (common/nas.nix) and keep restarting forever

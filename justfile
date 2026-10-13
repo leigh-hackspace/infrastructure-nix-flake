@@ -45,22 +45,26 @@ fmt-check:
       exit $bad'
 
 # --- Rust crates (toolchain from `nix develop`: cargo/rustc/rustfmt/clippy +
-# --- the pinned wasm-bindgen-cli) ---
+# --- the pinned wasm-bindgen-cli)
+#
+# Everything native is one cargo workspace (crates/Cargo.toml), so the whole set
+# is `cargo <cmd> --workspace` from there: one lock file, one target dir, and one
+# dependency build shared by every crate.  The wasm SPAs are deliberately not
+# members (the reason is in that manifest); build one with `just build-frontend`.
 
-# Recreate the git-ignored symlinks that let cargo resolve the in-repo path
-# dependencies (each crate's common-rs/, gocardless-dashboard/frontend/dto).
+# Recreate the git-ignored symlinks the wasm SPAs need to resolve their shared
+# path dependencies (frontend/dto, filestore's frontend/common-rs).  The native
+# crates need nothing: their path dependencies resolve inside the workspace.
 # Run once after a fresh clone; `nix develop` does it automatically.
 shared-rs:
     @bash common/shared-rs-links.sh
 
-# cargo test over the shared crates and every app crate.
+# cargo test over every crate in the workspace.
 test:
     #!/usr/bin/env bash
     set -euo pipefail
     bash common/shared-rs-links.sh
-    nix develop --command bash -c '
-      crates="common-rs/json common-rs/oidc common-rs/build-spa common-rs/web common-rs/pg common-rs/preview dns-sync moonraker-exporter status-dashboard network-status filestore gocardless-dashboard frigate-monitor switch-gui switch-gui/dto"
-      for c in $crates; do echo "=== test $c"; (cd $c && cargo test --offline); done'
+    nix develop --command bash -c 'cd crates && cargo test --workspace --offline'
 
 # cargo clippy over the same set.  Warnings are reported, not fatal: the point
 # is to see them (they used to go entirely unchecked).
@@ -69,8 +73,8 @@ clippy:
     set -euo pipefail
     bash common/shared-rs-links.sh
     nix develop --command bash -c '
-      crates="common-rs/json common-rs/oidc common-rs/build-spa common-rs/web common-rs/pg common-rs/preview dns-sync moonraker-exporter status-dashboard network-status filestore gocardless-dashboard frigate-monitor switch-gui switch-gui/dto"
-      for c in $crates; do echo "=== clippy $c"; (cd $c && cargo clippy --offline --all-targets 2>&1 | grep -vE "^(Compiling|Checking|Finished|    Finished)" | head -40); done'
+      cd crates && cargo clippy --workspace --all-targets --offline 2>&1 \
+        | grep -vE "^(Compiling|Checking|Finished|    Finished)" || true'
 
 # --- frontend (the four Dioxus SPAs) ---
 
@@ -94,24 +98,24 @@ build-frontend crate="all":
         *) crates={{quote(crate)}} ;;
     esac
     for c in $crates; do
-        if [ ! -f "$c/frontend/build.sh" ]; then
-            echo "no $c/frontend/build.sh — expected one of: frigate-monitor filestore gocardless-dashboard switch-gui all" >&2
+        if [ ! -f "crates/$c/frontend/build.sh" ]; then
+            echo "no crates/$c/frontend/build.sh — expected one of: frigate-monitor filestore gocardless-dashboard switch-gui all" >&2
             exit 2
         fi
         echo "=== build-frontend $c"
-        nix develop --command bash -c "exec ./$c/frontend/build.sh"
+        nix develop --command bash -c "exec ./crates/$c/frontend/build.sh"
     done
 
 # network-status' SPA is the exception: it is SolidJS + esbuild, not Dioxus, and
 # its npm deps are not nixpkgs-cached, so the flake cannot rebuild it offline and
-# network-status/frontend/dist is COMMITTED (see the note in
+# crates/network-status/frontend/dist is COMMITTED (see the note in
 # machines/services1/network-status.nix).  Build it with npm, then commit the
 # result; `just network-status-dist-check` catches a bundle that has drifted from
 # src/.
 network-status-frontend:
     #!/usr/bin/env bash
     set -euo pipefail
-    cd network-status/frontend
+    cd crates/network-status/frontend
     npm install
     npm run build
 
@@ -120,14 +124,14 @@ network-status-frontend:
 network-status-dist-check:
     #!/usr/bin/env bash
     set -euo pipefail
-    cd network-status/frontend
+    cd crates/network-status/frontend
     if [ ! -d node_modules ]; then
         echo "node_modules missing — run 'npm install' here once (or 'just network-status-frontend')" >&2
         exit 2
     fi
     npm run build >/dev/null
     if ! git diff --quiet -- dist; then
-        echo "network-status/frontend/dist has drifted from src/ — commit the rebuild:" >&2
+        echo "crates/network-status/frontend/dist has drifted from src/ — commit the rebuild:" >&2
         git --no-pager diff --stat -- dist
         exit 1
     fi
@@ -324,26 +328,26 @@ build-remote machine="services1":
 filestore-dev:
     #!/usr/bin/env bash
     set -euo pipefail
-    nix develop --command bash -c 'cd filestore && cargo build --release --offline && exec ./target/release/filestore --root "${FS_TEST_ROOT:-/tmp/filestore-test-root}" --no-auth --port "${FS_TEST_PORT:-18097}"'
+    nix develop --command bash -c 'cd crates && cargo build --release --offline -p filestore && exec ./target/release/filestore --root "${FS_TEST_ROOT:-/tmp/filestore-test-root}" --no-auth --port "${FS_TEST_PORT:-18097}"'
 
 # Builds the SPA + binary, starts filestore with --no-auth on 127.0.0.1 against
 # a scratch fixture, and drives the UI with headless Chromium (Playwright).
-# See filestore/tests/README.md.
+# See crates/filestore/tests/README.md.
 filestore-test:
     #!/usr/bin/env bash
     set -euo pipefail
-    nix develop --command bash -c 'exec filestore/tests/run.sh'
+    nix develop --command bash -c 'exec crates/filestore/tests/run.sh'
 
 # The switch-gui headless-browser suite: builds the SPA + binary, starts a fake
 # ProCurve console (a real Telnet server with an in-memory model), points the
 # service at it with --no-auth on a loopback bind and a scratch Postgres schema,
 # and drives the matrix with headless Chromium.  Nothing can reach a real switch:
 # the only address the service is given is 127.0.0.1.  Needs the local Postgres
-# cluster (see SG_TEST_DB_URL in switch-gui/tests/run.sh).
+# cluster (see SG_TEST_DB_URL in crates/switch-gui/tests/run.sh).
 switch-gui-test:
     #!/usr/bin/env bash
     set -euo pipefail
-    nix develop --command bash -c 'exec switch-gui/tests/run.sh'
+    nix develop --command bash -c 'exec crates/switch-gui/tests/run.sh'
 
 # Install the shared age key (used to edit secrets) so sops-nix can
 # decrypt at runtime and build time on this machine. Run after a fresh

@@ -74,7 +74,7 @@ dead input).
   (Nix). If the Nix derivation is built without `FILESTORE_DIST` set, the binary
   silently ships with no assets and returns 500 for every page.
 - `frontend/dist/` is git-ignored and never committed; rebuild with
-  `nix develop --command bash -c 'cd filestore/frontend && ./build.sh'`.
+  `nix develop --command bash -c 'cd crates/filestore/frontend && ./build.sh'`.
 - The flake has no `packages` output for filestore, so `nix flake show` won't
   list it; to build just the binary use a standalone `nix build -f <expr>` with
   `rustPlatform.buildRustPackage` + `FILESTORE_DIST`.

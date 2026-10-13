@@ -1,4 +1,4 @@
-# Status dashboard shared by all machines (Rust source: ../status-dashboard,
+# Status dashboard shared by all machines (Rust source: ../crates/status-dashboard,
 # zero external crates per house style).
 #
 # Each machine enables it and sets its own parameters:
@@ -26,12 +26,11 @@
 }: let
   cfg = config.services.status-dashboard;
 
-  statusDashboard = CRANE.cached {
+  statusDashboard = CRANE.crate {
     pname = "status-dashboard";
     version = "0.1.0";
-    src = ../status-dashboard;
-    cargoLock = CRANE.lockFile ../status-dashboard/Cargo.lock;
-    sharedCrates = ["web"];
+    member = "status-dashboard";
+    sharedCrates = ["json" "web"];
   };
 in {
   options.services.status-dashboard = {

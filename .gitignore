@@ -6,14 +6,14 @@ tmp/
 result-fd
 /result
 
-# Rust build output for the status dashboard
-**/status-dashboard/target/
+# The cargo workspace's build output: crates/ is one cargo workspace (see
+# crates/Cargo.toml), so cargo writes a single target/ there rather than one per
+# crate.  The wasm SPAs are separate workspaces and ignore their own.
+/crates/target/
 
-# filestore: cargo output and the wasm SPA bundle (built by the flake, never committed)
-filestore/target/
-filestore/frontend/target/
-filestore/frontend/dist/
-filestore/tests/node_modules/
+# network-status' SPA is the one frontend built with npm; its dependencies are
+# regenerated with `npm install` and never committed.
+/crates/network-status/frontend/node_modules/
 
 !.env.sample
 *.ignore
