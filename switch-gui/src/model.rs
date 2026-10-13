@@ -176,6 +176,26 @@ pub fn port_key(id: &str) -> (u8, u32) {
     }
 }
 
+/// Whether a port id names a **trunk group** (`Trk1`) rather than a physical
+/// port (`7`).
+///
+/// The switch uses the same token for both everywhere it talks: `show vlan 225`
+/// lists `Trk1` among its members, and the CLI takes `interface Trk1` and
+/// `vlan 225 tagged Trk1` as readily as the port forms.  So a group arrives
+/// through the parsers as a port-shaped row, and anything that means "a physical
+/// port" has to know which of the two it is holding.
+///
+/// This is **not** the same question as "is a trunk member": that is
+/// [`Port::trunk_group`], and it is filled in on the group's *members* from
+/// `show trunks` — never on the group's own row.  Checking one and assuming it
+/// covers the other is how a group's row ends up looking like an ordinary port.
+pub fn is_trunk_group(id: &str) -> bool {
+    match id.strip_prefix("Trk") {
+        Some(n) => !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()),
+        None => false,
+    }
+}
+
 /// The two CLI contexts the switch will put us in.
 ///
 /// `Operator` is read-only: it has `show`, `ping`, `traceroute`, `enable` and
@@ -216,5 +236,16 @@ mod tests {
         // Never panics, and does not sort as 0 in front of everything.
         assert_eq!(port_key("TrkX"), (1, 0));
         assert_eq!(port_key("??"), (0, 0));
+    }
+
+    #[test]
+    fn trunk_groups_are_told_apart_from_ports() {
+        assert!(is_trunk_group("Trk1"));
+        assert!(is_trunk_group("Trk10"));
+        assert!(!is_trunk_group("1"));
+        assert!(!is_trunk_group("48"));
+        assert!(!is_trunk_group("Trk"), "a group always has a number");
+        assert!(!is_trunk_group("TrkX"), "and it is always digits after it");
+        assert!(!is_trunk_group(""));
     }
 }

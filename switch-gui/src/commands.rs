@@ -162,12 +162,23 @@ pub fn port_name(port: &str, name: &str) -> R<Vec<String>> {
 /// * additions come last, so no later removal can undo one.
 pub fn port_members(port: &Port, tagged: &[u32], untagged: Option<u32>) -> R<Vec<String>> {
     check_port(&port.id)?;
+    // Two different things are "a trunk" here, and the model tells them apart:
+    // a **member** carries the group in `trunk_group` (set from `show trunks`),
+    // while the **group itself** is a row whose id is the token (`Trk1`).  Both
+    // are refused.  The switch refuses to change a member's membership while it
+    // is aggregated, and a trunk group has never been exercised at all — so the
+    // GUI locks both rather than sending a command form nobody has seen work.
     if !port.trunk_group.is_empty() {
         return Err(format!(
-            "port {} is in LACP group {}; this tool will not change the VLAN \
-             membership of a trunk member or of a trunk group",
+            "port {} is in LACP group {}; this tool will not change the VLAN membership of a trunk member or of a trunk group",
             port.id,
             port.trunk_group
+        ));
+    }
+    if crate::model::is_trunk_group(&port.id) {
+        return Err(format!(
+            "{} is a link-aggregation group, not a port; its VLAN membership is managed as a unit with its members, which this tool does not attempt",
+            port.id
         ));
     }
     let mut want: BTreeSet<u32> = BTreeSet::new();
@@ -496,14 +507,21 @@ mod tests {
         assert!(port_members(&bad, &[226], None).is_err());
     }
 
-    /// Trunk groups are ports to the CLI, so the form is accepted for them even
-    /// though the editor declines to use it (`trunk_members_are_left_alone`).
+    /// A trunk **group** is a port-shaped row in the model, and the CLI will
+    /// syntactically accept `vlan 225 tagged Trk1` — but that form has never been
+    /// exercised, so it is refused rather than sent.  (Checking `trunk_group`
+    /// alone does not catch this: that field is set on a group's *members*, not
+    /// on the group's own row.)
     #[test]
-    fn membership_accepts_a_trunk_group_token() {
+    fn a_trunk_group_is_refused_too() {
         let mut p = port(Some(225), &[]);
         p.id = "Trk1".into();
-        let c = port_members(&p, &[226], None).unwrap();
-        assert_eq!(c, vec!["vlan 226 tagged Trk1".to_string()]);
+        let err = port_members(&p, &[226], None).unwrap_err();
+        assert!(err.contains("link-aggregation group"), "{err}");
+        // And it is the group token, not the number, that makes it one.
+        let mut n = port(Some(225), &[]);
+        n.id = "1".into();
+        assert!(port_members(&n, &[226], None).is_ok());
     }
 
     #[test]

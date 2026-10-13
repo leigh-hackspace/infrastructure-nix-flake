@@ -11,7 +11,7 @@
 //! text an operator typed into the switch, and they end up inside HTML and
 //! inside `onclick` strings.
 
-use crate::model::Snapshot;
+use crate::model::{self, Snapshot};
 
 /// One switch as the page lists it — the same row serves the index and the nav
 /// bar on every dashboard, so the two cannot disagree about which switches exist.
@@ -679,18 +679,22 @@ fn membership_matrix(p: &Page) -> String {
 
     for port in s.sorted_ports() {
         let id = port.id.as_str();
-        let trunk = !port.trunk_group.is_empty();
-        // A trunk member is exactly what the switch refuses to have its VLAN
-        // membership changed ("remove it from the trunk first"), and a trunk
-        // group has never been exercised here.  Both are shown and disabled with
-        // the reason on hover rather than accepted and hoped for.
+        // Two kinds of "trunk", and both are locked: a **member** carries the
+        // group in `trunk_group`, the **group itself** is a row whose id is the
+        // token (`Trk1`).  The switch refuses the first, and the second has
+        // never been exercised — so neither gets a live control.  Checking only
+        // `trunk_group` is the mistake to avoid: it is set on members, so the
+        // group's own row comes out looking like an ordinary port.
+        let trunk = !port.trunk_group.is_empty() || model::is_trunk_group(id);
         let locked = !editable || trunk;
         let label = esc(&port.label());
-        let why = if trunk {
+        let why = if !port.trunk_group.is_empty() {
             format!(
                 "title=\"in LACP group {} — the switch will not change the VLAN membership of a trunk member\"",
                 esc(&port.trunk_group)
             )
+        } else if trunk {
+            "title=\"a link-aggregation group: its membership moves with its members, which this tool does not attempt\"".to_string()
         } else if !editable {
             "title=\"read-only session\"".to_string()
         } else {
@@ -1224,6 +1228,29 @@ mod tests {
         assert!(!row.contains("Apply"), "a locked row has nothing to apply");
         // Port 2, which is not in a trunk, does.
         assert!(html.contains("saveMembers('2'"), "an ordinary row can be applied");
+    }
+
+    /// A trunk **group** row is not a member row.  `trunk_group` is set on a
+    /// group's *members* (from `show trunks`), so a lock that only looks there
+    /// leaves `Trk1` itself live — and Apply on that row sends
+    /// `vlan 225 tagged Trk1`, a form this tool has never exercised.
+    #[test]
+    fn a_trunk_group_row_is_locked_too() {
+        let mut s = fixture();
+        let mut g = Port::new("Trk1");
+        g.tagged_vlans = vec![232];
+        s.ports.insert("Trk1".into(), g);
+        let html = dashboard(&manager_page(&s));
+        let row = html
+            .split("<tr id=\"mrowTrk1\"")
+            .nth(1)
+            .and_then(|r| r.split("</tr>").next())
+            .expect("the group has a row");
+        assert!(row.contains("data-locked=\"1\""), "{row}");
+        assert!(!row.contains("Apply"), "a group row has nothing to apply");
+        assert!(row.contains("link-aggregation group"), "and it says why");
+        // The ordinary port in the same fixture is still editable.
+        assert!(html.contains("saveMembers('2'"));
     }
 
     #[test]
