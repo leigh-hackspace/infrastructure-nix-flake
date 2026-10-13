@@ -5,59 +5,19 @@
 //! (truncate + reinsert in one transaction) — the GoCardless Pro dataset
 //! for a small organisation is tiny.
 //!
-//! sea-query 0.32 drops the sqlx runtime adapter, so each statement is
-//! built to `(sql, params)` and the parameters are inlined (escaped) with
-//! `inject_parameters` before handing a single string to sqlx.
+//! The sea-query→sqlx glue (sea-query 0.32 has no sqlx adapter, so parameters
+//! are inlined into the SQL string before sqlx runs it) lives in `common-rs/pg`
+//! and is imported by name below, so the queries in this file read the same as
+//! they did when the helpers were local.
 
 use std::collections::HashMap;
 
 use gdash_dto::{Customer, Fetched, Mandate, Payment, Payout, Refund, Subscription};
-use sea_query::{
-    prepare::inject_parameters, ColumnRef, DynIden, Expr, IntoIden, OnConflict,
-    PostgresQueryBuilder, Query, SimpleExpr, TableRef,
-};
+use sea_query::{OnConflict, PostgresQueryBuilder, Query, SimpleExpr};
 use serde::de::DeserializeOwned;
 use sqlx::postgres::PgPool;
 
-fn tbl(name: &'static str) -> TableRef {
-    TableRef::Table(name.into_iden())
-}
-
-/// A raw column identifier (for `insert().columns(..)` which takes `IntoIden`).
-fn iden(name: &'static str) -> DynIden {
-    name.into_iden()
-}
-
-/// A column reference (for `select().column(..)` which takes `IntoColumnRef`).
-fn col(name: &'static str) -> ColumnRef {
-    ColumnRef::Column(name.into_iden())
-}
-
-// sea-query `SimpleExpr` constructors (the `values_panic` array must be uniform).
-fn ev(s: &str) -> SimpleExpr {
-    Expr::value(s.to_string())
-}
-fn evo(o: Option<&str>) -> SimpleExpr {
-    Expr::value(o.map(str::to_string))
-}
-fn evi(o: Option<i64>) -> SimpleExpr {
-    Expr::value(o)
-}
-
-/// Build a sea-query statement, inline (escaped) its parameters, and return
-/// the final SQL string.
-fn to_sql(sql: String, values: sea_query::Values) -> String {
-    inject_parameters(&sql, values, &PostgresQueryBuilder)
-}
-
-/// Build the final (parameter-inlined) SQL from a sea-query insert
-/// statement.  Synchronous on purpose: sea-query's builders are not
-/// `Send`, so the builder must be moved into a sync function rather than
-/// kept alive across the `await` points in the caller's future.
-fn finalize_insert(ins: sea_query::InsertStatement) -> String {
-    let (sql, values) = ins.build_any(&PostgresQueryBuilder);
-    to_sql(sql, values)
-}
+use common_pg::{col, ev, evo, evi, finalize_insert, finalize_select, iden, tbl};
 
 /// Run a statement that selects exactly one `json` column, decoding each
 /// row into the given type.
@@ -137,20 +97,7 @@ CREATE INDEX IF NOT EXISTS payments_customer_idx        ON payments(customer_id)
 "#;
 
 pub async fn init_schema(pool: &PgPool) -> Result<(), String> {
-    // Postgres won't run multiple statements in one prepared query, so
-    // execute each one separately (the DDL above has no embedded ';').
-    for stmt in SCHEMA.split(';') {
-        let stmt = stmt.trim();
-        if stmt.is_empty() {
-            continue;
-        }
-        sqlx::query(stmt)
-            .execute(pool)
-            .await
-            .map(|_| ())
-            .map_err(|e| format!("{e}: {stmt}"))?;
-    }
-    Ok(())
+    common_pg::apply_schema(pool, SCHEMA).await
 }
 
 pub struct DbData {
@@ -171,11 +118,12 @@ pub struct DbData {
 /// snapshot after a restart, before the next sync runs).
 pub async fn load_all(pool: &PgPool) -> Result<DbData, String> {
     let select = |table: &'static str| {
-        let (sql, values) = Query::select()
-            .column(col("json"))
-            .from(tbl(table))
-            .build_any(&PostgresQueryBuilder);
-        to_sql(sql, values)
+        finalize_select(
+            Query::select()
+                .column(col("json"))
+                .from(tbl(table))
+                .clone(),
+        )
     };
 
     let customers: Vec<Customer> = fetch_json(pool, select("customers")).await?;
@@ -185,12 +133,13 @@ pub async fn load_all(pool: &PgPool) -> Result<DbData, String> {
     let refunds: Vec<Refund> = fetch_json(pool, select("refunds")).await?;
     let payouts: Vec<Payout> = fetch_json(pool, select("payouts")).await?;
 
-    let (sql, values) = Query::select()
-        .column(col("value"))
-        .from(tbl("meta"))
-        .and_where(sea_query::Expr::col(col("key")).eq("last_sync"))
-        .build_any(&PostgresQueryBuilder);
-    let sql = to_sql(sql, values);
+    let sql = finalize_select(
+        Query::select()
+            .column(col("value"))
+            .from(tbl("meta"))
+            .and_where(sea_query::Expr::col(col("key")).eq("last_sync"))
+            .clone(),
+    );
     let rows: Vec<(Option<String>,)> = sqlx::query_as(&sql)
         .fetch_all(pool)
         .await

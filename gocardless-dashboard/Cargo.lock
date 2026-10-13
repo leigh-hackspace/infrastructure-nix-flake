@@ -167,6 +167,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "common-pg"
+version = "0.1.0"
+dependencies = [
+ "sea-query",
+ "sqlx",
+]
+
+[[package]]
 name = "core-foundation-sys"
 version = "0.8.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -426,6 +434,7 @@ dependencies = [
  "chrono",
  "common-build-spa",
  "common-oidc",
+ "common-pg",
  "gdash-dto",
  "getrandom 0.2.17",
  "reqwest",

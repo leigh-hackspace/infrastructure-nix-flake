@@ -26,6 +26,9 @@ gdash-dto = { path = "dto" }
 # common-rs/ is a symlink to ../common-rs (git-ignored); the Nix build replaces
 # it with a real copy (see common/crane.nix).
 common-oidc = { path = "./common-rs/oidc" }
+# Shared Postgres plumbing: the pool, the schema runner, and the sea-query→sqlx
+# glue (parameter inlining) that this crate used to carry in src/db.rs.
+common-pg = { path = "./common-rs/pg" }
 tiny_http = "0.12"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }

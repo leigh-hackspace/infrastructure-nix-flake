@@ -177,11 +177,12 @@ async fn main() {
             base_url: cfg.authentik_url.clone(),
             group_name: cfg.authentik_group.clone(),
         };
-        let pool = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(2)
-            .connect(&cfg.db_url)
+        let pool = common_pg::connect(&cfg.db_url, 2)
             .await
-            .expect("connect to postgres");
+            .unwrap_or_else(|e| {
+                eprintln!("{e}");
+                std::process::exit(1);
+            });
         let _ = db::init_schema(&pool).await;
         let http = reqwest::Client::builder()
             .user_agent("gocardless-dashboard/0.1")
@@ -199,11 +200,12 @@ async fn main() {
         }
     }
 
-    let pool = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(5)
-        .connect(&cfg.db_url)
+    let pool = common_pg::connect(&cfg.db_url, 5)
         .await
-        .expect("connect to postgres");
+        .unwrap_or_else(|e| {
+            eprintln!("{e}");
+            std::process::exit(1);
+        });
 
     db::init_schema(&pool).await.expect("init schema");
 

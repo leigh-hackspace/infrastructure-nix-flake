@@ -51,9 +51,9 @@
     version = "0.1.0";
     src = ../../../gocardless-dashboard;
     cargoLock = CRANE.lockFile ../../../gocardless-dashboard/Cargo.lock;
-    # `common-oidc` + `common-build-spa` path dependencies (see common-rs/ and
-    # common/crane.nix).
-    sharedCrates = ["oidc" "build-spa"];
+    # `common-oidc` + `common-build-spa` + `common-pg` path dependencies (see
+    # common-rs/ and common/crane.nix).
+    sharedCrates = ["oidc" "build-spa" "pg"];
   };
   dashboard = CRANE.cached (dashboardArgs
     // {
