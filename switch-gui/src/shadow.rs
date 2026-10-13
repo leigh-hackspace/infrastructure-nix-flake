@@ -238,7 +238,20 @@ pub async fn store_snapshot(pool: &sqlx::PgPool, snap: &Snapshot) -> R<()> {
 
     delete_all(&mut *tx, "port", &snap.switch).await?;
     for p in snap.sorted_ports() {
-        let tagged: Vec<String> = p.tagged_vlans.iter().map(|v| v.to_string()).collect();
+        // VLAN ids go in as JSON **numbers**, because that is the shape both
+        // readers of this column ask for: [`number_list`] deserialises a
+        // `Vec<i64>`, and [`vlan_membership`]'s `@>` test compares against
+        // `[225]`. Storing them as strings (which this call site used to do by
+        // reusing [`jsonb_array`]) made both read "no tagged VLANs" — every
+        // tagged membership vanished from the page while sitting intact in the
+        // database, and a membership diff built from it could not see a
+        // membership to remove.
+        let tagged = jsonb_int_array(
+            &p.tagged_vlans
+                .iter()
+                .map(|v| i64::from(*v))
+                .collect::<Vec<_>>(),
+        );
         let sql = pg::insert_sql(|ins| {
             ins.into_table(pg::tbl("port"))
                 .columns(vec![
@@ -272,10 +285,7 @@ pub async fn store_snapshot(pool: &sqlx::PgPool, snap: &Snapshot) -> R<()> {
                     // The jsonb column takes a text literal cast; sea-query has no
                     // jsonb value type, and `::jsonb` after a bound string is how
                     // every jsonb write in this repo works.
-                    sea_query::Expr::cust(format!(
-                        "'{}'::jsonb",
-                        jsonb_array(&tagged).replace('\'', "''")
-                    )),
+                    sea_query::Expr::cust(format!("'{}'::jsonb", tagged.replace('\'', "''"))),
                     sea_query::Expr::value(p.enabled),
                     sea_query::Expr::value(p.counters.is_some()),
                     pg::ev(
@@ -805,8 +815,35 @@ pub fn string_list(json: &str) -> Vec<String> {
 }
 
 /// A jsonb array of numbers, read out of a `::text` cast.
+///
+/// Tolerant of the two shapes this column has had: the numbers
+/// [`jsonb_int_array`] writes now, and the quoted ids an older build wrote with
+/// [`jsonb_array`]. Reading is cheap to get wrong and silent about it — a
+/// `Vec<i64>` deserialize of `["225"]` is an error, and the fallback is an empty
+/// list, so a shape mismatch here shows up as "this port is in no tagged
+/// VLANs", which is indistinguishable from a true answer on the page. The
+/// column is rewritten from the switch on every sync, so the string form is on
+/// its way out on its own; this is what keeps it readable until it is.
 fn number_list(json: &str) -> Vec<i64> {
-    serde_json::from_str(json).unwrap_or_default()
+    serde_json::from_str::<Vec<serde_json::Value>>(json)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|v| match v {
+            serde_json::Value::Number(n) => n.as_i64(),
+            serde_json::Value::String(s) => s.trim().parse().ok(),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A JSON array of numbers, for a jsonb column holding ids.
+///
+/// The number form is not cosmetic: Postgres' `@>` containment is exact about
+/// element type, so `tagged @> '[225]'::jsonb` never matches a `tagged` stored
+/// as `["225"]` (see [`vlan_membership`]).
+pub fn jsonb_int_array(items: &[i64]) -> String {
+    let parts: Vec<String> = items.iter().map(|v| v.to_string()).collect();
+    format!("[{}]", parts.join(","))
 }
 
 /// A JSON array of strings, for a jsonb column.
@@ -960,6 +997,9 @@ mod tests {
             vec!["a".to_string(), "b".to_string()]
         );
         assert_eq!(number_list("[7,20]"), vec![7, 20]);
+        // The shape this column used to be written in (see `number_list`).
+        assert_eq!(number_list(r#"["7","20"]"#), vec![7, 20]);
+        assert_eq!(number_list("[ 7 , 20 ]"), vec![7, 20]);
         assert_eq!(
             command_lists(r#"[["interface 7","shutdown"]]"#),
             vec![vec!["interface 7".to_string(), "shutdown".to_string()]]
@@ -970,6 +1010,30 @@ mod tests {
         assert!(number_list("null").is_empty());
         assert!(string_list("not json").is_empty());
         assert!(command_lists("null").is_empty());
+    }
+
+    /// The round trip the page depends on: the tagged list the sync writes is the
+    /// tagged list the page reads.  This was broken for a build — the write reused
+    /// [`jsonb_array`], so the column held `["225"]` while [`number_list`] parsed a
+    /// `Vec<i64>` and fell back to empty, and every port on every switch looked
+    /// like an access port with no tagged memberships.  Nothing failed loudly: the
+    /// data was in the database, correct, and unreadable.
+    #[test]
+    fn tagged_vlans_survive_the_jsonb_round_trip() {
+        let ids: Vec<i64> = [1u32, 225, 1337].iter().map(|v| i64::from(*v)).collect();
+        let json = jsonb_int_array(&ids);
+        assert_eq!(json, "[1,225,1337]");
+        // A JSON array of numbers, which is what `@> '[225]'::jsonb` matches.
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid json");
+        assert!(parsed
+            .as_array()
+            .expect("an array")
+            .iter()
+            .all(serde_json::Value::is_number));
+        assert_eq!(number_list(&json), vec![1, 225, 1337]);
+        // And an empty set stays an empty set, not `null`.
+        assert_eq!(jsonb_int_array(&[]), "[]");
+        assert!(number_list(&jsonb_int_array(&[])).is_empty());
     }
 
     /// The port order the page shows is the switch's, not a string sort: `Trk1`
