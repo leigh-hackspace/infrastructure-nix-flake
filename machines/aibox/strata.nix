@@ -125,13 +125,15 @@ let
     nativeGguf
     "--ple-gguf"
     pleGguf
-    # Explicit, not the default it replaces. 0.1.42 added a start-up probe (#1425, #1549,
-    # #1629): when the default `direct` measures below 15 000 rows/s the engine switches the
-    # 28.8 GB n-gram table to `mmap` by itself - and only *warns* when `--ple-io` was passed.
-    # mmap means the page cache holds a 28.8 GB table on a box that runs with ~5 GiB
-    # available, and STRATA.md's "do not chase the PLE table" still holds (waitA 0.24 ms: no
-    # I/O stall in the profile). So: keep the measured unbuffered path, let the probe run for
-    # its log line, and take away its power to change the config.
+    # Explicit, not the default it replaces. 0.1.42's start-up probe (#1425, #1549, #1629)
+    # switched the 28.8 GB n-gram table to `mmap` by itself below 15 000 rows/s; 0.1.43 stopped
+    # making that choice on any platform (#2040: a SATA SSD tops out at 10-14K rows/s with
+    # direct's 16 reads in flight and mapped reads were 7x slower there), so the probe now only
+    # warns and the switch is opt-in STRATA_PLE_AUTO_MMAP=1. The flag is therefore no longer a
+    # guard against the probe - it is the measured config stated out loud, and it stays for that:
+    # mmap would put a 28.8 GB table in the page cache on a box that runs with ~5 GiB available,
+    # and STRATA.md's "do not chase the PLE table" still holds (waitA 0.24 ms: no I/O stall in
+    # the profile).
     "--ple-io"
     "direct"
     "--expert-profile"

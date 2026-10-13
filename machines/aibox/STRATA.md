@@ -555,6 +555,80 @@ plateau: **225-231 ms/window = 9.4-9.6 tok/s** at 4096 slots, so `strata-tune/ru
 control arm is the re-measurement — anything much outside that band is a regression to bisect,
 not a win to enjoy.
 
+## Update: engine 0.1.43.1 — 2026-10-13
+
+0.1.42 → **0.1.43.1** (`strata-package.nix`, rev `a0116b2`). Checked at both tags before bumping:
+
+- **The pinned llama.cpp is unchanged** (`LLAMA_CPP_COMMIT = 3cf03257…` at both tags), so the ggml /
+  i-quant side is byte-for-byte what 0.1.42 built against.
+- **Nothing the pack or the MTP runtime depends on moved**: `data/expert-profile.bin` and
+  `data/draft_vocab.bin` hash identically at both tags (the only `data/` file that changed is the new
+  `expert-profile-sycl.bin`), so **no re-prep**.
+- **The build interface is unchanged**: same cmake options, `strata` / `strata-device` /
+  `hip_mapped_alias` all still built (the HIP test targets are still outside `STRATA_BUILD_TESTS`, so
+  the `strata-alias-check` install line stands), same `serve/ tools/ data/` layout, same run-config
+  keys, and every flag the unit passes still exists. `cmake/hip_backend.cmake` and
+  `src/core/device.cu` are byte-identical — gfx1030 is still "unvalidated", gfx1035 still refused —
+  so `HSA_OVERRIDE_GFX_VERSION=10.3.0` and the gfx1030 build stay. `requirements.txt` is unchanged and
+  `jsonschema` is still optional (tests only), so `serverPython` gains nothing.
+
+### The answers do not move: every new default is gated on gfx12
+
+0.1.43's decode push was measured on RDNA4 and is armed only there, by one function —
+`decode_defaults_arch_ok()` (`generate.cpp:1609`) returns true on HIP only when
+`gfx_arch_is_gfx12(gcnArchName)`. aibox reports gfx1030, so everything it gates stays off:
+
+- `STRATA_ROUTE_TAIL_SKIP=7`: the whole block is inert here (`tail_default_ok`, `generate.cpp:8303`),
+  including the new "nearly every expert cached ⇒ no default" rule (`STRATA_TAIL_SKIP_MAX_CACHED`,
+  90 % on a single stage, 60 % on a HIP layer split, #1884).
+- the measured PCIe share that replaces the probe's number (`o.pcie_frac_auto`, `generate.cpp:2805`)
+  — aibox keeps the probe's 0.55 and `--pcie-mode direct`.
+- `--pipeline-windows`, which now defaults to auto-on for a layer split of 3+ stages
+  (`generate.cpp:3397`): gated on gfx12 *and* on a multi-GPU split, so aibox gets 0.
+- the three new HIP kernel fusions — `STRATA_QFUSE_HC` (`verify.cpp:141`), `STRATA_FUSE_WAIT`
+  (`verify.cpp:229`), `STRATA_FUSE_HITS` (`verify.cpp:260`) — are all gfx12 defaults.
+- `--prefill auto` may reach 16384 on gfx12 (`generate.cpp:2208`); aibox passes an explicit
+  `--prefill 8192`, which that rule never touches.
+
+`STRATA_ADAPT_OVERLAP` is opt-in on every backend (0.1.43 had it default-on for Linux CUDA; 0.1.43.1
+pulled that back after an RTX 5090 Laptop decoded 21 % slower with it, #1964/#1975) and the unit does
+not set it. So the plateau numbers above are still the control.
+
+### What does apply here
+
+1. **The GPU host-callback thread is created before the CPU pool pins itself**
+   (`STRATA_ADAPT_CALLBACK_WARMUP`, on by default, `generate.cpp:4796`). Linux threads inherit the
+   creator's CPU mask and the host pins itself to one CPU later, so a callback thread the driver
+   creates lazily after that runs on the pinned CPU and fights the host's spin-wait — 985 µs instead
+   of 4 µs per callback. This is the only default-on change that can move aibox's measured decode,
+   and it moves it the right way.
+2. **The stall watchdog samples the file tier every second, and "busy within the last 10 s" counts as
+   slow, not stuck** (`generate.cpp:9117-9133`) — the right shape for a box whose 20k-token prompt is
+   ~7 minutes. `STRATA_WATCHDOG_S` / `STRATA_WATCHDOG_IO_S` are unchanged, and both gfx1030 env
+   mitigations (`STRATA_HIP_ADAPT_KERNEL_COPY`, `HSA_USERPTR_FOR_PAGED_MEM`) are still read.
+3. **Non-finite logits end a request instead of emitting garbage** (#879): a verify window whose head
+   logits held a NaN or an infinity ends as `DONE … nonfinite`, none of that window's tokens are
+   written, and every cached state that may carry the poison is dropped, so the next request reads its
+   prompt from token 0. The serve layer reports it as `EngineNonFinite` and retries a request that had
+   produced nothing yet.
+4. **The PLE probe can no longer change the config.** 0.1.42 switched `--ple-io direct` to `mmap` by
+   itself below 15 000 rows/s; 0.1.43 stopped choosing on its own on every platform (#2040 — a SATA SSD
+   tops out at 10-14K rows/s with direct's 16 reads in flight, and mapped reads were 7× slower there),
+   so the probe only warns and the switch is opt-in `STRATA_PLE_AUTO_MMAP=1`. `--ple-io direct` is no
+   longer a guard; it is the measured config stated out loud, which is why it stays in `strata.nix`.
+5. Serve-layer odds and ends: `Retry-After` on the 503 when the model is unloaded and the GPU is busy
+   (`/unload?wait=N`, #1997), and a client that hangs up while its request is being prepared is
+   `ClientGone` (#1999) rather than a half-served request.
+
+### Deploying
+
+Committed here — **not built and not deployed**, and nothing was run against the live engine. When it
+is deployed the switch restarts the engine and the request in flight is the only casualty, as with the
+0.1.40.x and 0.1.42 bumps. The number to compare against is the plateau, **225-231 ms/window =
+9.4-9.6 tok/s** at 4096 slots, so `strata-tune/run-arms.sh`'s control arm is the re-measurement: if it
+lands inside the band the bump changed nothing measurable and item 1 above is the only candidate for a
+gain, and anything outside it is a regression to bisect rather than a win to enjoy.
+
 ## Pi clients
 
 `~/.pi/agent/models.json` on **aibox** and **services1** (10.3.1.20) was written
