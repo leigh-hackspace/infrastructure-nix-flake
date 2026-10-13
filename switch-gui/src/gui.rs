@@ -115,14 +115,36 @@ text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px}
 nav{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 14px}
 nav a.badge{text-decoration:none}
 nav .cur{border-color:var(--accent);color:var(--fg)}
+/* The VLAN membership matrix.  One column per VLAN, named vertically so forty
+   ports and ten VLANs fit without horizontal scrolling: a horizontal header
+   would need ~90px per column, a vertical one needs the width of a checkbox. */
+table.mx{table-layout:auto}
+.mx th.v{writing-mode:vertical-rl;transform:rotate(180deg);text-align:left;
+vertical-align:bottom;height:11em;padding:6px 3px;font-size:10px;letter-spacing:.04em}
+.mx th.v abbr{text-decoration:none;cursor:help}
+.mx td.ck{text-align:center;padding:4px 3px}
+.mx td.ck label{display:block;cursor:pointer}
+.mx input[type=checkbox]{accent-color:var(--accent);width:15px;height:15px;margin:0;cursor:pointer}
+.mx input[type=checkbox]:disabled{cursor:not-allowed;opacity:.35}
+/* A row whose form no longer matches the switch.  The page is a cache, so say
+   which rows are about to change rather than making the operator remember. */
+.mx tr.dirty td{background:#1d2531}
+.mx tr.dirty th{background:#1d2531}
+.mx td.apply{white-space:nowrap}
+.mx tr.dirty button{border-color:var(--accent);color:var(--accent)}
 "#;
 
 const SCRIPT: &str = r#"
 async function act(url, msg){
   if(msg && !confirm(msg)) return false;
   const box = document.getElementById('note');
+  // `&` once the url already has a query.  Always appending `?switch=` made
+  // '/api/port/5/name?v=AP3' into '...?v=AP3?switch=switch1', and the server
+  // splits the query on the first `?` — so the name arrived as
+  // 'AP3?switch=switch1' and every rename died on the 15-character limit.
+  const sep = url.indexOf('?') >= 0 ? '&' : '?';
   try{
-    const r = await fetch(url + '?switch=' + encodeURIComponent(SW), {method:'POST'});
+    const r = await fetch(url + sep + 'switch=' + encodeURIComponent(SW), {method:'POST'});
     const t = await r.text();
     box.className = 'note ' + (r.ok ? 'ok' : 'err');
     box.textContent = t || (r.ok ? 'done' : 'failed');
@@ -133,6 +155,49 @@ async function act(url, msg){
   return false;
 }
 function refresh(){ act('/api/refresh'); return false; }
+
+// --- the VLAN membership matrix -------------------------------------------
+// A row's state is its untagged select plus its checked tagged boxes.  The row
+// remembers what the switch said when the page was built (`data-init`), which
+// is the only way this page can be honest about being a cache: it shows which
+// rows are about to change, and never claims a change it has not confirmed.
+function rowBoxes(id){
+  return document.querySelectorAll('input[data-port="' + id + '"]');
+}
+function taggedOf(id){
+  const t = [];
+  rowBoxes(id).forEach(c => { if (c.checked) t.push(c.dataset.vlan); });
+  t.sort((a, b) => a - b);
+  return t;
+}
+function rowState(id){
+  const u = document.getElementById('mu' + id);
+  return (u ? u.value : '') + '|' + taggedOf(id).join(',');
+}
+// A port cannot be tagged and untagged on the same VLAN.  The server refuses it
+// too, but ticking a box that is about to be refused is a bad way to find out.
+function syncRow(id){
+  const u = document.getElementById('mu' + id);
+  const v = u ? u.value : '';
+  rowBoxes(id).forEach(c => {
+    const clash = v !== '' && c.dataset.vlan === v;
+    if (c.dataset.locked !== '1') c.disabled = clash;
+    if (clash) c.checked = false;
+  });
+  markRow(id);
+}
+function markRow(id){
+  const row = document.getElementById('mrow' + id);
+  if (!row) return;
+  row.classList.toggle('dirty', rowState(id) !== row.dataset.init);
+}
+async function saveMembers(id, label){
+  const u = document.getElementById('mu' + id);
+  const q = '?untagged=' + encodeURIComponent(u ? u.value : '') +
+            '&tagged=' + encodeURIComponent(taggedOf(id).join(','));
+  return act('/api/port/' + encodeURIComponent(id) + '/members' + q,
+             'Apply the VLAN membership of port ' + label + ' to the switch?');
+}
 "#;
 
 /// The page script, with the switch it belongs to.
@@ -362,6 +427,8 @@ pub fn dashboard(p: &Page) -> String {
     h.push_str(&vlan_table(p));
     h.push_str("<h2>Ports</h2>");
     h.push_str(&port_table(p));
+    h.push_str("<h2>VLAN membership</h2>");
+    h.push_str(&membership_matrix(p));
     h.push_str(&console_box(p.is_manager));
 
     // Wrapped in the shell: without it the page has no stylesheet and no script,
@@ -548,31 +615,173 @@ fn port_actions(p: &Page, port: &crate::model::Port) -> String {
     }
     let id = port.id.as_str();
     let dis = if p.is_manager { "" } else { " disabled " };
-    let mut vlan_opts = String::new();
-    for v in &p.snap.vlans {
-        vlan_opts.push_str(&format!(
-            "<option value=\"{}\">{}</option>",
-            v.id,
-            esc(&format!("{} · {}", v.id, v.name))
-        ));
-    }
     // The confirm message names the port the way the table does, because the
     // bare number is the same number on every switch in the rack.
     let label = esc(&port.label());
+    // Only the name lives here.  The untagged VLAN used to have a dropdown of
+    // its own in this row and a second one in the membership matrix, which is
+    // two controls for one setting with different rules — the matrix is the one
+    // that knows about tagged memberships, so it is the only one left.
     format!(
         "<span class=\"row\">\
          <input type=\"text\" size=\"8\" id=\"pn{id}\" placeholder=\"name\">\
          <button{dis} onclick=\"return act('/api/port/{id}/name?v='+encodeURIComponent(\
          document.getElementById('pn{id}').value), 'Rename port {label}?')\">Name</button>\
-         <select id=\"pv{id}\">{opts}</select>\
-         <button{dis} onclick=\"return act('/api/port/{id}/vlan?v='+document.getElementById(\
-         'pv{id}').value, 'Move port {label} to this VLAN?')\">Set VLAN</button>\
          </span>",
         id = id,
         dis = dis,
-        opts = vlan_opts,
         label = label
     )
+}
+
+/// The VLAN membership editor: one row per port, one vertical column per VLAN.
+///
+/// Why a matrix and not a per-VLAN port list, which is what the VLAN table above
+/// already is: the switch's own model is VLAN-first — `vlan 225 tagged 7,9-11` is
+/// a statement about a VLAN and a pile of ports — but an operator at a patch
+/// panel thinks per port.  This is the per-port question ("which VLANs is 7 in,
+/// and which one is native?") answered on one screen.
+///
+/// The form submits the **whole wanted row**, not the click that changed it, and
+/// [`crate::commands::port_members`] turns it into the difference against this
+/// snapshot.  That is what stops a tick from sending a half-state, and it is why
+/// the row is marked `dirty` the moment it stops matching the switch: this page
+/// is a cache, so it shows what it is about to change instead of pretending it
+/// *is* the switch.  Nothing is written until Apply is pressed, and the reload
+/// afterwards re-reads the device — so what is on screen after an apply is what
+/// the switch says, not what the form hoped for.
+///
+/// The VLAN names are vertical because there are ten VLANs and fifty ports: a
+/// horizontal header needs roughly 90 px per column and the table stops fitting
+/// the screen, while a vertical one costs the width of a checkbox.
+fn membership_matrix(p: &Page) -> String {
+    let s = p.snap;
+    let editable = p.is_manager && !p.read_only;
+    let mut h = String::from(
+        "<p class=\"muted\">Tick the VLANs a port is <b>tagged</b> in and pick its <b>untagged</b> \
+         (native, access) VLAN. Only rows you have changed are sent, and only when you press \
+         Apply.</p>\
+         <table class=\"mx\"><tr><th>Port</th><th>Name</th><th>Untagged</th>",
+    );
+    for v in &s.vlans {
+        // The tooltip carries the whole thing: a vertical header truncates, and
+        // `AD Lab` or `CS_VLAN_Paul` are not names to guess at.
+        h.push_str(&format!(
+            "<th class=\"v\"><abbr title=\"VLAN {} · {} · {}\">{} · {}</abbr></th>",
+            v.id,
+            esc(&v.name),
+            esc(&v.status),
+            v.id,
+            esc(&v.name)
+        ));
+    }
+    h.push_str("<th></th></tr>");
+
+    for port in s.sorted_ports() {
+        let id = port.id.as_str();
+        let trunk = !port.trunk_group.is_empty();
+        // A trunk member is exactly what the switch refuses to have its VLAN
+        // membership changed ("remove it from the trunk first"), and a trunk
+        // group has never been exercised here.  Both are shown and disabled with
+        // the reason on hover rather than accepted and hoped for.
+        let locked = !editable || trunk;
+        let label = esc(&port.label());
+        let why = if trunk {
+            format!(
+                "title=\"in LACP group {} — the switch will not change the VLAN membership of a trunk member\"",
+                esc(&port.trunk_group)
+            )
+        } else if !editable {
+            "title=\"read-only session\"".to_string()
+        } else {
+            String::new()
+        };
+
+        // The same shape the script recomputes, so `dirty` means "different from
+        // the switch" and not "different from what the page guessed".
+        let mut tagged: Vec<u32> = port.tagged_vlans.clone();
+        tagged.sort();
+        let init = format!(
+            "{}|{}",
+            port.untagged_vlan
+                .map(|v| v.to_string())
+                .unwrap_or_default(),
+            tagged
+                .iter()
+                .map(|v| v.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+
+        let mut opts = String::new();
+        if port.untagged_vlan.is_none() {
+            opts.push_str("<option value=\"\" selected>— not set —</option>");
+        }
+        for v in &s.vlans {
+            let sel = if port.untagged_vlan == Some(v.id) {
+                " selected"
+            } else {
+                ""
+            };
+            opts.push_str(&format!(
+                "<option value=\"{}\"{}>{} · {}</option>",
+                v.id,
+                sel,
+                v.id,
+                esc(&v.name)
+            ));
+        }
+        let sdis = if locked { " disabled" } else { "" };
+        let select = format!(
+            "<select id=\"mu{id}\"{sdis} onchange=\"syncRow('{id}')\">{opts}</select>",
+            id = id,
+            sdis = sdis,
+            opts = opts
+        );
+
+        let mut cells = String::new();
+        for v in &s.vlans {
+            let on = port.tagged_vlans.contains(&v.id);
+            let chk = if on { " checked" } else { "" };
+            let cdis = if locked { " disabled" } else { "" };
+            let lock = if locked { " data-locked=\"1\"" } else { "" };
+            cells.push_str(&format!(
+                "<td class=\"ck\"><label title=\"{} · VLAN {}\"><input type=\"checkbox\" \
+                 data-port=\"{id}\" data-vlan=\"{vid}\"{lock}{cdis}{chk} \
+                 onchange=\"markRow('{id}')\"></label></td>",
+                if on { "tagged" } else { "not tagged" },
+                v.id,
+                id = id,
+                vid = v.id
+            ));
+        }
+
+        let btn = if locked {
+            String::new()
+        } else {
+            format!(
+                "<button onclick=\"return saveMembers('{id}','{label}')\">Apply</button>"
+            )
+        };
+
+        h.push_str(&format!(
+            "<tr id=\"mrow{id}\" data-init=\"{init}\"><td class=\"n\"><b>{id}</b></td>\
+             <td{why}>{name}</td><td>{select}</td>{cells}<td class=\"apply\">{btn}</td></tr>",
+            id = id,
+            init = init,
+            why = if why.is_empty() {
+                String::new()
+            } else {
+                format!(" {why}")
+            },
+            name = esc(if port.name.is_empty() { "—" } else { &port.name }),
+            select = select,
+            cells = cells,
+            btn = btn
+        ));
+    }
+    h.push_str("</table>");
+    h
 }
 
 fn console_box(is_manager: bool) -> String {
@@ -694,6 +903,38 @@ mod tests {
         f(p)
     }
 
+    /// The fixture as a Manager session, for the tests that ask which controls
+    /// are live rather than which exist.
+    fn manager_page(s: &Snapshot) -> Page<'_> {
+        Page {
+            name: "switch1",
+            snap: s,
+            rows: &[],
+            privilege: "Manager",
+            is_manager: true,
+            user: "cjdell",
+            email: None,
+            read_only: false,
+            cache_age_secs: 0,
+            switch_url: "http://10.3.1.2",
+        }
+    }
+
+    fn read_only_page(s: &Snapshot) -> Page<'_> {
+        Page {
+            privilege: "Operator (read-only)",
+            is_manager: false,
+            read_only: true,
+            cache_age_secs: 0,
+            switch_url: "http://10.3.1.2",
+            ..manager_page(s)
+        }
+    }
+
+    fn count(hay: &str, needle: &str) -> usize {
+        hay.matches(needle).count()
+    }
+
     #[test]
     fn escaping() {
         assert_eq!(esc("\"><&"), "&quot;&gt;&lt;&amp;");
@@ -773,8 +1014,17 @@ mod tests {
             switch_url: "http://10.3.1.2",
         };
         let html = dashboard(&mgr);
-        assert!(!html.contains(" disabled "));
+        // A Manager session gets live buttons.  The matrix still renders a trunk
+        // row's controls disabled — the switch refuses membership changes for a
+        // trunk member — so "nothing on the page is disabled" was the wrong
+        // assertion once the matrix existed, and saying so is better than
+        // loosening it to nothing at all.
+        assert!(!html.contains("button disabled"), "{html}");
         assert!(!html.contains("Read-only session"));
+        assert!(
+            html.contains("in LACP group Trk3"),
+            "a locked trunk row has to say why"
+        );
     }
 
     #[test]
@@ -919,9 +1169,83 @@ mod tests {
         };
         let html = dashboard(&p);
         assert!(html.contains("const SW = 'switch3'"));
-        assert!(html.contains("'?switch=' + encodeURIComponent(SW)"));
+        assert!(html.contains("'switch=' + encodeURIComponent(SW)"));
         assert!(html.contains("href=\"/switch/switch2\""));
         assert!(!html.contains("href=\"/switch/switch3\""), "the current switch is not a link");
+    }
+
+    /// The matrix is the only place VLAN membership is edited, and it is the
+    /// only thing on the page that has to render a *state* rather than a button:
+    /// the checkboxes and the dropdown have to come out pre-set to what the
+    /// switch actually said, or the first Apply writes the page's guess.
+    #[test]
+    fn the_matrix_shows_what_the_switch_actually_said() {
+        let s = fixture();
+        let html = dashboard(&manager_page(&s));
+        // One vertical column per VLAN, named — vertically, because ten VLANs
+        // across forty-eight ports only fits if the header costs a checkbox.
+        assert_eq!(count(&html, "class=\"v\""), 2);
+        assert!(html.contains("1 · DEFAULT"));
+        assert!(html.contains("232 · AD Lab"));
+        // Port 2 is tagged in 232: its box is checked.  Port 1 is not: its is not.
+        assert!(html.contains("data-port=\"2\" data-vlan=\"232\" checked"), "{html}");
+        assert!(!html.contains("data-port=\"1\" data-vlan=\"232\" checked"));
+        // Port 2 has no native VLAN, and the dropdown has to say that rather
+        // than silently select VLAN 1 — which would be a change waiting to ship.
+        assert!(html.contains("<select id=\"mu2\" onchange=\"syncRow('2')\"><option value=\"\" selected>"), "{html}");
+        // Port 1 is in a trunk, so its dropdown is rendered but locked.
+        assert!(html.contains("<select id=\"mu1\" disabled onchange=\"syncRow('1')\"><option value=\"1\" selected>"), "{html}");
+    }
+
+    /// `data-init` is the contract with `rowState()` in the page script: it is
+    /// how a row knows it differs from the switch.  If the two formats drift, a
+    /// row shows as changed when it is not, or (worse) unchanged when it is.
+    #[test]
+    fn each_row_carries_the_state_the_script_compares_against() {
+        let s = fixture();
+        let html = dashboard(&manager_page(&s));
+        assert!(html.contains("id=\"mrow1\" data-init=\"1|\""), "{html}");
+        assert!(html.contains("id=\"mrow2\" data-init=\"|232\""), "{html}");
+    }
+
+    /// A trunk member is the one membership the switch refuses to change, and a
+    /// trunk group has never been exercised.  Neither gets a live control.
+    #[test]
+    fn a_trunk_row_is_locked_and_says_why() {
+        let s = fixture();
+        let html = dashboard(&manager_page(&s));
+        let row = html
+            .split("<tr id=\"mrow1\"")
+            .nth(1)
+            .and_then(|r| r.split("</tr>").next())
+            .expect("port 1 has a row");
+        assert!(row.contains("data-locked=\"1\""), "{row}");
+        assert!(row.contains("in LACP group Trk3"), "{row}");
+        assert!(!row.contains("Apply"), "a locked row has nothing to apply");
+        // Port 2, which is not in a trunk, does.
+        assert!(html.contains("saveMembers('2'"), "an ordinary row can be applied");
+    }
+
+    #[test]
+    fn a_read_only_session_locks_the_matrix() {
+        let s = fixture();
+        let html = dashboard(&read_only_page(&s));
+        // The script always *defines* the helper; what must be absent is a call.
+        assert!(!html.contains("return saveMembers("), "no writes to offer");
+        assert!(html.contains("read-only session"));
+    }
+
+    /// There used to be a second, narrower VLAN dropdown in the port table.  Two
+    /// controls for one setting, with different rules about tagged memberships,
+    /// is one too many — the matrix is the one that knows the whole row.
+    #[test]
+    fn the_port_table_no_longer_offers_a_second_vlan_dropdown() {
+        let s = fixture();
+        let html = dashboard(&manager_page(&s));
+        assert!(!html.contains("pv1"), "the duplicate dropdown is gone");
+        assert!(!html.contains("Set VLAN"));
+        // The name editor stays: it is a different setting, and a single field.
+        assert!(html.contains("pn1"));
     }
 
     /// A switch that is down has to show up on the landing page as an error, not

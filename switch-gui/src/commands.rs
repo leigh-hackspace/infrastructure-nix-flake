@@ -19,8 +19,9 @@
 //! (the switch would refuse, but "VLAN 225 still has 4 ports" beats a
 //! half-applied change and a confusing error).
 
-use crate::model::Snapshot;
+use crate::model::{Port, Snapshot};
 use crate::R;
+use std::collections::BTreeSet;
 
 /// Longest port name this platform accepts (the switch enforces its own limit
 /// too; failing here gives a readable message instead of `Invalid input`).
@@ -134,15 +135,73 @@ pub fn port_name(port: &str, name: &str) -> R<Vec<String>> {
     Ok(interface(port, &format!("name {}", quoted(name))))
 }
 
-/// Move an access port to another VLAN: `vlan 20 untagged 5`.
+/// Reconcile one port's VLAN membership with what the form says it should be.
 ///
-/// A port can be untagged in only one VLAN, so this does move it. **Tagged
-/// memberships are left alone**, which on a trunk is the opposite of what you
-/// want — the GUI offers this for access ports only.
-pub fn port_vlan(port: &str, vlan: u32) -> R<Vec<String>> {
-    check_port(port)?;
-    check_vlan(vlan)?;
-    Ok(vec![format!("vlan {vlan} untagged {port}")])
+/// The form submits the *wanted* state, not the click that changed it, and the
+/// commands come from the difference against the snapshot the page was built
+/// from.  Two reasons it has to work that way:
+///
+/// * `vlan <id> <untagged|tagged> <ports>` is a statement about the **VLAN**, not
+///   about the port, so "make port 7 an access port on 225" is three commands
+///   against three different VLANs, and the switch has no verb for the thing the
+///   operator actually asked for.
+/// * A command that is already true is not free.  It is a config-mode round trip
+///   on a console that takes a second per line, so ticking two boxes should cost
+///   two commands, not one per VLAN the port belongs to.
+///
+/// Ordering is not cosmetic.  The rule is **take away, then move the native
+/// VLAN, then add**:
+///
+/// * removals go first, because a port cannot be tagged and untagged on the same
+///   VLAN at once — moving port 7 from `untagged 225, tagged 226` to
+///   `untagged 226` has to `no vlan 226 tagged 7` before it sets the untagged
+///   side, or the port is left in a state the switch will not report honestly.
+/// * the untagged move is `no`-then-set: a port has exactly one native VLAN, and
+///   setting the new one without releasing the old leaves the port showing under
+///   both in `show vlan`.
+/// * additions come last, so no later removal can undo one.
+pub fn port_members(port: &Port, tagged: &[u32], untagged: Option<u32>) -> R<Vec<String>> {
+    check_port(&port.id)?;
+    if !port.trunk_group.is_empty() {
+        return Err(format!(
+            "port {} is in LACP group {}; this tool will not change the VLAN \
+             membership of a trunk member or of a trunk group",
+            port.id,
+            port.trunk_group
+        ));
+    }
+    let mut want: BTreeSet<u32> = BTreeSet::new();
+    for id in tagged {
+        check_vlan(*id)?;
+        want.insert(*id);
+    }
+    if let Some(u) = untagged {
+        check_vlan(u)?;
+        if want.remove(&u) {
+            return Err(format!(
+                "VLAN {u} cannot be both the untagged VLAN and a tagged VLAN of port {}",
+                port.id
+            ));
+        }
+    }
+
+    let have: BTreeSet<u32> = port.tagged_vlans.iter().copied().collect();
+    let mut cmds = Vec::new();
+    for id in have.difference(&want) {
+        cmds.push(format!("no vlan {id} tagged {}", port.id));
+    }
+    if let Some(new) = untagged {
+        if port.untagged_vlan != Some(new) {
+            if let Some(old) = port.untagged_vlan {
+                cmds.push(format!("no vlan {old} untagged {}", port.id));
+            }
+            cmds.push(format!("vlan {new} untagged {}", port.id));
+        }
+    }
+    for id in want.difference(&have) {
+        cmds.push(format!("vlan {id} tagged {}", port.id));
+    }
+    Ok(cmds)
 }
 
 /// `interface 9 enable` / `interface 9 disable`.
@@ -248,10 +307,6 @@ mod tests {
             vec![r#"interface 5 name "NAS2 Port 1""#.to_string()]
         );
         assert_eq!(
-            port_vlan("Trk1", 225).unwrap(),
-            vec!["vlan 225 untagged Trk1".to_string()]
-        );
-        assert_eq!(
             port_state("9", false).unwrap(),
             vec!["interface 9 disable".to_string()]
         );
@@ -339,6 +394,116 @@ mod tests {
         assert!(check_vlan(4094).is_ok());
         assert!(check_vlan(0).is_err());
         assert!(check_vlan(4095).is_err());
+    }
+
+    fn port(untagged: Option<u32>, tagged: &[u32]) -> Port {
+        let mut p = Port::new("7");
+        p.untagged_vlan = untagged;
+        p.tagged_vlans = tagged.to_vec();
+        p
+    }
+
+    /// The form sends the wanted state, so the commands are the difference.
+    /// Ticking two boxes must be two commands, not one per VLAN the port is in.
+    #[test]
+    fn membership_is_a_diff_not_a_recital() {
+        // 7 is untagged 225, tagged 226 and 227.  Want: same untagged, drop
+        // 226, add 230.  227 is untouched and must not appear at all.
+        let c = port_members(&port(Some(225), &[226, 227]), &[227, 230], Some(225)).unwrap();
+        assert_eq!(
+            c,
+            vec![
+                "no vlan 226 tagged 7".to_string(),
+                "vlan 230 tagged 7".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn nothing_changed_is_no_commands() {
+        assert!(port_members(&port(Some(225), &[226]), &[226], Some(225))
+            .unwrap()
+            .is_empty());
+        // `untagged: None` means "leave the native VLAN alone", not "clear it".
+        assert!(port_members(&port(Some(225), &[226]), &[226], None)
+            .unwrap()
+            .is_empty());
+    }
+
+    /// A port has exactly one native VLAN.  Setting the new one without
+    /// releasing the old leaves it showing under both in `show vlan`, which is
+    /// worse than the extra command.
+    #[test]
+    fn moving_the_untagged_vlan_releases_the_old_one() {
+        let c = port_members(&port(Some(225), &[]), &[], Some(226)).unwrap();
+        assert_eq!(
+            c,
+            vec![
+                "no vlan 225 untagged 7".to_string(),
+                "vlan 226 untagged 7".to_string()
+            ]
+        );
+        // A port with no native VLAN yet just joins.
+        let c = port_members(&port(None, &[]), &[], Some(226)).unwrap();
+        assert_eq!(c, vec!["vlan 226 untagged 7".to_string()]);
+    }
+
+    /// The ordering rule, and the case it exists for: 7 is untagged 225 and
+    /// tagged 226, and is being made an access port on 226.  The tagged 226 has
+    /// to go **before** the untagged side is set, or the port is briefly both on
+    /// the same VLAN and `show vlan` reports whichever one it likes.
+    #[test]
+    fn a_tagged_membership_is_dropped_before_the_same_vlan_goes_untagged() {
+        let c = port_members(&port(Some(225), &[226]), &[], Some(226)).unwrap();
+        assert_eq!(
+            c,
+            vec![
+                "no vlan 226 tagged 7".to_string(),
+                "no vlan 225 untagged 7".to_string(),
+                "vlan 226 untagged 7".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn a_port_cannot_be_untagged_and_tagged_on_the_same_vlan() {
+        let err = port_members(&port(Some(225), &[]), &[226, 227], Some(226)).unwrap_err();
+        assert!(err.contains("both the untagged VLAN and a tagged VLAN"), "{err}");
+        // The wanted state is what is checked: asking to *keep* 226 tagged while
+        // moving the native VLAN off it is fine, that is an ordinary trunk.
+        assert!(port_members(&port(Some(225), &[226]), &[226], Some(227))
+            .is_ok());
+    }
+
+    /// A trunk member is the one thing the switch refuses here, and a trunk
+    /// group has never been exercised: neither is attempted.
+    #[test]
+    fn trunk_members_are_left_alone() {
+        let mut p = port(Some(225), &[]);
+        p.trunk_group = "Trk3".into();
+        p.trunk_type = "LACP".into();
+        let err = port_members(&p, &[226], None).unwrap_err();
+        assert!(err.contains("LACP group Trk3"), "{err}");
+    }
+
+    #[test]
+    fn membership_validates_its_numbers() {
+        assert!(port_members(&port(Some(225), &[]), &[0], None).is_err());
+        assert!(port_members(&port(Some(225), &[]), &[4095], None).is_err());
+        assert!(port_members(&port(Some(225), &[]), &[], Some(0)).is_err());
+        let mut bad = port(Some(225), &[]);
+        bad.id = "7; show vlan".into();
+        assert!(port_members(&bad, &[226], None).is_err());
+    }
+
+    /// Trunk groups are ports to the CLI, so the form is accepted for them even
+    /// though the editor declines to use it (`trunk_members_are_left_alone`).
+    #[test]
+    fn membership_accepts_a_trunk_group_token() {
+        let mut p = port(Some(225), &[]);
+        p.id = "Trk1".into();
+        let c = port_members(&p, &[226], None).unwrap();
+        assert_eq!(c, vec!["vlan 226 tagged Trk1".to_string()]);
     }
 
     #[test]

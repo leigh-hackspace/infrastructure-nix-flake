@@ -17,6 +17,13 @@
 //! spaces**, and never index by character offset.  Fixed-width slicing breaks
 //! the moment the CLI widens a column for a longer value, whereas "the last
 //! field is Jumbo, the one before is Status, the middle is the name" survives.
+//!
+//! One byte to know about before writing a parser that cares about leading
+//! whitespace: the CLI ends every line with **LF** and then CR-paints to the
+//! next row, so `str::lines()` yields `"\r   name \"AP3\""` — every line begins
+//! with a carriage return, not a character.  Trailing-`trim()`ing hides this,
+//! which is why the column parsers are fine and [`port_names`], which asks
+//! whether a line is indented, was not.
 
 use crate::model::{Counters, Member, StpPort, SystemInfo, TrunkMember, Vlan};
 use std::collections::BTreeMap;
@@ -376,9 +383,99 @@ fn is_port_token(s: &str) -> bool {
     !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())
 }
 
+/// Port names out of `show running-config`.
+///
+/// On Y.11.44 this is the **only** place a port name is reported.  `show vlan
+/// <id>` has a `Name` column and it is blank for every port whose membership is
+/// dynamic (`Learn`) — which on 10.3.1.2 is every port — and there is no
+/// `show port name` to ask instead: it answers `Ambiguous input: port`.  The
+/// names live in the running config, one block per configured port:
+///
+/// ```text
+/// interface 22
+///    name "AP3"
+/// exit
+/// ```
+///
+/// Only `interface` blocks count.  A `vlan` block has a `name` line of its own
+/// (`vlan 225` / `name "Shared"`), and reading that as a port name is the
+/// obvious mistake with this input, so a block is open only between
+/// `interface <id>` and the line that ends it, and an indented `name` outside a
+/// block is ignored.  A block ends at `exit` or at any other unindented line.
+///
+/// And the line has to be stripped of its leading CR *before* asking whether it
+/// is indented.  This CLI ends every line with LF and then CR-paints its way to
+/// the next row, so `lines()` hands back `"\r   name \"AP3\""`: the indentation
+/// is real, but it is not at the start of the string.  Testing
+/// `starts_with(' ')` on the raw line made every line look top-level, every
+/// block close immediately, and the parser return no names at all while the
+/// command itself succeeded — which is why this is the one parser here with a
+/// CR-shaped test.
+///
+/// The rest of the input is deliberately not returned: `show running-config`
+/// carries the RADIUS shared secret and the local user hashes.  This hands back
+/// names and nothing else, and [`crate::switch::Switch::secret_command`] keeps
+/// the raw text out of the error path too.
+pub fn port_names(out: &str) -> BTreeMap<String, String> {
+    let mut names = BTreeMap::new();
+    let mut port: Option<&str> = None;
+    for line in out.lines() {
+        let line = line.trim_start_matches('\r');
+        // The CLI indents a block's settings; column 0 is a new block.
+        if !(line.starts_with(' ') || line.starts_with('\t')) {
+            port = match line.trim().strip_prefix("interface") {
+                Some(rest) if is_port_token(rest.trim()) => Some(rest.trim()),
+                _ => None,
+            };
+            continue;
+        }
+        let Some(id) = port else { continue };
+        if let Some(rest) = line.trim().strip_prefix("name ") {
+            if let Some(name) = unquoted(rest) {
+                names.insert(id.to_string(), name);
+            }
+        }
+    }
+    names
+}
+
+/// The inside of a double-quoted CLI argument, or `None` if it is not quoted.
+///
+/// The CLI has no escape mechanism inside a name (which is why
+/// `commands::check_label` refuses a quote rather than escaping it), so the
+/// first and last quote in the value are the delimiters.
+fn unquoted(s: &str) -> Option<String> {
+    let s = s.trim();
+    let rest = s.strip_prefix('"')?;
+    let end = rest.rfind('"')?;
+    Some(rest[..end].to_string())
+}
+
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use super::*;
+
+    /// Every fixture in this module, in one string.
+    ///
+    /// `switch::is_prompt` has to read a prompt as a *suffix* of a line — that
+    /// is the only way it sees the prompt the CLI paints on the end of an echoed
+    /// command (`interface 23 name "x"switch1(config)#`), which is what a write
+    /// answers. The cost is that a response line ending in `word#` would read as
+    /// a prompt and cut a response short, so the switch's own captured output is
+    /// the thing to check that against.
+    pub fn corpus() -> String {
+        [
+            SHOW_VLAN,
+            SHOW_VLAN_1,
+            SHOW_INTERFACES,
+            SHOW_TRUNKS,
+            SHOW_STP,
+            SHOW_SYSTEM,
+            SHOW_VLAN_2824,
+            SHOW_STP_2824,
+        ]
+        .join("\n")
+    }
 
     /// Real `show vlan` output from 10.3.1.2 (ANSI stripped, MORE markers
     /// removed) — including a VLAN whose name contains a space.
@@ -646,5 +743,118 @@ mod tests {
         assert!(!is_port_token("Trk"));
         assert!(!is_port_token("Port"));
         assert!(!is_port_token(""));
+    }
+
+    /// Real `show running-config` from 10.3.1.2 (Y.11.44), trimmed to the parts
+    /// that matter and with **every secret replaced** — the shape of the lines is
+    /// what is pinned here, never their values.  Note the trailing spaces the CLI
+    /// emits on `interface 1 ` and `name "GW Port 1" `.
+    const SHOW_RUNNING_CONFIG: &str = r#"interface 1 
+   name "GW Port 1" 
+exit
+interface 22 
+   name "AP3" 
+exit
+interface 48 
+   name "Switch2 Port 48" 
+exit
+trunk 47-48 Trk1 LACP 
+trunk 5-6 Trk3 LACP 
+ip default-gateway 10.3.1.1 
+snmp-server community "public" Unrestricted 
+vlan 1 
+   name "DEFAULT"
+exit
+vlan 225 
+   name "Shared" 
+   untagged 2,4,7,23,Trk1 
+   tagged 1,3,8-18,22,45-46,Trk1 
+exit
+radius-server host 10.3.1.36
+radius-server key <REDACTED-IN-THIS-REPO>
+username operator password <REDACTED-IN-THIS-REPO>
+"#;
+
+    #[test]
+    fn names_come_from_the_interface_blocks() {
+        let n = port_names(SHOW_RUNNING_CONFIG);
+        assert_eq!(n.len(), 3, "{n:?}");
+        assert_eq!(n.get("1").map(String::as_str), Some("GW Port 1"));
+        assert_eq!(n.get("22").map(String::as_str), Some("AP3"));
+        assert_eq!(n.get("48").map(String::as_str), Some("Switch2 Port 48"));
+    }
+
+    /// The trap this parser exists to avoid: a `vlan` block has a `name` line
+    /// exactly like an `interface` block's, and the running config is full of
+    /// them.  Reading one as a port name would invent a port called `225`.
+    #[test]
+    fn a_vlan_blocks_name_is_not_a_port_name() {
+        let n = port_names(SHOW_RUNNING_CONFIG);
+        assert!(!n.contains_key("225"), "the VLAN name leaked: {n:?}");
+        assert!(!n.contains_key("Shared"), "a name key, not a port: {n:?}");
+        // `trunk 5-6 Trk3 LACP` is a top-level setting, not a block.
+        assert!(!n.contains_key("5-6"));
+    }
+
+    /// `show running-config` is the only command this tool reads that carries
+    /// secrets.  The parser returns names, so a secret has nowhere to go — but
+    /// this is the line that would catch it if that ever changed.
+    #[test]
+    fn the_running_configs_secrets_are_not_returned() {
+        for (port, name) in port_names(SHOW_RUNNING_CONFIG) {
+            assert!(!name.contains("REDACTED"), "a secret leaked into a name");
+            assert!(!port.contains("REDACTED"), "a secret leaked into a port id");
+        }
+    }
+
+    #[test]
+    fn running_config_quirks() {
+        // A trailing space on the interface line, and on the name.
+        let n = port_names("interface 7 \n   name \"NAS2 iLO\" \nexit\n");
+        assert_eq!(n.get("7").map(String::as_str), Some("NAS2 iLO"));
+        // A trunk group can be named too, even though this switch puts trunks
+        // in a top-level `trunk 5-6 Trk3 LACP` line instead.
+        let t = port_names("interface Trk1\n   name \"ESX1 LACP\"\nexit\n");
+        assert_eq!(t.get("Trk1").map(String::as_str), Some("ESX1 LACP"));
+        // An unquoted or malformed value is skipped rather than half-parsed.
+        assert!(port_names("interface 7\n   name nope\nexit\n").is_empty());
+        // A block with no name line contributes nothing.
+        assert!(port_names("interface 7\n   speed-duplex auto\nexit\n").is_empty());
+        // An indented name with no open block is not a port's.
+        assert!(port_names("   name \"Orphan\"\n").is_empty());
+        // `interface` with no port number opens nothing.
+        assert!(port_names("interface\n   name \"Nope\"\n").is_empty());
+        // The last `name` in a block wins, and a block ends at the next block.
+        let two = port_names("interface 1\n   name \"A\"\ninterface 2\n   name \"B\"\n");
+        assert_eq!(two.len(), 2);
+        assert_eq!(two.get("1").map(String::as_str), Some("A"));
+    }
+
+    #[test]
+    fn unquoted_needs_its_quotes() {
+        assert_eq!(unquoted("\"AP3\" ").as_deref(), Some("AP3"));
+        assert_eq!(unquoted("AP3"), None);
+        assert_eq!(unquoted("\"open"), None);
+    }
+
+    /// The regression this exists for.  The CLI ends every line with LF and then
+    /// CR-paints to the next row, so what `lines()` splits into is `"\r   name
+    /// \"AP3\""`: asking whether the line is indented, on the raw line, answers
+    /// "no" for every line, every `interface` block closes before its `name`,
+    /// and the parser returns nothing — while the command succeeds and the page
+    /// quietly shows no names at all.  Nothing else in the module notices, so
+    /// nothing else would have caught it.
+    #[test]
+    fn every_line_arrives_behind_a_carriage_return() {
+        let crlf = SHOW_RUNNING_CONFIG.replace('\n', "\n\r");
+        assert!(
+            crlf.contains("\r   name"),
+            "the fixture is not shaped like the wire"
+        );
+        let n = port_names(&crlf);
+        assert_eq!(n.len(), 3, "{n:?}");
+        assert_eq!(n.get("22").map(String::as_str), Some("AP3"));
+        // And still no VLAN name pretending to be a port.
+        assert!(!n.contains_key("225"));
     }
 }

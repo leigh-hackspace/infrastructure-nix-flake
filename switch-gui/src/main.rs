@@ -55,7 +55,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use common_web as web;
 
-use model::{Privilege, Snapshot};
+use model::{Port, Privilege, Snapshot};
 use oidc::Oidc;
 
 type R<T> = std::result::Result<T, String>;
@@ -591,10 +591,9 @@ fn serve(mut stream: TcpStream, shared: &Shared) -> R<()> {
             let v = query.get("v").map(|s| s.as_str()).unwrap_or("");
             let cmds = match verb {
                 "name" => commands::port_name(port, v),
-                "vlan" => match v.parse::<u32>() {
-                    Ok(id) => commands::port_vlan(port, id),
-                    Err(_) => Err(format!("`{v}` is not a VLAN id")),
-                },
+                // The membership editor's one request: the whole wanted row for
+                // this port, turned into the difference against the snapshot.
+                "members" => port_membership_cmds(slot, &query, port),
                 "enabled" => match v {
                     "1" | "true" => commands::port_state(port, true),
                     "0" | "false" => commands::port_state(port, false),
@@ -675,6 +674,51 @@ fn page(stream: &TcpStream, shared: &Shared, slot: &Slot, session: &oidc::Sessio
 }
 
 /// Validate, refuse, send, audit.  Every write path ends here.
+/// Turn the membership editor's request into commands.
+///
+/// The editor sends the **whole wanted row**, and both parameters are required.
+/// That is deliberate: `tagged=` missing would be indistinguishable from "this
+/// port should be tagged in nothing", and a request that lost its query string
+/// would then strip every tagged membership off the port.  Refusing is the right
+/// answer to a request that does not state its whole intent.
+///
+/// The difference is taken against the **cached snapshot**, which is what the
+/// page was built from — the operator edited what they saw.  It is at most a TTL
+/// old, and the commands themselves are absolute (`vlan 226 tagged 7`), so a
+/// stale cache can only mean a command was skipped or sent redundantly, never
+/// that something else was configured.  `apply` invalidates the cache either way,
+/// so the next read is the switch's own answer.
+fn port_membership_cmds(slot: &Slot, query: &BTreeMap<String, String>, port: &str) -> R<Vec<String>> {
+    let tagged = match query.get("tagged") {
+        None => return Err("tagged=<list> is required; send it empty for no tagged VLANs".to_string()),
+        Some(v) => {
+            let mut out = Vec::new();
+            for part in v.split(',') {
+                let part = part.trim();
+                if part.is_empty() {
+                    continue;
+                }
+                out.push(
+                    part.parse::<u32>()
+                        .map_err(|_| format!("`{part}` is not a VLAN id"))?,
+                );
+            }
+            out
+        }
+    };
+    let untagged = match query.get("untagged") {
+        None => return Err("untagged=<id> is required; send it empty to leave the native VLAN alone".to_string()),
+        Some(v) if v.trim().is_empty() => None,
+        Some(v) => Some(
+            v.trim()
+                .parse::<u32>()
+                .map_err(|_| format!("`{v}` is not a VLAN id"))?,
+        ),
+    };
+    let state = slot.port_state(port)?;
+    commands::port_members(&state, &tagged, untagged)
+}
+
 fn apply(
     stream: &TcpStream,
     shared: &Shared,
@@ -692,6 +736,14 @@ fn apply(
             return text(stream, 400, &e);
         }
     };
+    // An empty plan is a success, not an application.  The membership editor
+    // sends the whole wanted row, so "nothing to do" is an ordinary answer, and
+    // saying `applied:` with nothing after it would be a lie that also costs a
+    // cache invalidation and a re-read of a switch that was not touched.
+    if cmds.is_empty() {
+        shared.audit(&slot.cfg.name, user, what, "no change");
+        return text(stream, 200, "already in that state");
+    }
     if shared.cfg.read_only {
         let msg = "this instance runs with --read-only".to_string();
         shared.audit(&slot.cfg.name, user, what, &msg);
@@ -1046,6 +1098,24 @@ impl Slot {
 
     fn has_cache(&self) -> bool {
         self.cache.lock().map(|g| g.is_some()).unwrap_or(false)
+    }
+
+    /// One port as the last snapshot saw it.
+    ///
+    /// The membership actions are a difference against a state, so they need the
+    /// state.  With no snapshot there is nothing honest to compare against, and
+    /// the right answer is to make the operator reload rather than guess at what
+    /// the port was in.
+    fn port_state(&self, id: &str) -> R<Port> {
+        self.cache
+            .lock()
+            .ok()
+            .and_then(|g| g.as_ref().and_then(|s| s.ports.get(id).cloned()))
+            .ok_or_else(|| {
+                format!(
+                    "no snapshot of this switch yet, so port {id}'s membership has nothing to compare against — reload the page once it has been read"
+                )
+            })
     }
 
     /// Forget the snapshot and the session, forcing a reconnect and a re-read.

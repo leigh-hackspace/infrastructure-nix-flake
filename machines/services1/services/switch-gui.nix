@@ -45,11 +45,13 @@
 #
 # Writes need the Manager context, and `agent` has it: `enable` is a second
 # login on this firmware and the same credentials answer it, so the enable pair
-# defaults to the login pair. It is nonetheless **disabled here with
-# `--read-only`** — see the ExecStart comment and switch-gui/README.md; the
-# console has never echoed a configuration command back, so no write is proven.
-# Configuration would apply inside config mode (`Switch::apply` enters it), and
-# nothing here saves to NVRAM, so a change is in RAM until someone writes it.
+# defaults to the login pair. Writes are **on** here: they were disabled on a
+# diagnosis that turned out to be wrong (the console did echo configuration
+# commands; the prompt matcher could not see a prompt painted on the same row as
+# the echo, so every write "timed out" after applying). Proven end to end on a
+# dead port of switch1 on 2026-10-13 — see switch-gui/README.md, "The write
+# path". Configuration applies inside config mode (`Switch::apply` enters it),
+# and nothing here saves to NVRAM, so a change is in RAM until someone writes it.
 {
   config,
   lib,
@@ -124,12 +126,10 @@ in {
         # measured on 10.3.1.2: `http://` answers 200, `https://` does not
         # complete a handshake at all.  It is only ever a link out of the page,
         # but a dead button is still a bug.
-        # Writes are off in this deployment.  The Manager context is reached and
-        # `config` is accepted, but the command after it is never echoed by the
-        # console, so nothing has been proven to apply — see switch-gui/README.md
-        # ("The write path, and why it is off").  Reads are unaffected; drop this
-        # flag once a write has been verified live.
-        "--read-only"
+        #
+        # No `--read-only`: writes are enabled, because they work.  The flag is
+        # still there as the escape hatch if the write path ever misbehaves —
+        # dropping it to read-only is a one-line change and a switch.
       ];
 
       # The switch login, its password and the OIDC client pair.  systemd reads

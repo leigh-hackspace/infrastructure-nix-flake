@@ -13,9 +13,12 @@
 //!    claiming a 100-row window changes nothing; [`Switch::command`] answers the
 //!    marker itself.  The line the marker interrupted *continues* after it, so
 //!    the marker is deleted rather than the line.
-//! 3. **It echoes.** The command comes back on the prompt line, prefixed with
-//!    the prompt and terminated by `ESC E`; [`strip_echo`] removes it so callers
-//!    parse only the response.
+//! 3. **It echoes, on the prompt's own row.** The command comes back prefixed
+//!    with the prompt and terminated by `ESC E`, and the prompt for the *next*
+//!    command is painted on the end of that same row — a command that prints
+//!    nothing answers `interface 23 name "x"switch1(config)#`.  [`strip_echo`]
+//!    removes the echo; [`is_prompt`] has to read the prompt as a suffix of the
+//!    line or no write is ever seen to finish.
 //!
 //! The 2824 at 10.3.1.4 adds a fourth, and it is the one that bites a client
 //! written against the 2510G: its banner ends with `Press any key to continue`
@@ -30,18 +33,19 @@ use std::time::Duration;
 
 use crate::model::{Counters, Port, Privilege, Snapshot, TrunkMember};
 use crate::parse;
-use crate::telnet::Telnet;
+use crate::telnet::{ReadFail, Telnet};
 use crate::R;
 
-/// How long to let the console settle between configuration commands.
+/// A short gap before each configuration command.
 ///
-/// The CLI **ignores keystrokes while it repaints** — the same reason it
-/// swallows input after the login banner — so a command typed the instant its
-/// prompt appears can be dropped on the floor, and the read then waits the full
-/// CLI timeout for a response that was never taken. Measured: sending
-/// `interface 5 name "…"` straight after `config` timed out with the buffer
-/// still ending on the *previous* command's prompt, while the same line typed
-/// with a pause in front of it applied cleanly.
+/// This is **not** what makes a write work.  The note here used to claim the
+/// console drops keystrokes while it repaints, which was a guess made while the
+/// real bug — a prompt matcher that could not see a prompt painted on the same
+/// row as the echoed command — was still hiding (see [`is_prompt`]).  Measured
+/// again on 10.3.1.2 on 2026-10-13 with the matcher fixed: `config` and the
+/// command after it go back-to-back with no gap at all and both apply.  It
+/// stays at 400 ms because this is a 1990s CPU that pages its own output and one
+/// write per button click is not worth tuning.
 ///
 /// Reads do not need it: each one is separated by the table it prints.
 const SETTLE: Duration = Duration::from_millis(400);
@@ -96,30 +100,41 @@ pub struct Switch {
     /// What the login said that is worth showing on the page without failing the
     /// session — the RADIUS noise, see [`check_auth`].
     pub note: Option<String>,
+    /// The context the console is in, read off the last prompt: `Some("config")`
+    /// at `switch1(config)#`, `Some("eth-23")` at `switch1(eth-23)#`, `None` at
+    /// an Exec prompt.  [`Switch::leave_config`] needs it because `exit` at an
+    /// Exec prompt does not go up a level, it *closes the session*.
+    context: Option<String>,
 }
 
 impl Switch {
     /// Connect, log in, and `enable` if manager credentials were supplied.
     pub fn connect(cfg: &Config) -> R<Switch> {
         let mut tn = Telnet::connect(&cfg.host, cfg.port, cfg.timeout)?;
-        let intro = strip_ansi(&tn.read_until(
-            |raw| {
-                let t = strip_ansi(raw);
-                t.contains(LOGIN_PROMPT) || ends_at_prompt(&t) || ends_at_key_gate(&t)
-            },
-            cfg.timeout,
-        )?);
+        let intro = strip_ansi(
+            &tn.read_until(
+                |raw| {
+                    let t = strip_ansi(raw);
+                    t.contains(LOGIN_PROMPT) || ends_at_prompt(&t) || ends_at_key_gate(&t)
+                },
+                cfg.timeout,
+            )
+            .map_err(ReadFail::into_message)?,
+        );
 
         // Answer the 2824's key gate, then read the prompt it was holding up.
         let intro = if ends_at_key_gate(&intro) {
             tn.send_raw(" ")?;
-            strip_ansi(&tn.read_until(
-                |raw| {
-                    let t = strip_ansi(raw);
-                    t.contains(LOGIN_PROMPT) || ends_at_prompt(&t)
-                },
-                cfg.timeout,
-            )?)
+            strip_ansi(
+                &tn.read_until(
+                    |raw| {
+                        let t = strip_ansi(raw);
+                        t.contains(LOGIN_PROMPT) || ends_at_prompt(&t)
+                    },
+                    cfg.timeout,
+                )
+                .map_err(ReadFail::into_message)?,
+            )
         } else {
             intro
         };
@@ -129,6 +144,7 @@ impl Switch {
             cfg: cfg.clone(),
             privilege: Privilege::Operator,
             note: None,
+            context: None,
         };
         if intro.contains(LOGIN_PROMPT) {
             sw.login()?;
@@ -156,17 +172,25 @@ impl Switch {
 
     fn login(&mut self) -> R<()> {
         self.tn.send_line(&self.cfg.login)?;
-        self.tn.read_until(
-            |raw| strip_ansi(raw).contains(PASSWORD_PROMPT),
-            self.cfg.login_timeout,
-        )?;
+        self.tn
+            .read_until(
+                |raw| strip_ansi(raw).contains(PASSWORD_PROMPT),
+                self.cfg.login_timeout,
+            )
+            .map_err(ReadFail::into_message)?;
         self.tn.send_line(&self.cfg.password)?;
-        let out = strip_ansi(&self.tn.read_until(
-            |raw| ends_at_prompt(&strip_ansi(raw)),
-            self.cfg.login_timeout,
-        )?);
+        let out = strip_ansi(
+            &self
+                .tn
+                .read_until(
+                    |raw| ends_at_prompt(&strip_ansi(raw)),
+                    self.cfg.login_timeout,
+                )
+                .map_err(ReadFail::into_message)?,
+        );
         self.note_auth(&out)?;
         self.privilege = prompt_privilege(&out);
+        self.context = console_context(&out);
         Ok(())
     }
 
@@ -191,27 +215,40 @@ impl Switch {
         let password = self.cfg.enable_password.clone().unwrap_or_default();
 
         self.tn.send_line("enable")?;
-        let out = strip_ansi(&self.tn.read_until(
-            |raw| {
-                let t = strip_ansi(raw);
-                t.contains(LOGIN_PROMPT) || t.contains(PASSWORD_PROMPT) || ends_at_prompt(&t)
-            },
-            self.cfg.login_timeout,
-        )?);
+        let out = strip_ansi(
+            &self
+                .tn
+                .read_until(
+                    |raw| {
+                        let t = strip_ansi(raw);
+                        t.contains(LOGIN_PROMPT) || t.contains(PASSWORD_PROMPT) || ends_at_prompt(&t)
+                    },
+                    self.cfg.login_timeout,
+                )
+                .map_err(ReadFail::into_message)?,
+        );
         if out.contains(LOGIN_PROMPT) {
             self.tn.send_line(&login)?;
-            self.tn.read_until(
-                |raw| strip_ansi(raw).contains(PASSWORD_PROMPT),
-                self.cfg.login_timeout,
-            )?;
+            self.tn
+                .read_until(
+                    |raw| strip_ansi(raw).contains(PASSWORD_PROMPT),
+                    self.cfg.login_timeout,
+                )
+                .map_err(ReadFail::into_message)?;
         }
         self.tn.send_line(&password)?;
-        let out = strip_ansi(&self.tn.read_until(
-            |raw| ends_at_prompt(&strip_ansi(raw)),
-            self.cfg.login_timeout,
-        )?);
+        let out = strip_ansi(
+            &self
+                .tn
+                .read_until(
+                    |raw| ends_at_prompt(&strip_ansi(raw)),
+                    self.cfg.login_timeout,
+                )
+                .map_err(ReadFail::into_message)?,
+        );
         self.note_auth(&out)?;
         self.privilege = prompt_privilege(&out);
+        self.context = console_context(&out);
         if !self.privilege.is_manager() {
             return Err(
                 "`enable` did not reach the Manager context (prompt is still an operator prompt)"
@@ -221,13 +258,37 @@ impl Switch {
         Ok(())
     }
 
+    /// Like [`Switch::command`], for output that must never be quoted back.
+    ///
+    /// `show running-config` is the only command this tool reads whose output
+    /// carries secrets — the RADIUS shared secret, the local user password
+    /// hashes, the SNMP community — and every failure path in `command` quotes
+    /// what it was reading: a timeout appends the tail of the buffer, a refusal
+    /// appends the CLI's own line.  Those errors end up in `Snapshot::warnings`,
+    /// on the page and in the journal, and this repo has already leaked the
+    /// RADIUS secret once by reading this very command into a transcript.
+    ///
+    /// So the failure is replaced wholesale rather than filtered: a masking rule
+    /// is one syntax change away from leaking again — the filter that missed
+    /// `radius-server key` is the cautionary tale — and an operator loses nothing
+    /// they could have acted on, because the command is a read and the warning
+    /// still says which one failed.
+    pub fn secret_command(&mut self, cmd: &str) -> R<String> {
+        self.command(cmd).map_err(|_| {
+            format!(
+                "{}: `{cmd}` failed; its output is withheld because it carries the \
+                 switch's secrets, which this tool does not put in errors",
+                self.cfg.name
+            )
+        })
+    }
+
     /// Run one CLI command and return its response, paging and cleaning.
     pub fn command(&mut self, cmd: &str) -> R<String> {
-        // The CLI is known to swallow input while it repaints (the login banner
-        // does it, and config mode does it on entry).  When that happens the
-        // command is never read, so it is never echoed and the read waits the
-        // full timeout for a response that will not come.  The echo is the only
-        // proof the console took the line, so check for it and send once more.
+        // The echo is the only proof the console took the line.  When it is
+        // missing the command is resent once — but see the `Err` arm: a command
+        // that *was* echoed is never sent again, because for a configuration
+        // command a resend is a second application of the change.
         let mut acc = String::new();
         let mut last_err: Option<String> = None;
         for attempt in 0..2 {
@@ -248,19 +309,35 @@ impl Switch {
                         break;
                     }
                 }
-                // No response at all is the swallowed-input case, not (yet) a
-                // failure worth reporting: the line never reached the parser.
-                Err(e) => {
-                    if attempt == 1 {
-                        return Err(e);
+                Err(fail) => {
+                    // The line reached the console and then the prompt never
+                    // came back.  The command may well have been applied, so
+                    // resending it is the one thing not to do: it would apply a
+                    // configuration change twice, and `no vlan 225 tagged 7`
+                    // after a half-read `vlan 225 tagged 7` is not a thing to
+                    // leave to chance.  Say what is known and let the caller
+                    // re-read the switch, which is the only real confirmation.
+                    if fail.text.contains(cmd) {
+                        return Err(format!(
+                            "{}: the console echoed `{cmd}` and then stopped answering, so \
+                             the command reached it and may have been applied — it was not \
+                             sent again. Re-read the switch before retrying. ({})",
+                            self.cfg.name, fail.message
+                        ));
                     }
-                    last_err = Some(e);
+                    // No echo at all is the swallowed-input case: the line never
+                    // reached the parser, so sending it once more is safe.
+                    if attempt == 1 {
+                        return Err(fail.message);
+                    }
+                    last_err = Some(fail.message);
                 }
             }
         }
         if let Some(e) = last_err {
             return Err(e);
         }
+        self.context = console_context(&acc);
         let out = strip_echo(&acc, cmd);
         // Check the raw response as well as the cleaned one.  This CLI paints
         // the prompt, the echoed command and the refusal on a single line, and
@@ -273,7 +350,10 @@ impl Switch {
     }
 
     /// Read one command's response, paging through `-- MORE --` as needed.
-    fn read_response(&mut self, cmd: &str) -> R<String> {
+    ///
+    /// The failure keeps the partial response (see [`ReadFail`]) so
+    /// [`Switch::command`] can tell "never sent" from "sent, then quiet".
+    fn read_response(&mut self, cmd: &str) -> Result<String, ReadFail> {
         let mut acc = String::new();
         let mut pages = 0usize;
         loop {
@@ -290,7 +370,10 @@ impl Switch {
                 // row and a bare timeout from the socket does not say which one
                 // the console stopped answering — and with three switches it does
                 // not say which switch either.
-                .map_err(|e| format!("{}: while sending `{cmd}`: {e}", self.cfg.name))?;
+                .map_err(|mut f| {
+                    f.message = format!("{}: while sending `{cmd}`: {}", self.cfg.name, f.message);
+                    f
+                })?;
             let chunk = strip_ansi(&chunk);
             let paged = waits_for_key(&chunk);
             acc.push_str(&strip_more(&chunk));
@@ -299,12 +382,18 @@ impl Switch {
             }
             pages += 1;
             if pages > MAX_PAGES {
-                return Err(format!(
-                    "gave up after {MAX_PAGES} pages of `{cmd}` — the CLI kept printing \
-                     `-- MORE --`"
-                ));
+                return Err(ReadFail {
+                    message: format!(
+                        "gave up after {MAX_PAGES} pages of `{cmd}` — the CLI kept printing the \
+                         `-- MORE --` marker"
+                    ),
+                    text: acc,
+                });
             }
-            self.tn.send_raw(" ")?;
+            self.tn.send_raw(" ").map_err(|e| ReadFail {
+                message: e,
+                text: acc.clone(),
+            })?;
         }
         Ok(acc)
     }
@@ -317,13 +406,18 @@ impl Switch {
     /// prompt goes `switch1#` → `switch1(config)#`), and `exit` comes back out.
     ///
     /// The session always leaves config mode, including when a command is
-    /// refused — a cached console left sitting in `(config)#` would make the
-    /// next *read* command fail in a way that looks like a parsing bug.
+    /// refused — see [`Switch::leave_config`].
     pub fn apply(&mut self, cmds: &[String]) -> R<()> {
         if !self.privilege.is_manager() {
             return Err("the session is not in the Manager context".to_string());
         }
         self.command("config")?;
+        // `config` was accepted, so the console is inside config mode whatever
+        // the prompt parse made of the reply — and `leave_config` must not
+        // conclude from an empty context that there is nothing to leave.
+        if self.context.is_none() {
+            self.context = Some("config".to_string());
+        }
         let mut failed: Option<String> = None;
         for cmd in cmds {
             thread::sleep(SETTLE);
@@ -332,16 +426,49 @@ impl Switch {
                 break;
             }
         }
-        thread::sleep(SETTLE);
-        let left = self.command("exit");
+        let left = self.leave_config();
         match (failed, left) {
-            (None, Ok(_)) => Ok(()),
+            (None, Ok(())) => Ok(()),
             (None, Err(e)) => Err(format!(
-                "applied, but leaving config mode failed ({e}) — the console was dropped"
+                "applied, but the console never came back out of config mode: {e}"
             )),
-            (Some(f), Ok(_)) => Err(f),
-            (Some(f), Err(e)) => Err(format!("{f}; and leaving config mode failed: {e}")),
+            (Some(f), Ok(())) => Err(f),
+            (Some(f), Err(e)) => Err(format!(
+                "{f}; and the console never came back out of config mode: {e}"
+            )),
         }
+    }
+
+    /// Come back to an Exec prompt, however deep the console went.
+    ///
+    /// One `exit` is enough for the one-shot `interface <n> …` form
+    /// `commands.rs` emits, but not if the console went a level deeper —
+    /// `interface 5` answers `switch1(eth-5)#`, and one `exit` from there lands
+    /// on `switch1(config)#`.  A session left inside config mode makes the next
+    /// *read* fail in a way that looks like a parser bug, so keep exiting while
+    /// the prompt still names a context.
+    ///
+    /// The prompt is consulted before each `exit` rather than a fixed number
+    /// being sent, because at an Exec prompt `exit` does not go up a level — its
+    /// own help says it will "terminate current console/telnet session".
+    fn leave_config(&mut self) -> R<()> {
+        let mut dropped = None;
+        for _ in 0..4 {
+            if self.context.is_none() {
+                return Ok(());
+            }
+            match self.command("exit") {
+                Ok(_) => {}
+                Err(e) => {
+                    dropped = Some(e);
+                    break;
+                }
+            }
+        }
+        Err(match dropped {
+            Some(e) => format!("the console was dropped ({e})"),
+            None => "it is still inside a configuration context after four `exit`s".to_string(),
+        })
     }
 }
 
@@ -432,9 +559,39 @@ pub fn read_snapshot(sw: &mut Switch) -> R<Snapshot> {
         Err(e) => warn("show interfaces", e, &mut snap.warnings),
     }
 
+    // Port names.  `show vlan <id>` has a Name column and leaves it blank for
+    // every dynamically-learned member, which on switch1 is every port, and
+    // `show port name` does not exist on this firmware (`Ambiguous input: port`)
+    // — the running config is the only source there is.  It is also the only
+    // read here that carries secrets, hence `secret_command`.
+    //
+    // One caveat worth knowing before changing the prompt matcher: this is the
+    // one response whose body could in principle end a line the way a prompt
+    // does, since `is_prompt` reads a prompt as a line's suffix.  No line of the
+    // real config does (checked against the capture from all three switches);
+    // a port or VLAN name that ended in `word>` would.
+    match sw.secret_command("show running-config") {
+        Ok(out) => merge_names(&mut snap, &parse::port_names(&out)),
+        Err(e) => warn("show running-config", e, &mut snap.warnings),
+    }
+
     inherit_trunk_states(&mut snap);
 
     Ok(snap)
+}
+
+/// Fold the running config's port names into the snapshot.
+///
+/// Only ports the snapshot already knows about are named: a stray
+/// `interface` block is not evidence a port belongs on the page — the
+/// membership and spanning-tree tables decide that, and inventing a row from a
+/// config fragment is how a snapshot starts describing a switch it never read.
+fn merge_names(snap: &mut Snapshot, names: &BTreeMap<String, String>) {
+    for (id, name) in names {
+        if let Some(p) = snap.ports.get_mut(id) {
+            p.name = name.clone();
+        }
+    }
 }
 
 /// Give a trunk member the state of its group.
@@ -558,20 +715,75 @@ fn waits_for_key(s: &str) -> bool {
 }
 
 /// The CLI prompt, as a line: `switch1>`, `switch1#`, `switch1(config)#`.
+///
+/// A prompt is a **suffix** of the line, not the whole line.  The CLI paints the
+/// echoed command and the prompt it prints next on the same row, so a command
+/// that prints nothing answers:
+///
+/// ```text
+/// interface 23 name "TEST WRITE"switch1(config)#
+/// ```
+///
+/// Matching only a line that is nothing but a prompt meant that form was never
+/// recognised: the read waited out its 20 s, the retry sent the command again,
+/// and the operator was told the console had never echoed a configuration
+/// command — when in fact it had echoed it, and applied it.  Measured on
+/// 10.3.1.2 on 2026-10-13, where `interface 23 name "TEST WRITE"` turned up in
+/// `show running-config` after a write the app had reported as a timeout.
+///
+/// The name is deliberately not anchored at its start: after `exit` the row is
+/// `exitswitch1#`, the prompt running straight into the echo.  The cost of that
+/// is that a response line ending in `word#` would read as a prompt; no table
+/// this tool parses has one (checked against every fixture in `parse.rs`).
 fn is_prompt(line: &str) -> bool {
-    let t = line.trim();
-    let mut chars = t.chars();
-    let Some(last) = chars.next_back() else {
-        return false;
+    prompt_tail(line).is_some()
+}
+
+/// Split the prompt at the end of `line` into `(name, context, is_manager)`:
+/// `switch1(vlan-225)#` is `("switch1", Some("vlan-225"), true)`.
+fn prompt_tail(line: &str) -> Option<(&str, Option<&str>, bool)> {
+    let t = line.trim_end();
+    let manager = match *t.as_bytes().last()? {
+        b'#' => true,
+        b'>' => false,
+        _ => return None,
     };
-    if !matches!(last, '>' | '#') {
-        return false;
+    let mut body = &t[..t.len() - 1];
+    let mut context = None;
+    if body.ends_with(')') {
+        let open = body.rfind('(')?;
+        let inner = &body[open + 1..body.len() - 1];
+        if inner.is_empty() || !inner.chars().all(is_name_char) {
+            return None;
+        }
+        context = Some(inner);
+        body = &body[..open];
     }
-    let name = chars.as_str();
-    !name.is_empty()
-        && name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || "-_.()".contains(c))
+    // The trailing run of name characters is the switch's own name.  They are
+    // all ASCII, so walking bytes cannot split a code point.
+    let bytes = body.as_bytes();
+    let mut i = bytes.len();
+    while i > 0 && is_name_char(bytes[i - 1] as char) {
+        i -= 1;
+    }
+    if i == bytes.len() {
+        return None;
+    }
+    Some((&body[i..], context, manager))
+}
+
+fn is_name_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.'
+}
+
+/// Which context the console is sitting in, read off the last prompt in `text`:
+/// `Some("config")` for `switch1(config)#`, `Some("eth-23")` for
+/// `switch1(eth-23)#`, `None` at an Exec prompt or when no prompt was seen.
+fn console_context(text: &str) -> Option<String> {
+    let line = text.lines().rev().find(|l| !l.trim().is_empty())?;
+    prompt_tail(line)
+        .and_then(|(_, ctx, _)| ctx)
+        .map(str::to_string)
 }
 
 /// True when the CLI is sitting on the 2824's `Press any key to continue` gate:
@@ -599,15 +811,14 @@ fn ends_at_prompt(s: &str) -> bool {
 }
 
 fn prompt_privilege(s: &str) -> Privilege {
-    for l in s.lines().rev() {
-        if l.trim().is_empty() {
-            continue;
+    if let Some(l) = s.lines().rev().find(|l| !l.trim().is_empty()) {
+        if let Some((_, _, manager)) = prompt_tail(l) {
+            return if manager {
+                Privilege::Manager
+            } else {
+                Privilege::Operator
+            };
         }
-        return if l.trim().ends_with('#') {
-            Privilege::Manager
-        } else {
-            Privilege::Operator
-        };
     }
     Privilege::Operator
 }
@@ -784,6 +995,68 @@ mod tests {
         assert!(!is_prompt(""));
         assert!(ends_at_prompt("  1  DEFAULT\n\nswitch1>"));
         assert!(!ends_at_prompt("  1  DEFAULT\n"));
+    }
+
+    /// The write path, and the bug that made it look like the console never
+    /// echoed a configuration command.  Captured from 10.3.1.2 on 2026-10-13:
+    /// the CLI paints the echo and the next prompt on one row, so the prompt is
+    /// a suffix of the line.  Reading it as the whole line meant the read timed
+    /// out, the retry sent the command a second time, and the operator was told
+    /// the switch had never seen it — while `show running-config` showed the
+    /// name on port 23, applied twice over.
+    #[test]
+    fn a_prompt_painted_on_the_end_of_the_echo_line_ends_the_response() {
+        let echoed = "interface 23 name \"TEST WRITE\"switch1(config)# ";
+        assert!(
+            is_prompt(echoed),
+            "the CLI answers a silent command like this"
+        );
+        assert!(ends_at_prompt(echoed));
+        // `exit` runs straight into the prompt it prints.
+        assert!(is_prompt("exitswitch1#"));
+        assert!(is_prompt("interface 23switch1(eth-23)#"));
+        // And a table row still is not a prompt.
+        assert!(!is_prompt("  23               Untagged Learn        Down      "));
+    }
+
+    /// The context in the prompt is what tells `leave_config` whether there is
+    /// a level to leave — and `exit` at an Exec prompt closes the session, so
+    /// it must not be sent on a guess.
+    #[test]
+    fn the_context_comes_from_the_prompt() {
+        assert_eq!(console_context("configswitch1(config)# ").as_deref(), Some("config"));
+        assert_eq!(
+            console_context("interface 23switch1(eth-23)#").as_deref(),
+            Some("eth-23")
+        );
+        assert_eq!(console_context("exitswitch1# ").as_deref(), None);
+        assert_eq!(console_context("show vlan\n  1  DEFAULT\nswitch1>").as_deref(), None);
+        // No prompt at all: nothing to go by.
+        assert_eq!(console_context("  1  DEFAULT\n"), None);
+    }
+
+    /// A prompt is a suffix, so anything ending `word#` reads as one.  That is
+    /// the accepted cost, and it is only safe because no table this tool parses
+    /// has a row ending that way — checked against every fixture in `parse.rs`,
+    /// and pinned here for the two tables that come closest.
+    #[test]
+    fn no_response_row_ends_like_a_prompt() {
+        for line in crate::parse::tests::corpus().lines() {
+            assert!(!is_prompt(line), "{:?} would end a response early", line);
+        }
+    }
+
+    #[test]
+    fn prompt_tail_splits_name_context_and_privilege() {
+        assert_eq!(prompt_tail("switch1(vlan-225)#"), Some(("switch1", Some("vlan-225"), true)));
+        assert_eq!(prompt_tail("switch3>"), Some(("switch3", None, false)));
+        assert_eq!(
+            prompt_tail("interface 23 name \"x\"switch1(config)# "),
+            Some(("switch1", Some("config"), true))
+        );
+        assert_eq!(prompt_tail("  1  DEFAULT"), None);
+        assert_eq!(prompt_tail("#"), None);
+        assert_eq!(prompt_tail("()#"), None);
     }
 
     #[test]

@@ -179,8 +179,21 @@ Guidance for AI agents working in this repository. Read this before making chang
   those names, which are also each device's own `System Name` and the names the
   GUI's URLs use (`/switch/switch2`). The switches speak only Telnet, so the tool
   ships its own minimal Telnet client (`src/telnet.rs`), parses the CLI's
-  fixed-width tables (`src/parse.rs`) and merges the four `show` commands that
-  split a port's name, link state and VLAN membership between them.
+  fixed-width tables (`src/parse.rs`) and merges the five `show` commands that
+  split a port's name, link state and VLAN membership between them. **Port names
+  come only from `show running-config`**: the `Name` column of `show vlan <id>` is
+  blank for every dynamically-learned member (all fifty ports on switch1) and
+  `show port name` does not exist on this firmware. That command is also the only
+  read whose output carries secrets, so it goes through `Switch::secret_command`
+  (failures never quote its output) and `parse::port_names` returns names and
+  nothing else.
+  Below the port table is a **VLAN membership matrix** — one row per port, one
+  **vertical** column per VLAN, with the untagged VLAN a dropdown — which is the
+  only place membership is edited. The form posts the whole wanted row and
+  `commands::port_members` turns it into the diff against the snapshot (removals,
+  then the native-VLAN move, then additions: a port cannot be tagged and untagged
+  on one VLAN at once), the row is marked changed until Apply, and a trunk member
+  is rendered locked because the switch refuses that change.
   Server-rendered dashboard on the shared `common-rs/web` (same shape as
   status-dashboard): `/` lists the switches and `/switch/<name>` is one switch's
   page. **The cache and the CLI session are per switch** (`--ttl`, default 30 s,
@@ -208,8 +221,9 @@ Guidance for AI agents working in this repository. Read this before making chang
   credentials (`--read-only` is the switch that asks for Manager not at all),
   and writes run **inside config mode**: at the plain Manager Exec prompt every
   configuration command answers `Invalid input`, so `Switch::apply` sends
-  `config` first and `exit` after. Nothing saves to NVRAM, so a reboot undoes
-  any change. `switch-gui/README.md` documents the CLI's
+  `config` first and then exits until the prompt stops naming a context (one
+  `exit` from `switch1(eth-23)#` only reaches `(config)#`). Nothing saves to
+  NVRAM, so a reboot undoes any change. `switch-gui/README.md` documents the CLI's
   traps (LF-only line endings, the banner swallowing input, `-- MORE --` paging
   with `NAWS` ignored, ANSI screen painting, trunk members having no rows) and
   the finding that **`Can't reach RADIUS server.` is this firmware's generic
@@ -857,16 +871,26 @@ The grid is infinitely scrollable — there is **no "load more" button**; the
   Note the provider's `groups` scope reuses gocardless-dashboard's ScopeMapping
   row rather than owning one: creating a fresh child row through the ORM trips a
   unique-violation on `propertymapping.name` (see the authentik notes).
-- **switch-gui: writes are implemented but unproven, so the deployment runs
-  `--read-only`** — `enable` reaches the Manager context and `config` is
-  accepted, but the command after it is never echoed by the console, so nothing
-  has been shown to apply. Syntax, config mode, settle delays, echo-checked
-  resends and session contention were each ruled out with a live attempt;
-  the remaining suspect is telnet option negotiation (the app answers IAC, a
-  hand-driven `nc` does not and works). `switch-gui/README.md` has the evidence
-  and the tcpdump that would settle it. The VLAN commands have never been sent
-  at all. Nothing in the app writes NVRAM, so a change lives in RAM until
-  someone saves it.
+- **switch-gui: writes work (2026-10-13) and are enabled in the deployment** —
+  the write path was never broken. `is_prompt` required a line to be *nothing but*
+  a prompt, and this CLI paints the echoed command and the next prompt on the
+  **same row** (`interface 23 name "x"switch1(config)#`), so every silent config
+  command "timed out", the retry resent it, and the error claimed the console had
+  never echoed it — while `show running-config` showed the change applied. The
+  earlier suspect (telnet option negotiation) was wrong: a client answering
+  `WONT`/`DONT` like the app works fine, and `nc` works because it answers
+  nothing. Fixed in `is_prompt` (a prompt is a **suffix** of the line),
+  `telnet::ReadFail` (a timed-out read keeps the partial buffer) and
+  `Switch::command` (**no echo → resend once; echoed then silent → never
+  resend**, because resending an applied config command applies it twice);
+  `leave_config` exits until the prompt stops naming a context. Proven end to end
+  through the HTTP API on a dead port: 0.8 s, `applied:`, written once, reverted.
+  `--read-only` is still in `main.rs` as the escape hatch. Still unverified: the
+  VLAN-management commands (create/rename/delete, the per-VLAN `tagged`
+  endpoint). Nothing in the app writes NVRAM, so a change lives in RAM until
+  someone runs `write`; keep it that way unless asked (`write` is this firmware's
+  command — `wr mem`/`write memory` is the other firmware's spelling, and
+  `write ?` is already `Invalid input` here).
 - **The RADIUS shared secret was printed into a session transcript on
   2026-10-12** (reading `show running-config` on the switch to root-cause the
   login noise; a masking filter that expected `key:` missed the actual

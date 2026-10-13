@@ -45,6 +45,29 @@ enum State {
     SubIac,
 }
 
+/// A read that did not end on the prompt it was waiting for.
+///
+/// The bytes received before the failure are kept rather than dropped.  The CLI
+/// paints the echoed command and the prompt for the *next* one on the same row
+/// (`interface 23 name "x"switch1(config)#`), so a buffer that contains the
+/// command is proof the console read it — which is exactly the difference
+/// between "safe to send again" and "sending it again applies it twice".
+/// A bare `String` error throws that evidence away, which is how a write that
+/// had in fact been applied came to be reported as a command the switch had
+/// never seen.
+pub struct ReadFail {
+    pub message: String,
+    /// Everything received before the failure, protocol bytes already removed.
+    pub text: String,
+}
+
+impl ReadFail {
+    /// The failure on its own, for a caller that cannot use the partial text.
+    pub fn into_message(self) -> String {
+        self.message
+    }
+}
+
 pub struct Telnet {
     stream: TcpStream,
     state: State,
@@ -91,17 +114,21 @@ impl Telnet {
     /// Read until `done` is satisfied by everything received so far.
     ///
     /// Returns the accumulated *text* (protocol bytes removed, lossy UTF-8).
-    /// A timeout is an error rather than a short return: every caller is
+    /// A timeout is a failure rather than a short return: every caller is
     /// waiting for a specific prompt, and handing back a partial response
-    /// would let the next command read the previous one's tail.
+    /// would let the next command read the previous one's tail.  The failure
+    /// carries the partial text with it — see [`ReadFail`].
     pub fn read_until<F: Fn(&str) -> bool>(
         &mut self,
         done: F,
         timeout: Duration,
-    ) -> R<String> {
+    ) -> Result<String, ReadFail> {
         let deadline = Instant::now()
             .checked_add(timeout)
-            .ok_or_else(|| "timeout out of range".to_string())?;
+            .ok_or_else(|| ReadFail {
+                message: "timeout out of range".to_string(),
+                text: String::new(),
+            })?;
         let mut out: Vec<u8> = Vec::new();
         let mut buf = [0u8; 1024];
         loop {
@@ -111,23 +138,42 @@ impl Telnet {
             }
             let now = Instant::now();
             if now >= deadline {
-                return Err(format!(
-                    "timed out after {}s waiting for a prompt; last {} bytes: {:?}",
-                    timeout.as_secs(),
-                    out.len(),
-                    tail_for_error(&text)
-                ));
+                return Err(ReadFail {
+                    message: format!(
+                        "timed out after {}s waiting for a prompt; last {} bytes: {:?}",
+                        timeout.as_secs(),
+                        out.len(),
+                        tail_for_error(&text)
+                    ),
+                    text,
+                });
             }
             self.stream
                 .set_read_timeout(Some(deadline - now))
-                .map_err(|e| format!("set_read_timeout: {e}"))?;
+                .map_err(|e| ReadFail {
+                    message: format!("set_read_timeout: {e}"),
+                    text: text.clone(),
+                })?;
             match self.stream.read(&mut buf) {
-                Ok(0) => return Err("the switch closed the connection".to_string()),
-                Ok(n) => self.feed(&buf[..n], &mut out)?,
+                Ok(0) => {
+                    return Err(ReadFail {
+                        message: "the switch closed the connection".to_string(),
+                        text,
+                    })
+                }
+                Ok(n) => self.feed(&buf[..n], &mut out).map_err(|e| ReadFail {
+                    message: e,
+                    text: text.clone(),
+                })?,
                 // read_until owns the deadline, so a per-read timeout just
                 // means "loop again and re-check it".
                 Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
-                Err(e) => return Err(format!("read failed: {e}")),
+                Err(e) => {
+                    return Err(ReadFail {
+                        message: format!("read failed: {e}"),
+                        text,
+                    })
+                }
             }
         }
     }

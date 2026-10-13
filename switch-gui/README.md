@@ -39,12 +39,20 @@ single one of them has the whole picture:
 | `show vlan`            | the VLAN list, including names with spaces (`AD Lab`)          |
 | `show vlan <id>`       | port membership (`Untagged`/`Tagged`) and `Up`/`Down` per member |
 | `show spanning-tree`   | every port's STP state (`Forwarding`/`Disabled`/…) and media    |
-| `show trunks`          | port **names** (`NAS2 Port 1`) and trunk group/type             |
+| `show trunks`          | trunk group/type, and names for the few ports in a trunk        |
 | `show interfaces`      | per-port byte/frame/error counters                              |
+| `show running-config`  | **port names** — the only place this firmware reports them       |
 
 `show port name` and `show ports` do **not** exist on this firmware at all (as
-Manager, `show port name` answers `Ambiguous input: port`), so `show trunks` is
-the only source of a port name — and only for ports in a trunk.
+Manager, `show port name` answers `Ambiguous input: port`), and the `Name`
+column of `show vlan <id>` is blank for every port whose membership is dynamic —
+which on `switch1` is every port.  So the running config is where names come
+from, and it is read for that alone: see "Reading names out of the running
+config".
+
+Below the tables is a **VLAN membership matrix** — one row per port, one vertical
+column per VLAN — which is the only place membership is edited.  See "Editing
+VLAN membership".
 
 Every action is audited with the switch it went to (`/api/audit`), because with
 three devices a log line that does not name one is not evidence of anything.
@@ -140,7 +148,18 @@ the wait predicate has to accept a response that ends on the marker as well as
 one that ends on a prompt.
 
 **It echoes**, prefixed with the prompt and terminated by `ESC E`, so the first
-line of every response is the command you sent (`strip_echo`).
+line of every response is the command you sent (`strip_echo`).  It also paints
+the prompt for the *next* command on the **end of that same row**: a command that
+prints nothing answers `interface 23 name "x"switch1(config)#`, with no line break
+anywhere in it.  That is the most consequential thing on this page — it is what
+made every write look like it had failed.  See "The write path".
+
+**And it ends its lines with LF, then CR-paints to the next row.**  So what
+`str::lines()` gives you is `"\r   name \"AP3\""`: every line *starts* with a
+carriage return.  Anything that splits from the right and `trim()`s never notices
+— which is why every table parser in `parse.rs` works and the one parser that
+asks whether a line is indented did not.  Strip the leading CR before testing for
+indentation.
 
 **It paints the screen.** Real output arrives wrapped in ANSI clears and cursor
 moves (`ESC [ 2 J`, `ESC [ 2 4 ; 1 H`, `ESC [ ? 2 5 l`), which is why almost
@@ -179,47 +198,156 @@ both.
 
 Nothing here writes NVRAM (no `write`, no `copy running-config startup-config`),
 so **every change is in RAM and a reboot undoes it**. Say that out loud before
-trusting one.
+trusting one. If it is ever changed: on Y.11.44 the command is `write`, whose own
+help line is "Write current command set to memory", and `write ?` already answers
+`Invalid input: ?` — so `wr mem`/`write memory` is the *other* firmware's spelling
+and should not be assumed here.
 
-## The write path, and why it is off
+## The write path, and what was wrong with it
 
-**The deployed service runs `--read-only`.** Reads, the Manager context and
-config mode all work; no write has been made to work, so the buttons are off
-rather than offered on a promise.
+**Writes work.**  Everything in the earlier version of this section — "the next
+command is never echoed", "the difference is telnet option negotiation, capture
+the TCP stream" — was wrong, and it was wrong in a way that made the write path
+less safe rather than more.  What follows is what 2026-10-13 measurement found.
 
-What is proven, against the live switch:
+A raw Telnet client that answers the negotiation exactly as this app does (every
+`WILL` with `DONT`, every `DO` with `WONT`) logs in, enables, enters config mode
+and applies a port name on `switch1`:
 
-- `enable` with the login account reaches `switch1#` (`privilege: Manager`). On
-  `switch2` the same account reaches `switch2#` without the RADIUS noise, and on
-  `switch3` it reaches `switch3#` once the key gate is answered.
-- `config` is sent, echoed and accepted — the console answers `switch1(config)#`.
-- The **next** command is never echoed. `interface 5 name "NAS2 Port 1"` goes
-  out and the read times out with a buffer containing nothing but the CLI's idle
-  repaint and the cursor parked at column 18, i.e. an empty input line. No echo
-  means the parser never saw it.
-- The same bytes typed by hand over `nc` apply cleanly, at 0.15 s and at 2 s
-  after `config`.
+```text
+TX> "config"
+RX  configswitch1(config)#
+TX> "interface 23 name \"TEST WRITE\""
+RX  interface 23 name "TEST WRITE"switch1(config)#
+```
 
-Ruled out, each by a deploy and a live attempt: the command syntax (the CLI's
-own `?` at `switch1(eth-5)#` confirms `name`/`enable`/`disable`, and the one-shot
-`interface 5 name "…"` form works manually); entering interface context instead
-of using the one-shot form; a settle delay before the command (400 ms); resending
-when no echo comes back; two Manager sessions contending (tested with the
-service stopped); and the prompt matcher, which accepts `switch1(config)#`.
+Echoed, prompt back, in 0.15 s.  Negotiation was a red herring: `nc` works
+because it answers *nothing*, and answering `WONT`/`DONT` is equally acceptable
+to this CLI.  The idle repaint and the cursor parked at column 18 that the old
+note read as "an empty input line, so the parser never saw it" was the cursor
+sitting at the end of the echoed command — on the same row as the prompt.
 
-What is left, and what would settle it: the difference between this app's
-session and `nc` is **telnet option negotiation** — the app answers IAC, `nc`
-sends none. Capture the app's TCP stream (`tcpdump -i any host 10.3.1.2 and
-port 23 -w /tmp/w.pcap` while a write is attempted) and compare it with the same
-exchange from `nc`: if the bytes never leave services1, the client is the
-problem; if they arrive and are unanswered, the switch's console is deciding
-something about this session. Until then, treat every write command in
-`src/commands.rs` as unverified, including the VLAN ones, which have never been
-sent at all — on any of the three switches.
+The bug was `is_prompt`, which required a line to be *nothing but* a prompt.
+Since this CLI paints the echo and the next prompt on one row, a command that
+prints nothing — every configuration command — answered a line the matcher could
+not accept.  So each write waited out its 20 s, the retry sent it again, and the
+operator was told the console had never echoed a command the console had echoed
+twice.  `show running-config` after a "failed" write showed `interface 23` /
+`name "TEST WRITE"`: **the change had been applied**, and the only thing missing
+was the truth about it.
+
+Three consequences, all now in the code:
+
+* `is_prompt` reads the prompt as a **suffix** of the line, since that is where
+  the CLI puts it.  The name is not anchored at its start either, because after
+  `exit` the row is `exitswitch1#`.  The cost is that a response line ending in
+  `word#` would end a response early; no row in any captured table does, and
+  `no_response_row_ends_like_a_prompt` pins that against every fixture.
+* **The retry was the dangerous part, not the fix.**  A command that timed out
+  with no echo was resent on the theory that the console swallows input while it
+  repaints; for a configuration command that had already been applied, a resend
+  is a second application.  `Switch::command` now decides from the partial buffer
+  the old code threw away: no echo at all means the line never reached the parser
+  and one resend is safe, an echo followed by silence means it did reach it and
+  the command is **never** resent — the error says the command may have been
+  applied and to re-read the switch, which is the only real confirmation there
+  is.  `telnet::ReadFail` exists to carry that partial buffer.
+* `leave_config` exits until the prompt stops naming a context instead of sending
+  one `exit`.  `interface 5` answers `switch1(eth-5)#`, and one `exit` from there
+  lands back in `(config)#`, leaving the cached console inside config mode so the
+  next *read* fails like a parser bug.  A fixed number of `exit`s is also wrong:
+  at an Exec prompt `exit` terminates the session — its own help says so — so the
+  prompt is consulted before each one.
+
+Verified end to end through the app's own HTTP API on port 23 of `switch1` — a
+port that is Down, has moved zero bytes, is untagged in the default VLAN and had
+no name: `POST /api/port/23/name` returned `applied:` in 0.8 s (was 40 s and a
+false failure), `show running-config` showed the name **once**, not twice, and
+`no name` put it back.  Membership was exercised the same way: adding tagged 225
+sent exactly `vlan 225 tagged 23`; moving to `untagged 226, tagged 227` sent
+exactly the four commands the diff implies, in the right order; and the port came
+back to its original state and was confirmed clean in all three VLANs.
+
+Still unverified: the **VLAN-management** commands (create, rename, delete, and
+the per-VLAN `tagged` endpoint), which have never been sent at all.
 
 Anything the switch does refuse comes back as its own `Invalid input:` text,
 surfaced verbatim — that part is tested, and a refusal is no longer reported as
 a success.
+
+## Reading names out of the running config
+
+Port names are the one setting this firmware will not report in a table.  The
+`Name` column of `show vlan <id>` is blank for every dynamically-learned member,
+which on `switch1` is all fifty ports, and `show port name` does not exist.  The
+names live in `show running-config`, one block per configured port:
+
+```text
+interface 22 
+   name "AP3" 
+exit
+```
+
+Two things make that input awkward, and both are pinned by tests in
+`parse::port_names`:
+
+* **A `vlan` block has a `name` line too** (`vlan 225` / `name "Shared"`), in the
+  same shape.  Reading it as a port name invents a port called `225`, so a block
+  is open only between `interface <id>` and the next line at column 0.
+* **Every line arrives behind a carriage return.**  The CLI ends its lines with
+  LF and then CR-paints to the next row, so `str::lines()` yields `"\r   name
+  \"AP3\""`.  Asking whether that line is indented answers "no", every block
+  closes before its `name`, and the parser returns nothing — while the command
+  succeeds and the page quietly shows no names at all.  Nothing else in `parse.rs`
+  notices the CR, because everything else splits from the right and `trim()`s it
+  away; this is the only parser that cares about leading whitespace, and the only
+  one with a CR-shaped test.
+
+And the reason this command is treated differently from every other read: **its
+output carries secrets** — the RADIUS shared secret, the local user password
+hashes, the SNMP community.  `Switch::secret_command` exists because every
+failure path in `command` quotes what it was reading (a timeout appends the tail
+of the buffer) and those errors reach the page and the journal.  This repo has
+already leaked the RADIUS secret once by reading this very command into a
+transcript, and the masking filter that missed it is why the answer is "withhold
+the failure entirely" rather than "filter it": a filter is one syntax change
+away from leaking again.  `parse::port_names` returns names and nothing else, so
+a secret has nowhere to go even if that ever changes.
+
+## Editing VLAN membership
+
+The switch's own model is VLAN-first — `vlan 225 tagged 7,9-11` is a statement
+about a VLAN and a pile of ports — but an operator at a patch panel thinks per
+port.  The matrix is the per-port question ("which VLANs is 7 in, and which one
+is native?") answered on one screen: a checkbox per VLAN, the untagged VLAN a
+dropdown, and the VLAN names as **vertical** headers because ten VLANs across
+fifty ports only fit if a column costs the width of a checkbox.
+
+What the form sends is the **whole wanted row**, never the click that changed it,
+and `commands::port_members` turns it into the difference against the snapshot
+the page was built from.  That is what makes a two-checkbox edit cost two
+commands instead of one per VLAN the port belongs to, and it is why a row is
+marked as changed the moment it stops matching the switch: this page is a cache,
+so it shows what it is *about to change* rather than pretending it *is* the
+switch.  Nothing is sent until Apply, and the reload afterwards re-reads the
+device, so what is on screen after an apply is what the switch says.
+
+The order of the generated commands is not cosmetic — take away, then move the
+native VLAN, then add.  A port cannot be tagged and untagged on the same VLAN at
+once, so moving port 7 from `untagged 225, tagged 226` to `untagged 226` has to
+`no vlan 226 tagged 7` **before** it sets the untagged side.  And the untagged
+move is `no`-then-set, because a port has exactly one native VLAN and setting the
+new one without releasing the old leaves it showing under both.
+
+Two guards worth knowing because they look like bugs otherwise:
+
+* A **trunk member** is shown with its boxes disabled and the reason on hover.
+  The switch refuses to change the membership of a port in a link-aggregation
+  group ("remove it from the trunk first"), and a trunk *group* has never been
+  exercised here, so neither gets a live control.
+* `tagged=` and `untagged=` are both **required** on the API.  A missing
+  `tagged=` would be indistinguishable from "tagged in nothing", and a request
+  that lost its query string would then strip every membership off the port.
 
 ## "Can't reach RADIUS server"
 
