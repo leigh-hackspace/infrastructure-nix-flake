@@ -96,6 +96,15 @@ const LIST_LIMIT: i64 = 200;
 /// The statuses that mean "not settled": still queued, in flight, or both.
 pub(crate) const OPEN: [&str; 2] = ["pending", "applying"];
 
+/// The one status [`claim`] may take.
+///
+/// Deliberately narrower than [`OPEN`].  `applying` is the in-flight marker, not
+/// a queue state: a row wearing it is either being written by a worker right now
+/// or belongs to [`recover_stale`], and a claim that matched it would let the
+/// *next* pass re-claim the row the *current* pass is holding — burning an
+/// attempt every tick and outrunning the ladder in `max_attempts`.
+const PENDING: &str = "pending";
+
 /// Apply the queue's schema.
 pub async fn migrate(pool: &sqlx::PgPool) -> R<()> {
     pg::apply_schema(pool, SCHEMA).await
@@ -165,13 +174,39 @@ pub async fn queue(
 /// sync run at the same moment without applying the same row twice: whichever
 /// loses the race sees no rows and returns `None`.  Marking it `applying` in the
 /// same statement is what makes a crash recoverable — see [`recover_stale`].
+///
+/// Returns `None` only when there is genuinely nothing queued, which depends on
+/// the statement returning the id it claimed: see [`claim_sql`].
 pub async fn claim(pool: &sqlx::PgPool, switch_name: &str) -> R<Option<crate::dto::Change>> {
-    let sql = pg::update_sql(|upd| {
+    let sql = claim_sql(switch_name);
+    let row = sqlx::query(&sql)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| format!("claim change: {e}"))?;
+    let Some(row) = row else { return Ok(None) };
+    let id = row.try_get::<i64, _>("id").unwrap_or(0);
+    by_id(pool, id).await
+}
+
+/// The claim statement itself, built by the function [`claim`] runs.
+///
+/// Extracted so the test asserts on the query that ships rather than on a copy
+/// of it — which is exactly how this statement's worst bug survived: without the
+/// `RETURNING` the UPDATE answers with a command tag and **no row**, so
+/// `fetch_optional` yields `None`, `claim` reports "nothing queued", and the
+/// caller cannot tell that apart from an empty queue.  The row is left
+/// `applying` with its attempt spent: never written, never failed, never
+/// recorded, and invisible to every error path in the program.  A queue that
+/// silently does nothing looks from the page like a queue that is merely slow.
+pub(crate) fn claim_sql(switch_name: &str) -> String {
+    pg::update_sql(|upd| {
         let mut next = Query::select();
         next.column(pg::col("id"))
             .from(pg::tbl("change"))
             .and_where(Expr::col(pg::col("switch_name")).eq(switch_name))
-            .and_where(Expr::col(pg::col("status")).is_in(OPEN))
+            // `pending` only — see [`PENDING`] for why an in-flight row is not
+            // up for grabs.
+            .and_where(Expr::col(pg::col("status")).eq(PENDING))
             .order_by(pg::col("id"), Order::Asc)
             .limit(1)
             // The row lock, not a table lock: the loser of the race moves on to
@@ -188,15 +223,12 @@ pub async fn claim(pool: &sqlx::PgPool, switch_name: &str) -> R<Option<crate::dt
             // Repeated in the outer statement because the subquery's lock is
             // taken before the update runs: if the row was claimed a moment
             // earlier, this is what stops the second worker stealing it.
-            .and_where(Expr::col(pg::col("status")).is_in(OPEN));
-    });
-    let row = sqlx::query(&sql)
-        .fetch_optional(pool)
-        .await
-        .map_err(|e| format!("claim change: {e}"))?;
-    let Some(row) = row else { return Ok(None) };
-    let id = row.try_get::<i64, _>("id").unwrap_or(0);
-    by_id(pool, id).await
+            .and_where(Expr::col(pg::col("status")).eq(PENDING))
+            // The id, or the claim is a write with no result.  Every other
+            // mutation in this module already returns something; this one is the
+            // queue's only read-modify-write, so it is the one that has to.
+            .returning(sea_query::Query::returning().column(pg::col("id")));
+    })
 }
 
 /// Mark a claimed change applied.
@@ -578,30 +610,35 @@ mod tests {
         assert_eq!(sql.matches("AT TIME ZONE 'UTC'").count(), 2, "{sql}");
     }
 
-    /// The claim must lock and skip, must take only open rows, and must count the
-    /// attempt it is making.
+    /// The claim must lock and skip, must take only *pending* rows, must count
+    /// the attempt it is making, and must hand the claimed id back.
+    ///
+    /// Built from [`claim_sql`] — the statement the sync actually runs — because
+    /// this test used to rebuild the query by hand, and the copy was missing the
+    /// `RETURNING` that the real one needed too: the claim spent an attempt,
+    /// reported "nothing queued", and no change ever reached a switch while every
+    /// test here stayed green.
     #[test]
     fn the_claim_is_a_skip_locked_ladder() {
-        let mut next = Query::select();
-        next.column(pg::col("id"))
-            .from(pg::tbl("change"))
-            .and_where(Expr::col(pg::col("status")).is_in(OPEN))
-            .order_by(pg::col("id"), Order::Asc)
-            .limit(1)
-            .lock_with_behavior(
-                sea_query::LockType::Update,
-                sea_query::LockBehavior::SkipLocked,
-            );
-        let sql = pg::update_sql(|upd| {
-            upd.table(pg::tbl("change"))
-                .value(pg::iden("attempt"), Expr::col(pg::col("attempt")).add(1))
-                .value(pg::iden("status"), "applying")
-                .and_where(Expr::col(pg::col("id")).in_subquery(next.clone()));
-        });
+        let sql = claim_sql("switch1");
         assert!(sql.contains("FOR UPDATE SKIP LOCKED"), "{sql}");
         assert!(sql.contains("\"attempt\" + 1"), "{sql}");
         assert!(sql.contains("'applying'"), "{sql}");
         assert!(sql.contains("IN (SELECT"), "{sql}");
+        // The claimed id, or `fetch_optional` sees no row and the caller reads
+        // that as an empty queue (see `claim_sql`).
+        assert!(sql.contains("RETURNING \"id\""), "{sql}");
+        // Both halves of the predicate say `pending`: the row the update is
+        // writing is already `applying`, so a claim that matched `applying`
+        // would re-take its own in-flight row on the next pass.
+        assert_eq!(sql.matches("'pending'").count(), 2, "{sql}");
+        assert!(
+            !sql.contains("'applying',") && !sql.contains("'applying')"),
+            "claim must not select an in-flight row: {sql}"
+        );
+        // And it is scoped to one switch, or a change for switch3 would be
+        // claimed by switch1's pass and sent down the wrong console.
+        assert!(sql.contains("'switch1'"), "{sql}");
     }
 
     /// Giving up is decided in SQL from the row's own counters, so a retry cannot
