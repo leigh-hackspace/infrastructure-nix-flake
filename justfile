@@ -59,7 +59,7 @@ test:
     set -euo pipefail
     bash common/shared-rs-links.sh
     nix develop --command bash -c '
-      crates="common-rs/json common-rs/oidc common-rs/build-spa common-rs/web common-rs/preview dns-sync moonraker-exporter status-dashboard network-status filestore gocardless-dashboard frigate-monitor switch-gui"
+      crates="common-rs/json common-rs/oidc common-rs/build-spa common-rs/web common-rs/pg common-rs/preview dns-sync moonraker-exporter status-dashboard network-status filestore gocardless-dashboard frigate-monitor switch-gui switch-gui/dto"
       for c in $crates; do echo "=== test $c"; (cd $c && cargo test --offline); done'
 
 # cargo clippy over the same set.  Warnings are reported, not fatal: the point
@@ -69,10 +69,10 @@ clippy:
     set -euo pipefail
     bash common/shared-rs-links.sh
     nix develop --command bash -c '
-      crates="common-rs/json common-rs/oidc common-rs/build-spa common-rs/web common-rs/preview dns-sync moonraker-exporter status-dashboard network-status filestore gocardless-dashboard frigate-monitor switch-gui"
+      crates="common-rs/json common-rs/oidc common-rs/build-spa common-rs/web common-rs/pg common-rs/preview dns-sync moonraker-exporter status-dashboard network-status filestore gocardless-dashboard frigate-monitor switch-gui switch-gui/dto"
       for c in $crates; do echo "=== clippy $c"; (cd $c && cargo clippy --offline --all-targets 2>&1 | grep -vE "^(Compiling|Checking|Finished|    Finished)" | head -40); done'
 
-# --- frontend (the three Dioxus SPAs) ---
+# --- frontend (the four Dioxus SPAs) ---
 
 # Rebuild a Dioxus SPA into its frontend/dist using the devshell's toolchain
 # (cargo/rustc/lld + the pinned wasm-bindgen-cli).  Same recipe the flake runs
@@ -80,7 +80,7 @@ clippy:
 # the one it embeds; those dist/ directories are git-ignored and rebuilt at
 # deploy time, so this is only for local iteration.
 #
-#   just build-frontend                 # all three
+#   just build-frontend                 # all four
 #   just build-frontend filestore       # one of them
 # (just 1.51 passes any extra argument straight into the single parameter, so
 # there are no flags here — a bad name just fails the whitelist check.)
@@ -90,12 +90,12 @@ build-frontend crate="all":
     # The parameter arrives through just's quote() — shell-quoted, and the case
     # below is a whitelist anyway.
     case {{quote(crate)}} in
-        all) crates="frigate-monitor filestore gocardless-dashboard" ;;
+        all) crates="frigate-monitor filestore gocardless-dashboard switch-gui" ;;
         *) crates={{quote(crate)}} ;;
     esac
     for c in $crates; do
         if [ ! -f "$c/frontend/build.sh" ]; then
-            echo "no $c/frontend/build.sh — expected one of: frigate-monitor filestore gocardless-dashboard all" >&2
+            echo "no $c/frontend/build.sh — expected one of: frigate-monitor filestore gocardless-dashboard switch-gui all" >&2
             exit 2
         fi
         echo "=== build-frontend $c"

@@ -28,6 +28,12 @@
 use crate::model::{Counters, Member, StpPort, SystemInfo, TrunkMember, Vlan};
 use std::collections::BTreeMap;
 
+// The whole module reads the CLI's own text, and every parser here is `pub` only
+// so `switch.rs` and the tests can reach it.  Nothing outside this crate consumes
+// it, so an unused parser is dead code rather than an API, and rustc is right to
+// say so: `#![allow(dead_code)]` here would hide a parser that stopped being
+// wired up, which is exactly the bug class this module has fixtures for.
+
 /// The `Key : Value` lines from `show system`.
 ///
 /// The key names are the switch's own, verified against its output — several of
@@ -249,7 +255,10 @@ pub fn counters(out: &str) -> Vec<(String, Counters)> {
             continue;
         }
         // Numeric columns: reject the header row (whose fields are words).
-        if !f[1].chars().all(|c| c.is_ascii_digit() || c == ',' || c == '.') {
+        if !f[1]
+            .chars()
+            .all(|c| c.is_ascii_digit() || c == ',' || c == '.')
+        {
             continue;
         }
         rows.push((
@@ -416,8 +425,47 @@ fn is_port_token(s: &str) -> bool {
 /// carries the RADIUS shared secret and the local user hashes.  This hands back
 /// names and nothing else, and [`crate::switch::Switch::secret_command`] keeps
 /// the raw text out of the error path too.
+/// The port names in `show running-config`.
+///
+/// Not a live path: [`port_settings`] reads the same blocks and `merge_settings`
+/// needs `enabled` from them too, so the session reads the running config once and
+/// takes both facts from that.  It stays because it is the tightest statement of
+/// what this command is the only source *for* — the name of a dynamically-learned
+/// port, which `show vlan <id>` leaves blank for all fifty ports on switch1 — and
+/// the tests below read through it so they cannot drift from that.
+#[allow(dead_code)] // the tests read through it; `port_settings` is the live path
 pub fn port_names(out: &str) -> BTreeMap<String, String> {
-    let mut names = BTreeMap::new();
+    port_settings(out)
+        .into_iter()
+        .map(|(id, s)| (id, s.name))
+        .filter(|(_, name)| !name.is_empty())
+        .collect()
+}
+
+/// What an `interface <id>` block in `show running-config` says about a port.
+///
+/// Split out of [`port_names`] because the same block is the only source for two
+/// facts the GUI needs, and reading the running config twice against a 1990s CPU
+/// is not free: the port's name, and whether it is administratively shut.
+///
+/// The `shutdown` line is why this exists.  Every other read treats a shut port
+/// as merely a down one — `show interfaces` counts it, `show spanning-tree` has
+/// no row or a `Disabled` one that a port in a blocked state also produces, and
+/// `show vlan <id>` reports `Down` for a missing cable identically — so without
+/// the running config the GUI cannot tell "nobody is plugged in" from "an
+/// operator turned this port off", and cannot show the state its own
+/// `disable`/`enable` writes produce (the CLI spells the setting `shutdown` in the
+/// running config and `disable` on the command line).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PortSettings {
+    pub name: String,
+    /// Absent `shutdown` means up: that is the switch's default, and the
+    /// running config only writes what differs from it.
+    pub enabled: bool,
+}
+
+pub fn port_settings(out: &str) -> BTreeMap<String, PortSettings> {
+    let mut ports: BTreeMap<String, PortSettings> = BTreeMap::new();
     let mut port: Option<&str> = None;
     for line in out.lines() {
         let line = line.trim_start_matches('\r');
@@ -430,13 +478,23 @@ pub fn port_names(out: &str) -> BTreeMap<String, String> {
             continue;
         }
         let Some(id) = port else { continue };
-        if let Some(rest) = line.trim().strip_prefix("name ") {
+        // Every port the running config has a block for is a port that has some
+        // non-default setting; `enabled` starts true and only a `shutdown` line
+        // turns it off, so a block with no `shutdown` still has to be recorded.
+        let entry = ports.entry(id.to_string()).or_insert(PortSettings {
+            name: String::new(),
+            enabled: true,
+        });
+        let body = line.trim();
+        if let Some(rest) = body.strip_prefix("name ") {
             if let Some(name) = unquoted(rest) {
-                names.insert(id.to_string(), name);
+                entry.name = name;
             }
+        } else if body == "shutdown" {
+            entry.enabled = false;
         }
     }
-    names
+    ports
 }
 
 /// The inside of a double-quoted CLI argument, or `None` if it is not quoted.
@@ -703,7 +761,10 @@ pub mod tests {
     fn stp_rows_on_the_2824_layout() {
         let s = stp_ports(SHOW_STP_2824);
         assert_eq!(s.len(), 2);
-        assert_eq!((s[0].port.as_str(), s[0].state.as_str()), ("1", "Forwarding"));
+        assert_eq!(
+            (s[0].port.as_str(), s[0].state.as_str()),
+            ("1", "Forwarding")
+        );
         assert_eq!(s[0].media, "100/1000T");
         assert_eq!((s[1].port.as_str(), s[1].state.as_str()), ("5", "Disabled"));
     }
@@ -720,9 +781,18 @@ pub mod tests {
     #[test]
     fn the_right_hand_column_is_read_too() {
         let kv = key_values(SHOW_SYSTEM);
-        assert_eq!(kv.get("Base MAC Addr").map(String::as_str), Some("643150-bf8c40"));
-        assert_eq!(kv.get("Serial Number").map(String::as_str), Some("CN117DG07S"));
-        assert_eq!(kv.get("Memory   - Total").map(String::as_str), Some("23,556,880"));
+        assert_eq!(
+            kv.get("Base MAC Addr").map(String::as_str),
+            Some("643150-bf8c40")
+        );
+        assert_eq!(
+            kv.get("Serial Number").map(String::as_str),
+            Some("CN117DG07S")
+        );
+        assert_eq!(
+            kv.get("Memory   - Total").map(String::as_str),
+            Some("23,556,880")
+        );
         let s = system_info(SHOW_SYSTEM);
         assert_eq!(s.mac, "643150-bf8c40");
         assert_eq!(s.serial, "CN117DG07S");
@@ -758,6 +828,13 @@ exit
 interface 48 
    name "Switch2 Port 48" 
 exit
+interface 23 
+   shutdown 
+exit
+interface 9 
+   name "Camera 9" 
+   shutdown 
+exit
 trunk 47-48 Trk1 LACP 
 trunk 5-6 Trk3 LACP 
 ip default-gateway 10.3.1.1 
@@ -775,13 +852,58 @@ radius-server key <REDACTED-IN-THIS-REPO>
 username operator password <REDACTED-IN-THIS-REPO>
 "#;
 
+    /// The other half of what an `interface` block is the only source for:
+    /// whether the port is administratively shut.  Note the two shapes — a shut
+    /// port with no name (23) must still be reported as shut, and a named port
+    /// (9) must keep both facts.
+    #[test]
+    fn shutdown_comes_from_the_interface_blocks() {
+        let s = port_settings(SHOW_RUNNING_CONFIG);
+        assert_eq!(s.len(), 5, "{s:?}");
+        assert!(
+            s.get("1").map(|p| p.enabled).unwrap_or(false),
+            "no shutdown line"
+        );
+        assert_eq!(s.get("1").map(|p| p.name.as_str()), Some("GW Port 1"));
+        assert!(
+            !s.get("23").map(|p| p.enabled).unwrap_or(true),
+            "port 23 has a shutdown line"
+        );
+        assert_eq!(s.get("23").map(|p| p.name.as_str()), Some(""));
+        assert_eq!(s.get("9").map(|p| p.name.as_str()), Some("Camera 9"));
+        assert!(!s.get("9").map(|p| p.enabled).unwrap_or(true));
+        // A VLAN block is not a port block, and its `name` is not a port name.
+        assert!(!s.contains_key("225"), "the VLAN block leaked: {s:?}");
+    }
+
+    /// A port the running config never mentions is not in the map at all, which
+    /// is what lets [`crate::switch`] keep the default (`enabled: true`) for it
+    /// rather than inventing a state.
+    #[test]
+    fn an_unconfigured_port_has_no_settings_row() {
+        let s = port_settings(SHOW_RUNNING_CONFIG);
+        assert!(!s.contains_key("2"), "{s:?}");
+        assert!(
+            !s.contains_key("Trk1"),
+            "a trunk line is not a block: {s:?}"
+        );
+    }
+
     #[test]
     fn names_come_from_the_interface_blocks() {
         let n = port_names(SHOW_RUNNING_CONFIG);
-        assert_eq!(n.len(), 3, "{n:?}");
+        // Four, not three: `interface 9` is a shut port that still has a name,
+        // and `interface 23` is shut with no name at all (so it is not here, but
+        // is in `port_settings`).
+        assert_eq!(n.len(), 4, "{n:?}");
         assert_eq!(n.get("1").map(String::as_str), Some("GW Port 1"));
         assert_eq!(n.get("22").map(String::as_str), Some("AP3"));
         assert_eq!(n.get("48").map(String::as_str), Some("Switch2 Port 48"));
+        assert_eq!(n.get("9").map(String::as_str), Some("Camera 9"));
+        assert!(
+            !n.contains_key("23"),
+            "a shut port with no name has no name"
+        );
     }
 
     /// The trap this parser exists to avoid: a `vlan` block has a `name` line
@@ -852,7 +974,7 @@ username operator password <REDACTED-IN-THIS-REPO>
             "the fixture is not shaped like the wire"
         );
         let n = port_names(&crlf);
-        assert_eq!(n.len(), 3, "{n:?}");
+        assert_eq!(n.len(), 4, "{n:?}");
         assert_eq!(n.get("22").map(String::as_str), Some("AP3"));
         // And still no VLAN name pretending to be a port.
         assert!(!n.contains_key("225"));

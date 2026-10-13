@@ -26,6 +26,7 @@ done
 # preview table the server uses through frontend/common-rs).  Both are
 # git-ignored; the flake materialises a real copy.
 ln -sfn ../dto "$root/gocardless-dashboard/frontend/dto"
+ln -sfn ../dto "$root/switch-gui/frontend/dto"
 ln -sfn ../../common-rs "$root/filestore/frontend/common-rs"
 
 echo "shared path-dependency symlinks are in place"

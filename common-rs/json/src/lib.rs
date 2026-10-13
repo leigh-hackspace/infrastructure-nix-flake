@@ -191,7 +191,9 @@ impl<'a> Parser<'a> {
 
     fn literal(&mut self, lit: &str) -> Result<(), String> {
         let bytes = lit.as_bytes();
-        if self.bytes.len() - self.pos < bytes.len() || &self.bytes[self.pos..self.pos + bytes.len()] != bytes {
+        if self.bytes.len() - self.pos < bytes.len()
+            || &self.bytes[self.pos..self.pos + bytes.len()] != bytes
+        {
             return Err(format!("expected '{}' at byte {}", lit, self.pos));
         }
         self.pos += bytes.len();
@@ -223,9 +225,7 @@ impl<'a> Parser<'a> {
         let mut out: Vec<u8> = Vec::new();
         loop {
             match self.next() {
-                Some(b'"') => {
-                    return Ok(String::from_utf8_lossy(&out).to_string())
-                }
+                Some(b'"') => return Ok(String::from_utf8_lossy(&out).to_string()),
                 Some(b'\\') => match self.next() {
                     Some(b'"') => out.push(b'"'),
                     Some(b'\\') => out.push(b'\\'),
@@ -246,7 +246,10 @@ impl<'a> Parser<'a> {
                         }
                     }
                     Some(c) => {
-                        return Err(format!("invalid escape '\\{}' at byte {}", c as char, self.pos))
+                        return Err(format!(
+                            "invalid escape '\\{}' at byte {}",
+                            c as char, self.pos
+                        ))
                     }
                     None => return Err(format!("unterminated escape at byte {}", self.pos)),
                 },
@@ -292,7 +295,10 @@ mod tests {
         assert_eq!(doc.get("page").and_then(|j| j.as_u64()), Some(1));
         let records = doc.get("records").and_then(|j| j.as_array()).unwrap();
         assert_eq!(records.len(), 3);
-        assert_eq!(records[0].get("name").and_then(|j| j.as_str()), Some("filestore.int"));
+        assert_eq!(
+            records[0].get("name").and_then(|j| j.as_str()),
+            Some("filestore.int")
+        );
         assert_eq!(records[0].get("ttl").and_then(|j| j.as_u64()), Some(1800));
         // A record with no `data` key is absent, not empty.
         assert!(records[2].get("data").is_none());
@@ -313,13 +319,20 @@ mod tests {
             Some("ready")
         );
         assert_eq!(
-            doc.at(&["result", "print_stats", "filename"]).and_then(|j| j.as_str()),
+            doc.at(&["result", "print_stats", "filename"])
+                .and_then(|j| j.as_str()),
             Some("benchy.gcode")
         );
         let used = doc.at(&["result", "print_stats", "filament_used"]).unwrap();
         assert_eq!(used.as_f64(), Some(1234.5));
-        assert_eq!(doc.at(&["result", "temperature"]).and_then(|j| j.as_f64()), Some(45.25));
-        assert_eq!(doc.at(&["result", "is_active"]).and_then(|j| j.as_bool()), Some(true));
+        assert_eq!(
+            doc.at(&["result", "temperature"]).and_then(|j| j.as_f64()),
+            Some(45.25)
+        );
+        assert_eq!(
+            doc.at(&["result", "is_active"]).and_then(|j| j.as_bool()),
+            Some(true)
+        );
         assert!(doc.at(&["result", "print_stats", "message"]).unwrap() == &Json::Null);
         // A missing path is None at every level, not a panic.
         assert!(doc.at(&["result", "nope", "deeper"]).is_none());
@@ -361,7 +374,10 @@ mod tests {
     #[test]
     fn strings_decode_escapes() {
         let s = parse(r#""a\"b\\c\/d\n\t\r\b\f\u00e9\u6210""#).unwrap();
-        assert_eq!(s.as_str().unwrap(), "a\"b\\c/d\n\t\r\u{8}\u{c}\u{e9}\u{6210}");
+        assert_eq!(
+            s.as_str().unwrap(),
+            "a\"b\\c/d\n\t\r\u{8}\u{c}\u{e9}\u{6210}"
+        );
     }
 
     #[test]
@@ -389,16 +405,16 @@ mod tests {
     #[test]
     fn malformed_documents_error_instead_of_guessing() {
         for bad in [
-            "",                     // empty document
-            "{",                    // unterminated object
-            "[1,",                  // unterminated array
-            r#""unterminated"#,     // unterminated string
-            "{\"a\" 1}",           // missing colon
-            "{\"a\":1,}",          // trailing comma
-            "1 2",                  // trailing value
-            "nul",                  // misspelled literal
+            "",                 // empty document
+            "{",                // unterminated object
+            "[1,",              // unterminated array
+            r#""unterminated"#, // unterminated string
+            "{\"a\" 1}",        // missing colon
+            "{\"a\":1,}",       // trailing comma
+            "1 2",              // trailing value
+            "nul",              // misspelled literal
             "tru",
-            r#""\q""#,             // invalid escape
+            r#""\q""#, // invalid escape
         ] {
             let r = parse(bad);
             assert!(r.is_err(), "{bad} should not parse: {:?}", r);

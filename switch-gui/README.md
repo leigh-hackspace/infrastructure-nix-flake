@@ -21,17 +21,50 @@ devices cannot disagree about which switch is which.
 One login serves all three: the same `agent` account is a Manager on each, so
 there is one credential pair (`SWITCH_GUI_LOGIN`/`_PASSWORD`) and one Telnet
 session **per switch**. The CLI is one console per device, so the mutex is per
-switch: a slow read on the 2824 cannot hold up a page for a switch that answered
-normally, and a switch that is down keeps its last good snapshot instead of
-blanking the other two.
+switch, and a switch that is down — or a 2824 taking twenty seconds over a RADIUS
+login — costs its own stale page, not the other two's.
+
+## Where the page's data comes from
+
+**Nothing reads a switch while serving a request.** A background sync
+(`src/sync.rs`) re-reads each switch's whole configuration on an interval into a
+**shadow copy in Postgres**, and drains a **queue** of wanted changes out of the
+same database, which is also the audit trail. The page (`GET /api/switch`) reads
+the shadow copy and appends to the queue.
+
+That is the whole reason for the database, and it is worth stating because it looks
+like overkill for a port table:
+
+| | before (server-rendered, read on demand) | now |
+| --- | --- | --- |
+| a page load | up to six Telnet round-trips per switch, inside the request | one SQL query |
+| a dead switch | a spinner, then a timeout in the browser | a stale page with a visible error, and the last good rows |
+| a write | a Telnet session in the request, so a second click raced it | a row; the sync owns the console |
+| two operators | each saw whatever their own request happened to read | the same rows, and each other's queued changes |
+| the audit log | 200 entries in memory, gone on restart | rows, with Retry / Discard / Revert |
+
+The queue is also what makes a write honest: the page says *queued*, then the row
+says *applied* or *failed* with the sentence the switch printed, and a port with a
+row against it stays marked on the page until the queue stops saying so — which is
+why that marking is derived from the fetched rows on every poll rather than kept as
+local state in the browser.
+
+The UI is a Dioxus SPA (`frontend/`, compiled to wasm by the flake and embedded by
+`build.rs` — no bundle is committed) over a JSON API (`/api/state`,
+`/api/switch`, `/api/pending`, `/api/changes`, `/api/intent`,
+`/api/change/{retry,forget,revert}`, `/api/export`). The wire types are in `dto/`
+(`switch-gui-dto`), shared with the SPA exactly as gocardless-dashboard shares
+`gdash-dto`, so the two cannot disagree about a field name.
 
 Deployment: `machines/services1/services/switch-gui.nix` (services1 proxies it;
 the binary listens on `127.0.0.1:8097`). The switch list is built from
-`common/hosts.nix` and reaches the app as `SWITCH_GUI_SWITCHES`.
+`common/hosts.nix` and reaches the app as `SWITCH_GUI_SWITCHES`; the database is
+`switch_gui` over the unix socket, which needs no credential (see the note in that
+file about `local all all trust`).
 
 ## What it shows
 
-One row per port and per trunk group, merged out of four commands, because no
+One row per port and per trunk group, merged out of six commands, because no
 single one of them has the whole picture:
 
 | command                | what only it knows                                            |
@@ -54,36 +87,56 @@ Below the tables is a **VLAN membership matrix** — one row per port, one verti
 column per VLAN — which is the only place membership is edited.  See "Editing
 VLAN membership".
 
-Every action is audited with the switch it went to (`/api/audit`), because with
-three devices a log line that does not name one is not evidence of anything.
+Under that is the queue: the open rows for this switch and the last twenty closed
+ones, each naming the switch it went to, who asked, how many tries it took, and
+what the device said — because with three devices a log line that does not name one
+is not evidence of anything.
 
 ## Signing in
 
 authentik, restricted to the `Infra` group. Not the switch's own login: the
 switch authenticates against RADIUS, so a password here would be a second,
 weaker door to the same device. The client contract (S256 PKCE, unpadded
-challenge, `groups` claim) is in `src/oidc.rs` and the three authentik traps are
-in `docs/authentik-oidc-notes.md`.
+challenge, `groups` claim) is implemented once for the whole network, in
+`common-rs/oidc`; the three authentik traps are in `docs/authentik-oidc-notes.md`.
 
-Writes additionally need the switch's **Manager** context, which the `agent`
-account does not have — see "Privilege" below.
+Writes additionally need the switch's **Manager** context, which the same `agent`
+credentials get with `enable` (a second login on this firmware) — see "Privilege"
+below.
 
 ## Running it locally
 
+It needs Postgres: the shadow copy, the queue and the audit log **are** the
+application, and there is no in-memory fallback — a tool whose page and whose audit
+log can disagree is worse than one with no page.
+
 ```bash
+sudo -u postgres createuser -s switch_gui
+sudo -u postgres createdb -O switch_gui switch_gui
+cd switch-gui && cargo build --release
 SWITCH_GUI_LOGIN=agent SWITCH_GUI_PASSWORD='…' \
   ./target/release/switch-gui --bind 127.0.0.1:8097 --dev-user you
 ```
+
+The DSN defaults to `postgresql://switch_gui@/switch_gui?host=/run/postgresql`, so
+a local Postgres answering on the socket is all it takes; `--db-url` (or
+`SWITCH_GUI_DB_URL`) overrides it. `--interval <secs>` is how often the sync
+re-reads each switch (default 30).
 
 `--dev-user`/`--no-auth` skip sign-in and are **refused on a non-loopback bind**
 (the same rule filestore's `--no-auth` follows). With no OIDC client configured
 and a loopback bind, `--dev-user` alone is enough.
 
-The switches come from `SWITCH_GUI_SWITCHES` (or `--switches`), so a local run
-against one device is `--switches switch3=10.3.1.4`.
+The switches come from `SWITCH_GUI_SWITCHES` (a comma list of `name=address`), so a
+local run against one device is `SWITCH_GUI_SWITCHES=switch3=10.3.1.4`. A fresh
+database shows "not read yet" until the sync has been round; the Refresh button
+forces one.
 
-Tests: `cargo test` — 101 of them, no network, no switch. The parser fixtures are
-captured output from the real devices, one per firmware.
+The SPA: `just build-frontend switch-gui` (or `cd frontend && nix develop --command
+./build.sh`), which writes `frontend/dist/` (git-ignored) for `build.rs` to embed.
+
+Tests: `cargo test` — 108 in `switch-gui`, 7 in `dto`, no network and no switch. The
+parser fixtures are captured output from the real devices, one per firmware.
 
 ## Two firmwares, one parser
 
@@ -324,13 +377,14 @@ dropdown, and the VLAN names as **vertical** headers because ten VLANs across
 fifty ports only fit if a column costs the width of a checkbox.
 
 What the form sends is the **whole wanted row**, never the click that changed it,
-and `commands::port_members` turns it into the difference against the snapshot
-the page was built from.  That is what makes a two-checkbox edit cost two
-commands instead of one per VLAN the port belongs to, and it is why a row is
-marked as changed the moment it stops matching the switch: this page is a cache,
-so it shows what it is *about to change* rather than pretending it *is* the
-switch.  Nothing is sent until Apply, and the reload afterwards re-reads the
-device, so what is on screen after an apply is what the switch says.
+and `commands::port_members` turns it into the difference against the shadow copy
+the page was built from.  That is what makes a two-checkbox edit cost two commands
+instead of one per VLAN the port belongs to, and it is why a row is marked as
+changed the moment it stops matching the switch: this page is a cache, so it shows
+what it is *about to change* rather than pretending it *is* the switch.  Nothing is
+sent until Apply; the edit lives in an overlay over the fetched rows, so the poll
+keeps running underneath it, and once the sync has applied the change the next poll
+replaces the row with what the switch says.
 
 The order of the generated commands is not cosmetic — take away, then move the
 native VLAN, then add.  A port cannot be tagged and untagged on the same VLAN at
@@ -341,13 +395,20 @@ new one without releasing the old leaves it showing under both.
 
 Two guards worth knowing because they look like bugs otherwise:
 
-* A **trunk member** is shown with its boxes disabled and the reason on hover.
-  The switch refuses to change the membership of a port in a link-aggregation
-  group ("remove it from the trunk first"), and a trunk *group* has never been
-  exercised here, so neither gets a live control.
-* `tagged=` and `untagged=` are both **required** on the API.  A missing
-  `tagged=` would be indistinguishable from "tagged in nothing", and a request
-  that lost its query string would then strip every membership off the port.
+* A **trunk member** is shown with its boxes disabled and the reason on hover.  The
+  switch refuses to change the membership of a port in a link-aggregation group
+  ("remove it from the trunk first").  A trunk **group** (`Trk1`) is locked too, and
+  for a different reason: its membership moves with its members, and that command
+  list has never been exercised here — so neither gets a live control.  The two
+  cases are told apart by `dto::Port::membership_editable`, which checks
+  `trunk_group` (set on the members) *and* the id (the group's own row has no
+  `trunk_group` of its own).
+* On the API, an absent `tagged=` or `untagged=` means **"leave that half alone"**,
+  not "clear it": `intent::port_members` fills the missing half from the shadow
+  copy before diffing, because the diff needs a complete wanted row and half a row
+  would delete the half that was not mentioned.  The SPA always sends both; the
+  rule is what stops a hand-made `curl` that only names the native VLAN from
+  stripping every tagged membership off the port.
 
 ## "Can't reach RADIUS server"
 
@@ -415,7 +476,24 @@ The note goes into the snapshot's warnings, so the page shows it.
 
 ## Audit log
 
-Every action (including refusals and read-only denials) is kept in memory, last
-200 entries, at `/api/audit` — deliberately not on disk, since the switches have
-their own logging and this box should not accumulate state for a tool that owns
-nothing. Each line names the switch it went to.
+Every change is a row in Postgres (`change`), not a ring buffer: what was asked
+for, the switch it went to, who asked, the CLI lines, the `before` map, how many
+tries it took, and what the switch said.  The page shows the open rows and the last
+twenty closed ones, and offers three actions on a row:
+
+* **Retry** — put it back in the queue and reset the attempt ladder, which is a
+  statement that the reason it failed has been dealt with.
+* **Discard** — delete a row that has not been written.  Only a row that has not
+  been written: `applied` and `failed` are history, and history that can be deleted
+  is not an audit trail.
+* **Revert** — queue the opposite change, built from the row's stored `before` map
+  rather than from the switch's current state, because by the time anyone clicks it
+  the switch may have moved again and "undo" has to mean the state this change
+  replaced.
+
+Refusals are rows too (`--read-only` denials included, failed by the sync with the
+reason), so the log answers "did anything happen to switch2 at 14:10?" without
+needing the journal.  It is in RAM on the switch's side and in Postgres on ours:
+nothing here writes to NVRAM, so a reboot of a switch undoes the configuration
+while the log still says it was applied — which is why the log is evidence about
+*this tool*, not about the device.

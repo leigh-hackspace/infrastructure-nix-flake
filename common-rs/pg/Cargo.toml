@@ -1,0 +1,41 @@
+[package]
+name = "common-pg"
+version = "0.1.0"
+edition = "2021"
+
+# Postgres plumbing shared by the services that keep state in the network's
+# one Postgres (gocardless-dashboard, switch-gui).
+#
+# Path dependency: see common/crane.nix for how the shared source reaches the
+# Nix build (the service modules pass `sharedCrates = ["pg"]`), and AGENTS.md
+# ("common-rs") for the symlink convention.
+#
+# Why this exists rather than each app opening its own socket:
+#
+#   * **The sea-query/sqlx dance is not obvious and must only be got wrong
+#     once.** sea-query 0.32 dropped its sqlx runtime adapter, so a statement
+#     has to be built to `(sql, params)` and the parameters *inlined* with
+#     `inject_parameters` before sqlx will take the string. Both apps were
+#     carrying their own copy of `to_sql`/`finalize_insert` and the
+#     `tbl`/`iden`/`col`/`ev*` constructors around it.
+#   * **A schema is applied the same way everywhere**: split on `;` and run one
+#     statement at a time, because Postgres will not prepare multiple
+#     statements at once.
+#   * **A DSN contains a password** and both apps log connection failures at
+#     startup, where the naive thing to log is the URL they were given.
+#     [`redact`] is the one place that knows how to take it out.
+#
+# Deliberately *not* here: any table, row type or query that belongs to one
+# app. This is the plumbing, not the schema.
+
+[dependencies]
+# Features matched to gocardless-dashboard's own sea-query: the default feature
+# set pulls in `sea-query-derive` (the `DeriveValues` macros), which nothing in
+# this repo uses and which is therefore not in the offline crate cache.
+sea-query = { version = "0.32", default-features = false, features = [
+  "backend-postgres",
+] }
+sqlx = { version = "0.8", default-features = false, features = [
+  "runtime-tokio",
+  "postgres",
+] }

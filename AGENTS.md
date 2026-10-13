@@ -172,40 +172,56 @@ Guidance for AI agents working in this repository. Read this before making chang
   canonicalised at startup, but symlinks **inside** the share are followed
   wherever they point (the NAS uses them) — the guarantee is "no traversal from
   the API", not "nothing outside the share is reachable". See `filestore/src/fsutil.rs`.
-- `switch-gui/` — top-level Rust tool (zero external crates) that manages the
+- `switch-gui/` — top-level Rust tool that manages the
   **three ProCurve switches** from a browser: `switch1` (J9280A 2510G-48,
   `Y.11.44`, `10.3.1.2`), `switch2` (same model, `10.3.1.3`) and `switch3`
   (J4903A 2824, `I.10.107`, `10.3.1.4`) — all three in `common/hosts.nix` under
   those names, which are also each device's own `System Name` and the names the
   GUI's URLs use (`/switch/switch2`). The switches speak only Telnet, so the tool
   ships its own minimal Telnet client (`src/telnet.rs`), parses the CLI's
-  fixed-width tables (`src/parse.rs`) and merges the five `show` commands that
+  fixed-width tables (`src/parse.rs`) and merges the six `show` commands that
   split a port's name, link state and VLAN membership between them. **Port names
   come only from `show running-config`**: the `Name` column of `show vlan <id>` is
   blank for every dynamically-learned member (all fifty ports on switch1) and
   `show port name` does not exist on this firmware. That command is also the only
   read whose output carries secrets, so it goes through `Switch::secret_command`
   (failures never quote its output) and `parse::port_names` returns names and
-  nothing else.
+  nothing else. The Telnet client, the parsers and the command generator are still
+  **crate-free on purpose**; what took crates is the other half (below): sqlx +
+  sea-query + tokio + reqwest, and `common-rs/{json,web,oidc,pg,build-spa}`.
   Below the port table is a **VLAN membership matrix** — one row per port, one
   **vertical** column per VLAN, with the untagged VLAN a dropdown — which is the
-  only place membership is edited. The form posts the whole wanted row and
-  `commands::port_members` turns it into the diff against the snapshot (removals,
-  then the native-VLAN move, then additions: a port cannot be tagged and untagged
-  on one VLAN at once), the row is marked changed until Apply, and a trunk member
-  is rendered locked because the switch refuses that change.
-  Server-rendered dashboard on the shared `common-rs/web` (same shape as
-  status-dashboard): `/` lists the switches and `/switch/<name>` is one switch's
-  page. **The cache and the CLI session are per switch** (`--ttl`, default 30 s,
-  plus a Refresh button) because a full read is six-plus round-trips against a
-  1990s CPU that pages its own output, and because a slow or dead switch must not
-  hold up the other two. Login is OIDC against authentik gated on the
-  `Infra` group — hand-written (`src/oidc.rs`, S256 PKCE over `curl`, keeping the
-  zero-dependency rule like `dns-sync`'s DO API calls) because `common-rs/oidc`
-  would mean taking reqwest and tokio. LAN-only vhost
+  only place membership is edited. The form sends the whole wanted row and
+  `commands::port_members` turns it into the diff against the shadow copy
+  (removals, then the native-VLAN move, then additions: a port cannot be tagged and
+  untagged on one VLAN at once); the row is marked changed until Apply (the edit is
+  an overlay over the polled rows, so the poll keeps running underneath it), and a
+  trunk member **or** trunk group is locked — `dto::Port::membership_editable` is
+  the one rule, and it checks `trunk_group` (set on members) *and* the id (the
+  group's own row has no `trunk_group`), because the switch refuses the first and
+  this tool has never exercised the second.
+  **Nothing reads a switch while serving a request.** A background sync
+  (`src/sync.rs`) re-reads each switch into a **shadow copy in Postgres** and drains
+  a **queue** of wanted changes in the same database, which is also the audit trail
+  (rows, with Retry / Discard / Revert — `Discard` only ever deletes a row that has
+  not been written). The UI is a Dioxus SPA (`frontend/`, wasm-built by the flake,
+  embedded by `build.rs`, no bundle committed) over a JSON API (`/api/state`,
+  `/api/switch`, `/api/pending`, `/api/changes`, `/api/intent`,
+  `/api/change/{retry,forget,revert}`, `/api/export`), and the wire types are the
+  shared `switch-gui/dto` crate (`switch-gui-dto`), exactly as
+  gocardless-dashboard shares `gdash-dto`. Login is OIDC against authentik gated on
+  the `Infra` group through `common-rs/oidc` (the hand-written `src/oidc.rs` +
+  `curl` is gone: the pool and the query builder were already bringing tokio, so
+  the zero-dependency rule stopped buying anything). The database is `switch_gui`
+  (role and DB from `machines/services1/services/postgres.nix`) over the **unix
+  socket**, which `CONFIG.PG_AUTH` trusts for local users — so the unit needs no
+  database credential and stays a `DynamicUser`. LAN-only vhost
   `switch.int.leighhack.org` → `127.0.0.1:8097`, packaging in
-  `machines/services1/services/switch-gui.nix` (the switch list reaches the unit
-  as `SWITCH_GUI_SWITCHES`, built from `common/hosts.nix`).
+  `machines/services1/services/switch-gui.nix` (the switch list reaches the unit as
+  `SWITCH_GUI_SWITCHES`, built from `common/hosts.nix`; `--interval` is how often
+  the sync re-reads, 60 s there rather than the default 30 because each read is a
+  **login** and every login currently logs two `login_failed` events in authentik —
+  see the RADIUS entry under Known follow-ups).
   **The 2824 is not the same firmware**, and three things bite a client written
   against the 2510G: `show vlan` has an extra `Voice` column (so the number of
   trailing columns must come from the header), `show spanning-tree` puts
@@ -730,17 +746,18 @@ each frontend's Cargo.lock exactly) and the wasm build recipe live in
 
 ## SPA frontends — local development
 
-The same recipe applies to all three Dioxus SPAs (`frigate-monitor/frontend/`,
-`filestore/frontend/`, `gocardless-dashboard/frontend/`): each is built to wasm
-and embedded into its service as `frontendDist` (see
+The same recipe applies to all four Dioxus SPAs (`frigate-monitor/frontend/`,
+`filestore/frontend/`, `gocardless-dashboard/frontend/`, `switch-gui/frontend/`):
+each is built to wasm and embedded into its service as `frontendDist` (see
 `machines/aibox/frigate-monitor.nix`, `machines/services1/services/filestore.nix`,
-`machines/services1/services/gocardless-dashboard.nix`). Their `dist/`
+`machines/services1/services/gocardless-dashboard.nix` and
+`machines/services1/services/switch-gui.nix`). Their `dist/`
 directories are **git-ignored and never committed** — the flake rebuilds them at
 deploy time. To iterate locally:
 
 ```bash
 nix develop            # toolchain: cargo/rustc/rustfmt + lld + just + git + alejandra
-just build-frontend                    # all three SPAs
+just build-frontend                    # all four SPAs
 just build-frontend filestore          # just one
 # or, equivalently, per frontend:
 cd frigate-monitor/frontend && nix develop --command bash build.sh
@@ -839,6 +856,73 @@ The grid is infinitely scrollable — there is **no "load more" button**; the
   in DO DNS, and these two were never. Either add the records (public apps CNAME →
   `nginx.leighhack.org`) or drop the vhosts and the endpoint.
 
+- **services1 could not `CREATE DATABASE` (found and fixed 2026-10-13)** —
+  `sudo -u postgres psql -c "CREATE DATABASE x"` failed with
+  `ERROR: template database "template1" has a collation version mismatch` (created
+  under collation version 2.42, the box now runs 2.44 — a glibc upgrade, and Postgres
+  17 refuses to copy a template whose recorded version differs). Nothing existing
+  broke because no new database had been asked for since the upgrade; `switch_gui`
+  was the first. **Fixed by refreshing the recorded version on the maintenance
+  databases** — `ALTER DATABASE template1 REFRESH COLLATION VERSION;` (and `postgres`;
+  `template0` refuses with `invalid collation version change` because it records no
+  version, and does not need one: `CREATE DATABASE` copies `template1`). Verified by
+  creating and dropping a probe database.
+  What the refresh asserts is that the on-disk collation still matches the indexes,
+  which for a 2.42 → 2.44 bump is almost certainly true but is not *proven* — the
+  strict route is `REINDEX` of the collated indexes. The **application databases still
+  record 2.42** and so still log `database "…" has a collation version mismatch` on
+  connect; refreshing them is a one-liner each, but it is a statement about their
+  indexes, so it wants a decision per database rather than a loop. Note the
+  interaction with deploys: `switch-gui.service` can start before
+  `postgresql-setup.service` has created its role, so its first start exits with
+  `role "switch_gui" does not exist` and the never-give-up policy brings it up five
+  seconds later — seen live, and correct behaviour, not a fault.
+- **switch-gui: reworked onto a Postgres shadow copy + a write queue + a Dioxus SPA
+  (2026-10-13) — built and deployed.** The page used to read the switches
+  inside the request and keep its cache and audit log in memory; it now reads a
+  shadow copy that a background sync maintains in Postgres and writes through a
+  queue in the same database (see the switch-gui section above and
+  `switch-gui/README.md`, "Where the page's data comes from"). What that means for
+  whoever deploys it next:
+  1. **It needs the database to start at all.** `switch_gui` (role + DB) is created
+     by `machines/services1/services/postgres.nix` — **done, and deployed: reading all
+     three switches as Manager since 2026-10-13 14:18**. The DSN is the unix socket, so
+     there is no new secret to add and `switch_gui_env_file` keeps its four keys.
+  2. The old in-memory audit log is gone and there is nothing to migrate; the first
+     read of each switch seeds its row, so the pages say "not read yet" until the
+     sync has been round (Refresh forces one).
+  3. `--ttl` is gone (it was the page's cache); `--interval` is the sync's read
+     interval and is 60 s in the unit, not the 30 s default, because every read is a
+     login and every login is two authentik `login_failed` events until the RADIUS
+     password below is fixed.
+  4. Verified so far: 108 crate tests + 7 dto tests, the wasm bundle builds with the
+     pinned wasm-bindgen 0.2.128, `nix flake check` and the system build are clean,
+     and the new binary was run against a **live Postgres on services1** (in a scratch
+     schema, `--no-auth`, loopback, a dead switch address so no device was touched):
+     migrations create `switch`/`vlan`/`port`/`change`, `/api/state` and
+     `/api/switch` return the read failure rather than a healthy-looking page,
+     `/` and `/switch/<name>` serve the SPA, `/assets/switch_gui_web.js` and
+     `/assets/switch_gui_web_bg.wasm` are 200, and `POST /api/intent` queues a row
+     (`createdBy` recorded) while the refusals name the switch, the missing VLAN and
+     the port that is not in the shadow copy. After the deploy the live service reads
+     all three switches with `privilege = manager`, `warnings` empty on switch1/2 and
+     the known RADIUS note on switch3, 26/46/1 named ports, and `change` empty (no
+     writes have been queued through it). Three bugs came out of that work and are
+     fixed. **`--no-auth` was parsed and validated but never reached `Shared`**, so
+     every request got the "sign-in is not configured" 401 (it is now
+     `Shared::no_auth` and the audit line reads `local`). **The default DSN was
+     libpq's socket form**, which sqlx rejects with `error with configuration: empty
+     host` — the socket has to be the percent-encoded host
+     (`postgresql://switch_gui@%2Frun%2Fpostgresql/switch_gui`), and
+     `the_default_dsn_is_one_sqlx_can_parse` now asserts both halves. And the rewrite
+     had dropped the **"the enable credentials default to the login pair"** fallback,
+     so every session sat in the Operator context, `show running-config` was refused,
+     and the port names vanished (switch1: 4 named ports instead of 26) — restored, with
+     `enable_defaults_to_the_login_account`. That default has now been lost **twice**,
+     which is why `main::enable_creds` records that it is deliberately *not* gated on
+     `--read-only`: the read needs Manager too. **Still not verified: the SPA in a
+     browser (nobody has signed in to it yet), and the sync's first write through the
+     queue.**
 - **switch-gui: deployed, and serving all three switches** — the code, the
   service and the secret are all in place (`systemd.services.switch-gui` is live
   on services1, 100 unit tests pass, and it has been run read-only against the

@@ -245,7 +245,11 @@ impl Telnet {
 
 /// A short, printable excerpt for timeout messages.
 fn tail_for_error(s: &str) -> String {
-    let tail: String = s.chars().rev().take(120).collect::<Vec<_>>()
+    let tail: String = s
+        .chars()
+        .rev()
+        .take(120)
+        .collect::<Vec<_>>()
         .into_iter()
         .rev()
         .collect();

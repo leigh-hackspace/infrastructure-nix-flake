@@ -2,7 +2,7 @@
 //! should not be sent.
 //!
 //! The commands follow the older ProCurve CLI this firmware speaks.  They run
-//! inside **config mode** (`Switch::apply` enters it first) — at the plain
+//! inside **config mode** (`Switch::apply_groups` enters it first) — at the plain
 //! Manager Exec prompt every one of them answers `Invalid input` — and the
 //! per-port ones use the one-shot `interface <n> <setting>` form, because at
 //! config level `port 5 name "x"` is refused and entering the interface level
@@ -100,7 +100,10 @@ fn check_label(value: &str, max: usize, what: &str) -> R<()> {
             value.chars().count()
         ));
     }
-    if value.chars().any(|c| c == '"' || c == '\\' || c.is_control()) {
+    if value
+        .chars()
+        .any(|c| c == '"' || c == '\\' || c.is_control())
+    {
         return Err(format!(
             "{what} may not contain a quote, a backslash or a control character"
         ));
@@ -258,15 +261,19 @@ pub fn vlan_tagged(id: u32, ports: &str, add: bool) -> R<Vec<String>> {
     check_vlan(id)?;
     let list = check_port_list(ports)?;
     let verb = if add { "" } else { "no " };
-    Ok(vec![format!(
-        "{verb}vlan {id} tagged {}",
-        list.join(",")
-    )])
+    Ok(vec![format!("{verb}vlan {id} tagged {}", list.join(","))])
 }
 
 /// A command typed into the console box.  Only `show` commands are accepted:
 /// everything else should come through a validated action so the audit log
 /// says what changed.
+///
+/// Not wired to an endpoint, and that is deliberate: the SPA has no console box,
+/// because a raw prompt beside a database-backed page is a way to change a switch
+/// without it appearing in `change`.  The rule stays here, tested, so the first
+/// person who adds the box has the guard already written and cannot forget the
+/// one case that matters (`no vlan 1` is a write, not a read).
+#[allow(dead_code)] // the guard for a console box, not a live path (see above)
 pub fn read_command(cmd: &str) -> R<String> {
     let cmd = cmd.trim();
     if cmd.is_empty() {
@@ -479,11 +486,13 @@ mod tests {
     #[test]
     fn a_port_cannot_be_untagged_and_tagged_on_the_same_vlan() {
         let err = port_members(&port(Some(225), &[]), &[226, 227], Some(226)).unwrap_err();
-        assert!(err.contains("both the untagged VLAN and a tagged VLAN"), "{err}");
+        assert!(
+            err.contains("both the untagged VLAN and a tagged VLAN"),
+            "{err}"
+        );
         // The wanted state is what is checked: asking to *keep* 226 tagged while
         // moving the native VLAN off it is fine, that is an ordinary trunk.
-        assert!(port_members(&port(Some(225), &[226]), &[226], Some(227))
-            .is_ok());
+        assert!(port_members(&port(Some(225), &[226]), &[226], Some(227)).is_ok());
     }
 
     /// A trunk member is the one thing the switch refuses here, and a trunk

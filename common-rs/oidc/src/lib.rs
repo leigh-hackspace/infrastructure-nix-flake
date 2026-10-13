@@ -422,8 +422,9 @@ mod tests {
     fn begin_login_url_carries_the_client_contract() {
         let o = oidc();
         let (url, state) = o.begin_login();
-        assert!(url
-            .starts_with("https://id.example/application/o/authorize/?client_id=cid&redirect_uri="));
+        assert!(url.starts_with(
+            "https://id.example/application/o/authorize/?client_id=cid&redirect_uri="
+        ));
         for want in [
             "response_type=code",
             "scope=openid profile email groups",

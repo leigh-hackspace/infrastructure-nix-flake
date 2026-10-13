@@ -9,12 +9,18 @@
   slackWebhookUrl = lib.strings.trim (builtins.readFile (config.sopsSecretText "slack_url"));
   pgPass = lib.strings.trim (builtins.readFile (config.sopsSecretText "pg_pass"));
   # Define a single data structure for DB names and passwords.
+  #
+  # `switch_gui`'s password is set like everyone else's and used by nobody: that
+  # service connects over the unix socket, which `CONFIG.PG_AUTH` trusts for local
+  # connections (`local all all trust`), so it needs no credential — which is why
+  # its unit can stay a DynamicUser with no secret of its own for the database.
   dbs = {
     door_system = pgPass;
     door_system_dev = pgPass;
     affine = pgPass;
     outline = pgPass;
     gocardless_dashboard = pgPass;
+    switch_gui = pgPass;
   };
 in {
   services.postgresql = {

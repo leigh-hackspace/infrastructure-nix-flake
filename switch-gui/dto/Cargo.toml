@@ -1,0 +1,23 @@
+[package]
+name = "switch-gui-dto"
+version = "0.1.0"
+edition = "2021"
+
+# Wire types shared by the switch-gui API and its Dioxus SPA.
+#
+# Same convention as `gocardless-dashboard/dto`: one place defines what a
+# snapshot, a port row and a queued change look like, so the server cannot
+# rename a field out from under the frontend.  Compiled for both targets, which
+# means: serde only, no sqlx, no chrono, no wall-clock reads.  Every timestamp
+# here is a string the server formatted (Postgres formats them, in UTC, with
+# `to_char`), and every "how old is this" number is computed server-side too —
+# a browser clock and a switch read time must not be compared in the client.
+#
+# Path dependency: `common-rs`-style symlink, see AGENTS.md and
+# machines/services1/services/switch-gui.nix (`sharedCrates`).
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1"

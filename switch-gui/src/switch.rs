@@ -91,6 +91,14 @@ pub struct Config {
     /// hold the console for 15-25 s before it falls back to its local account
     /// database and prints the prompt. At 20 s that read times out on `switch3`.
     pub login_timeout: Duration,
+    /// Never send a configuration command to this switch.
+    ///
+    /// The operator-level version of the same rule the queue enforces per change:
+    /// for looking at a switch you are not willing to have changed today (a
+    /// staging unit, or a device someone is working on by hand).  Queued changes
+    /// are still drained and failed with this reason, so the page never shows a
+    /// pending notice that cannot clear.
+    pub read_only: bool,
 }
 
 pub struct Switch {
@@ -142,7 +150,7 @@ impl Switch {
         let mut sw = Switch {
             tn,
             cfg: cfg.clone(),
-            privilege: Privilege::Operator,
+            privilege: Privilege::default(),
             note: None,
             context: None,
         };
@@ -221,7 +229,9 @@ impl Switch {
                 .read_until(
                     |raw| {
                         let t = strip_ansi(raw);
-                        t.contains(LOGIN_PROMPT) || t.contains(PASSWORD_PROMPT) || ends_at_prompt(&t)
+                        t.contains(LOGIN_PROMPT)
+                            || t.contains(PASSWORD_PROMPT)
+                            || ends_at_prompt(&t)
                     },
                     self.cfg.login_timeout,
                 )
@@ -250,10 +260,13 @@ impl Switch {
         self.privilege = prompt_privilege(&out);
         self.context = console_context(&out);
         if !self.privilege.is_manager() {
-            return Err(
-                "`enable` did not reach the Manager context (prompt is still an operator prompt)"
-                    .to_string(),
-            );
+            // `Unknown` (no prompt at all) belongs in this message: what the
+            // operator needs to know is that the console is not in a state to take
+            // a write, whatever the reason.
+            return Err(format!(
+                "`enable` did not reach the Manager context (prompt says: {})",
+                self.privilege.label()
+            ));
         }
         Ok(())
     }
@@ -398,16 +411,34 @@ impl Switch {
         Ok(acc)
     }
 
-    /// Send a sequence of configuration commands.
+    /// Send several configuration plans, in **one** config-mode session.
     ///
+    /// A queued change is a plan per port (`interface 7`, its settings, then
+    /// `interface 8`, …), and entering config mode costs a round trip against a
+    /// console that pages its own output.  Applying the whole queue between one
+    /// `config` and one `exit` is what makes a batch of five changes five plans
+    /// rather than ten connections' worth of prompt chasing.
+    ///
+    /// A refused command stops the batch: the
+    /// switch's CLI has no transaction, so the only honest thing is to stop
+    /// writing at the first refusal, report which command was refused, and let
+    /// the queue retry the rest.  Everything applied before the refusal stays
+    /// applied — which is why the sync re-reads the switch after a failure too.
     /// This firmware only accepts configuration **inside config mode**: at the
     /// Manager Exec prompt `port 1 name x` answers `Invalid input: port`.  Both
     /// `config` and `configure terminal` get there (measured on 10.3.1.2: the
-    /// prompt goes `switch1#` → `switch1(config)#`), and `exit` comes back out.
+    /// prompt goes `switch1#` → `switch1(config)#`), and `exit` comes back out —
+    /// always, including when a command is refused, see [`Switch::leave_config`].
     ///
-    /// The session always leaves config mode, including when a command is
-    /// refused — see [`Switch::leave_config`].
-    pub fn apply(&mut self, cmds: &[String]) -> R<()> {
+    /// One call per queued **batch**: a change is a plan per port and the whole
+    /// queue for a switch goes between one `config` and one `exit`, because
+    /// entering config mode costs a round trip against a console that pages its
+    /// own output.
+    pub fn apply_groups(&mut self, groups: &[Vec<String>]) -> R<()> {
+        let groups: Vec<&Vec<String>> = groups.iter().filter(|g| !g.is_empty()).collect();
+        if groups.is_empty() {
+            return Ok(());
+        }
         if !self.privilege.is_manager() {
             return Err("the session is not in the Manager context".to_string());
         }
@@ -419,11 +450,13 @@ impl Switch {
             self.context = Some("config".to_string());
         }
         let mut failed: Option<String> = None;
-        for cmd in cmds {
-            thread::sleep(SETTLE);
-            if let Err(e) = self.command(cmd) {
-                failed = Some(e);
-                break;
+        'plans: for group in groups {
+            for cmd in group {
+                thread::sleep(SETTLE);
+                if let Err(e) = self.command(cmd) {
+                    failed = Some(e);
+                    break 'plans;
+                }
             }
         }
         let left = self.leave_config();
@@ -559,19 +592,26 @@ pub fn read_snapshot(sw: &mut Switch) -> R<Snapshot> {
         Err(e) => warn("show interfaces", e, &mut snap.warnings),
     }
 
-    // Port names.  `show vlan <id>` has a Name column and leaves it blank for
-    // every dynamically-learned member, which on switch1 is every port, and
-    // `show port name` does not exist on this firmware (`Ambiguous input: port`)
-    // — the running config is the only source there is.  It is also the only
-    // read here that carries secrets, hence `secret_command`.
+    // Port names and administrative state.  `show vlan <id>` has a Name column
+    // and leaves it blank for every dynamically-learned member, which on switch1
+    // is every port, and `show port name` does not exist on this firmware
+    // (`Ambiguous input: port`) — the running config is the only source for
+    // names, and likewise the only one that says whether a port is `shutdown`
+    // (see [`parse::port_settings`]).  It is also the only read here that carries
+    // secrets, hence `secret_command`.
     //
     // One caveat worth knowing before changing the prompt matcher: this is the
     // one response whose body could in principle end a line the way a prompt
     // does, since `is_prompt` reads a prompt as a line's suffix.  No line of the
     // real config does (checked against the capture from all three switches);
     // a port or VLAN name that ended in `word>` would.
+    //
+    // When this read fails the snapshot still loads, with every port named by
+    // nothing and shown as enabled.  That is a lie of omission, so it is a
+    // warning: the page says the running config could not be read rather than
+    // implying it said the ports are all up.
     match sw.secret_command("show running-config") {
-        Ok(out) => merge_names(&mut snap, &parse::port_names(&out)),
+        Ok(out) => merge_settings(&mut snap, &parse::port_settings(&out)),
         Err(e) => warn("show running-config", e, &mut snap.warnings),
     }
 
@@ -580,16 +620,19 @@ pub fn read_snapshot(sw: &mut Switch) -> R<Snapshot> {
     Ok(snap)
 }
 
-/// Fold the running config's port names into the snapshot.
+/// Fold the running config's per-port settings into the snapshot.
 ///
-/// Only ports the snapshot already knows about are named: a stray
-/// `interface` block is not evidence a port belongs on the page — the
-/// membership and spanning-tree tables decide that, and inventing a row from a
-/// config fragment is how a snapshot starts describing a switch it never read.
-fn merge_names(snap: &mut Snapshot, names: &BTreeMap<String, String>) {
-    for (id, name) in names {
+/// Only ports the snapshot already knows about are touched: a stray `interface`
+/// block is not evidence a port belongs on the page — the membership and
+/// spanning-tree tables decide that, and inventing a row from a config fragment
+/// is how a snapshot starts describing a switch it never read.
+fn merge_settings(snap: &mut Snapshot, settings: &BTreeMap<String, parse::PortSettings>) {
+    for (id, s) in settings {
         if let Some(p) = snap.ports.get_mut(id) {
-            p.name = name.clone();
+            if !s.name.is_empty() {
+                p.name = s.name.clone();
+            }
+            p.enabled = s.enabled;
         }
     }
 }
@@ -810,6 +853,13 @@ fn ends_at_prompt(s: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// The privilege the last prompt in `s` claims, or [`Privilege::Unknown`] when no
+/// line of it is a prompt at all.
+///
+/// Guessing `Operator` for output that never reached a prompt is how a banner, a
+/// `Can't reach RADIUS server.` refusal or a dead socket ends up recorded as "this
+/// switch lets us read but not write" — a claim about a console that was never in
+/// a state to be asked.
 fn prompt_privilege(s: &str) -> Privilege {
     if let Some(l) = s.lines().rev().find(|l| !l.trim().is_empty()) {
         if let Some((_, _, manager)) = prompt_tail(l) {
@@ -820,7 +870,7 @@ fn prompt_privilege(s: &str) -> Privilege {
             };
         }
     }
-    Privilege::Operator
+    Privilege::Unknown
 }
 
 /// Remove the echoed `<prompt> <command>` line the CLI puts first.
@@ -967,7 +1017,8 @@ mod tests {
         let waiting = "  1  x\n-- MORE --, next page: Space, next line: Enter, quit: Control-C";
         assert!(waits_for_key(waiting));
         // A marker that has already been paged past is mid-text, not a stop.
-        let paged = "-- MORE --, next page: Space, next line: Enter, quit: Control-C  17  y\nswitch1>";
+        let paged =
+            "-- MORE --, next page: Space, next line: Enter, quit: Control-C  17  y\nswitch1>";
         assert!(!waits_for_key(paged));
     }
 
@@ -1016,7 +1067,9 @@ mod tests {
         assert!(is_prompt("exitswitch1#"));
         assert!(is_prompt("interface 23switch1(eth-23)#"));
         // And a table row still is not a prompt.
-        assert!(!is_prompt("  23               Untagged Learn        Down      "));
+        assert!(!is_prompt(
+            "  23               Untagged Learn        Down      "
+        ));
     }
 
     /// The context in the prompt is what tells `leave_config` whether there is
@@ -1024,13 +1077,19 @@ mod tests {
     /// it must not be sent on a guess.
     #[test]
     fn the_context_comes_from_the_prompt() {
-        assert_eq!(console_context("configswitch1(config)# ").as_deref(), Some("config"));
+        assert_eq!(
+            console_context("configswitch1(config)# ").as_deref(),
+            Some("config")
+        );
         assert_eq!(
             console_context("interface 23switch1(eth-23)#").as_deref(),
             Some("eth-23")
         );
         assert_eq!(console_context("exitswitch1# ").as_deref(), None);
-        assert_eq!(console_context("show vlan\n  1  DEFAULT\nswitch1>").as_deref(), None);
+        assert_eq!(
+            console_context("show vlan\n  1  DEFAULT\nswitch1>").as_deref(),
+            None
+        );
         // No prompt at all: nothing to go by.
         assert_eq!(console_context("  1  DEFAULT\n"), None);
     }
@@ -1048,7 +1107,10 @@ mod tests {
 
     #[test]
     fn prompt_tail_splits_name_context_and_privilege() {
-        assert_eq!(prompt_tail("switch1(vlan-225)#"), Some(("switch1", Some("vlan-225"), true)));
+        assert_eq!(
+            prompt_tail("switch1(vlan-225)#"),
+            Some(("switch1", Some("vlan-225"), true))
+        );
         assert_eq!(prompt_tail("switch3>"), Some(("switch3", None, false)));
         assert_eq!(
             prompt_tail("interface 23 name \"x\"switch1(config)# "),
@@ -1063,10 +1125,37 @@ mod tests {
     fn privilege_comes_from_the_prompt_character() {
         assert_eq!(prompt_privilege("x\nswitch1>"), Privilege::Operator);
         assert_eq!(prompt_privilege("x\nswitch1#"), Privilege::Manager);
+        assert_eq!(prompt_privilege("x\nswitch1(config)#"), Privilege::Manager);
+    }
+
+    /// Output with no prompt in it says nothing about privilege, and must not be
+    /// recorded as the read-only level: that is a claim about a console that never
+    /// answered.
+    #[test]
+    fn no_prompt_is_no_privilege() {
+        assert_eq!(prompt_privilege(""), Privilege::Unknown);
+        assert_eq!(prompt_privilege("\n\n"), Privilege::Unknown);
         assert_eq!(
-            prompt_privilege("x\nswitch1(config)#"),
-            Privilege::Manager
+            prompt_privilege("Warning: This is a restricted access device"),
+            Privilege::Unknown
         );
+        assert_eq!(
+            prompt_privilege("Can't reach RADIUS server."),
+            Privilege::Unknown
+        );
+        assert_eq!(prompt_privilege("% Unknown command."), Privilege::Unknown);
+    }
+
+    /// The slug is what the shadow copy stores and what the index page shows; the
+    /// label is prose. A switch nobody has dialled is `unknown`, not `operator`.
+    #[test]
+    fn the_stored_slug_is_not_the_page_label() {
+        assert_eq!(Privilege::default(), Privilege::Unknown);
+        assert_eq!(Privilege::Unknown.slug(), "unknown");
+        assert_eq!(Privilege::Operator.slug(), "operator");
+        assert_eq!(Privilege::Manager.slug(), "manager");
+        assert!(!Privilege::Unknown.is_manager());
+        assert_eq!(Privilege::Manager.label(), "Manager");
     }
 
     #[test]
@@ -1209,7 +1298,10 @@ mod tests {
     fn radius_noise_with_a_prompt_behind_it_is_a_note_not_a_failure() {
         let out = "Can't reach RADIUS server.\nCan't reach RADIUS server.\nswitch3>";
         let note = check_auth(out).unwrap().expect("a note");
-        assert!(note.contains("Can't reach RADIUS server."), "quotes what it said");
+        assert!(
+            note.contains("Can't reach RADIUS server."),
+            "quotes what it said"
+        );
         assert!(note.contains("local account database"));
     }
 }

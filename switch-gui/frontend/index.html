@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>switch-gui</title>
+<style>
+/* The dashboard's own stylesheet: no framework, and the same dark monospace look
+   the server-rendered page had, because this is a tool for reading a device's
+   tables and a proportional font makes fifty port rows hard to scan. */
+:root{color-scheme:dark;--bg:#14161a;--panel:#1b1e24;--line:#2a2f38;--fg:#e6e9ef;
+--dim:#98a2b3;--ok:#4ade80;--warn:#fbbf24;--err:#f87171;--accent:#60a5fa}
+*{box-sizing:border-box}
+body{margin:0;padding:20px;background:var(--bg);color:var(--fg);
+font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}
+h1{font-size:17px;margin:0 0 4px}
+h2{font-size:13px;margin:26px 0 8px;color:var(--dim);text-transform:uppercase;
+letter-spacing:.08em}
+a{color:var(--accent)}
+header{display:flex;flex-wrap:wrap;gap:14px;align-items:baseline;
+border-bottom:1px solid var(--line);padding-bottom:12px;margin-bottom:16px}
+.spacer{flex:1}
+.badge{border:1px solid var(--line);border-radius:999px;padding:2px 10px;font-size:12px;
+white-space:nowrap}
+.badge.ro{color:var(--warn);border-color:#5a4a1d}
+.badge.mgr{color:var(--ok);border-color:#1f4d33}
+.badge.pending{color:var(--accent);border-color:#2b4a6b}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th,td{padding:5px 9px;border-bottom:1px solid var(--line);text-align:left;
+white-space:nowrap;vertical-align:top}
+th{color:var(--dim);font-weight:600;font-size:11px;text-transform:uppercase}
+td.n{text-align:right;font-variant-numeric:tabular-nums}
+tr:hover td{background:#191c22}
+.up{color:var(--ok)}.down{color:var(--dim)}.err{color:var(--err)}.warn{color:var(--warn)}
+.note{border:1px solid var(--line);border-left-width:3px;border-radius:6px;
+padding:9px 12px;margin:0 0 14px}
+.note.ok{border-left-color:var(--ok)}
+.note.err{border-left-color:var(--err)}
+.note.info{border-left-color:var(--accent)}
+.note code{color:var(--fg);background:#0e1013;padding:1px 5px;border-radius:4px;font-size:12px}
+button{background:#22262e;color:var(--fg);border:1px solid var(--line);border-radius:6px;
+padding:4px 10px;font:inherit;font-size:12px;cursor:pointer}
+button:hover{border-color:var(--accent)}
+button.danger:hover{border-color:var(--err);color:var(--err)}
+button:disabled{opacity:.45;cursor:default}
+input[type=text],input[type=number],select,textarea{background:#0e1013;color:var(--fg);
+border:1px solid var(--line);border-radius:6px;padding:4px 7px;font:inherit;font-size:12px}
+.row{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.muted{color:var(--dim)}
+pre{background:#0e1013;border:1px solid var(--line);border-radius:6px;padding:10px;
+overflow:auto;font-size:12px;white-space:pre-wrap}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px 12px}
+.card b{display:block;color:var(--dim);font-size:11px;font-weight:600;
+text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px}
+nav{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 14px}
+nav a.badge{text-decoration:none}
+nav .cur{border-color:var(--accent);color:var(--fg)}
+.empty{color:#6f7f90;padding:30px 0;text-align:center}
+
+/* The VLAN membership matrix.  One column per VLAN, named vertically so fifty
+   ports and ten VLANs fit without horizontal scrolling: a horizontal header
+   would need ~90px per column, a vertical one needs the width of a checkbox. */
+table.mx{table-layout:auto}
+.mx th.v{writing-mode:vertical-rl;transform:rotate(180deg);text-align:left;
+vertical-align:bottom;height:11em;padding:6px 3px;font-size:10px;letter-spacing:.04em}
+.mx th.v abbr{text-decoration:none;cursor:help}
+.mx td.ck{text-align:center;padding:4px 3px}
+.mx td.ck label{display:block;cursor:pointer}
+.mx input[type=checkbox]{accent-color:var(--accent);width:15px;height:15px;margin:0;cursor:pointer}
+.mx input[type=checkbox]:disabled{cursor:not-allowed;opacity:.35}
+/* A row whose form no longer matches the switch.  The page is a cache of the
+   device, so say which rows are about to change rather than making the operator
+   remember what they ticked. */
+.mx tr.dirty td,.mx tr.dirty th{background:#1d2531}
+.mx td.apply{white-space:nowrap}
+.mx tr.dirty button{border-color:var(--accent);color:var(--accent)}
+
+/* The queue.  A change is a row of the database, so it reads like one: what was
+   asked, who asked, whether it reached the switch, and what the switch said. */
+.change{border:1px solid var(--line);border-radius:8px;padding:9px 12px;margin:0 0 8px;
+background:var(--panel)}
+.change.pending{border-left:3px solid var(--accent)}
+.change.applying{border-left:3px solid #a78bfa}
+.change.applied{border-left:3px solid var(--ok)}
+.change.failed{border-left:3px solid var(--err)}
+.change .head{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
+.change .kind{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.06em}
+.change .cmds{margin:6px 0 0}
+.change .why{color:var(--err);margin-top:4px}
+.spin{color:var(--dim)}
+</style>
+</head>
+<body>
+  <div id="main"></div>
+  <script type="module">
+    // Absolute on purpose: this document is served for `/` and for every
+    // `/switch/<name>`, and a relative `./switch_gui_web.js` asked for
+    // `/switch/assets/…` on the latter — a 404 that looked like a broken build.
+    import init from '/assets/switch_gui_web.js';
+    await init();
+  </script>
+</body>
+</html>
