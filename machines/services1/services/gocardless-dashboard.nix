@@ -67,6 +67,7 @@ in {
     description = "GoCardless Pro sync + dashboard";
     wantedBy = ["multi-user.target"];
     after = ["postgresql.service" "network-online.target"];
+    wants = ["network-online.target"];
     requires = ["postgresql.service"];
     serviceConfig = {
       Type = "simple";

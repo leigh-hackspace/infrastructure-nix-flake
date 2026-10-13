@@ -75,6 +75,7 @@ in {
     description = "filestore web file browser (/mnt/filestore)";
     wantedBy = ["multi-user.target"];
     after = ["wait-for-nas.service" "network-online.target"];
+    wants = ["network-online.target"];
     requires = ["wait-for-nas.service"];
     serviceConfig = {
       Type = "simple";

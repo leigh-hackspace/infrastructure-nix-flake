@@ -99,7 +99,7 @@ in {
     # derivations, which are built during evaluation and therefore go to the builder).
     # The `sshUser` above has to be a trusted user on the builder too. Appended to the
     # default `["root"]`, so this is `root` plus `leigh-admin` on both ends.
-    nix.trustedUsers = lib.optionals (cfg.serveBuilds || cfg.builderHost != null) [
+    nix.settings.trusted-users = lib.optionals (cfg.serveBuilds || cfg.builderHost != null) [
       "leigh-admin"
     ];
 

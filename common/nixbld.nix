@@ -31,7 +31,7 @@
 #     `LocalStore` only when `access(stateDir, R_OK|W_OK)` succeeds) — group
 #     membership buys a client no store access at all;
 #   * what a client actually needs in order to ask for input-addressed builds is
-#     `nix.trustedUsers`, which build-farm.nix still sets.
+#     `nix.settings.trusted-users`, which build-farm.nix still sets.
 #
 # Two guards, because the mistake produces no error when it is made — only a dead
 # session minutes later — and is easy to make again:
@@ -69,7 +69,7 @@ in {
         on this machine (docs/nix-build-sigkill-2026-10-11.md).
 
         A client that has to be allowed to ask the daemon to build things needs
-        `nix.trustedUsers` (and `nix.settings.allowed-users`), not membership.
+        `nix.settings.trusted-users` (and `nix.settings.allowed-users`), not membership.
       '';
     }
   ];

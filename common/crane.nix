@@ -98,7 +98,17 @@
   # The flip side of one lock file: changing a dependency *anywhere* invalidates it
   # for everyone. That is the price of a workspace and it is the same price cargo
   # charges locally.
+  # `pname`/`version` are stated rather than discovered.  The workspace root is a
+  # *virtual* manifest — `[workspace]` with members, no `[package]`, so no name and
+  # no version to read — and crane, asked for neither, reads `src/Cargo.toml`, finds
+  # nothing, and warns on every single evaluation that it is using a placeholder
+  # value.  They are only labels for the dependency derivation, which is the same
+  # stubbed-deps tree for every member regardless of what any of them version
+  # themselves (the members are 0.1.0 except frigate-monitor at 0.2.0, and neither
+  # number reaches it).
   workspaceArtifacts = craneLib.buildDepsOnly {
+    pname = "crates-workspace";
+    version = "0.1.0";
     src = workspaceSrc;
     cargoLock = workspaceLock;
     doCheck = false;
