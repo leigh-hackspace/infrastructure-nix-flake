@@ -120,10 +120,31 @@ pub struct Outcome {
 /// session it owns the lock for.
 pub fn run(job: Job, device: &Device) -> Outcome {
     let mut out = Outcome::default();
+    // A pass that never reached the console still owes the queue an answer.
+    //
+    // `claim` has already marked these rows `applying` and spent an attempt, and
+    // `record` only writes the rows named in `applied`/`failed`. Returning with
+    // neither — which is what an early `return out` used to do — left every
+    // claimed change sitting `applying` with no error and no trace in the
+    // journal, invisible until `recover_stale` released them fifteen minutes
+    // later. On the page that is "I ticked a box, pressed Apply, the tick went
+    // away and nothing happened": the change is real, queued, and never sent.
+    //
+    // It is not a rare path: `switch3` takes 15-25 s to log in, so a connect
+    // failure is a Tuesday. And because `claim_batch` claims up to `BATCH` rows
+    // per pass, one dead console orphaned the whole batch at once.
+    let fail_all = |out: &mut Outcome, reason: String| {
+        out.failed = job
+            .writes
+            .iter()
+            .map(|(id, _)| (*id, reason.clone()))
+            .collect();
+        out.error = Some(reason);
+    };
     let mut guard = match device.cli.lock() {
         Ok(g) => g,
         Err(_) => {
-            out.error = Some("the console lock was poisoned".into());
+            fail_all(&mut out, "the console lock was poisoned".into());
             return out;
         }
     };
@@ -135,7 +156,7 @@ pub fn run(job: Job, device: &Device) -> Outcome {
         None => match Switch::connect(&job.cfg) {
             Ok(sw) => sw,
             Err(e) => {
-                out.error = Some(format!("connect: {e}"));
+                fail_all(&mut out, format!("connect: {e}"));
                 return out;
             }
         },
@@ -252,9 +273,19 @@ pub async fn claim_batch(
     let mut writes = Vec::new();
     let mut read = false;
     while writes.len() < BATCH {
-        let Some(change) = changes::claim(pool, name).await? else {
-            break;
+        // A claim that succeeded and a claim that failed on the *next* row are
+        // not the same thing: the rows already taken are `applying` and are this
+        // function's debt, so an error here fails them before it propagates.
+        // Returning Err with rows still claimed is how they ended up invisible.
+        let claimed = match changes::claim(pool, name).await {
+            Ok(change) => change,
+            Err(e) => {
+                let ids: Vec<i64> = writes.iter().map(|(id, _)| *id).collect();
+                fail_claimed(pool, &ids, &format!("claim: {e}")).await;
+                return Err(e);
+            }
         };
+        let Some(change) = claimed else { break };
         if change.kind == "refresh" {
             read = true;
             changes::applied(pool, change.id).await?;
@@ -263,6 +294,26 @@ pub async fn claim_batch(
         writes.push((change.id, change.commands));
     }
     Ok((writes, read))
+}
+
+/// Fail every claimed change with `reason`, for the paths that got as far as
+/// claiming and no further.
+///
+/// `retry_or_fail` is the right verb, not `failed`: a console that would not
+/// answer this pass may answer the next, and the row should be retried until
+/// `max_attempts` runs out rather than thrown away because one pass was
+/// unlucky. What must never happen is the row staying `applying`: nothing else
+/// in the program looks at a row in that state until [`recover_stale`] releases
+/// it a `STALE` later, and on the page that gap is a change that silently does
+/// nothing.
+pub async fn fail_claimed(pool: &sqlx::PgPool, claimed: &[i64], reason: &str) {
+    for id in claimed {
+        match changes::retry_or_fail(pool, *id, reason).await {
+            Ok(gave_up) if gave_up => eprintln!("switch-gui: change {id} gave up: {reason}"),
+            Err(e) => eprintln!("switch-gui: {e}"),
+            _ => {}
+        }
+    }
 }
 
 /// Whether the shadow copy needs re-reading.
@@ -362,15 +413,25 @@ pub async fn pass(pool: &sqlx::PgPool, device: &Arc<Device>, interval: Duration)
         return Ok(());
     }
 
+    // The ids, taken before the job moves: if the console task dies, `pass` is
+    // still the only thing that can answer the rows it claimed.
+    let claimed: Vec<i64> = writes.iter().map(|(id, _)| *id).collect();
     let job = Job {
         cfg: device.cfg.clone(),
         writes,
         read,
     };
     let device2 = device.clone();
-    let outcome = tokio::task::spawn_blocking(move || run(job, &device2))
-        .await
-        .map_err(|e| format!("console task: {e}"))?;
+    let outcome = match tokio::task::spawn_blocking(move || run(job, &device2)).await {
+        Ok(outcome) => outcome,
+        Err(e) => {
+            // The console task died — a panic, or a runtime shutting down under
+            // it. Either way nothing recorded these rows, and the pass that
+            // claimed them is the only thing that can say so.
+            fail_claimed(pool, &claimed, &format!("console task: {e}")).await;
+            return Err(format!("console task: {e}"));
+        }
+    };
     record(pool, &name, &address, outcome).await;
     Ok(())
 }
