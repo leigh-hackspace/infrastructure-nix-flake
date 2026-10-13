@@ -1,0 +1,8 @@
+{
+  "name": "switch-gui-tests",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "playwright": "1.59.1"
+  }
+}

@@ -324,8 +324,8 @@ fn run() -> R<()> {
             Arc::new(sync::Device {
                 cfg: switch::Config {
                     name: name.clone(),
-                    host: address.clone(),
-                    port: 23,
+                    host: switch_address(address).0,
+                    port: switch_address(address).1,
                     login: login.clone(),
                     password: password.clone(),
                     timeout: Duration::from_secs(20),
@@ -467,6 +467,39 @@ fn default_dsn() -> String {
 
 /// `switch1=10.3.1.2,switch2=10.3.1.3` into `(name, address)` pairs.
 ///
+/// Split a switch address into the host to dial and the TCP port to dial it on.
+///
+/// Port 23 is the only port a ProCurve console listens on, which is why this was
+/// once a constant — but a test that drives a real console session cannot bind a
+/// privileged port, and neither can a switch reached through a port forward.
+/// So an address may name one: `switch1=127.0.0.1:22323`.
+///
+/// The split is at the **last** colon, and only when what follows it is all
+/// digits, because an unbracketed IPv6 address is full of colons: `::1` is a
+/// host, `[::1]:2323` is a host and a port, and `fe80::1%eth0` is a host.
+fn switch_address(addr: &str) -> (String, u16) {
+    if let Some(rest) = addr.strip_prefix('[') {
+        // A bracketed host is taken whole; the port is whatever follows `]`.
+        if let Some((host, tail)) = rest.split_once(']') {
+            let port = tail.strip_prefix(':').and_then(|p| p.parse().ok());
+            return (host.to_string(), port.unwrap_or(23));
+        }
+        return (addr.to_string(), 23);
+    }
+    match addr.rsplit_once(':') {
+        Some((host, port))
+            if !host.is_empty()
+                && !port.is_empty()
+                && port.len() <= 5
+                && port.bytes().all(|b| b.is_ascii_digit())
+                && !host.contains(':') =>
+        {
+            (host.to_string(), port.parse().unwrap_or(23))
+        }
+        _ => (addr.to_string(), 23),
+    }
+}
+
 /// The name is what the URLs use (`/switch/switch2`), so it is checked for the
 /// characters that would make a path ambiguous, and duplicates are refused: two
 /// switches sharing a name would share one page, and the audit log would not say
@@ -649,6 +682,23 @@ mod tests {
             parse_switches("a/../b=1").is_err(),
             "a name that escapes a path"
         );
+    }
+
+    /// Port 23 is the default, and an address that only looks like it carries one
+    /// must not lose part of its host: an unbracketed IPv6 address is a host full
+    /// of colons, and `%eth0` is part of the address, not a port.
+    #[test]
+    fn a_switch_address_may_name_its_port() {
+        assert_eq!(switch_address("10.3.1.2"), ("10.3.1.2".into(), 23));
+        assert_eq!(switch_address("10.3.1.2:2323"), ("10.3.1.2".into(), 2323));
+        assert_eq!(switch_address("switch1.int"), ("switch1.int".into(), 23));
+        // Not ports: an IPv6 host, however it is spelled.
+        assert_eq!(switch_address("::1"), ("::1".into(), 23));
+        assert_eq!(switch_address("fe80::1%eth0"), ("fe80::1%eth0".into(), 23));
+        assert_eq!(switch_address("[::1]"), ("::1".into(), 23));
+        assert_eq!(switch_address("[::1]:22323"), ("::1".into(), 22323));
+        // A colon with no digits after it is not a port separator either.
+        assert_eq!(switch_address("host:"), ("host:".into(), 23));
     }
 
     /// The default DSN must carry no password: it is built from the local socket

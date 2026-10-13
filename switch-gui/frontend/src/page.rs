@@ -656,6 +656,14 @@ fn matrix(
                         rsx! {
                             tr {
                                 class: if dirty { "dirty" } else { "" },
+                                // The test hooks the headless suite selects on
+                                // (see `switch-gui/tests/README.md`), in the same
+                                // spirit as filestore's `data-fs-*`: a port is
+                                // identified by the switch's own id, and a VLAN
+                                // column by its id, so a test does not have to
+                                // count `td`s against a VLAN order that comes from
+                                // the device.
+                                "data-port": id.clone(),
                                 td { class: "n", b { "{id}" } }
                                 td { title: "{why}", "{dash(&port.name)}" }
                                 td {
@@ -697,6 +705,7 @@ fn matrix(
                                                         r#type: "checkbox",
                                                         checked: on,
                                                         disabled: locked,
+                                                        "data-vlan": vid.to_string(),
                                                         onchange: move |e| {
                                                             let on = e.checked();
                                                             let mut w = ed
@@ -724,6 +733,7 @@ fn matrix(
                                     if !locked {
                                         button {
                                             disabled: !dirty,
+                                            "data-apply": id_apply.clone(),
                                             onclick: move |_| {
                                                 let Some(w) = ed_apply.read().get(&id_apply).cloned() else {
                                                     return;

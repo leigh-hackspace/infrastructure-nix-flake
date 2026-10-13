@@ -334,6 +334,17 @@ filestore-test:
     set -euo pipefail
     nix develop --command bash -c 'exec filestore/tests/run.sh'
 
+# The switch-gui headless-browser suite: builds the SPA + binary, starts a fake
+# ProCurve console (a real Telnet server with an in-memory model), points the
+# service at it with --no-auth on a loopback bind and a scratch Postgres schema,
+# and drives the matrix with headless Chromium.  Nothing can reach a real switch:
+# the only address the service is given is 127.0.0.1.  Needs the local Postgres
+# cluster (see SG_TEST_DB_URL in switch-gui/tests/run.sh).
+switch-gui-test:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    nix develop --command bash -c 'exec switch-gui/tests/run.sh'
+
 # Install the shared age key (used to edit secrets) so sops-nix can
 # decrypt at runtime and build time on this machine. Run after a fresh
 # 'nixos-rebuild'. The nixbld group ownership is what lets nix builds

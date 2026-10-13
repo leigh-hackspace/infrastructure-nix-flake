@@ -1,0 +1,3 @@
+# Playwright is the only practical headless driver, and its Rust bindings
+# are not usable offline here (see tests/README.md).  Installed by run.sh.
+node_modules/
