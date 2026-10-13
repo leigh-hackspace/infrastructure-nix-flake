@@ -551,7 +551,22 @@ The short version, and the parts that are easy to get wrong:
   `system.autoRollback.enable = true` is set on **all three** machines
   (services1, services2 and aibox, via nixos-utils). The `auto-rollback.timer` rolls
   the machine back to the last confirmed-good generation if the current one
-  is not confirmed, and it acts within a minute or two of the switch. So:
+  is not confirmed. What it actually does, read off the unit script rather than guessed:
+  activating a configuration **restarts the timer**, which fires **once**, five minutes
+  later (`OnActiveSec=5 min`, `RemainAfterElapse=false`); on firing it compares
+  `readlink /run/current-system` with `/nix/var/nix/profiles/system-good` and, if they
+  differ, walls, sleeps 30 s, and **reboots the box into `system-good`**
+  (`switch-to-configuration boot` then `sync; echo b > /proc/sysrq-trigger`). So the
+  window is five minutes, not a minute — but it is still the same shell invocation, and
+  not only because a late confirm marks the *old* generation good: a rollback reboots
+  the machine out from under whatever the next tool call is doing. `nixos-confirm` is
+  what repoints `system-good`, and the state is readable without nix at all:
+
+  ```bash
+  readlink /run/current-system /nix/var/nix/profiles/system-good   # equal = confirmed
+  ```
+
+  So:
   1. Run `sudo nixos-confirm` **immediately** after `switch`/`boot`
      finishes — ideally in the **same shell invocation**
      (`... switch ... && sudo nixos-confirm`), on the machine that was
@@ -606,6 +621,26 @@ failed — the error is only useful if it is read as soon as it appears.
   running, read the log, and stop the moment it exits — not at the estimated duration.
   Polling also catches the failure modes a sleep hides: a build that dies immediately, a
   unit that exits 0 but did nothing, a remote builder that silently falls back to local.
+- **An aborted tool call does not stop what it started, and a nix client holds the
+  global store lock for its whole evaluation.** Seen 2026-10-14: a `nix eval` whose tool
+  call reported `Command aborted` went on running for minutes, holding
+  `/nix/var/nix/db/big-lock` (nix's exclusive NixDB lock). Every nix command after it
+  queued behind that lock and did *nothing* — no CPU, no output, no timeout — which is
+  indistinguishable from "this eval is just slow", and it read as several dead evals on
+  top of the one that was actually stuck. So: **after aborting a nix tool call, find the
+  survivor and kill it before issuing another nix command**; and when a nix command
+  hangs, look for the lock holder before believing it is evaluating. None of these run
+  nix, so they work while it is wedged:
+
+  ```bash
+  pgrep -a -f "nix eval|nix build"     # survivors of aborted calls — kill these
+  ps -o pid,stat,etimes -p <pid>       # D = blocked in I/O, not computing
+  sudo ls -l /proc/<pid>/fd | grep big-lock   # the holder is a nix-daemon child
+  ```
+
+  Killing the client takes the daemon's child, and the lock, with it. `nix eval --raw
+  --expr '"ok"'` returning instantly is the proof the store is free again. (The stuck
+  eval itself was my own doing — see the path-literal gotcha under "Nix commands".)
 
 ## Nix build users: `nixbld` is a target, not a grant
 
@@ -736,6 +771,28 @@ nix flake metadata           # locked inputs / rev
 
 - Untracked files are invisible to the flake — `git add` new/changed `.nix`
   files first (see Workflow).
+- **Never evaluate this repo through a path literal.** `import
+  /home/leigh-admin/Projects/infrastructure-nix-flake/common/crane.nix` resolves the
+  `../crates` inside it against the **real working tree**, and `lib.cleanSourceFilter`
+  drops only VCS directories and `~`/`.o`/`.so`/`result*` names — it does **not** read
+  `.gitignore` — so `cleanSourceWith { src = ../crates; }` copies `crates/target/`
+  (**3.1 GB** of cargo artifacts) into the store while holding the big lock above. The
+  flake path is unaffected: through `self` the same directory arrives already filtered to
+  git-tracked files (the store copy is 132K), which is why nothing in a deploy hints at
+  this and it only bites a throwaway `nix eval --file` that measures something. Read
+  values out of the flake instead — `nix flake check --no-build`, `nixos-rebuild
+  dry-build`, then `$SYS/etc/systemd/system/<unit>.service` — or, for a value with no
+  flake output, `nix eval --impure --expr` against `builtins.getFlake` (flake sources
+  are git-filtered; path literals are not).
+- **`nix flake check --no-build` is expected to be warning-free**, so a warning is a
+  finding rather than noise. The four classes that were live until 2026-10-14: crane
+  guessing `pname`/`version` from the workspace root (it is a *virtual* manifest — pass
+  both to `buildDepsOnly`, see `common/crane.nix`), the renamed `nix.trustedUsers`
+  (now `nix.settings.trusted-users`), and a unit `after` `network-online.target`
+  without `wants`/`requires` it. It still ends with
+  `error: path '...sops-secret-grafana_secret_key.drv' is not valid`, which predates
+  all of that and is not yours to chase — verify against clean HEAD (`git stash`) before
+  hunting any error you think your change caused.
 - `nix eval`/`nix build` on a bare path (e.g. `nix build nixpkgs#foo`)
   from the repo root will resolve against the repo flake, not nixpkgs; use
   `--file <(...)` with an explicit `import` for standalone nixpkgs lookups.
@@ -848,7 +905,24 @@ The grid is infinitely scrollable — there is **no "load more" button**; the
 
 ## Known follow-ups
 
-## Known follow-ups
+- **`crates/target/` is not excluded from `workspaceSrc` (open, one line)** —
+  `common/crane.nix` filters the four SPA directories out of `workspaceSrc` and nothing
+  else, and `lib.cleanSourceFilter` does not read `.gitignore`, so an evaluation that
+  reaches `crates/` as a **path literal** copies 3.1 GB of cargo artifacts into the store
+  while holding the nix big lock — which is what wedged the box on 2026-10-14 (see the
+  gotcha under "Nix commands (local dev)"). Harmless through the flake, since `self`
+  arrives git-filtered, so this is hardening rather than a fault: adding `target` to that
+  filter makes the mistake impossible to repeat.
+- **Evaluation warnings cleaned up (2026-10-14, deployed)** — `nix flake check
+  --no-build` is warning-free now. `buildDepsOnly` states `pname`/`version` instead of
+  letting crane guess them from the *virtual* workspace manifest (it warned about both on
+  every evaluation); `nix.trustedUsers` became `nix.settings.trusted-users`, which
+  renders the identical `nix.conf` (`trusted-users = root leigh-admin`, so remote
+  building is untouched); and `filestore.service` and `gocardless-dashboard.service`
+  gained the `wants = [ "network-online.target" ]` their `after` had always implied —
+  the house pattern every other net-dependent unit already had. Naming the dependency
+  derivation changes its name, so the first build after it recompiles the shared
+  workspace deps once; already paid (`crates-workspace-deps-0.1.0` is in the store).
 
 - **`crates/` + the cargo workspace, and the `--no-auth` loopback bug it fixed
   (2026-10-13)** — every Rust crate moved under `crates/` and the native ones
