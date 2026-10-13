@@ -584,6 +584,13 @@ fn port_table(
 /// The VLAN names are vertical because there are ten VLANs and fifty ports: a
 /// horizontal header needs roughly 90 px per column and the table stops fitting
 /// the screen, while a vertical one costs the width of a checkbox.
+///
+/// The form keeps one switch rule true as it is edited: **a port is never tagged
+/// in its own native VLAN**.  The column of the row's native VLAN is therefore not
+/// tickable, and moving the native VLAN off a ticked VLAN unticks it.  Both are
+/// things the switch enforces anyway (`commands::port_members` refuses the other
+/// state), but a form that offers an impossible row only trades a click for a
+/// refusal the operator has to go looking for.
 fn matrix(
     p: &dto::Page,
     edits: Signal<BTreeMap<String, RowEdit>>,
@@ -652,6 +659,9 @@ fn matrix(
                         let mut ed_apply = edits.clone();
                         let id_apply = id.clone();
                         let sw_apply = p.name.clone();
+                        // For putting the row back when the server refuses it.
+                        let ed_back = edits.clone();
+                        let id_back = id.clone();
                         let mut note = note;
                         rsx! {
                             tr {
@@ -672,6 +682,13 @@ fn matrix(
                                         onchange: move |e| {
                                             let v = e.value();
                                             let mut w = wanted_of(&ed_select, &row);
+                                            // A port has one native VLAN and can never be tagged
+                                            // in it, so moving the native takes that tick with it.
+                                            // The switch does the move in one go (`no vlan X tagged`
+                                            // then `vlan X untagged`, which is exactly the order
+                                            // `commands::port_members` emits); a row that asked for
+                                            // both halves at once would only be a refusal.
+                                            w.tagged.retain(|x| x.to_string() != v);
                                             w.native = v;
                                             ed_select.write().insert(id_select.clone(), w);
                                         },
@@ -695,16 +712,42 @@ fn matrix(
                                     {
                                         let vid = *vid;
                                         let on = wanted.tagged.contains(&vid);
+                                        // The row's own native VLAN is the one column this port can
+                                        // never join: `vlan 225 tagged 2` on a port that is
+                                        // *untagged* in 225 is a state the switch has no room for,
+                                        // and it refuses it.  Offered anyway, the tick looked legal,
+                                        // the Apply was refused, and the only answer was a banner at
+                                        // the top of a fifty-row page.  The server still checks it
+                                        // (`commands::port_members`); this is only so the page never
+                                        // asks for what it knows will be refused.
+                                        //
+                                        // A tick that is already there is never locked away: if a
+                                        // shadow copy ever does show a port tagged in its own native
+                                        // VLAN, taking it out has to stay possible.
+                                        let native_here = !on
+                                            && !native.is_empty()
+                                            && native == vid.to_string();
+                                        let hint = if native_here {
+                                            format!(
+                                                "VLAN {vid} is this port's untagged (native) VLAN — \
+                                                 a port cannot be tagged in the VLAN it is untagged \
+                                                 in.  Change Untagged first."
+                                            )
+                                        } else if on {
+                                            "tagged".to_string()
+                                        } else {
+                                            "not tagged".to_string()
+                                        };
                                         let mut ed = edits.clone();
                                         let pid = id.clone();
                                         let snap = snapshot.clone();
                                         rsx! {
                                             td { class: "ck",
-                                                label { title: if on { "tagged" } else { "not tagged" },
+                                                label { title: "{hint}",
                                                     input {
                                                         r#type: "checkbox",
                                                         checked: on,
-                                                        disabled: locked,
+                                                        disabled: locked || native_here,
                                                         "data-vlan": vid.to_string(),
                                                         onchange: move |e| {
                                                             let on = e.checked();
@@ -746,10 +789,24 @@ fn matrix(
                                                 );
                                                 // Drop the overlay before the reply: the queue
                                                 // row is the truth from here on, and the poll marks
-                                                // the port from it.
+                                                // the port from it.  It also disables Apply for the
+                                                // round trip, which is what stops a double-click
+                                                // queueing the same write twice.
                                                 ed_apply.write().remove(&id_apply);
+                                                let mut ed_back = ed_back.clone();
+                                                let id_back = id_back.clone();
                                                 spawn(async move {
                                                     let r = send(i).await;
+                                                    if !r.0 {
+                                                        // Refused, so nothing was queued and the
+                                                        // queue row is *not* the truth: the row goes
+                                                        // back exactly as the operator left it rather
+                                                        // than snapping to the switch and losing the
+                                                        // edit they now have to fix.  This is what
+                                                        // "the tick unset itself and nothing
+                                                        // happened" used to mean.
+                                                        ed_back.write().insert(id_back, w);
+                                                    }
                                                     note.set(Some(r));
                                                 });
                                             },

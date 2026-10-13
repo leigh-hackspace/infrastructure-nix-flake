@@ -199,7 +199,13 @@ Guidance for AI agents working in this repository. Read this before making chang
   trunk member **or** trunk group is locked — `dto::Port::membership_editable` is
   the one rule, and it checks `trunk_group` (set on members) *and* the id (the
   group's own row has no `trunk_group`), because the switch refuses the first and
-  this tool has never exercised the second.
+  this tool has never exercised the second. A third rule is kept true **by the
+  form** rather than only refused by the server: a port is never tagged in its own
+  native VLAN, so the column of the row's native VLAN is not tickable (a tick
+  already there can always be removed) and moving the native VLAN off a ticked
+  VLAN unticks it. `commands::port_members` still refuses the impossible state; the
+  form just never asks for it, because a refusal the operator cannot see looks
+  exactly like a dead button.
   **Nothing reads a switch while serving a request.** A background sync
   (`src/sync.rs`) re-reads each switch into a **shadow copy in Postgres** and drains
   a **queue** of wanted changes in the same database, which is also the audit trail
@@ -1040,6 +1046,20 @@ The grid is infinitely scrollable — there is **no "load more" button**; the
   filestore's `data-fs-*`. Also needed for the harness: a switch address may now name
   a port (`switch1=127.0.0.1:22323`, split at the last colon, IPv6-safe) because a
   test cannot bind port 23. 110 cargo tests + 10 browser tests pass.
+- **switch-gui: "I tick a VLAN, press Apply, the row resets and nothing is queued" —
+  reported live on switch1 port 2 (2026-10-13), and it was a correct refusal with no
+  visible answer.** Port 2 is *untagged* in 225, so tagging it in 225 is a state the
+  switch has no room for and `commands::port_members` refused it before queueing —
+  right, and unit-tested since the start. The page was the bug: it offered the native
+  VLAN's own checkbox as a legal tick, `Apply` dropped the row's overlay **before** the
+  reply (so the row snapped back to the switch whatever the answer was), the only
+  explanation was the banner at the top of a page with fifty port rows above the matrix,
+  and a refusal wrote nothing at all to the journal. Four fixes: the native column is
+  not tickable and moving the native VLAN off a ticked VLAN unticks it (the same rule,
+  from the other side); a refused intent puts the overlay back, so the edit survives its
+  own refusal; the banner is pinned (`position:sticky`) so the answer is read with the
+  row that caused it; and `POST /api/intent` logs refusals (`refusal_line`, one line,
+  control characters stripped because the intent was never validated).
 - **The RADIUS shared secret was printed into a session transcript on
   2026-10-12** (reading `show running-config` on the switch to root-cause the
   login noise; a masking filter that expected `key:` missed the actual

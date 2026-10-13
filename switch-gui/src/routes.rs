@@ -397,7 +397,14 @@ fn post_intent(shared: &Shared, req: &common_web::Request, user: &str) -> Reply 
 
     let planned = match shared.rt.block_on(intent::plan(&shared.pool, &intent)) {
         Ok(p) => p,
-        Err(e) => return json(&dto::Ack::refused(e)),
+        Err(e) => {
+            // A refused write used to leave no trace whatsoever: the operator read
+            // a banner (at the top of a long page, which they may not have looked
+            // at) and whoever debugged it an hour later read a journal with
+            // nothing in it.  Same sentence, plus who asked and for what.
+            eprintln!("switch-gui: {}", refusal_line(&intent, &e, user));
+            return json(&dto::Ack::refused(e));
+        }
     };
     // "already in that state" is not a failure of the request; the SPA shows it
     // as a note rather than an error, and `ok: true` is what says so.  The `Err`
@@ -451,6 +458,40 @@ fn post_intent(shared: &Shared, req: &common_web::Request, user: &str) -> Reply 
 }
 
 /// The journal's rendering of an operator's note: set off, or nothing at all.
+/// The journal line for an intent that [`crate::intent::plan`] refused.
+///
+/// A refusal is the one write-path outcome that used to be silent, and it is the
+/// one an operator is most likely to describe as "nothing happened".
+///
+/// `plan` failed, so its arguments were never validated: everything quoted here
+/// is still whatever the browser sent.  Each field is therefore flattened to a
+/// single line — a newline in a port name would otherwise forge a journal entry —
+/// and cut short, because a journal line is not where a 4 kB payload belongs.
+/// The refusal itself is the sentence the operator is being shown, so it keeps
+/// its length.
+fn refusal_line(intent: &dto::Intent, why: &str, user: &str) -> String {
+    fn flat(s: &str) -> String {
+        s.chars()
+            .filter(|c| !c.is_control())
+            .take(64)
+            .collect::<String>()
+            .trim()
+            .to_string()
+    }
+    let mut line = format!(
+        "refused {} for {} — {why} (by {user})",
+        flat(&intent.kind),
+        flat(&intent.switch_name),
+    );
+    if let Some(p) = intent.port.as_deref() {
+        line = format!("{line}, port {}", flat(p));
+    }
+    if let Some(v) = intent.vlan {
+        line = format!("{line}, vlan {v}");
+    }
+    line
+}
+
 fn note_note(note: &str) -> String {
     let note = note.trim();
     if note.is_empty() {
@@ -602,4 +643,42 @@ fn json<T: serde::Serialize>(value: &T) -> Reply {
 /// bare "server error" to whoever reads the journal five minutes later.
 fn server_error(e: &str) -> Reply {
     Reply::json(500, &serde_json::json!({"error": e}).to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The refusal line is the only record a refused write leaves, and the intent
+    /// it describes has not been validated: it must stay one line and one screen.
+    #[test]
+    fn refusal_lines_name_the_request_and_cannot_be_forged() {
+        let i = dto::Intent {
+            switch_name: "switch1".into(),
+            kind: "port-members".into(),
+            port: Some("2".into()),
+            ..Default::default()
+        };
+        let line = refusal_line(&i, "VLAN 225 cannot be both the untagged VLAN and a tagged VLAN of port 2", "cjdell");
+        assert!(line.starts_with("refused port-members for switch1 — "), "{line}");
+        assert!(line.contains("by cjdell"), "{line}");
+        assert!(line.contains("port 2"), "{line}");
+        assert_eq!(line.lines().count(), 1);
+
+        // A port name carrying a newline must not add a second journal entry.
+        let sneaky = dto::Intent {
+            port: Some("2\nOct 13 00:00:00 services1 switch-gui[1]: queued everything".into()),
+            ..i.clone()
+        };
+        let line = refusal_line(&sneaky, "no", "cjdell");
+        assert_eq!(line.lines().count(), 1, "{line}");
+        assert!(!line.contains("queued everything\n"), "{line}");
+
+        // A VLAN intent says which VLAN.
+        let v = dto::Intent {
+            vlan: Some(225),
+            ..i
+        };
+        assert!(refusal_line(&v, "no", "cjdell").contains("vlan 225"));
+    }
 }

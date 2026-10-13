@@ -160,7 +160,14 @@ const row = (id) => page.locator(`tr[data-port=${JSON.stringify(id)}]`);
 const box = (id, vlan) => row(id).locator(`input[data-vlan="${vlan}"]`);
 const applyButton = (id) => row(id).locator(`button[data-apply="${id}"]`);
 const nativeSelect = (id) => row(id).locator('select');
-const noteText = () => page.locator('.note').first().innerText();
+// The banner, not the first `.note`: the page also carries the read's own
+// warnings, and those are `.note.err` before anything has been clicked — which is
+// how "wait for the error note" became a test that passed on the old page.
+// Empty rather than a throw when no action has answered yet, so a test can poll it.
+const noteText = async () => {
+  const n = page.locator('.note.banner');
+  return (await n.count()) > 0 ? await n.innerText() : '';
+};
 
 /** The page for one switch, reloaded, with the matrix present. */
 async function open() {
@@ -298,6 +305,117 @@ test('write: the untagged dropdown changes the native VLAN', async () => {
     (await devicePort(SAFE_2)).untagged === ADD ? true : null);
   await open();
   assert.equal(await nativeSelect(SAFE_2).inputValue(), String(ADD));
+});
+
+test('lock: a port is never offered its own native VLAN as a tagged membership', async () => {
+  // A port cannot be tagged in the VLAN it is untagged in — the switch has no
+  // room for it and `commands::port_members` refuses it.  Offered anyway, the
+  // tick looked legal, Apply was refused, and the only answer was a banner at the
+  // top of a page with fifty rows above the matrix, which is how a correct
+  // refusal reached an operator as "the checkboxes reset and nothing happened".
+  await open();
+  assert.ok(
+    await box(SAFE, NATIVE).isDisabled(),
+    'the row offered its own native VLAN as a tagged membership',
+  );
+  assert.equal(await box(SAFE, NATIVE).isChecked(), false);
+  // The reason is in the cell's `title`, like every other lock on this page.
+  assert.match(
+    await box(SAFE, NATIVE).locator('xpath=..').getAttribute('title'),
+    /untagged \(native\) VLAN/,
+  );
+  // Only that one column: an ordinary membership is still editable.
+  assert.ok(await box('1', ADD).isEnabled(), 'a real tagged membership was locked too');
+  // Moving the native VLAN moves the locked column with it, because the rule is
+  // about the row being edited and not about the switch it was read from.
+  await nativeSelect(SAFE).selectOption(String(ADD));
+  assert.ok(await box(SAFE, NATIVE).isEnabled(), 'the old native VLAN stayed locked');
+  assert.ok(
+    await box(SAFE, ADD).isDisabled(),
+    'the new native VLAN is offered as a tagged membership',
+  );
+  // Back where it started, and nothing was written: this test touches no switch.
+  await nativeSelect(SAFE).selectOption(String(NATIVE));
+  assert.ok(await box(SAFE, NATIVE).isDisabled());
+  assert.equal(await applyButton(SAFE).isEnabled(), false, 'the row was left marked as changed');
+});
+
+test('write: making a ticked VLAN the native VLAN takes the tick with it', async () => {
+  // The same rule, from the other side: ticking 228 and then picking 228 as the
+  // native VLAN means "make this an access port on 228", which the switch does
+  // quite happily (`no vlan 228 tagged` then `vlan 228 untagged`, which is the
+  // order `commands::port_members` emits).  Sending both halves in one row would
+  // only be a refusal, so the tick goes with the dropdown.
+  await open();
+  // The audit log keeps applied rows, so "the newest change" is only *this*
+  // test's change if it is newer than the one already there.
+  const seen = (await latestChange())?.id ?? 0;
+  const b = box(SAFE, ADD);
+  await b.click();
+  assert.ok(await b.isChecked(), 'the tick never appeared');
+  await nativeSelect(SAFE).selectOption(String(ADD));
+  assert.equal(await box(SAFE, ADD).isChecked(), false, 'the row asked for both halves at once');
+  assert.ok(await applyButton(SAFE).isEnabled(), 'the row stopped being an edit');
+  await applyButton(SAFE).click();
+  const change = await until('the change never made it through the queue', async () => {
+    const c = await latestChange();
+    return c && c.id > seen && c.status === 'applied' && c.ports.includes(SAFE) ? c : null;
+  });
+  const cmds = change.commands.flat();
+  assert.ok(!cmds.includes(`vlan ${ADD} tagged ${SAFE}`), `asked for both: ${cmds}`);
+  assert.ok(cmds.includes(`vlan ${ADD} untagged ${SAFE}`), JSON.stringify(cmds));
+  const p = await until('the device never changed its native VLAN', async () => {
+    const d = await devicePort(SAFE);
+    return d.untagged === ADD ? d : null;
+  });
+  assert.ok(!p.tagged.includes(ADD), 'the device holds both halves');
+});
+
+test('refused: the row keeps the edit that was refused', async () => {
+  // The other half of "the tick unset itself and nothing happened".  Apply dropped
+  // the row's overlay before the reply — right, because a queued row is the truth
+  // from then on, and it is also what stops a double-click queueing twice — but a
+  // *refusal* queues nothing, so the row snapped back to the switch and the
+  // operator lost the edit they were being told to fix.
+  //
+  // The refusal is faked at the HTTP boundary on purpose: with the native VLAN's
+  // column no longer tickable, the page cannot be made to ask for the impossible,
+  // and what is under test is the page's behaviour on `ok: false`.
+  await open();
+  await page.route('**/api/intent', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ ok: false, error: 'REFUSED-BY-TEST: cannot be both' }),
+    }),
+  );
+  try {
+    const b = box(SAFE, ADD);
+    await b.click();
+    assert.ok(await b.isChecked(), 'the tick never appeared');
+    await applyButton(SAFE).click();
+    // Not `.note.err`: the fake switch answers every read with the RADIUS warning,
+    // so an error note is already on this page before the click happens.  The
+    // banner is the one that carries the answer.
+    await until('the refusal never reached the banner', async () =>
+      /REFUSED-BY-TEST/.test(await noteText()));
+    // The edit survives the refusal, and so does the button to fix it.
+    assert.ok(await box(SAFE, ADD).isChecked(), 'the refused tick was thrown away');
+    assert.ok(await applyButton(SAFE).isEnabled(), 'Apply went away with the edit');
+    // And nothing was queued: a refusal is a refusal.
+    const c = await latestChange();
+    assert.ok(
+      !c || (c.status !== 'pending' && c.status !== 'applying'),
+      'a refused write was queued anyway',
+    );
+    // The banner is pinned, so the answer is on screen with the row that caused
+    // it: at the bottom of the matrix, it used to be a screen away.
+    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+    const bb = await page.locator('.note.banner').boundingBox();
+    assert.ok(bb && bb.y >= 0 && bb.y < 120, `the banner scrolled away: ${JSON.stringify(bb)}`);
+  } finally {
+    await page.unroute('**/api/intent');
+  }
 });
 
 test('lock: a trunk member and a trunk group cannot be edited', async () => {

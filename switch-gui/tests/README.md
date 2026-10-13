@@ -91,6 +91,17 @@ device, so a column index is a fact about a switch, not about the page.
 * **A claim that never returned what it claimed.** `UPDATE … ` with no
   `RETURNING` answers with a command tag and no row, so `fetch_optional` yielded
   `None`, `claim` reported "nothing queued", and the queue silently did nothing.
+* **A refusal that looked like a dead button.** Ticking a port's own native VLAN
+  asks for a state the switch has no room for — a port is not tagged in the VLAN it
+  is untagged in — and `commands::port_members` refused it, correctly, into a banner
+  at the top of a page with fifty port rows above the matrix. `Apply` also dropped
+  the row's overlay *before* the reply, so the row snapped back to the switch
+  whatever the answer was, and a refusal wrote nothing to the journal either: the
+  report was "the checkboxes reset and nothing happened" with no trace anywhere.
+  The page now keeps that rule as it edits (the native VLAN's column is not
+  tickable, and moving the native VLAN off a ticked VLAN unticks it), a refused
+  intent puts the overlay back so the edit survives its own refusal, the banner is
+  pinned, and `POST /api/intent` logs its refusals.
 * **A fixture that lied.** `padEnd(8)` on the eight-character string `Untagged`
   glued it to `Learn`; `members()` reads a row that is not four fields as the
   *end of the table*, so every untagged membership vanished and the page showed
@@ -105,3 +116,17 @@ device, then on the page. `open()` reloads (which is also how a test gets the
 shadow copy's latest read into the DOM); `waitShadow()` waits until the shadow
 copy agrees with the device port for port, which is what a page assertion
 actually depends on.
+
+Two traps the suite has already eaten:
+
+* **`latestChange()` includes applied rows** — `clearQueue()` only forgets what is
+  still open. A test that waits for "the newest change is applied" passes on the
+  previous test's row, so read the id first and wait for one newer (and check
+  `ports` names the port the test is about).
+* **An error note is on the page before anything is clicked** — the fake switch
+  answers every read with the RADIUS warning, which renders as `.note.err`. The
+  answer to a click is in the banner (`.note.banner`, `noteText()`).
+* When the page can no longer be made to ask for the impossible, fake the refusal
+  at the HTTP boundary: `page.route('**/api/intent', r => r.fulfill({ body:
+  JSON.stringify({ ok: false, error: '…' }) }))`. That is what the
+  "the row keeps the edit that was refused" test does.

@@ -38,6 +38,13 @@ padding:9px 12px;margin:0 0 14px}
 .note.err{border-left-color:var(--err)}
 .note.info{border-left-color:var(--accent)}
 .note code{color:var(--fg);background:#0e1013;padding:1px 5px;border-radius:4px;font-size:12px}
+/* The banner is the only answer an action gets, and the thing it answers is often
+   a long way down the page — the membership matrix sits under fifty port rows.  If
+   it is not on screen when the click happens, "refused" reads as "nothing
+   happened", which is how a correct refusal became a bug report.  Pinned, it is
+   read with the row it is about. */
+.note.banner{position:sticky;top:0;z-index:10;background:var(--panel);
+box-shadow:0 2px 0 var(--bg)}
 button{background:#22262e;color:var(--fg);border:1px solid var(--line);border-radius:6px;
 padding:4px 10px;font:inherit;font-size:12px;cursor:pointer}
 button:hover{border-color:var(--accent)}

@@ -233,7 +233,11 @@ fn Note(note: Signal<Option<(bool, String)>>) -> Element {
         None => rsx! {},
         Some((ok, text)) => rsx! {
             div {
-                class: if ok { "note ok" } else { "note err" },
+                // `banner` pins it: this is the only place an action's answer
+                // appears, and the matrix it answers is at the bottom of a long
+                // page.  Double-click still clears it, which is how an operator
+                // gets the pinned line out of the way once they have read it.
+                class: if ok { "note banner ok" } else { "note banner err" },
                 ondoubleclick: move |_| note.set(None),
                 "{text}"
             }
