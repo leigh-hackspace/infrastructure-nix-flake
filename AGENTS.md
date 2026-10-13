@@ -500,7 +500,9 @@ The short version, and the parts that are easy to get wrong:
   and `alejandra --check` over every tracked `.nix`) and, when anything is built rather
   than just evaluated, `just check-build` (`nixos-rebuild dry-build` for all three
   machines — it compiles everything and activates nothing). `just test` runs the cargo
-  tests, `just clippy` the lints, `just filestore-test` the browser suite, and
+  tests, `just clippy` the lints, `just filestore-test` and `just switch-gui-test` the
+  headless-browser suites (the latter drives a fake ProCurve console — see
+  `switch-gui/tests/README.md`), and
   `just build-remote` offloads a build to services2 (see `common/build-farm.nix`).
 - **GOLDEN RULE — confirm immediately after every switch/boot:**
   `system.autoRollback.enable = true` is set on **all three** machines
@@ -920,9 +922,9 @@ The grid is infinitely scrollable — there is **no "load more" button**; the
      and the port names vanished (switch1: 4 named ports instead of 26) — restored, with
      `enable_defaults_to_the_login_account`. That default has now been lost **twice**,
      which is why `main::enable_creds` records that it is deliberately *not* gated on
-     `--read-only`: the read needs Manager too. **Still not verified: the SPA in a
-     browser (nobody has signed in to it yet), and the sync's first write through the
-     queue.**
+     `--read-only`: the read needs Manager too. Both of those "not verified"s are
+     now verified, and both turned out to be broken — see
+     "switch-gui: three queue/shadow-copy bugs, and a browser suite to keep them fixed".
 - **switch-gui: deployed, and serving all three switches** — the code, the
   service and the secret are all in place (`systemd.services.switch-gui` is live
   on services1, 100 unit tests pass, and it has been run read-only against the
@@ -969,12 +971,55 @@ The grid is infinitely scrollable — there is **no "load more" button**; the
   resend**, because resending an applied config command applies it twice);
   `leave_config` exits until the prompt stops naming a context. Proven end to end
   through the HTTP API on a dead port: 0.8 s, `applied:`, written once, reverted.
+  (**That proof did not exercise the queue** — it drove the console directly, which
+  is why it passed while the queue swallowed every change for a day. The console
+  half really was fixed; the claim half was not, see below.)
   `--read-only` is still in `main.rs` as the escape hatch. Still unverified: the
   VLAN-management commands (create/rename/delete, the per-VLAN `tagged`
   endpoint). Nothing in the app writes NVRAM, so a change lives in RAM until
   someone runs `write`; keep it that way unless asked (`write` is this firmware's
   command — `wr mem`/`write memory` is the other firmware's spelling, and
   `write ?` is already `Invalid input` here).
+- **switch-gui: three queue/shadow-copy bugs, and a browser suite to keep them fixed
+  (2026-10-13, all three deployed)** — the symptom was "I tick a VLAN, press Apply,
+  the tick unsets itself and nothing happens". Three separate faults, each invisible
+  from the layer above:
+  1. **`port.tagged` was written as JSON strings and read as numbers.**
+     `store_snapshot` reused `jsonb_array` (`["225"]`) while `number_list` parsed a
+     `Vec<i64>` and fell back to empty, so **every tagged membership on every switch
+     vanished from the page** while sitting correct in the database — and
+     `commands::port_members`, which diffs against the shadow copy, could not see a
+     membership to remove (unticking a VLAN queued nothing). `jsonb_int_array` now
+     writes numbers, which is also what `vlan_membership`'s `tagged @> '[225]'::jsonb`
+     containment needs (jsonb containment is exact about element type, so the
+     "VLAN in use" delete guard never matched either). `number_list` tolerates both
+     shapes; the column rewrites itself from the switch on every sync.
+  2. **`claim()` had no `RETURNING`.** An `UPDATE` without it answers with a command
+     tag and **no row**, so `fetch_optional` yielded `None`, `claim` returned "nothing
+     queued", and the queue silently applied nothing — the row left `applying` with
+     its attempt spent (observed live: `attempt` 277 of `max_attempts` 5, no error,
+     no journal line). Its predicate also matched `applying`, so the row it had just
+     claimed was claimable again on the next tick. `claim_sql()` is now a function the
+     test asserts on (the old test rebuilt the query by hand and was missing the same
+     `RETURNING`), it returns `RETURNING id`, and it takes only `pending`.
+  3. **A pass that claimed changes and never reached the console recorded nothing.**
+     `sync::run` returned early on a poisoned console lock or a failed connect,
+     naming neither `applied` nor `failed`, and `record` only writes the rows it is
+     named — so claimed changes sat `applying`, invisible, until `recover_stale`
+     released them 15 min later. With `BATCH > 1` one dead console orphaned a whole
+     batch, and `switch3`'s 15-25 s login makes a failed connect routine. Every
+     no-console path now fails the batch (`run`'s `fail_all`, `claim_batch` on a
+     mid-loop claim error, `pass` if the console task dies).
+  What makes this testable is **`just switch-gui-test`** (`switch-gui/tests/`, see its
+  README): a fake ProCurve console — a real Telnet server with an in-memory model, so
+  the console protocol is exercised rather than stubbed — plus headless Chromium on
+  `--no-auth`/loopback and a scratch Postgres schema per run. Each test asserts on the
+  **device's** state, not just the page's, and `assertNothingStuck()` is a
+  post-condition of every test. The page carries test hooks for it
+  (`tr[data-port]`, `input[data-vlan]`, `button[data-apply]`), in the same spirit as
+  filestore's `data-fs-*`. Also needed for the harness: a switch address may now name
+  a port (`switch1=127.0.0.1:22323`, split at the last colon, IPv6-safe) because a
+  test cannot bind port 23. 110 cargo tests + 10 browser tests pass.
 - **The RADIUS shared secret was printed into a session transcript on
   2026-10-12** (reading `show running-config` on the switch to root-cause the
   login noise; a masking filter that expected `key:` missed the actual
