@@ -28,6 +28,7 @@ Every address is in `common/hosts.nix`.
 | switch-gui | `crates/switch-gui/` | 127.0.0.1:8097 | `crates/switch-gui/README.md` |
 | status-dashboard | `crates/status-dashboard/` | both boxes | `common/status-dashboard.nix` |
 | moonraker-exporter | `crates/moonraker-exporter/` | metrics | `docs/printer-servers.md` |
+| strata | `machines/*/strata.nix` | aibox:8080, services2:8080 | `machines/aibox/STRATA.md`, `machines/services2/STRATA.md` |
 
 ---
 
@@ -256,6 +257,26 @@ what was wrong with it, and "Can't reach RADIUS server". The device-level facts
 and the RADIUS root cause are in `docs/procurve-switches.md`; the browser suite
 (`just switch-gui-test`, a real fake-console Telnet server) is
 `crates/switch-gui/tests/README.md`.
+
+## `machines/*/strata.nix` + `strata-package.nix` — the two Strata engines
+
+Strata (`github.com/Niko1221/Strata`) is not a crate and not llama.cpp: it is its
+own ggml-based engine for Qwen3.8-Flash-Next, run as `strata.service` on two
+boxes. It is not in the monorepo because it is an upstream program packaged per
+machine, and the two builds differ only in backend:
+
+| box | model | backend | source | detail |
+| --- | --- | --- | --- | --- |
+| aibox | full 125B, IQ2_XS | **HIP/gfx1030** (Radeon iGPU) | `.#strata` | `machines/aibox/STRATA.md` |
+| services2 | **Coder** IQ1_M | **CUDA/sm_86** (RTX 3060) | `.#strata-cuda` | `machines/services2/STRATA.md` |
+
+Both take their upstream source from the flake's **`strata` input, tracked on
+`main`** (`nix flake update strata`); each `strata-package.nix` pins the vendored
+llama.cpp revision from `setup.py`'s `LLAMA_CPP_COMMIT`. Model data (GGUF, pack,
+MTP runtime) is deliberately outside the store and prepared once by hand — the
+units have `ConditionPathExists` on the pack index so they never crash-loop
+before that. **Read the box's `STRATA.md` before changing engine flags**: the
+knobs were measured on different hardware and do not transfer.
 
 ## `crates/status-dashboard/` and `crates/moonraker-exporter/`
 

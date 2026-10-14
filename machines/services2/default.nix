@@ -10,14 +10,18 @@ flakeInputs: {
     ./sops.nix
 
     # What this box actually runs: the observability stack (gatus + Prometheus +
-    # Grafana) and its own status dashboard.  See ./README.md for why monitoring
-    # lives here rather than on services1.
+    # Grafana), its own status dashboard, and (since the RTX 3060 arrived) a
+    # Strata instance.  See ./README.md for why monitoring lives here rather than
+    # on services1 and machines/services2/STRATA.md for the engine.
     ./gatus.nix
     ./monitoring.nix
     ./status.nix
+    ./strata.nix
 
     ./configuration.nix
     ./hardware-configuration.nix
+    # NVIDIA driver for the RTX 3060 that runs Strata's CUDA engine.
+    ./nvidia.nix
     ./networking.nix
 
     # Metrics exporters — the per-box half of monitoring.  This box is measured by
@@ -26,4 +30,8 @@ flakeInputs: {
 
     flakeInputs.sops-nix.nixosModules.sops
   ];
+
+  # The Qwen3.8-Flash-Next Coder engine on the RTX 3060; see ./strata.nix for
+  # the one-time model prep and the memory sizing.
+  services.strata.enable = true;
 }

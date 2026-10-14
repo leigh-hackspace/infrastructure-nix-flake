@@ -34,6 +34,19 @@
       url = "github:Mic92/sops-nix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+
+    # Strata (https://github.com/Niko1221/Strata), the ggml-based engine that
+    # serves Qwen3.8-Flash-Next across GPU VRAM, RAM and the CPU.  Tracked on
+    # `main` on purpose: it is the bleeding-edge tree, and services2's CUDA engine
+    # (machines/services2/strata-package.nix) builds from it.  Upstream's own
+    # flake only provides a devShell, so the engine is still packaged by hand;
+    # this input is the source.  aibox's older HIP package still pins its own
+    # fetchFromGitHub, so `nix flake update strata` moves only the CUDA engine.
+    # `inputs.nixpkgs.follows` keeps the eval on one nixpkgs.
+    strata = {
+      url = "github:Niko1221/Strata";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs = {
@@ -95,6 +108,10 @@
           inherit system;
           config = {
             allowUnfree = true;
+            # The RTX 3060 runs Strata's CUDA engine; this makes the splayed
+            # cudaPackages_13_0 the toolkit the box builds against (and pulls
+            # the CUDA stdenv in without a per-package override everywhere).
+            cudaSupport = true;
           };
         };
         specialArgs = flakeInputs // extraArgs;
@@ -166,13 +183,29 @@
     # machines/aibox/strata.nix installs as a service. That file documents the
     # hand-run model download/pack/MTP steps this package deliberately keeps
     # out of the store.
-    packages.${system}.strata = let
+    #
+    # `nix build .#strata-cuda` - the same engine built for services2's RTX
+    # 3060 (CUDA 13.0 / sm_86), from the bleeding-edge `strata` flake input.
+    packages.${system} = let
       pkgs = import nixpkgs {
         inherit system;
         config = {allowUnfree = true;};
       };
-    in
-      pkgs.callPackage ./machines/aibox/strata-package.nix {};
+      pkgsCuda = import nixpkgs {
+        inherit system;
+        config = {
+          allowUnfree = true;
+          cudaSupport = true;
+        };
+      };
+    in {
+      strata = pkgs.callPackage ./machines/aibox/strata-package.nix {};
+      strata-cuda = pkgsCuda.callPackage ./machines/services2/strata-package.nix {
+        src = flakeInputs.strata.outPath;
+        stdenv = pkgsCuda.cudaPackages_13_0.backendStdenv;
+        cudaPackages = pkgsCuda.cudaPackages_13_0;
+      };
+    };
 
     # `nix develop`
     #

@@ -1,18 +1,23 @@
 # services2.int.leighhack.org
 
 Second services box (10.3.1.21), a clone of services1 on different hardware:
-AMD Ryzen 7 5700G (Cezanne Radeon iGPU), Intel I211 NIC, 250 GB Kingston NVMe,
-16 GB RAM. Installed 2026-10-10, replacing the Windows install that shipped on
-the NVMe.
+AMD Ryzen 7 5700G (Cezanne Radeon iGPU), NVIDIA RTX 3060 (12 GB, GA106) for
+compute, Intel I211 NIC, 250 GB Kingston NVMe, 30 GiB RAM. Installed 2026-10-10,
+replacing the Windows install that shipped on the NVMe; the RTX 3060 arrived
+2026-10-14 and runs Strata (see below).
 
 ## What it runs
 
-The observability stack, and its own status dashboard:
+The observability stack, its own status dashboard, and a Strata instance:
 
 - `./gatus.nix` — the endpoint checks and the Slack alerting.
 - `./monitoring.nix` — Prometheus (9091) + Grafana (3000) and the alert rules.
 - `./status.nix` — services2's own dashboard, proxied by services1 as
   `services2-status.int.leighhack.org`.
+- `./strata.nix` + `./strata-package.nix` — the Qwen3.8-Flash-Next **Coder**
+  engine on the RTX 3060 (`http://10.3.1.21:8080/v1`), the box's second Strata
+  instance after aibox's. `./nvidia.nix` is the driver for that card. The
+  memory sizing and the one-time model prep are in `./STRATA.md`.
 - `common/exporters.nix` — the per-box exporters, so this box is measured too.
 
 Monitoring lives here rather than on services1 for one reason: **the box that
