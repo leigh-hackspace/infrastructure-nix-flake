@@ -22,7 +22,7 @@ systemd-analyze blame | head  # host boot: ~44 s, of which pve-guests ~8 s on NF
    show it online. NAS = `nas2` (10.3.1.6). `leigh-admin@10.3.1.6` is keyed
    with the machine-hop-key and has **passwordless sudo** (since 2026-10-13, as the
    middleware user record `sudo_commands_nopasswd`, not a hand edit — see the NAS
-   entry in AGENTS.md), so `zpool status` and SMART work from the shell. Its shell is
+   entry in docs/nas-and-borg.md), so `zpool status` and SMART work from the shell. Its shell is
    zsh: never `echo ===` (zsh reads `===` as command expansion).
 2. **Clear HA error state — disable, *wait*, then start.** Doing both back to
    back in one loop races: the start is rejected with `service 'vm:127' in

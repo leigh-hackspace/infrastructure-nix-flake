@@ -7,8 +7,8 @@ open the page.
 ## 1. The pinned dioxus version decides the whole API
 
 `frontend/Cargo.toml` pins **dioxus 0.7.10** (and `wasm-bindgen 0.2.128`, which
-must match `wasm-bindgen-cli` exactly — see the wasm-bindgen gotcha in the main
-AGENTS.md). Code written against the 0.6 API does not compile, and the
+must match `wasm-bindgen-cli` exactly — see the wasm-bindgen pin in
+`docs/building-rust-code.md`). Code written against the 0.6 API does not compile, and the
 differences are not deprecations, they are removals:
 
 - `use_signal` / `use_future` / `use_effect` take `FnOnce` / `FnMut`, not `Fn`.

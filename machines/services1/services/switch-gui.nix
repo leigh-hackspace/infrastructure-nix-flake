@@ -97,7 +97,7 @@
   # A full read is six-plus Telnet round-trips against a 1990s CPU that pages its
   # own output — and on switch3 every table pages, so a read is nearer a second
   # than a tenth.  It is also a **login**, and the switch tries RADIUS first
-  # (authentik refuses `agent` today — see the RADIUS entry in AGENTS.md — and the
+  # (authentik refuses `agent` today — see docs/procurve-switches.md — and the
   # switch falls back to its local database), so every read logs two `login_failed`
   # events in authentik.  That is the reason this is 60s rather than the binary's
   # 30s default; when the RADIUS password is fixed, dropping it back is fine.
@@ -194,7 +194,7 @@ in {
       # needs to open the secret file — which is why it can be an unprivileged
       # dynamic user rather than root (the pattern filestore/gocardless avoid by
       # reading CONFIG.ENV_FILE themselves; a LAN-facing web app should not run
-      # as a privileged account, see the network-status follow-up in AGENTS.md).
+      # as a privileged account, see the network-status follow-up in docs/follow-ups.md).
       #
       # The database needs no credential either: `/run/postgresql` is world-executable
       # and `local all all trust`, so a DynamicUser connects as the `switch_gui`

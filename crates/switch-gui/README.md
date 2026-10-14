@@ -118,14 +118,21 @@ SWITCH_GUI_LOGIN=agent SWITCH_GUI_PASSWORD='…' \
   ./target/release/switch-gui --bind 127.0.0.1:8097 --dev-user you
 ```
 
-The DSN defaults to `postgresql://switch_gui@/switch_gui?host=/run/postgresql`, so
-a local Postgres answering on the socket is all it takes; `--db-url` (or
-`SWITCH_GUI_DB_URL`) overrides it. `--interval <secs>` is how often the sync
-re-reads each switch (default 30).
+The DSN defaults to `postgresql://switch_gui@%2Frun%2Fpostgresql/switch_gui` — the
+socket path percent-encoded **as the host**, which is sqlx's convention and not
+libpq's: the psql-style `postgresql://u@/db?host=/run/postgresql` parses to an empty
+host and sqlx refuses it with `error with configuration: empty host`. That form was
+the shipped default once and the unit could not start at all, so
+`the_default_dsn_is_one_sqlx_can_parse` asserts both halves. A local Postgres
+answering on the socket is all it takes; `--db-url` (or `SWITCH_GUI_DB_URL`) overrides
+it. `--interval <secs>` is how often the sync re-reads each switch (default 30).
 
 `--dev-user`/`--no-auth` skip sign-in and are **refused on a non-loopback bind**
 (the same rule filestore's `--no-auth` follows). With no OIDC client configured
-and a loopback bind, `--dev-user` alone is enough.
+and a loopback bind, `--dev-user` alone is enough. Under `--no-auth` the audit
+actor reads `local`; the flag used to be parsed and validated but never reached
+`Shared::no_auth`, so every request got the "sign-in is not configured" 401 while the
+page looked merely unsigned-in.
 
 The switches come from `SWITCH_GUI_SWITCHES` (a comma list of `name=address`), so a
 local run against one device is `SWITCH_GUI_SWITCHES=switch3=10.3.1.4`. A fresh
@@ -134,6 +141,10 @@ forces one.
 
 The SPA: `just build-frontend switch-gui` (or `cd frontend && nix develop --command
 ./build.sh`), which writes `frontend/dist/` (git-ignored) for `build.rs` to embed.
+`build.rs` embeds the bundle, so the page's assets are served by the binary at
+`/assets/switch_gui_web.js` and `/assets/switch_gui_web_bg.wasm`; `asset()` answers
+`no such asset` for any name the bundle does not contain, so a 404 there means the
+embedded names moved (a renamed crate, a stale bundle), not that a route is missing.
 
 Tests: `cargo test --workspace` from `crates/` (or `just test`) — 108 in
 `switch-gui`, 7 in `dto`, no network and no switch. The
@@ -498,3 +509,89 @@ needing the journal.  It is in RAM on the switch's side and in Postgres on ours:
 nothing here writes to NVRAM, so a reboot of a switch undoes the configuration
 while the log still says it was applied — which is why the log is evidence about
 *this tool*, not about the device.
+
+## The queue and the shadow copy: three bugs that all looked like "nothing happened"
+
+The symptom on 2026-10-13 was identical in all three cases: *"I tick a VLAN, press
+Apply, the tick unsets itself and nothing happens."* Three separate faults, each
+invisible from the layer above, all deployed and fixed. They are written up here
+because each is a general trap, not a switch-gui quirk.
+
+1. **`port.tagged` was written as JSON strings and read as numbers.**
+   `store_snapshot` reused `jsonb_array` (`["225"]`) while `number_list` parsed a
+   `Vec<i64>` and fell back to empty, so **every tagged membership on every switch
+   vanished from the page** while sitting correct in the database — and
+   `commands::port_members`, which diffs against the shadow copy, could not see a
+   membership to remove (unticking a VLAN queued nothing). `jsonb_int_array` now
+   writes numbers, which is also what `vlan_membership`'s
+   `tagged @> '[225]'::jsonb` containment needs — jsonb containment is exact about
+   element type, so the "VLAN in use" delete guard never matched either.
+   `number_list` tolerates both shapes; the column rewrites itself from the switch on
+   every sync. *The trap: a writer and a reader of the same jsonb column that disagree
+   about the element type produce a silently empty value, not an error.*
+2. **`claim()` had no `RETURNING`.** An `UPDATE` without it answers with a command tag
+   and **no row**, so `fetch_optional` yielded `None`, `claim` returned "nothing
+   queued", and the queue silently applied nothing — the row left `applying` with its
+   attempt spent (observed live: `attempt` 277 of `max_attempts` 5, no error, no
+   journal line). Its predicate also matched `applying`, so the row it had just claimed
+   was claimable again on the next tick. `claim_sql()` is now a function the test
+   asserts on (the old test rebuilt the query by hand and was missing the same
+   `RETURNING`), it returns `RETURNING id`, and it takes only `pending`. *The trap: the
+   test that passes is the one that re-implements the query instead of importing it.*
+3. **A pass that claimed changes and never reached the console recorded nothing.**
+   `sync::run` returned early on a poisoned console lock or a failed connect, naming
+   neither `applied` nor `failed`, and `record` only writes the rows it is named — so
+   claimed changes sat `applying`, invisible, until `recover_stale` released them
+   15 min later. With `BATCH > 1` one dead console orphaned a whole batch, and
+   `switch3`'s 15-25 s login makes a failed connect routine. Every no-console path now
+   fails the batch (`run`'s `fail_all`, `claim_batch` on a mid-loop claim error, `pass`
+   if the console task dies). *The trap: an early return that names neither success nor
+   failure leaves work in a state only a timeout will notice.*
+
+What makes this testable is **`just switch-gui-test`** (`tests/`, see its README): a
+fake ProCurve console — a real Telnet server with an in-memory model, so the console
+protocol is exercised rather than stubbed — plus headless Chromium on
+`--no-auth`/loopback and a scratch Postgres schema per run. Each test asserts on the
+**device's** state, not just the page's, and `assertNothingStuck()` is a
+post-condition of every test. The page carries test hooks for it (`tr[data-port]`,
+`input[data-vlan]`, `button[data-apply]`), in the same spirit as filestore's
+`data-fs-*`. Also needed for the harness: a switch address may now name a port
+(`switch1=127.0.0.1:22323`, split at the last colon, IPv6-safe) because a test cannot
+bind port 23.
+
+**Proving the console is not proving the queue.** The 2026-10-13 write verification
+above went through `POST /api/port/23/name`, which reaches the console directly; the
+queue swallowed every change for the next day and that proof still passed. The console
+half really was fixed; the claim was not. Test the path the UI actually takes
+(`POST /api/intent` → `claim` → sync → console), which is what `just switch-gui-test`
+now does.
+
+## A refusal the operator cannot see is indistinguishable from a dead button
+
+Reported live on `switch1` port 2 (2026-10-13): "I tick a VLAN, press Apply, the row
+resets and nothing is queued." It was a **correct refusal** with no visible answer.
+Port 2 is *untagged* in 225, so tagging it in 225 is a state the switch has no room
+for and `commands::port_members` refused it before queueing — right, and unit-tested
+since the start. The page was the bug: it offered the native VLAN's own checkbox as a
+legal tick, `Apply` dropped the row's overlay **before** the reply (so the row snapped
+back to the switch whatever the answer was), the only explanation was the banner at
+the top of a page with fifty port rows above the matrix, and a refusal wrote nothing
+at all to the journal. Four fixes:
+
+* the native VLAN's own column is not tickable, and moving the native VLAN off a
+  ticked VLAN unticks it (the same rule, from the other side);
+* a refused intent puts the overlay back, so the edit survives its own refusal;
+* the banner is pinned (`position:sticky`) so the answer is read with the row that
+  caused it;
+* `POST /api/intent` logs refusals (`refusal_line`, one line, control characters
+  stripped because the intent was never validated).
+
+## The enable-credentials default has been lost twice
+
+`SWITCH_GUI_ENABLE_LOGIN`/`_PASSWORD` default to the login pair, and that default is
+**deliberately not gated on `--read-only`** — the *read* needs Manager too, because
+`show running-config` (the only source of port names) is refused in the Operator
+context. A rewrite dropped the fallback once during the 2026-10-13 SPA work and every
+session sat in Operator: switch1 reported 4 named ports instead of 26, and it looked
+like a parser bug. `main::enable_creds` records the reasoning; the test is
+`enable_defaults_to_the_login_account`.

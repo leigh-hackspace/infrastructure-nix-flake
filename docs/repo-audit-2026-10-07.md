@@ -193,8 +193,7 @@ cache while a shared-crate dependency *change* does.
 > `CRANE.cached`/`CRANE.deps` became `CRANE.crate`, and the dependency derivation
 > is now shared by every native crate rather than built per crate.  The
 > `json_str` item below the fold did get shared too: it is `common_json::quoted`,
-> with `error_object` beside it.  See the "Rust builds (crane)" section of
-> `AGENTS.md` for what is true now.
+> with `error_object` beside it.  See `docs/building-rust-code.md` for what is true now.
 
 ---
 

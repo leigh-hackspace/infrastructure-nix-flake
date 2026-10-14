@@ -2,7 +2,7 @@
 #
 # One table so the nginx vhost proxies, the Prometheus scrape targets and the
 # gatus checks cannot disagree about where a box lives.  Every entry is a fixed
-# address: the DHCP reservation on the router (see AGENTS.md), not a DNS name,
+# address: the DHCP reservation on the router (see docs/router-and-dns.md), not a DNS name,
 # so nothing here depends on the resolver it is meant to be independent of.
 {
   services1 = "10.3.1.20";

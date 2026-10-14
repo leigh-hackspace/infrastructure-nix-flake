@@ -1,9 +1,10 @@
 # Authentik — OIDC provider notes (moved out of AGENTS.md 2026-10-08)
 
-The facts an agent needs day to day stay in `AGENTS.md` (admin access, the
-deployed integrations, the client-side contract). This file holds the detail that
-only matters when creating or debugging a provider — read it **before** minting a
-new OIDC app, every part of it has bitten once.
+The rules an agent needs day to day are in `AGENTS.md` (the Authentik section: admin
+access, the PKCE contract, "read this **before** minting a new OIDC app"). This file
+holds the detail that only matters when creating or debugging a provider, and the
+deployed-integrations table (provider pks, client ids, where each secret lives) — read
+it **before** minting a new OIDC app, every part of it has bitten once.
 
 ## Minting an admin API token
 
@@ -141,3 +142,28 @@ for `rad` finds nothing.
 `RadiusProvider` (pk 7, application `Switches`) has `authentication_flow = None`
 yet the flow used is `radius-authentication-flow` — resolved from the outpost,
 not the provider, so do not read that `None` as "no flow is running".
+
+## Deployed integrations
+
+Provider pks, where each secret lives, and what it gates.  Client ids are
+identifiers, not secrets; the secrets themselves are never in this repo — the sops
+key names are.
+
+| App | Provider pk | Client id | Secret location | Gate |
+| --- | --- | --- | --- | --- |
+| Grafana (services1) | 3 | `8TMM2mYHBV2YQCovNbgGKbuEp0LJcxo2TjpqNN9s` | sops: `grafana_oidc_client_secret` (runtime secret on services1) | role mapping: `Infra` → GrafanaAdmin, else Viewer |
+| gocardless-dashboard | 33 (name "gocardless-dashboard", slug `gocardless-dashboard`) | `UonE3N21HsJH5ia12zxUSqo8wzoG19Hk6LQbOfBw` | shared env-file secret: `GOCARDLESS_DASHBOARD_OIDC_CLIENT_SECRET` | `Infra` group, from the `groups` scope claim |
+| filestore | 34 (slug `filestore`) | in the shared env-file secret as `FILESTORE_OIDC_CLIENT_ID` | shared env-file secret: `FILESTORE_OIDC_CLIENT_SECRET` | `Infra` |
+| switch-gui | 35 | in `switch_gui_env_file` as `SWITCH_GUI_OIDC_CLIENT_ID` | `switch_gui_env_file`: `SWITCH_GUI_OIDC_CLIENT_SECRET` | `Infra` |
+| Switches (RADIUS) | `RadiusProvider` pk 7 | — | — | see "Debugging RADIUS" above |
+
+The three client-side apps all implement the same contract (above) through
+`crates/common-rs/oidc`, so a bug in one is a bug in three — and a new one should
+reuse that crate rather than re-implementing the flow.
+
+`switch-gui` (pk 35) was copied from gocardless-dashboard's provider on 2026-10-12:
+strict redirect `https://switch.int.leighhack.org/auth/callback`, the three OpenID
+mappings plus a `groups` scope, and the same flows and `signing_key`.  Its `groups`
+scope **reuses gocardless-dashboard's ScopeMapping row** rather than owning one —
+creating a fresh child row through the ORM trips the unique-violation described
+above.

@@ -12,12 +12,14 @@ crates/        every Rust crate; one cargo workspace (crates/Cargo.toml)
 common/        Nix modules shared by every machine (crane helpers, hosts, nginx)
 machines/      one directory per machine; services/ one file per service
 secrets/       sops-encrypted
-docs/          write-ups, post-mortems and audits — the backstory modules point to
+docs/          reference docs (services, builds, DNS, switches, backups) plus the
+               write-ups, post-mortems and audits the backstory points to
 ```
 
 Build anything in `crates/` with `cargo build -p <name>` from there; `just test`
-and `just clippy` run the whole workspace. `AGENTS.md` documents the conventions
-and the build cache.
+and `just clippy` run the whole workspace. `AGENTS.md` is the rules file — the
+detail it points at lives in `docs/` (services, builds, DNS, switches, backups,
+follow-ups).
 
 ## Applying Config
 

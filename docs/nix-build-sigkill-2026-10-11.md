@@ -198,8 +198,11 @@ interrupted, then activate the already-built closure (activation does no build).
    `system-good` = the same generation, and `build-users-group = nixbld` live in
    `/etc/nix/nix.conf`.
 
-The exact commands are in `AGENTS.md` ("Deploying when every build kills the session"),
-because that is guidance; this file is the story.
+The exact commands were kept in `AGENTS.md` at the time ("Deploying when every build kills
+the session"). That recipe is **gone** — the bug it worked around is fixed — and the
+detached-unit build recipe it grew into is now in `docs/nix-dev-workflow.md`; the
+`deploy` account it used is dead weight awaiting removal (`docs/follow-ups.md`). This
+file is the story.
 
 **The escape is not a cure.** Later the same day, sweeps were observed after a *successful*
 build, and after a build authored by the `deploy` account rather than uid 1234. So the cleanup
@@ -216,7 +219,7 @@ machines came up running the fixed generation while still *booting* the pre-fix 
 reboot would have silently reverted the fix (on services1 that means losing
 `build-users-group` and being sweep-prone again). Re-pointed with `nix-env --profile
 /nix/var/nix/profiles/system --set /run/current-system && /run/current-system/bin/switch-to-configuration boot`;
-the updated recipe in `AGENTS.md` includes that step.
+the same step is noted in the detached-unit recipe in `docs/nix-dev-workflow.md`.
 
 ## Honest gaps
 

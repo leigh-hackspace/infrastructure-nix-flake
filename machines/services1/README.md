@@ -2,7 +2,7 @@
 
 The services box (10.3.1.20). What runs here is the module list, not this file:
 `services/default.nix` imports one module per service under `services/`, and
-`AGENTS.md` describes what each of them does. This README keeps only what is not
+`docs/services.md` describes what each of them does. This README keeps only what is not
 in the flake.
 
 ## Tailscale (client)
