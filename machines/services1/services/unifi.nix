@@ -5,7 +5,6 @@
 }: let
   CONFIG = import ../../../common/config.nix;
   UNIFI_UID = 8901;
-  mkIntVhost = import ../../../common/nginx/int-vhost.nix {inherit lib;};
   mongoPass = lib.strings.trim (builtins.readFile (config.sopsSecretText "unifi_db_password"));
 in {
   users.users.unifi = {
@@ -60,11 +59,8 @@ in {
     ];
   };
 
-  services.nginx.virtualHosts = {
-    "unifi-admin.int.leighhack.org" = mkIntVhost {
-      proxyPass = "https://127.0.0.1:8443";
-    };
-  };
+  # The unifi-admin.int vhost now lives in ./unifi-os-server.nix, which owns the
+  # controller that answers there.
 
   system.activationScripts.initUnifi = ''
     mkdir -p                                              /srv/unifi

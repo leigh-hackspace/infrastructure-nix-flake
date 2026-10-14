@@ -20,6 +20,7 @@ X first", X has already cost someone a day.
 | touch DNS, dnsmasq, the router, the DigitalOcean zone, a new vhost's name | `docs/router-and-dns.md` |
 | touch the ProCurve switches (device side, RADIUS, logins) | `docs/procurve-switches.md` + `crates/switch-gui/README.md` |
 | touch NAS mounts, the NAS itself, or backups/borg | `docs/nas-and-borg.md` |
+| touch the UniFi controller, its backups, or UniFi OS Server | `docs/unifi-os-server.md` — the appliance is a *downgrade* of the running controller, and `.unf` backups are encrypted with a key that is not on disk |
 | touch a Proxmox VM on monster1 | `docs/monster-proxmox.md` (+ `docs/monster-powercut-runbook.md` if anything is stopped) |
 | touch the 3D print servers | `docs/printer-servers.md` |
 | touch a Dioxus SPA (any of the four) or its headless-browser suite | `docs/filestore-gotchas-2026-10-05.md` (the dioxus 0.7 + wasm traps apply to all of them) + `crates/filestore/tests/README.md`, `crates/switch-gui/tests/README.md` |
@@ -67,6 +68,11 @@ X first", X has already cost someone a day.
     commit the dist. The four Dioxus `dist/`s are git-ignored and built by the flake.
 20. **Check `git log -1` on a remote box before blaming a config change** for its
     behaviour — boxes have run newer generations than their checkout.
+21. **Never evaluate to find out what a change does** — deploy it and read the
+    rendered file (`just switch`, then `/etc/nginx/nginx.conf` or
+    `$SYS/etc/systemd/system/<unit>.service`). A `nix eval --impure --expr` against
+    `builtins.getFlake` cold-evaluates the whole flake, is slower than the switch
+    that answers the same question, and its aborted survivor holds the big lock.
 
 ---
 
@@ -250,7 +256,7 @@ invariant, its assertion and its self-healing timer live in **`common/nixbld.nix
 ## Nix commands
 
 The full command reference, the rendered-unit workflow and the gotchas are
-**`docs/nix-dev-workflow.md`**. The four that bite:
+**`docs/nix-dev-workflow.md`**. The five that bite:
 
 - **Never evaluate this repo through a path literal.** `import
   /home/leigh-admin/Projects/infrastructure-nix-flake/common/crane.nix` resolves the
@@ -259,8 +265,15 @@ The full command reference, the rendered-unit workflow and the gotchas are
   while holding the big lock. Through `self` the same directory arrives git-filtered, so
   nothing in a deploy hints at this. Read values out of the flake instead
   (`nix flake check --no-build`, `nixos-rebuild dry-build`, then
-  `$SYS/etc/systemd/system/<unit>.service`), or `nix eval --impure --expr` against
-  `builtins.getFlake`.
+  `$SYS/etc/systemd/system/<unit>.service`).
+- **Never evaluate to find out what a change does.** `nix eval --impure --expr` with
+  `builtins.getFlake` starts a **cold** evaluation of every machine and crate, so it
+  reuses nothing the last deploy cached and is *slower than `just switch`* for a
+  one-service change — and an aborted one keeps running while holding the big lock,
+  which makes the next `just switch` look hung. Apply it and read the rendered file;
+  to check without applying use `nixos-rebuild dry-run`/`dry-build`, which is the same
+  evaluation the deploy does and so stays cache-warm. Full ordering of methods:
+  `docs/nix-dev-workflow.md`.
 - **`nix eval`/`nix build` on a bare path** from the repo root resolves against the *repo*
   flake, not nixpkgs.
 - **`nix flake check --no-build` is expected to be warning-free**, so a warning is a

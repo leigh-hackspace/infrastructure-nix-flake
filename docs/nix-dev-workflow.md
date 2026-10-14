@@ -34,6 +34,44 @@ is enough to validate config.
 `nixos-rebuild dry-build` for all three machines: compiles everything, activates
 nothing. Use the latter whenever anything is built rather than just evaluated.
 
+## Never evaluate to find out what a change does
+
+The slow way, which looks like the careful way:
+
+```bash
+# minutes, and it is the thing that wedges the session
+nix eval --impure --expr 'let f = builtins.getFlake "/home/leigh-admin/Projects/infrastructure-nix-flake"; in f.nixosConfigurations.services1.config.services.nginx.virtualHosts."x".locations."/".proxyPass'
+```
+
+`builtins.getFlake` starts a **cold evaluation of the whole flake** — every
+machine, every crate's source filter, every image pin — so it reuses none of the
+eval and build cache the last deploy left behind. For a change confined to one
+service module it is therefore *slower than deploying it*, and it answers a
+question the running system can answer for free. It also has a second cost: an
+aborted `nix eval` keeps running and holds `/nix/var/nix/db/big-lock`, so every
+nix command after it — including `just switch` — queues behind it and looks
+identical to "this eval is just slow" ([the big lock](#the-nix-big-lock-and-aborted-tool-calls)).
+
+The rule, in order of preference:
+
+1. **Apply it and read the file.** `just switch`, then
+   `/etc/nginx/nginx.conf`, `/etc/systemd/system/<unit>.service`,
+   `systemctl show -p …`, `curl localhost:<port>`. This is the only method that
+   also proves NixOS's own normalisation, and on a warm machine it is usually
+   faster than a cold eval of one attribute.
+2. **Check without applying:** `nixos-rebuild dry-run`/`dry-build`, or
+   `just check` / `just check-build`. Same evaluation the deploy performs, so it
+   is cache-warm and its result is reusable by the deploy.
+3. **One value, once:** `nix eval .#…` (the flake-reference form, not
+   `--impure --expr`), under `timeout`, and kill the survivor before any other nix
+   command. Never in a loop, and never to ask "did my setting land".
+
+Observed 2026-10-14 on services1: two `nix eval --impure --expr` calls to read one
+nginx location's `proxyPass` — the first aborted and left a lock-holding survivor,
+the second slower than the `just switch` that finally answered it, after which
+`grep proxy_pass /etc/nginx/nginx.conf` was instant. The rendered config is the
+source of truth; the expression is a guess about it.
+
 ## Inspect the generated output (the reliable way to know what a service runs)
 
 Once you have a system path `$SYS`:

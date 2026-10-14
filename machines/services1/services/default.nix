@@ -36,6 +36,9 @@
     # Ports and VLANs on the ProCurve core switch (10.3.1.2) over HTTPS.
     # Needs the switch_gui_env_file sops secret before it will start.
     ./switch-gui.nix
+    # Trial of the new appliance, on offset ports, next to ./unifi.nix rather
+    # than in its place.  Remove this line to take it back out.
+    ./unifi-os-server.nix
     ./unifi.nix
     ./zigbee2mqtt.nix
   ];
