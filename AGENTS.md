@@ -27,7 +27,7 @@ X first", X has already cost someone a day.
 | touch a Dioxus SPA (any of the four) or its headless-browser suite | `docs/filestore-gotchas-2026-10-05.md` (the dioxus 0.7 + wasm traps apply to all of them) + `crates/filestore/tests/README.md`, `crates/switch-gui/tests/README.md` |
 | create or debug an OIDC app / authentik anything | `docs/authentik-oidc-notes.md` — **every part of it has bitten once** |
 | touch the authentik container stack on services1, or the migration/cutover off 10.3.1.36 | `docs/authentik-container-migration.md` — the flake half is a **parked shadow**, the appliance is the live IdP |
-| pick up someone else's TODO, or wonder if something is already known-broken | `docs/follow-ups.md` |
+| run a **full network upgrade** — one flake pass landed on every box the hop key reaches | `docs/network-upgrade-runbook.md` (the order, the gates, and what must *not* move) |
 | ask "why is it shaped like this?" | `docs/work-log-2026-10.md` and the dated post-mortems in `docs/` |
 
 ## The rules, in one place
