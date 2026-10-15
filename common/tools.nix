@@ -36,6 +36,15 @@
     git
     direnv
     deno
+    # jq and python3 are on every box so ad-hoc inspection (flake.lock, the JSON
+    # the exporters and monitoring endpoints emit, a service's API) works from a
+    # bare ssh session.  Neither is in the default profile, and reaching for
+    # `nix run` mid-debug pulls a whole store path and a daemon lock; `nix develop
+    # --command` is not an option at all when the point of the call is to read the
+    # state of a box that is mid-switch.  python3 is the interpreter only — no
+    # packages, per the Rust-for-everything rule (AGENTS.md 1).
+    jq
+    python3
     # The repo's formatter is alejandra (see .zed/settings.json and `just fmt`);
     # nixfmt is deliberately not installed so the two cannot drift.
     nil
