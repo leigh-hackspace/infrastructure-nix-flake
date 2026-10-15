@@ -51,6 +51,27 @@ Things that bind `0.0.0.0` because the proxy/scrape comes from another box: Graf
   suspecting the forwarding. Its own `nix.conf` also lives on a read-only symlink into the store, so
   a stateful edit needs replacing that symlink with a real file (see
   `docs/nix-build-sigkill-2026-10-11.md`).
+- **Pushing from here needs a relay through services1** (which authenticates to GitHub as
+  `cjdell`). Commit here, then, from services1, fetch this tree into `FETCH_HEAD` and push
+  that — so services1's own checkout, which lags `origin/main` and carries its own dirty
+  files, is never touched:
+
+  ```bash
+  # on services1, from its own checkout
+  GIT_SSH_COMMAND='ssh -i ~/.ssh/agent-hop-key -o IdentitiesOnly=yes' \
+    git fetch ssh://leigh-admin@10.3.1.21/home/leigh-admin/Projects/infrastructure-nix-flake main
+  git push origin "$(git rev-parse FETCH_HEAD):refs/heads/main"
+  ```
+
+  Two traps, both hit on 2026-10-15. **`GIT_SSH_COMMAND` applies to every ssh transport**, so
+  exporting it forces the LAN hop key on the GitHub remote too and the push dies with
+  `Permission denied (publickey)` — the same error a missing GitHub key gives, on the box that
+  has one; set it inline on the `git fetch` only. And services1 offers several identities, so
+  the LAN fetch dies with `Too many authentication failures` unless the hop key is passed with
+  `IdentitiesOnly=yes`. Guard the push with
+  `git merge-base --is-ancestor "$(git ls-remote origin refs/heads/main | cut -f1)" FETCH_HEAD`
+  so it can only ever fast-forward. Until this box fetches, `git status -sb` here reports
+  `ahead 1` forever — that is a stale `origin/main` ref, not an unpushed commit.
 - **No swap *partition*** — the NVMe is only p1 (512 MiB ESP) + p2 (232 GiB ext4 root), so
   there is no spare partition like services1's `nvme0n1p3` (18 GiB) or aibox's. It does have
   **a 16 GiB swap *file*, `/var/swap/services2`**, declared in `./hardware-configuration.nix`
