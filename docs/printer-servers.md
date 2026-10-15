@@ -22,6 +22,27 @@ below), which made the `3d-*` names advertise each other's IPv6 addresses. Lime'
 machine-id and SSH host keys were regenerated on 2026-10-03 (blue still carries the
 old identity), but fixed IPv4 is deliberately kept regardless.
 
+## The printers and their reservations
+
+The two boxes above are *print servers* (a Pi bolted to a printer). The printers
+with their own network interface are reserved in the router's dnsmasq config too,
+and the ones on WiFi are on the **WIFI VLAN (10.3.2.0/24), not the wired
+10.3.14.0/24** — a reservation in the wrong VLAN is inert, so check which one the
+device is on before adding one (`arp -an | grep -i <mac>` on the router answers it
+by the interface name):
+
+| Name | Address | Note |
+| --- | --- | --- |
+| `voron` | 10.3.2.50 | Voron, WiFi |
+| `elegoo` | 10.3.2.55 | Elegoo resin printer, WiFi |
+| `snapmaker` | 10.3.2.56 | **Snapmaker U1**, MAC `28:2d:06:1d:bc:96`, WiFi (announces itself as `U1`) |
+| `3d-lime` / `3d-blue` | 10.3.14.61 / 10.3.14.62 | the Pi print servers, wired |
+
+The U1 is a closed appliance (Snapmaker's own app/cloud, no Moonraker), so it is
+**not** a `moonraker-exporter` target and never will be; the reservation exists so
+the slicer can find it at a fixed address. Adding one: `docs/router-and-dns.md` §
+"Adding one by hand".
+
 ## SSH access (the permanent method)
 
 The Pi's user is **`hackspace`** (not `pi`/`root`) and the host is keyed with the

@@ -69,9 +69,44 @@ Live in the same dnsmasq config (the router, not DNS): services1 (10.3.1.20, MAC
 `70:85:c2:53:f1:d4`), aibox (10.3.1.32), nas1/nas2 (10.3.1.5 / 10.3.1.6), apps1
 (10.3.1.30), yunohost (10.3.1.15).
 
+Printers, same place: `voron` 10.3.2.50, `elegoo` 10.3.2.55 and `snapmaker`
+(Snapmaker U1, MAC `28:2d:06:1d:bc:96`) 10.3.2.56 on the WIFI VLAN, `3d-lime`
+10.3.14.61 and `3d-blue` 10.3.14.62 on the wired one — see
+`docs/printer-servers.md`.
+
 This is why `common/hosts.nix` holds **addresses, not names**: every machine in
 this network is a DHCP reservation, and a table that resolved through the resolver
 it is meant to be independent of would not be one.
+
+### Adding one by hand
+
+A reservation is a `<hosts>` entry under `<dnsmasq>` in `/conf/config.xml` (`host`,
+`domain int.leighhack.org`, `ip`, `hwaddr`, `set_tag`), and three things have to
+agree or it silently does nothing:
+
+- **The IP must be in the subnet of the VLAN the device is actually on**, and
+  **below that VLAN's dynamic pool** (pools start at `.100` on WIFI/`opt1`/
+  `vlan0.226` = 10.3.2.0/24 and at `.150` on SHARED/`lan` = 10.3.1.0/24 and
+  WIRED/`opt2` = 10.3.14.0/24, so every reservation in use is ≤ `.99`). A
+  reservation in the wrong VLAN is inert: the U1 sits on WiFi, so it is a
+  10.3.2.x address even though the other 3D printers are wired.
+- **`set_tag` must be that VLAN's dhcp tag** (`<dhcp_tags>`: SHARED
+  `0f6ba0e7-…`, WIRED `58a01f56-…`, WIFI `7965a3d1-…`). It becomes the `set:` on
+  the generated `dhcp-host=` line.
+- Only `hwaddr` is needed: dnsmasq matches a MAC-only entry even when the client
+  sends a client-id (`voron` and `snapmaker` both do, and both match).
+
+Then apply it — **`pluginctl dns`**, which is `plugins_configure('dns')`: it runs
+`dnsmasq_configure_do`, regenerating `/var/etc/dnsmasq-hosts` and
+`/usr/local/etc/dnsmasq.conf` and restarting dnsmasq. `pluginctl -s dns` is *not*
+the same command: `-s` is service mode, it exits 0 and changes nothing (check the
+mtime of `/usr/local/etc/dnsmasq.conf` when in doubt). Verify with
+`grep <name> /usr/local/etc/dnsmasq.conf /var/etc/dnsmasq-hosts` and a lookup.
+
+Leases are 24 h, and dnsmasq only re-reads its config on restart, so a device that
+already holds an address keeps it until it renews (≈12 h, NAKed into a rebind) or
+reconnects — the reservation is already correct, the lease table just still shows
+the old address.
 
 ## DigitalOcean zone `leighhack.org`
 
