@@ -12,6 +12,15 @@ elsewhere, and the manual fallback when `dns-sync` is unavailable.
 OPNsense 26.7 on FreeBSD, **10.3.1.1**, managed out-of-band — nothing here is
 declarative.
 
+**That sentence is about the running box, and it has an expiry date.**
+`machines/gw/` is the flake-managed replacement for everything in this file: dnsmasq
+generated from `common/vlans.nix` and `common/dns-records.nix` instead of from
+`<Interfaces>` XML, nftables from `common/config.nix` instead of the web UI, the
+AAISP tunnel and the tailnet client. It has **no hardware**, so the OPNsense box is
+still the router and everything below is still how the network actually behaves — but
+read `machines/gw/README.md` before changing either side, because it is the document
+that says which of these facts the new config has inherited and which are still open.
+
 ```bash
 ssh -i ~/.ssh/agent-hop-key root@10.3.1.1        # root IS keyed on the router
 ```

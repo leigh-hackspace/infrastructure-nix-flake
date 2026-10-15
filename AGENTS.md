@@ -17,7 +17,7 @@ X first", X has already cost someone a day.
 | change any service's behaviour, flags, API, ports, or deploy | `docs/services.md` (the crate's README too where one exists) |
 | touch how Rust is built: `common/crane.nix`, a `Cargo.toml`, `build.rs`, a Dioxus SPA | `docs/building-rust-code.md` |
 | run non-trivial nix, debug a wedged/hanging nix, build detached, remote-build | `docs/nix-dev-workflow.md` |
-| touch DNS, dnsmasq, the router, the DigitalOcean zone, a new vhost's name | `docs/router-and-dns.md` |
+| touch DNS, dnsmasq, the router, the DigitalOcean zone, a new vhost's name | `docs/router-and-dns.md` (+ `machines/gw/README.md` — the flake's replacement router lives there, with no hardware: it says what is proven and what is a guess) |
 | touch the ProCurve switches (device side, RADIUS, logins) | `docs/procurve-switches.md` + `crates/switch-gui/README.md` |
 | touch NAS mounts, the NAS itself, or backups/borg | `docs/nas-and-borg.md` |
 | touch the UniFi controller, its backups, or UniFi OS Server | `docs/unifi-os-server.md` — the appliance is a *downgrade* of the running controller, and `.unf` backups are encrypted with a key that is not on disk |
@@ -100,7 +100,12 @@ X first", X has already cost someone a day.
   paths — it used to be `machines/services1/config.nix`, now deleted, and its being
   per-machine is what stopped a second box serving any vhost), `hosts.nix` (one table of
   machine addresses, read by the nginx proxies, the Prometheus scrape targets and the
-  gatus checks so they cannot disagree), `nginx/`
+  gatus checks so they cannot disagree), `vlans.nix` (the VLANs, their blocks and
+  their dynamic ranges) and `dns-records.nix` (which device keeps which address) — the
+  two tables the router generates its dnsmasq conf and nft sets from, so a lease is
+  one fact in one place; they are network-wide for the same reason `hosts.nix` is,
+  and `machines/gw/lib/check-network-tables.nix` is what refuses to let them drift,
+  `nginx/`
   (`sso-vhost.nix`, `int-vhost.nix`, `int-vhost-names.nix`), `exporters.nix`,
   `build-farm.nix` (GC + remote building), `monitoring-endpoints.nix` (the gatus
   endpoint data). `common/nginx/` and `common/config.nix` are shared because services1
@@ -122,6 +127,14 @@ X first", X has already cost someone a day.
   not read the contents**), `secrets/.env.sample` (the shape of the shared env-file
   secret). `machines/services1/README.md` keeps what is not in the flake (tailscale
   client, secrets habits).
+- `machines/gw/` — the network's **replacement router**, generated from
+  `common/vlans.nix` + `common/dns-records.nix` (dnsmasq, nftables, the AAISP tunnel,
+  the tailnet client). **There is no hardware for it**: it is in the flake to be
+  evaluated and table-checked, not deployed, and it is not in `just check-build`.
+  `machines/gw/README.md` is mandatory before any change here — it separates what was
+  read off the old OPNsense box from what is a placeholder, and lists the fact → file
+  → command table for the cutover. `machines/gw/lib/check-network-tables.nix` runs
+  from `just check` and as a module assertion.
 - `secrets/` — sops-encrypted.
 
 ## Language preference
@@ -326,7 +339,9 @@ listed here is in the doc named for it.
   (`docs/procurve-switches.md`). `agent` is a **Manager**: `enable` is a second login,
   writes run inside config mode, and **nothing writes NVRAM**, so a reboot undoes any
   change. `crates/switch-gui/` wraps them; its README is the CLI's trap list.
-- **Router** (OPNsense 26.7, FreeBSD, 10.3.1.1) is out-of-band — no flake config.
+- **Router** (OPNsense 26.7, FreeBSD, 10.3.1.1) is out-of-band — no flake config
+ **for the box that is running**; `machines/gw/` is the flake's rewrite of it, with no
+ hardware behind it yet, and its README says which facts this bullet inherits.
   `ssh root@10.3.1.1` with the machine-hop key. **The root shell is tcsh**: `2>` fails
   and grep patterns with `<`/`>` need double quotes. Never edit the auto-generated
   `/usr/local/etc/dnsmasq.conf`; `/conf/config.xml` is the source of truth and

@@ -283,6 +283,14 @@ check:
     nix eval --impure --raw -f machines/services1/lib/check-config-to-gitlab.nix
     echo "=== printer-state tables (exporter <-> dashboards/alerts)"
     nix eval --impure --raw -f common/check-printer-states.nix
+    # The router's two network tables: common/vlans.nix and common/dns-records.nix
+    # generate dnsmasq's conf, nftables' rules and the VLAN devices, so a VLAN id
+    # that is not in the first table or an address claimed twice is a client that
+    # gets the wrong address rather than a build failure.  The same assertions run
+    # as a module (machines/gw/lib/assert-network-tables.nix) and so in the `nix
+    # flake check` above; this is the version that prints which record is wrong.
+    echo "=== router network tables (vlans <-> dns-records <-> ACL)"
+    nix eval --impure --raw -f machines/gw/lib/check-network-tables.nix
     # The gatus endpoint guard is a module assertion in
     # machines/services1/services/monitoring.nix, so the `nix flake check` above
     # already runs it: every https *.int endpoint in common/monitoring-endpoints.nix

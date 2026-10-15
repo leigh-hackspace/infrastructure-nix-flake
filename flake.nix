@@ -176,6 +176,42 @@
           ((import ./machines/aibox) flakeInputs)
         ];
       };
+
+      # The router.  It has no hardware yet — machines/gw/README.md is the reason,
+      # and the short version is that this entry exists so the config is *evaluated*
+      # by `nix flake check` (and its table assertions by `just check`) rather than
+      # so it can be deployed.  Two consequences of that, both deliberate:
+      #
+      #   * No ./common/nas.nix and no ./common/tools.nix: the router is the thing
+      #     the network's DNS depends on, so it must not grow a dependency on a NAS
+      #     that is still importing after a power cut.  tools.nix's wait-for-network
+      #     unit reads `config.infra.nas.host`, which only exists with nas.nix, so
+      #     the two are added and removed together — which is the check that keeps
+      #     them out.
+      #   * No ./common/build-farm.nix and no ./common/containers.nix: a router runs
+      #     dnsmasq, pppd, openvpn, tailscale and nft, and nothing else.  The
+      #     build-user invariant it does get, from common/base.nix's own import of
+      #     common/nixbld.nix.
+      gw = nixpkgs.lib.nixosSystem {
+        inherit system;
+        pkgs = import nixpkgs {
+          inherit system;
+          config = {
+            allowUnfree = true;
+          };
+        };
+        specialArgs = flakeInputs // extraArgs;
+        modules = [
+          nix-shell-registry
+
+          nixos-utils.nixosModules.rollback
+
+          ./common/sops.nix
+          ./common/users.nix
+
+          ((import ./machines/gw) flakeInputs)
+        ];
+      };
     };
 
     # `nix build .#strata` - the Strata engine (HIP/gfx1030) plus its Python

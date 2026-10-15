@@ -12,6 +12,17 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
 
 ## Nix / build
 
+- **`nix flake check` is not warning-free: services2 prints a Grafana one** (noticed
+  2026-10-14 while checking the `gw` machine; unrelated to it). Checking
+  `nixosConfigurations.services2` emits `evaluation warning: Grafana passwords will
+  be stored as plaintext in the Nix store! Use file provider or an env-var instead.`,
+  which by rule 9 is a finding: either the Grafana provisioner moves to the file
+  provider / `GF_SECURITY_ADMIN_PASSWORD__FILE`-style env, or the warning is the
+  documented exception. Note `just check` cannot reach it today: `nix flake check`
+  stops at `aibox`, whose `pi-room-sys` input is absent on the box the check is run
+  from (AGENTS.md says so) — so run `nix flake check --no-build` per machine when you
+  need the warnings for one of them.
+
 - **`crates/target/` is not excluded from `workspaceSrc` (open, one line).**
   `common/crane.nix` filters the four SPA directories out of `workspaceSrc` and
   nothing else, and `lib.cleanSourceFilter` does not read `.gitignore`, so an
@@ -69,6 +80,43 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
 - **Nothing monitors the borg server** (`nas2.int:3022`), so a dead `borg-server`
   container only shows up as a failed nightly job — and one nightly run has already
   failed with no recorded reason. Details: `docs/nas-and-borg.md`.
+
+## Router (gw)
+
+- **`machines/gw/` is a router with no hardware** (started 2026-10-14). It is in the
+  flake so its config is evaluated by `nix flake check` and its tables checked by
+  `just check`, and so the eventual cutover is `nixos-generate-config` plus reading
+  facts off the old box rather than writing five files under pressure. Blocked on:
+  the board existing. `machines/gw/README.md` owns the whole list — what is proven
+  from the old box's generated files, what is inferred, and the table of "fact → the
+  file it goes in → the command that reads it". Do not deploy it, and do not add it
+  to `just check-build` (that recipe means "about to deploy").
+
+- **`aaisp_ppp_chat_secrets` does not exist** (found while writing
+  `machines/gw/sops.nix`, 2026-10-14). The tunnel's credentials have never been in
+  `secrets/secrets.yaml`: the old box kept them in OPNsense's own config and nobody
+  has read them off it. sops-nix fails *activation*, not evaluation, on a missing
+  key, so `gw` builds fine and would refuse to come up. Read them from the old box's
+  `/conf/config.xml` and `echo … | sops edit secrets/secrets.yaml` — never into a
+  transcript (rule 13).
+
+- **Nothing obtains the network's IPv6 prefix** (`machines/gw/networking.nix`,
+  2026-10-14). The RA ranges in `common/vlans.nix` and the fixed v6 addresses in
+  `common/dns-records.nix` are correct and dnsmasq advertises them, but no part of
+  the new router's config asks the uplink for the /48, so IPv6 to the outside world
+  will not work on a cutover today. How the old box got its prefix (DHCPv6-PD from
+  AAISP, or a static assignment) is the first thing to read off it.
+
+- **The new firewall's rules are shape-correct, not value-verified**
+  (`machines/gw/firewall.nix`, 2026-10-14). nixpkgs validates the ruleset against a
+  user-mode kernel at build time — which caught two real mistakes (ICMPv6's ND types
+  are `nd-neighbor-solicit`, not `neighbour-solicitation`; `packet-too-big` is ICMPv6
+  only) — but "parses" is not "is what the old box did". The old box's
+  `/var/etc/nftables.conf` and `nft list ruleset` have never been read; do that
+  before trusting any rule here, and note the per-VLAN anti-spoof rule emits *two*
+  match forms (`vlan id N` and `iifname "vlanN"`) because which one the kernel
+  actually matches on is a question about the real box.
+
 
 ## Postgres
 
