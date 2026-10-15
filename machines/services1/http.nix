@@ -188,6 +188,12 @@ in {
       # Rust filestore binary on this box, 127.0.0.1:8096 — replacing the
       # old apps1:8001 deployment).
 
+      # The authentik appliance (10.3.1.36) is the live IdP.  This box has a
+      # shadow of it written and verified but PARKED (services/authentik.nix is
+      # not imported, so there is no id-shadow.int vhost right now); the cutover
+      # deletes this vhost in the same change that un-parks the module and sets
+      # `shadow = false` — two vhosts for one name is the safe way to fail that.
+      # Read docs/authentik-container-migration.md first.
       "id.int.leighhack.org" = mkIntVhost {
         serverAliases = [
           "id.leighhack.org"

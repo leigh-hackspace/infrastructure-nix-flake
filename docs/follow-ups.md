@@ -118,3 +118,35 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   one, because creating a fresh child row through the ORM trips a unique-violation
   on `propertymapping.name`. Fine for now; the proper fix is the web UI or the real
   API. `docs/authentik-oidc-notes.md`.
+
+- **The authentik cutover is not done — and the shadow is now parked.** The
+  container stack was deployed, migrated from the live database and verified
+  against the appliance (`docs/authentik-container-migration.md`), then switched
+  off on 2026-10-15 by un-importing `machines/services1/services/authentik.nix`;
+  10.3.1.36 is the IdP. **Step nought is uncommenting that import and
+  `sudo authentik-migrate all --force`** (the state under `/srv/authentik` is
+  still there but stale). Then the four things the checklist names: the outpost
+  containers (needs the two `AUTHENTIK_TOKEN` sops secrets, then
+  `enableOutposts = true`), the RADIUS clients that name 10.3.1.36 (switch NVRAM
+  — ask first), `authentik.int`'s router override to 10.3.1.36 (aibox's sssd),
+  and flipping `shadow = false` while deleting the `proxyPass` vhost from
+  `machines/services1/http.nix` in the same change.
+
+- **Rotate the appliance's postgres password (2026-10-15).** The first 40
+  characters of `PG_PASS` and of `AUTHENTIK_SECRET_KEY` reached a transcript
+  through a verification command whose redaction did not work. The database
+  password is cheap: it is only read by the appliance's own compose file, so
+  change `PG_PASS` in `/srv/authentik/.env`, `docker compose down && up -d`.
+  `AUTHENTIK_SECRET_KEY` is not cheap — authentik cannot re-encrypt what it has
+  already encrypted, so rotating it means regenerating every stored provider key
+  and bind password. Both are now also in `secrets/secrets.yaml`
+  (`authentik_env_file`), which is where they should have been.
+
+- **`id-shadow.int.leighhack.org` has no DNS record.** The vhost works and was
+  tested with `curl --resolve`; `sudo dns-sync sync` adds the record, and
+  `just dns-sync prune` should remove it when the shadow goes away.
+
+- **The nightly authentik dump timer is off** while `shadow = true` (a dump of a
+  copy of the live database would only confuse a restore). The unit itself is
+  tested; it turns on with the flag. `machines/services1/services/authentik.nix`.
+

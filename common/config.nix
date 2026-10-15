@@ -16,6 +16,14 @@
 
   AUTHENTIK_DOMAIN = "id.leighhack.org";
 
+  # authentik on services1 (machines/services1/services/authentik.nix).  The
+  # container env files are passed to podman with `--env-file`, which keeps
+  # quotes and `$` literal, so these files are unquoted `KEY=value` lines —
+  # unlike the shared ENV_FILE above, whose values are quoted for systemd.
+  AUTHENTIK_ENV_FILE = "/run/secrets/authentik_env_file";
+  AUTHENTIK_RADIUS_OUTPOST_ENV_FILE = "/run/secrets/authentik_radius_outpost_env";
+  AUTHENTIK_LDAP_OUTPOST_ENV_FILE = "/run/secrets/authentik_ldap_outpost_env";
+
   HEADSCALE_DOMAIN = "tailscale.leighhack.org";
   HEADPLANE_PRE_AUTHKEY_FILE = "/run/secrets/headplane_pre_authkey";
   HEADPLANE_API_KEY_FILE = "/run/secrets/headplane_api_key";

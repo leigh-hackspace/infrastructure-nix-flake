@@ -6,6 +6,15 @@
     #   ./affine.nix  — the Affine container was never deployed on this box.
     #   ./samba.nix   — SMB is served by the NAS (10.3.1.6), not here.
     # ./affine.nix
+    # PARKED 2026-10-15: the authentik *shadow* — a podman copy of the 10.3.1.36
+    # appliance, built and verified against a live copy of its database, then
+    # switched off until the session that does the real cutover.  10.3.1.36 is
+    # the IdP either way; see docs/authentik-container-migration.md for the
+    # checklist and docs/follow-ups.md for what blocks it.  Uncommenting brings
+    # back postgres/redis/server and the id-shadow.int vhost; the state under
+    # /srv/authentik outlives the parking (bind mounts, not volumes), but the
+    # copy is stale, so re-run `authentik-migrate all --force` before trusting it.
+    # ./authentik.nix
     ./backup.nix
     ./cockpit.nix
     ./door-entry-management-system.nix

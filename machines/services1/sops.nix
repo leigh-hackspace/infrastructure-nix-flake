@@ -66,6 +66,18 @@
       mode = "0440";
     };
 
+    # The authentik container stack's environment (services/authentik.nix):
+    # POSTGRES_PASSWORD, AUTHENTIK_SECRET_KEY, AUTHENTIK_POSTGRESQL__PASSWORD
+    # and the SMTP keys, as unquoted KEY=value lines.  Read by PID 1 only —
+    # podman opens it with `--env-file` when it starts each container, so no
+    # process inside a container can list it.  Values must not be quoted and
+    # must not contain `$`: podman does not strip quotes or expand in env files
+    # (the opposite of systemd's EnvironmentFile).
+    authentik_env_file = {
+      group = "secrets";
+      mode = "0440";
+    };
+
     # Borg/ssh backup key (services/backup.nix); keep private.
     backup_key = {
       mode = "0400";

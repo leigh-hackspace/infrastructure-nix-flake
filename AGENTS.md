@@ -25,6 +25,7 @@ X first", X has already cost someone a day.
 | touch the 3D print servers | `docs/printer-servers.md` |
 | touch a Dioxus SPA (any of the four) or its headless-browser suite | `docs/filestore-gotchas-2026-10-05.md` (the dioxus 0.7 + wasm traps apply to all of them) + `crates/filestore/tests/README.md`, `crates/switch-gui/tests/README.md` |
 | create or debug an OIDC app / authentik anything | `docs/authentik-oidc-notes.md` — **every part of it has bitten once** |
+| touch the authentik container stack on services1, or the migration/cutover off 10.3.1.36 | `docs/authentik-container-migration.md` — the flake half is a **parked shadow**, the appliance is the live IdP |
 | pick up someone else's TODO, or wonder if something is already known-broken | `docs/follow-ups.md` |
 | ask "why is it shaped like this?" | `docs/work-log-2026-10.md` and the dated post-mortems in `docs/` |
 
@@ -342,6 +343,18 @@ listed here is in the doc named for it.
 
 Out-of-band on its own box (docker compose in `/srv/authentik`), not flake-managed; nginx
 on the box proxies to 127.0.0.1:9000. Also served as `authentik.int.leighhack.org`.
+
+**A second, flake-managed authentik exists for this box**
+(`machines/services1/services/authentik.nix`): a *shadow* that runs a copy of
+the appliance's database behind `id-shadow.int.leighhack.org`. It was built and
+verified end to end and is now **PARKED — the module is not imported**, so
+nothing of it is deployed. Un-parking it and flipping `shadow = false` is the
+cutover, and **neither should happen without reading
+`docs/authentik-container-migration.md`** — the RADIUS and LDAP outposts and the
+`authentik.int` router override are still on 10.3.1.36, and two authentik
+instances sharing a database's secrets is how the switch logins break. The
+appliance's `AUTHENTIK_SECRET_KEY` is in `secrets/secrets.yaml` as part of
+`authentik_env_file` because a copied database cannot be opened without it.
 
 - **Before creating an OIDC provider, read `docs/authentik-oidc-notes.md`.** Three
   invisible bites, summarised: copy the flows + `signing_key` from a known-good provider
