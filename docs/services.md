@@ -27,6 +27,7 @@ Every address is in `common/hosts.nix`.
 | filestore | `crates/filestore/` | 127.0.0.1:8096 | `docs/filestore-gotchas-2026-10-05.md` |
 | switch-gui | `crates/switch-gui/` | 127.0.0.1:8097 | `crates/switch-gui/README.md` |
 | status-dashboard | `crates/status-dashboard/` | both boxes | `common/status-dashboard.nix` |
+| whisper-ws | `crates/whisper-ws/` | aibox:8083 | `crates/whisper-ws/README.md` |
 | moonraker-exporter | `crates/moonraker-exporter/` | metrics | `docs/printer-servers.md` |
 | strata | `machines/*/strata.nix` | aibox:8080, services2:8080 | `machines/aibox/STRATA.md`, `machines/services2/STRATA.md` |
 
@@ -287,6 +288,18 @@ knobs were measured on different hardware and do not transfer.
 services1 as `status.*` / `aibox.status.*`. `moonraker-exporter` polls the two
 print servers' APIs; see `machines/services1/services/printer-monitoring.nix` and
 `docs/printer-servers.md`.
+
+## `crates/whisper-ws/` — OpenAI Realtime in front of whisper.cpp
+
+A stdlib-only Rust bridge that speaks the OpenAI Realtime transcription subset on
+`ws://10.3.1.32:8083/v1/realtime` and forwards each committed audio chunk to
+whisper-server as a WAV; whisper.cpp's own server has no WebSocket. Runs on aibox
+as `whisper-ws.service` behind `whisper-server.service` (both units,
+`machines/aibox/whisper.nix` — including the note that the GPU `--device 1` was
+pinned to was removed on 2026-09-02, so `whisper-server` needs a repin before
+either comes up). Its status page is a Solid.js/Vite app embedded in the binary,
+which is why this one crate is packaged by `crates/whisper-ws/package.nix` rather
+than by crane: `docs/building-rust-code.md`, "the fifth non-member".
 
 ## `crates/common-rs/` — where new shared code goes
 

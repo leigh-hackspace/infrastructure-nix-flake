@@ -21,6 +21,10 @@ workspace member, built with `cargo build -p <pname>`. `crane` takes `cargoLock`
 as a **path**, not nixpkgs' `cargoLock.lockFile` attrset, and vendors the crates
 itself, so there is no `cargoDeps` hash to maintain.
 
+One crate is not built this way: `crates/whisper-ws/`, which is not a workspace
+member and is packaged by its own `package.nix`. See
+[the fifth non-member](#the-fifth-non-member-crateswhisper-ws) at the end.
+
 ## One workspace, one dependency derivation
 
 Because `crates/` is one cargo workspace (`crates/Cargo.toml`) there is **one
@@ -133,3 +137,39 @@ die anyway.
 **Do not "fix" a mismatch by bumping the crate or downgrading the CLI to nixpkgs'
 version.** Keep the crate pinned at 0.2.128 and match the CLI to it, in all three
 places at once (frontend `Cargo.lock`, `CRANE.wasmBindgenCli`, the devshell).
+
+## The fifth non-member: `crates/whisper-ws/`
+
+It is Rust, so it lives in `crates/`. It is **not** a workspace member, and not
+for the wasm reason above:
+
+* its status page is a Solid.js + Vite app in `web/app/`, and `src/assets.rs`
+  (git-ignored) is **generated** from the built bundle by `web/app/gen_assets.sh`;
+  `main.rs` will not compile without it, and cargo loads *every* member's manifest
+  before it builds any of them and refuses a manifest whose target files are
+  missing — so as a member it would put an npm build on the critical path of every
+  other crate's dependency derivation;
+* it depends on **zero external crates** (house style: stdlib-only), so the shared
+  `Cargo.lock` and the one vendored dependency tree buy it nothing. It has its own
+  `Cargo.lock`, which is empty but for itself.
+
+So: it opts out of the workspace with an empty `[workspace]` table (the same
+mechanism the SPAs use, and mirrored in `crates/Cargo.toml`'s `exclude`), it is
+filtered out of `workspaceSrc` next to them (`common/crane.nix`'s
+`nonMemberPrograms`, which also keeps its own `target/` out of everyone else's
+source tree), and it is built by `crates/whisper-ws/package.nix` —
+`buildNpmPackage` for the app, then plain `rustPlatform.buildRustPackage`, with
+`preBuild` copying the generated `assets.rs` in. `flake.nix` binds that derivation
+once (`whisperWsPkg`) and uses it twice: `packages.<system>.whisper-ws` and the
+aibox overlay that provides `pkgs.whisper-ws` for
+`whisper-ws.service`'s `ExecStart`.
+
+```bash
+nix build .#whisper-ws                       # from the repo root
+web/app/build.sh && cargo build              # from crates/whisper-ws, no nix for the web step
+```
+
+It came from `~/Projects/whisper-ws` (a `git+file://` flake input with its own
+`flake.nix`, whose `nixpkgs` pin was already overridden by a `follows` in
+`flake.lock`); the flake went away in the 2026-10-15 move and `package.nix` is
+that recipe, unchanged.

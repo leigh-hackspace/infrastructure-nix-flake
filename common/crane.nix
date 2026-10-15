@@ -75,6 +75,15 @@
     "switch-gui/frontend"
   ];
 
+  # Non-members that are not SPAs, same reason for the filter here: `whisper-ws`
+  # is a native crate but not a workspace member (its generated src/assets.rs
+  # means it cannot compile as one — see the header of its package.nix), and it is
+  # its own cargo workspace, so `cargo build` inside it writes a `target/` here
+  # that `cleanSourceFilter` would otherwise copy into every crate's source tree
+  # (it does not read .gitignore — the same trap as crates/target/, and the reason
+  # this list is a filter rather than a comment).
+  nonMemberPrograms = ["whisper-ws"];
+
   relativeToWorkspace = path: lib.removePrefix (toString workspaceRoot + "/") (toString path);
 
   workspaceSrc = lib.cleanSourceWith {
@@ -82,7 +91,7 @@
     filter = path: _type: let
       rel = relativeToWorkspace path;
     in
-      !lib.any (d: rel == d || lib.hasPrefix (d + "/") rel) spaMembers;
+      !lib.any (d: rel == d || lib.hasPrefix (d + "/") rel) (spaMembers ++ nonMemberPrograms);
   };
 
   workspaceLock = lockFile (workspaceRoot + "/Cargo.lock");

@@ -31,6 +31,16 @@
 # symlink (`frontend/dto -> ../dto`) locally and by `sharedCrates` in the Nix
 # build.  Same file, two materialisations, so the SPA and the API cannot disagree.
 #
+# ## The fifth non-member: `whisper-ws`
+#
+# `whisper-ws` is a native crate, not a SPA, and it is out of the workspace for a
+# different reason: its status page is a Solid.js/Vite app and `src/assets.rs`
+# (git-ignored) is *generated* from the built bundle, so a plain workspace member
+# would not compile until npm had run — and cargo reads every member's manifest
+# before it builds any of them.  It is in `crates/` because it is Rust and it is
+# built by `crates/whisper-ws/package.nix`; `common/crane.nix` filters it out of
+# `workspaceSrc` next to the SPAs.
+#
 # ## Building one crate
 #
 #   cargo build -p filestore          # from this directory
@@ -61,13 +71,18 @@ members = [
   "switch-gui",
   "switch-gui/dto",
 ]
-# Belt and braces: each SPA's own `[workspace]` table is what actually opts it
-# out, and this list says the same thing from the other side.  Cargo refuses a
-# package that sits inside a workspace directory without being a member or being
-# excluded, so if the two ever disagree the failure is loud rather than silent.
+# Belt and braces: each non-member's own `[workspace]` table is what actually
+# opts it out, and this list says the same thing from the other side.  Cargo
+# refuses a package that sits inside a workspace directory without being a member
+# or being excluded, so if the two ever disagree the failure is loud rather than
+# silent.  The four SPAs are out because they are wasm (above);
+# `whisper-ws` is out because its `main.rs` includes a generated `src/assets.rs`
+# that only exists after an npm build, so it could never compile as a member and
+# is packaged on its own (crates/whisper-ws/package.nix).
 exclude = [
   "filestore/frontend",
   "frigate-monitor/frontend",
   "gocardless-dashboard/frontend",
   "switch-gui/frontend",
+  "whisper-ws",
 ]

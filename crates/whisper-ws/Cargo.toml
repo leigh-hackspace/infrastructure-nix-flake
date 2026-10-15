@@ -1,0 +1,18 @@
+[package]
+name = "whisper-ws"
+version = "0.1.0"
+edition = "2021"
+
+# Not a member of the native workspace in crates/Cargo.toml, and it is this empty
+# table that keeps cargo from adopting it (the same mechanism the four Dioxus
+# SPAs use).  The reason is the generated src/assets.rs: main.rs will not compile
+# until the Vite app in web/app has been built, and cargo refuses a member whose
+# manifest points at files the tree does not have.  Built by
+# crates/whisper-ws/package.nix instead.
+[workspace]
+
+[[bin]]
+name = "whisper-ws"
+path = "src/main.rs"
+
+[dependencies]

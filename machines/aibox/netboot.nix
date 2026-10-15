@@ -5,7 +5,11 @@
   INFRA,
   ...
 }: let
-  sys = specialArgs.pi-room-sys.nixosConfigurations.pi-room-sys;
+  # The Pi Room image, as a built nixosSystem.  It is this flake's own
+  # `nixosConfigurations.pi-room-sys` (machines/pi-room-sys/README.md), handed to
+  # this module through specialArgs by flake.nix because an attrset cannot pass a
+  # sibling to its own member.
+  sys = specialArgs.piRoomSys;
   build = sys.config.system.build;
   nfsServer = "aibox.int.leighhack.org";
 in {
@@ -103,7 +107,7 @@ in {
           };
 
           "= /boot/logo.png" = {
-            alias = "${specialArgs.pi-room-sys.resources.leigh-logo}";
+            alias = "${../pi-room-sys/leigh-logo.png}";
           };
 
           "/" = {

@@ -146,8 +146,12 @@ explicit automounts + `_netdev` + `wait-for-network` ordering + `wait-for-nas`. 
 automount gotcha that made this necessary (unit-file mounts ignore
 `x-systemd.automount` in `Options=`) is a standing rule in `AGENTS.md`.
 
-Unchanged since: **evaluating aibox locally requires the `pi-room-sys` git input to
-exist at `/home/leigh-admin/Projects/pi-room-sys`.**
+Unchanged since: ~~**evaluating aibox locally requires the `pi-room-sys` git input
+to exist at `/home/leigh-admin/Projects/pi-room-sys`.**~~ **Fixed 2026-10-15** —
+that tree is `machines/pi-room-sys/` now and `whisper-ws` is `crates/whisper-ws/`,
+so the flake has no inputs outside its own checkout and `just check` runs on any
+box (which is what services2 needed to be able to act as the build machine for
+checks and not only builds).
 
 ## 2026-10-13 — borg server upgraded to 1.4.5
 

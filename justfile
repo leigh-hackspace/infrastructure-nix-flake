@@ -167,15 +167,13 @@ dns-sync-prune:
 router-known-hosts:
     ssh -i ~/.ssh/agent-hop-key -o BatchMode=yes root@10.3.1.1 'sh -c "ssh-keyscan -t ed25519,ecdsa,rsa 10.3.1.1 2>/dev/null"'
 
-# Pull the netboot input (pi-room-sys) to its latest revision.  Split out of
-# switch-netboot: a deploy recipe silently rewriting flake.lock is a side effect
-# nobody expects, and the pin should be an explicit act.
-update-netboot-input:
-    nix flake update pi-room-sys
-
 # Rebuild+switch for the netboot setup, then reboot the netbooted clients.
-# Assumes the pi-room-sys pin is already right — run update-netboot-input first
-# if you mean to move it.
+#
+# The image is `machines/pi-room-sys` — an in-tree machine, so edit it and
+# rebuild: there is no pin to move any more (it used to be a `git+file://` input
+# with a `just update-netboot-input` to drag flake.lock along, and the pin going
+# stale in silence is exactly why that is gone).  Boot flow and what aibox
+# exports: machines/pi-room-sys/README.md.
 switch-netboot:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -252,16 +250,6 @@ pxe-client-uefi:
     -display vnc=:0 \
     -vga qxl \
     -boot n \
-
-update-gocardless-input:
-    #!/usr/bin/env bash
-    set -euo pipefail
-
-    pushd /home/leigh-admin/Projects/gocardless-tools
-    git pull
-    popd
-
-    nix flake update gocardless-tools
 
 update-pkgs:
     nix flake update nixpkgs

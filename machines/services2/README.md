@@ -79,8 +79,11 @@ Things that bind `0.0.0.0` because the proxy/scrape comes from another box: Graf
   made the box go unresponsive — journald was logging "Under memory pressure, flushing caches"
   — and a build here had nowhere to go). `size` in that entry is what makes nixpkgs create and
   `mkswap` the file at boot; see the comment there for why a file and not a partition.
-- `just check` cannot run here: it evaluates aibox, which needs the `whisper-ws` and
-  `pi-room-sys` checkouts under `~/Projects/`. Run checks from services1.
+- `just check` runs here: the flake has no inputs outside its own tree, so
+  evaluating aibox needs nothing that is not in the checkout. (Until 2026-10-15 it
+  could not — `whisper-ws` and `pi-room-sys` were `git+file:///home/leigh-admin/Projects/…`
+  inputs and aibox would not evaluate without those checkouts. They are in-tree now,
+  as `crates/whisper-ws/` and `machines/pi-room-sys/`.)
 
 ## Network
 
@@ -102,12 +105,12 @@ cd ~/Projects/infrastructure-nix-flake
 sudo nixos-rebuild switch --flake .#services2 && sudo nixos-confirm
 ```
 
-This flake evaluates here without the two local `git+file://` inputs
-(`whisper-ws`, `pi-room-sys`): they are aibox-only, and Nix only fetches the
-inputs an output actually uses (verified at install time — `.#services2`
-evaluated to the same derivation on this box and on services1). `nix flake
-check` / `just check` do evaluate aibox, so those need the checkouts under
-`~/Projects/` before they will pass here.
+This flake evaluates here with no local checkouts of its own: every input is a
+network-wide source, and the two programs it builds live in the tree
+(`crates/whisper-ws/`, `machines/pi-room-sys/`). `nix flake check` / `just check`
+evaluate all five configurations, so they work from this box too — that is the
+change the 2026-10-15 move bought, and it is what makes services2 usable as the
+network's build machine for *checks* and not only for builds.
 
 There is no `system-good` generation yet, so `auto-rollback` is inert until the
 first `nixos-confirm` (which `just switch` runs for you).

@@ -20,13 +20,12 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
-    whisper-ws = {
-      url = "git+file:///home/leigh-admin/Projects/whisper-ws"; # WebSocket gateway for whisper.cpp
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
-
-    pi-room-sys = {
-      url = "git+file:///home/leigh-admin/Projects/pi-room-sys";
+    # The software centre the Pi Room netboot image ships in its
+    # `environment.systemPackages`.  It used to be an input of that tree's own
+    # flake (machines/pi-room-sys, `nixosConfigurations.pi-room-sys` below), which
+    # is why the network has an input for a machine nobody can SSH into.
+    nix-software-center = {
+      url = "github:snowfallorg/nix-software-center";
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
@@ -53,7 +52,7 @@
     nixpkgs,
     nixos-utils,
     llama-cpp,
-    whisper-ws,
+    nix-software-center,
     ...
   } @ flakeInputs: let
     system = "x86_64-linux";
@@ -67,6 +66,56 @@
     # as `INFRA`), so shared helpers are not re-imported in each file.
     extraArgs = {
       INFRA = import ./common/systemd.nix {lib = nixpkgs.lib;};
+    };
+
+    # The package set things that are not a machine's own `pkgs` are built with:
+    # `packages.*` below, and the one package an overlay puts into aibox's set.
+    pkgs = import nixpkgs {
+      inherit system;
+      config = {
+        allowUnfree = true;
+      };
+    };
+
+    # crates/whisper-ws, from its own recipe: it is Rust, so it lives in crates/,
+    # but it is not a workspace member and not built by common/crane.nix — the
+    # header of crates/whisper-ws/package.nix says why.  aibox's overlay below is
+    # what puts it in `pkgs.whisper-ws` for whisper-ws.service's ExecStart.
+    whisperWsPkg = pkgs.callPackage ./crates/whisper-ws/package.nix {};
+
+    # The Pi Room computers' image: a machine, but one nobody switches.  It is a
+    # nixosConfiguration like any other in here, and it is *built by* aibox rather
+    # than deployed — machines/aibox/netboot.nix serves its kernel, initrd,
+    # kernel params and squashfs store over iPXE + NFS, and reads this value out
+    # of specialArgs to do it.  So it is a `let` binding and not an entry of
+    # `nixosConfigurations` directly: aibox's config needs it, and an attrset
+    # cannot refer to its own sibling.
+    #
+    # Deliberately absent: `nixos-utils.nixosModules.rollback`.  The root is a
+    # tmpfs over a squashfs mounted off aibox and there is no profile to mark
+    # good, so auto-rollback would be a timer that reboots a client into a
+    # generation that does not exist.
+    #
+    # `nfsServer` is the address the *image* mounts its store from and it is an IP
+    # for the reason written next to it in the file that came with this tree ("DNS
+    # is too slow"); the iPXE menu that boots the image uses aibox's hostname, and
+    # that string lives in machines/aibox/netboot.nix.
+    piRoomSys = nixpkgs.lib.nixosSystem {
+      inherit system;
+      pkgs = import nixpkgs {
+        inherit system;
+        config = {
+          allowUnfree = true;
+        };
+      };
+      specialArgs = flakeInputs // extraArgs;
+      modules = [
+        ./machines/pi-room-sys/configuration.nix
+        ((import ./machines/pi-room-sys/netboot.nix) {nfsServer = "10.3.1.32";})
+        {
+          environment.systemPackages = [nix-software-center.packages.${system}.nix-software-center];
+        }
+      ];
     };
   in {
     nixosConfigurations = {
@@ -140,7 +189,16 @@
             allowUnfree = true;
           };
         };
-        specialArgs = flakeInputs // extraArgs;
+        # `piRoomSys` because this box serves that image: machines/aibox/netboot.nix
+        # reads its build tree (kernel, initrd, kernel params, squashfs store) and
+        # its boot logo.  It is passed in rather than imported because it is a
+        # nixosSystem, not a module.
+        specialArgs =
+          flakeInputs
+          // extraArgs
+          // {
+            piRoomSys = piRoomSys;
+          };
         modules = [
           nix-shell-registry
 
@@ -167,7 +225,7 @@
                   # llama-cpp-leigh-rocm = llama-cpp.packages.${pkgs.stdenv.hostPlatform.system}.rocm;
                   llama-cpp-leigh-vulkan = llama-cpp.packages.${pkgs.stdenv.hostPlatform.system}.vulkan;
                   # llama-cpp-cpu = llama-cpp.packages.${pkgs.stdenv.hostPlatform.system}.default;
-                  whisper-ws = whisper-ws.packages.${pkgs.stdenv.hostPlatform.system}.default;
+                  whisper-ws = whisperWsPkg;
                 })
               ];
             }
@@ -176,6 +234,13 @@
           ((import ./machines/aibox) flakeInputs)
         ];
       };
+
+      # The Pi Room netboot image.  Here so it is evaluated and built by this
+      # flake like every other machine — `nixos-rebuild --flake .#pi-room-sys`
+      # would not do anything to a host, because there is no host: aibox boots
+      # these machines over iPXE and they mount their store off aibox at runtime.
+      # The why of the whole thing is in machines/pi-room-sys/README.md.
+      pi-room-sys = piRoomSys;
 
       # The router.  It has no hardware yet — machines/gw/README.md is the reason,
       # and the short version is that this entry exists so the config is *evaluated*
@@ -222,11 +287,11 @@
     #
     # `nix build .#strata-cuda` - the same engine built for services2's RTX
     # 3060 (CUDA 13.0 / sm_86), from the bleeding-edge `strata` flake input.
+    #
+    # `nix build .#whisper-ws` - the aibox WebSocket gateway (crates/whisper-ws,
+    # built by its own recipe).  It is a package here as well as an overlay entry
+    # so it can be built on its own without the whole aibox system.
     packages.${system} = let
-      pkgs = import nixpkgs {
-        inherit system;
-        config = {allowUnfree = true;};
-      };
       pkgsCuda = import nixpkgs {
         inherit system;
         config = {
@@ -235,6 +300,7 @@
         };
       };
     in {
+      whisper-ws = whisperWsPkg;
       strata = pkgs.callPackage ./machines/aibox/strata-package.nix {};
       strata-cuda = pkgsCuda.callPackage ./machines/services2/strata-package.nix {
         src = flakeInputs.strata.outPath;

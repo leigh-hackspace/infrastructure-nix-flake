@@ -74,7 +74,7 @@
     },
     "flake-utils_2": {
       "inputs": {
-        "systems": "systems_2"
+        "systems": "systems_3"
       },
       "locked": {
         "lastModified": 1731533236,
@@ -116,7 +116,6 @@
       "inputs": {
         "nixos-appstream-data": "nixos-appstream-data",
         "nixpkgs": [
-          "pi-room-sys",
           "nixpkgs"
         ],
         "utils": "utils"
@@ -138,12 +137,10 @@
     "nixos-appstream-data": {
       "inputs": {
         "flake-utils": [
-          "pi-room-sys",
           "nix-software-center",
           "utils"
         ],
         "nixpkgs": [
-          "pi-room-sys",
           "nix-software-center",
           "nixpkgs"
         ]
@@ -231,38 +228,16 @@
         "type": "github"
       }
     },
-    "pi-room-sys": {
-      "inputs": {
-        "nix-software-center": "nix-software-center",
-        "nixpkgs": [
-          "nixpkgs"
-        ]
-      },
-      "locked": {
-        "lastModified": 1782987155,
-        "narHash": "sha256-xnFm9JrrDAbYGaass5jPcVhLGiGP4In+SmEz/meg0lI=",
-        "ref": "refs/heads/main",
-        "rev": "f025a93f522e08f0c56b2b3a1e260703e29b2d6c",
-        "revCount": 1,
-        "type": "git",
-        "url": "file:///home/leigh-admin/Projects/pi-room-sys"
-      },
-      "original": {
-        "type": "git",
-        "url": "file:///home/leigh-admin/Projects/pi-room-sys"
-      }
-    },
     "root": {
       "inputs": {
         "crane": "crane",
         "door-entry-management-system": "door-entry-management-system",
         "llama-cpp": "llama-cpp",
+        "nix-software-center": "nix-software-center",
         "nixos-utils": "nixos-utils",
         "nixpkgs": "nixpkgs_2",
-        "pi-room-sys": "pi-room-sys",
         "sops-nix": "sops-nix",
-        "strata": "strata",
-        "whisper-ws": "whisper-ws"
+        "strata": "strata"
       }
     },
     "sops-nix": {
@@ -352,7 +327,7 @@
     },
     "utils": {
       "inputs": {
-        "systems": "systems_3"
+        "systems": "systems_2"
       },
       "locked": {
         "lastModified": 1731533236,
@@ -366,26 +341,6 @@
         "owner": "numtide",
         "repo": "flake-utils",
         "type": "github"
-      }
-    },
-    "whisper-ws": {
-      "inputs": {
-        "nixpkgs": [
-          "nixpkgs"
-        ]
-      },
-      "locked": {
-        "lastModified": 1787769037,
-        "narHash": "sha256-ZwpI1A27Q/reCK8oScsMvWhREldrQmuTOLX8kpMHfAU=",
-        "ref": "refs/heads/master",
-        "rev": "d673722296cfa391bc53ca76798143d454591227",
-        "revCount": 4,
-        "type": "git",
-        "url": "file:///home/leigh-admin/Projects/whisper-ws"
-      },
-      "original": {
-        "type": "git",
-        "url": "file:///home/leigh-admin/Projects/whisper-ws"
       }
     }
   },

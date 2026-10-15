@@ -47,7 +47,8 @@ in {
   };
 
   # OpenAI-Realtime-compatible WebSocket gateway in front of whisper-server
-  # (source: ~/Projects/whisper-ws, stdlib-only Rust). Clients speak the
+  # (source: crates/whisper-ws, stdlib-only Rust, packaged by its own
+  # crates/whisper-ws/package.nix). Clients speak the
   # Realtime transcription subset over ws://10.3.1.32:8083/v1/realtime
   # (input_audio_buffer.append/commit → transcription.completed).
   systemd.services.whisper-ws = INFRA.mkNeverGiveUp {

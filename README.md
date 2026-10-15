@@ -9,8 +9,12 @@ infrastructure.
 crates/        every Rust crate; one cargo workspace (crates/Cargo.toml)
   common-rs/     the shared in-tree crates (json, oidc, web, pg, service, …)
   <program>/     one directory per service or tool; its Dioxus SPA in frontend/
+                 (five are not workspace members: the four SPAs' `frontend/`s,
+                 which are wasm, and `whisper-ws/`, which is packaged on its own)
 common/        Nix modules shared by every machine (crane helpers, hosts, nginx)
 machines/      one directory per machine; services/ one file per service
+               (`pi-room-sys/` is the image aibox netboots the Pi Room with, and
+               `gw/` is the router with no hardware yet — neither is deployed)
 secrets/       sops-encrypted
 docs/          reference docs (services, builds, DNS, switches, backups) plus the
                write-ups, post-mortems and audits the backstory points to
@@ -26,7 +30,6 @@ follow-ups).
 ```bash
 just boot               # Build for next reboot (chains sudo nixos-confirm)
 just switch             # Build and apply now (chains sudo nixos-confirm)
-just update-netboot-input  # Move the pi-room-sys (netboot image) input pin
 just switch-netboot     # Rebuild/switch the netboot setup and restart clients
 just hard-reboot        # sysrq hard reboot — no orderly shutdown
 
