@@ -291,28 +291,44 @@ check:
 # Deploy-readiness: build every machine's system derivation without touching the
 # running system.  `nix flake check` only *evaluates*, so a module that evaluates
 # but fails to build (bad package, bad derivation arg, broken SPA bundle) still
-# reaches `just switch`.  dry-build does the whole build and stops before
-# activating anything — deliberately not `switch`/`boot`.
+# reaches `just switch`.  This does the whole build and stops short of activating
+# anything — deliberately not `switch`/`boot`.
 #
-# Slower than `just check` (it compiles what changed), so run it before a deploy
-# rather than on every edit.
+# This is `nix build` on the toplevel, NOT `nixos-rebuild dry-build`.  This box's
+# nixos-rebuild is nixos-rebuild-ng, and its man page defines dry-build as "Show what
+# store paths would be built or downloaded by any of the operations above, but
+# otherwise do nothing": on the 2026-10-15 network upgrade (first run of
+# docs/network-upgrade-runbook.md) it evaluated all three systems, printed a
+# 786-derivation "these derivations will be built" list, exited 0 in under a minute
+# and had compiled nothing.  `nixos-rebuild build`/`boot` do compile, but they also
+# write a boot loader entry, so the next reboot comes up on a configuration nobody
+# ever activated.  `nix build` on config.system.build.toplevel builds the very same
+# derivation with neither side effect: no profile, no boot entry, no
+# /run/current-system, so the autoRollback timer stays unarmed.
+#
+# Slower than `just check` — a nixpkgs bump is hundreds of derivations — so run it
+# before a deploy rather than on every edit, detached, and poll it (rule 11).  The
+# work is delegated to services2, which also runs strata at ~28 GiB RSS against
+# 30 GiB of RAM, so poll swap/load on the builder as well as this log: a build storm
+# there is the outage that takes the monitor down (machines/services2/README.md).
 check-build:
     #!/usr/bin/env bash
     set -euo pipefail
     for m in services1 services2 aibox; do
-        echo "=== nixos-rebuild dry-build $m"
-        nixos-rebuild dry-build --flake ".#$m"
+        echo "=== nix build $m toplevel"
+        nix build --no-link --print-out-paths ".#nixosConfigurations.$m.config.system.build.toplevel"
     done
     echo "all three systems build"
 
-# Offload a build to services2 (common/build-farm.nix).  `--max-jobs 0` is what
-# makes the delegation happen — with the default max-jobs the client builds locally
-# anyway, which is why `just switch` and `just check-build` do not use it: a build
-# that falls back to local is worth more than one that fails because the builder is
-# down.  Currently this cannot work: `nix.distributedBuilds` is false because the
-# builder's build-user cleanup SIGKILLs the ssh connection carrying the delegated
-# build (empty log, exit 1) — see the comment in common/build-farm.nix and
-# docs/nix-build-sigkill-2026-10-11.md.  Re-enable it there first.
+# Offload a build to services2 and refuse to fall back (common/build-farm.nix).
+# `nix.distributedBuilds` is true, so nix already prefers the external builder for
+# every build and only comes back local when no builder is available — `just switch`
+# and `just check-build` are therefore already remote, and that is deliberate (a
+# build that falls back is worth more than one that fails because the builder is
+# down).  `--max-jobs 0` is for when you need the opposite guarantee: it removes the
+# local fallback, so the build fails loudly instead of quietly compiling on the box
+# you are standing on.  It is the recipe to reach for when the builder is idle and
+# the local disk is climbing.
 build-remote machine="services1":
     #!/usr/bin/env bash
     set -euo pipefail
