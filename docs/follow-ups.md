@@ -12,18 +12,32 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
 
 ## Nix / build
 
-- **`nix flake check` is not warning-free: services2 prints a Grafana one** (noticed
-  2026-10-14 while checking the `gw` machine; unrelated to it). Checking
-  `nixosConfigurations.services2` emits `evaluation warning: Grafana passwords will
-  be stored as plaintext in the Nix store! Use file provider or an env-var instead.`,
-  which by rule 9 is a finding: either the Grafana provisioner moves to the file
-  provider / `GF_SECURITY_ADMIN_PASSWORD__FILE`-style env, or the warning is the
-  documented exception. `just check` still cannot reach it, but for a different
-  reason since 2026-10-15: `nix flake check` now evaluates past `aibox` (its
-  inputs are in-tree) and dies on `services1` with the pre-existing
-  `error: path '…-sops-secret-<name>.drv' is not valid` that AGENTS.md documents —
-  so until that is settled, run `nix flake check --no-build` per machine when you
-  need the warnings for one of them.
+- **`nix flake check` is not warning-free: two findings, both reachable now**
+  (noticed 2026-10-14 while checking the `gw` machine; re-read on 2026-10-15 during
+  the network upgrade). Checking `nixosConfigurations.services2` emits
+  `evaluation warning: Grafana passwords will be stored as plaintext in the Nix
+  store! Use file provider or an env-var instead.`, which by rule 9 is a finding:
+  either the Grafana provisioner moves to the file provider /
+  `GF_SECURITY_ADMIN_PASSWORD__FILE`-style env, or the warning is the documented
+  exception. **The blocker that used to hide it is gone at the 2026-10-14 lock:**
+  `nix flake check` no longer dies on
+  `error: path '…-sops-secret-<name>.drv' is not valid` — it reaches all five
+  configurations (`services1`, `services2`, `aibox`, `pi-room-sys`, `gw`) and exits
+  0, so both warnings are now visible from one command and both are findings.
+  (Note `nix flake check` is not a cheap eval gate: it *builds* `packages.strata`,
+  `packages.strata-cuda`, `packages.whisper-ws` and the devShell — ~10 minutes on a
+  lock bump.)
+
+- **`packages.strata-cuda` emits four upstream deprecation warnings (open, one
+  line).** `checking derivation packages.x86_64-linux.strata-cuda` prints
+  `stdenv.isLinux` / `isAarch64` / `isDarwin` "is deprecated, use
+  stdenv.hostPlatform.…". They are not ours — nothing in this tree says `stdenv.is*`
+  (`grep -rn 'stdenv\.is' --include=*.nix` is empty) — they come from the CUDA-enabled
+  package set `pkgsCuda` (`nixpkgs` with `cudaSupport = true`, `flake.nix:295`) and
+  the `cudaPackages_13_0` overlays. Rule 9 says a warning is a finding, so either
+  they get an exception here with a pointer to the upstream file that still uses the
+  old attribute, or they go when nixpkgs' CUDA glue does. `packages.strata` (the
+  HIP one on aibox) is clean.
 
 - **`crates/target/` is not excluded from `workspaceSrc` (open, one line).**
   `common/crane.nix` filters the four SPA directories and `whisper-ws` out of
@@ -48,7 +62,46 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   existed is gone entirely: the flake has no `~/Projects` inputs to copy.)
 
 - **services2 has no swap partition** (services1 has 18 GB). Fine at the current
-  load, worth matching before it runs anything heavier than builds.
+  load, worth matching before it runs anything heavier than builds. **Update
+  2026-10-15:** it has 15 GB of *swap file* (`/var/swap/services2` — the
+  `DEVICE=/var/swap/services2` in its units is swapon), so the partition is absent
+  but the swap is not; what is true is that a full three-machine build pushed the
+  box to 0 MiB free and ~6 GiB swap while strata held 24-26 GiB resident. It survived;
+  the margin is not there twice.
+
+- **Declare root's `safe.directory` for the repo, or stop depending on it** (found
+  2026-10-15, first run of `docs/network-upgrade-runbook.md`). `sudo nixos-rebuild
+  switch --flake .` opens the checkout as **root**, and root's HOME is `/root`
+  (`sudo`'s `secure_path`/`env_reset`), so git's ownership check fires: `repository
+  path '…infrastructure-nix-flake' is not owned by current user (libgit2 error code
+  = 7)`. services1 and services2 have `/root/.gitconfig` with
+  `safe.directory = /home/leigh-admin/Projects/infrastructure-nix-flake`; **aibox
+  did not**, and its first switch of the run died on it in the first second. That is
+  imperative, undeclared, per-host state under the single most-used command in the
+  repo — one `nix.settings`-adjacent line (or `programs.git.safeDirectories` for
+  root, or `sudo` keeping `HOME`) makes three boxes agree. Until then Phase 0 checks
+  it, because the failure looks like a permissions bug in the deploy rather than a
+  missing config file on one box.
+
+- **aibox's netboot export makes every switch of that box exit 4** (found
+  2026-10-15). `/exports/netboot-squashfs` is a `fileSystems` **bind mount of a
+  store path** (`machines/aibox/netboot.nix`), so the source changes on every
+  nixpkgs bump; the mount unit is boot-generated from `/etc/fstab` (nothing in the
+  toplevel's `etc/systemd/system`), so activation's `systemctl restart` of it fails
+  *after* `/run/current-system` has flipped and after nginx/sshd/immich/strata have
+  restarted. The workaround is the `just switch-netboot` dance (`umount -f -l` +
+  `mount -a`, then switch again) and it is now written into the runbook; the fix is
+  to stop the export path from moving — export a directory that holds a **symlink**
+  to the current image (or `linkAs` the squashfs into a stable name), so the bind
+  mount is created once and never restarted. Until then: aibox's switch is expected
+  to fail once, and the second failure is the stop condition.
+
+- **`just switch-netboot` reboots ten clients to change a file aibox already
+  has** (2026-10-15). The clients NFS-mount `/nix/store` from aibox
+  (`/exports/nix-store`), so a new image's kernel/initrd/store paths are already
+  served; the reboot is only needed to make running clients *re-read* the export.
+  Splitting "re-point the export" (no client impact) from "reboot the clients" is
+  what the runbook currently has to do by hand.
 
 ## Machines / access
 
@@ -97,6 +150,17 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   public names are added by hand in DO DNS and these two never were. Either add the
   records (public apps CNAME → `nginx.leighhack.org`) or drop the vhosts and the
   endpoint.
+
+- **Three gatus checks point at names that have never existed** (found 2026-10-15
+  while taking the upgrade's endpoint baseline). `common/monitoring-endpoints.nix`
+  monitors `http://3d-1.int.leighhack.org`, `3d-2` and `3d-3`; `getent` says
+  NXDOMAIN and `common/dns-records.nix` has no such devices — the printers are
+  `3d-blue` (10.3.14.62) and `3d-lime` (10.3.14.61), and there is no third. So three
+  of the network's ~30 checks have been red since they were written, which is worse
+  than no check: it trains the reader to ignore the red. Either the names are the
+  old ones and the file is stale, or a third printer was planned and never bought.
+  Fix the endpoints to the two real names (and say why a check is allowed to be red
+  if it ever is again).
 
 - **Nothing monitors the borg server** (`nas2.int:3022`), so a dead `borg-server`
   container only shows up as a failed nightly job — and one nightly run has already

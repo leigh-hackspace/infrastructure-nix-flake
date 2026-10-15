@@ -9,6 +9,80 @@ Still-open items live in `docs/follow-ups.md`.
 
 ---
 
+## 2026-10-15 — the first full network upgrade, and the four things its runbook got wrong
+
+`docs/network-upgrade-runbook.md` was written the day before it was first executed.
+That is the only way to find out what a runbook is worth: **all three boxes are now
+on `26.11.20261014.319e4ce`** (nixpkgs `8edc0c72e3a`/2026-10-08 →
+`319e4cebef1`/2026-10-14, plus crane, nixos-utils, sops-nix; strata,
+nix-software-center and door-entry were offered to the same `nix flake update` and
+legitimately did not move; llama-cpp left pinned to the model branch), 0 failed
+units, `cur == system-good` on all three, no reboots, endpoint probe identical to
+the pre-run baseline, prometheus `count(up)` 12 / `count(up==0)` empty.
+
+**The gate that gated nothing.** `just check-build` was `nixos-rebuild dry-build`.
+This box's `nixos-rebuild` is nixos-rebuild-ng, whose own man page says dry-build
+"[s]how[s] what store paths would be built or downloaded … but otherwise do
+nothing". Measured: three machines, a 786-derivation "these derivations will be
+built" list, **exit 0 in 57 seconds, nothing compiled, builder load 0.00**. The
+Phase 3 gate — the one that exists because `nix flake check` cannot catch "evaluates
+but will not build" — had never caught anything. It is now `nix build` on each
+machine's `config.system.build.toplevel`: the same derivation, and unlike
+`nixos-rebuild build`/`boot` it writes no boot loader entry, so the next reboot
+cannot silently come up on a configuration nobody activated. The real gate then
+took **77 minutes** and 2 310 derivations, which is the number the runbook now
+quotes instead of "slower than `just check`".
+
+**A confirm is a claim about the running system, so never confirm a failed
+switch.** aibox's first switch exited 4 — activation died on
+`Failed to restart exports-netboot\x2dsquashfs.mount` — but `/run/current-system`
+had already been flipped to the new toplevel and nginx/sshd/immich/strata had all
+restarted, and the chained `nixos-confirm` (from the `systemd-run` recipe in
+`docs/nix-dev-workflow.md`, which ran it unconditionally) marked that half-activated
+generation good. That is the exact state auto-rollback exists to catch, disarmed by
+the tool whose job was to arm it. The recipe is now `&&`-style: confirm only on
+exit 0. The mount itself is the second finding: `/exports/netboot-squashfs` is a
+bind mount **of a store path**, so its source moves on every nixpkgs bump, and the
+unit is boot-generated from `/etc/fstab` so a switch can never restart it. The fix
+is the `just switch-netboot` dance without the client reboot — `umount -f -l`,
+`mount -a`, switch again — and the real fix (a stable export directory holding a
+symlink) is in `docs/follow-ups.md`. Nothing was actually broken: no client was
+mounting the export, `/nix/store` is served read-only to the whole VLAN, and the
+clients pick the new image up on their next boot.
+
+**The deploy depended on state that exists on two of the three boxes.** aibox's
+switch died in one second with `repository path '…' is not owned by current user
+(libgit2 error code = 7)`: `sudo nixos-rebuild --flake .` opens the checkout as
+root, root's HOME is `/root`, and only services1 and services2 have
+`safe.directory` in `/root/.gitconfig`. Undeclared, imperative, per-host — and
+invisible to every eval this repo has. Phase 0 now checks it alongside `df`.
+
+**Two smaller corrections worth the sentence.** `nix flake check` at the new lock
+reaches all five configurations and exits 0: the `sops-secret-….drv is not valid`
+error that `AGENTS.md` and two docs call the known-bad baseline **did not
+reproduce**, so "the baseline is red" was a fact about the 2026-10-08 lock, not a
+law — and the two warnings rule 9 wants gone (Grafana plaintext `secret_key`, and
+four `stdenv.is*` deprecations from the CUDA package set behind
+`packages.strata-cuda`) are now both visible from one command. And delegation is
+lumpier than the docs imply: the fixed-output download derivations are
+`preferLocalBuild`, so services1 built 754 of its own 916 while the builder idled
+at load 0.0 — and services1's load average reached 37 while every SSO vhost kept
+answering in 8-50 ms. **Judge a box by endpoint latency, not by load**, because its
+baseline already includes frigate's ffmpeg workers.
+
+Order used: services1 → services2 → aibox, which is *not* the runbook's default
+(services1 → aibox → services2). It was benign — Phase 3 had finished, so nothing
+was delegated to the builder, and services2 gives the other two boxes nothing but
+monitoring — but the reason the default puts the monitor last is that switching it
+blinds the run for every box after it, and that is now written down where I will
+read it next time. Kernel bumps were patches (6.18.55→6.18.56, aibox
+7.2.9→7.2.10) and postgres stayed 17.11, so no reboot and no migration; immich is a
+pinned container image, so the mobile-client check did not apply. `jq` and
+`python3` were added to `common/tools.nix` mid-run because inspecting a `flake.lock`
+or a prometheus response without them costs more tool calls than it saves.
+
+---
+
 ## 2026-10-14 — evaluation warnings cleaned up (deployed)
 
 `nix flake check --no-build` is warning-free now, which is what makes it a useful

@@ -27,12 +27,12 @@ Skim this; the detail below is what each step means.
 2. Confirm every box is *settled* (`/run/current-system` = `system-good`).
 3. Put the whole network on **one commit**: push local work, then reset each box to it.
 4. Decide, per input, whether the upgrade moves it. Update `flake.lock` deliberately, commit it.
-5. `just check` (evaluate everything, activate nothing). Expect the known non-green baseline.
-6. `just check-build` (build all three machines, activate nothing) — offloaded, polled.
+5. `just check` (evaluate everything, activate nothing). Re-read the baseline at the new lock.
+6. `just check-build` (build all three machines' toplevels, activate nothing) — detached, polled, ~75 min for a nixpkgs bump.
 7. Read the diff for **interface** changes (ports, addresses, APIs). They reorder step 10.
 8. Decide per box whether the upgrade changes the kernel. A kernel change means a reboot.
 9. Pick the order: services1 → aibox → services2, unless 7 said otherwise.
-10. Land one box: `switch` **and** `nixos-confirm` in one shell invocation.
+10. Land one box: `switch` **and** `nixos-confirm` in one shell invocation — chained with `&&`, so a failed switch is never confirmed.
 11. Verify that box before starting the next one. Never two boxes mid-switch at once.
 12. Repeat 10–11 for the next box.
 13. Do the network's own after-effects: DNS records, netboot image, printers, VMs, router.
@@ -105,6 +105,44 @@ readlink /run/current-system /nix/var/nix/profiles/system-good   # must be equal
 systemctl --failed --no-pager --no-legend                        # must be empty
 df -h / ; df -h /home                                            # build headroom
 pgrep -a -f "nix eval|nix build|nixos-rebuild"                   # no survivors
+```
+
+Then the **imperative state the deploy itself depends on**, which no eval will
+tell you about and which is not the same on all three boxes (each of these has
+now cost a failed switch):
+
+```bash
+for h in 10.3.1.20 10.3.1.21 10.3.1.32; do
+  timeout 20 ssh -i ~/.ssh/agent-hop-key -o ConnectTimeout=5 -o BatchMode=yes leigh-admin@$h \
+    'echo "$(hostname): root_safe_directory=$(sudo git config --global --get-all safe.directory | paste -sd, -) tailscaled=$(systemctl is-enabled tailscaled 2>&1) swap=$(free -g | awk "NR==3{print $2}") esp_free=$(sudo df -h /boot/EFI | awk "NR==2{print $4}")"'
+done
+```
+
+- **`root_safe_directory` empty** → a `sudo nixos-rebuild --flake .` on that box
+  fails instantly with libgit2's "not owned by current user". Set it before you
+  need it (`sudo git config --global --add safe.directory
+  /home/leigh-admin/Projects/infrastructure-nix-flake`).
+- **`tailscaled` is `not-found` on services2 and aibox** — only services1 runs
+  tailscale (and headscale). "Check tailscale is up" is not a per-box check here;
+  asking a box for a unit it has never had wastes a poll and reads as a regression.
+- **`esp_free` matters when the kernel bumps**: three kernels' worth of a new
+  generation lands in the ESP on the next boot, and a 400 MB-full ESP turns a
+  reboot into a rescue job. 2026-10-15: 401-428 MB free on all three.
+
+And a **baseline of what is already red**, because the monitor's own list contains
+checks that have never passed and you will otherwise spend the run blaming
+yourself: probe every URL in `common/monitoring-endpoints.nix` once, save the
+output, and diff the post-switch runs against *that* rather than against "all
+green". On 2026-10-15 four of them were already failing before anything moved:
+`https://status.leighhack.org` (the vhost exists on services1's nginx, the
+DigitalOcean record does not — and `just dns-sync-check` cannot see it, because it
+only audits `*.int`), and `http://3d-{1,2,3}.int.leighhack.org` (no such names;
+the printers are `3d-blue` / `3d-lime` — see `docs/follow-ups.md`).
+
+```bash
+for u in $(grep -oE 'https?://[^"]+' common/monitoring-endpoints.nix | tr -d '"' | sort -u); do
+  printf '%s %s\n' "$(curl -sk -o /dev/null -m 6 -w '%{http_code}' "$u" || echo ERR)" "$u"
+done > /tmp/nu-endpoints-base.txt
 ```
 
 Then the same four lines on the other two boxes, in one hop each:
@@ -253,58 +291,113 @@ network's date.
 
 ## Phase 3 — build everything, activate nothing
 
-`just check-build` is `nixos-rebuild dry-build --flake` for all three machines:
-it compiles every crate, every SPA, every container, every kernel module, and
-activates nothing. It is the gate that catches "evaluates but will not build",
-which `nix flake check` does not.
+`just check-build` builds all three machines' system toplevels and activates
+nothing. It is the gate that catches "evaluates but will not build", which
+`nix flake check` does not.
 
 ```bash
-just check          # nix flake check + the two assertion evals + alejandra --check
+just check          # nix flake check + the assertion evals + alejandra --check
 just check-build    # all three machines, nothing activated
 ```
 
-**The baseline is not green, and you must know it before you read a failure as
-yours.** As of 2026-10-15, from services1:
+**`just check-build` used to be `nixos-rebuild dry-build`, and it never built
+anything.** This box's `nixos-rebuild` is nixos-rebuild-ng, whose man page
+defines `dry-build` as "Show what store paths would be built or downloaded by any
+of the operations above, but otherwise do nothing". The first run of this runbook
+(2026-10-15) measured it: all three machines, a 786-derivation "these derivations
+will be built" list for services1, **exit 0 in 57 seconds, nothing compiled, the
+builder at load 0.00**. The gate that was supposed to catch "evaluates but will
+not build" caught nothing. It is now `nix build` on
+`nixosConfigurations.<m>.config.system.build.toplevel` — the same derivation,
+with neither of the two bad alternatives: `nixos-rebuild build`/`boot` do compile,
+but they write a boot loader entry, so the next reboot comes up on a configuration
+nobody ever activated. A toplevel build touches no profile, no boot entry, no
+`/run/current-system`, so it cannot arm the auto-rollback timer either.
 
-- `nix flake check --no-build` checks `services1` (clean), then dies on
-  `services2` with `error: path '...-sops-secret-grafana_secret_key.drv' is not
-  valid`, from `services.grafana.settings.security.secret_key` in
-  `machines/services2/monitoring.nix`. **It never reaches `aibox` or `gw`** —
-  `nix flake check` stops at the first failing output. So a "passing-looking"
-  check is not a network-wide check, and the per-machine gate is
-  `nixos-rebuild dry-build --flake .#<machine>` (which is what `just check-build`
-  runs). `gw` is deliberately in neither gate (`machines/gw/README.md`).
-- The Grafana *warning* (plaintext `secret_key`) is the same attribute, and is
-  open in `docs/follow-ups.md`. It is a finding, not yours to fix mid-upgrade.
-- Verify against clean HEAD (`git stash`) before hunting any error you think
-  your change caused (rule 9).
+**Budget it, do not guess it.** The 2026-10-15 run (one nixpkgs bump, 2026-10-08 →
+2026-10-14, plus crane/nixos-utils/sops-nix) took **77 minutes** and produced
+2 310 built derivations: services1 ~10 min (786 drvs), services2 ~4 min (121),
+aibox ~63 min (1 404, of which the strata CUDA engine and the pi-room-sys
+`mksquashfs` were the long poles). Run it detached to a log and poll; a tool call
+is not a place to sit through that.
+
+**The baseline is not green, and you must know it before you read a failure as
+yours.** As of the 2026-10-08 lock, from services1, `nix flake check --no-build`
+died on `services2` with `error: path '...-sops-secret-grafana_secret_key.drv' is
+not valid` (from `services.grafana.settings.security.secret_key` in
+`machines/services2/monitoring.nix`) having checked `services1` only —
+`nix flake check` stops at the first failing output, so a "passing-looking" check
+was never a network-wide check. **On the 2026-10-14 lock that error did not
+reproduce: `nix flake check` reached all five configurations and exited 0** (the
+Grafana plaintext-`secret_key` *warning* is still there, and is open in
+`docs/follow-ups.md`). Re-read the baseline at the new lock instead of inheriting
+the sentence, and verify against clean HEAD (`git stash`) before hunting any error
+you think your change caused (rule 9). `gw` is deliberately in neither gate
+(`machines/gw/README.md`).
 
 Build discipline for the long part:
 
-- **Offload it.** `nix.distributedBuilds = true` and nix 2.34 *prefers* the
-  external builder, so a plain build on services1 already runs on services2 and
-  copies the result back. `just build-remote` makes it explicit and lets you
-  watch which one actually ran. **The headroom numbers in `common/build-farm.nix`
-  and `machines/services2/README.md` are stale** (they say services1's root is
-  84 % full; it measured 52 % on 2026-10-15). Re-read `df -h` on every box
-  before a big build rather than inheriting a comment written months ago.
+- **Offload it, but expect half of it local anyway.** `nix.distributedBuilds = true`
+  and nix 2.34 *prefers* the external builder, so a plain build on services1 does
+  run much of itself on services2 and copies the result back — but the
+  fixed-output download derivations (`fetchurl`, every npm `.tgz`, every crate)
+  are `preferLocalBuild` and run on the client: the 2026-10-15 run measured 754
+  local vs 162 remote for services1's toplevel, and 411 local vs 20 remote for
+  aibox's, with the builder sitting at load 0.0 while services1 sat at load 20-37.
+  `just build-remote` (`--max-jobs 0`) removes the *local fallback*; it does not
+  force a derivation that nixpkgs marked `preferLocalBuild` onto the builder.
+  **The headroom numbers in `common/build-farm.nix` and `machines/services2/README.md`
+  are stale** (they say services1's root is 84 % full; it measured 52 % before the
+  run and 77 % after — a full three-machine build costs services1 ~25 GB of store).
+  Re-read `df -h` on every box rather than inheriting a comment written months ago.
+- **Judge health by latency, not load.** services1's load average reached 37 during
+  the aibox build and every SSO vhost still answered in 8-50 ms (`curl -w
+  %{time_total}`). Load on a box whose baseline is frigate's ffmpeg workers is not
+  a signal; before you decide the box is unhappy, probe the endpoints and read the
+  time.
+- **Watch the builder's memory, not just its load.** services2 runs strata at
+  24-26 GiB RSS against 30 GiB of RAM. A full build pushed it to 0 MiB free and
+  6 GiB of swap, and the peak was `mksquashfs` (4.4 GB RSS, 7 cores) building the
+  **pi-room-sys netboot image**, which is inside aibox's closure. Nothing OOMed,
+  but that is a coin-toss: if the builder starts thrashing, the first thing to
+  lose is strata (26 GiB, unmonitored by gatus) and the second is the monitor
+  itself. `free -g` on services2 belongs in the poll loop next to the log tail.
 - **Poll, never sleep** (rule 11). Run it detached to a log
-  (the `systemd-run` recipe is in `docs/nix-dev-workflow.md`), then per tool
-  call: is the process still running? read the log tail; stop the moment it
-  exits. Polling is also the only way to catch a delegated build that silently
-  fell back to local — which is the failure you want to know about *before* it
-  fills the wrong disk.
+  (the `systemd-run` recipe is in `docs/nix-dev-workflow.md`; `setsid nohup … &`
+  also survives an aborted tool call), then per tool call: is the process still
+  running? read the log tail; stop the moment it exits. A poll that returns early
+  on "log line count changed" or "error: in the log" is worth more than a fixed
+  sleep, because the failure you are hunting usually lands in the first seconds.
 - **The first build after an input bump recompiles the shared crane workspace
-  deps** (`crates-workspace-deps-0.1.0` and friends). That is expected cost, not
-  a fault.
+  deps** (`crates-workspace-deps-0.1.0` and friends), the strata CUDA engine on
+  **both** GPU boxes, and the netboot squashfs. That is expected cost, not a fault.
 - Do not run `nix eval --impure --expr` with `builtins.getFlake` to "see what
   will change" (rule 21): it is a cold evaluation of every machine and crate,
   slower than the switch that answers the same question, and its aborted
-  survivor holds the big lock. `nixos-rebuild dry-build`/`dry-run` is the same
-  evaluation the deploy does, so it stays cache-warm.
+  survivor holds the big lock. `nixos-rebuild dry-run` is the same evaluation the
+  deploy does, so it stays cache-warm — but remember it **builds nothing**.
 
 If `check-build` fails on one machine, **stop**: fix it, or revert the change,
 before any box moves. A half-landed network is worse than an un-landed one.
+
+Cheap, cache-warm things worth knowing before you switch (all of these are one
+eval, and they answer questions that otherwise get asked at 20:00 during an
+activation):
+
+```bash
+for m in services1 services2 aibox; do
+  echo -n "$m new-kernel: "
+  nix eval --raw ".#nixosConfigurations.$m.config.boot.kernelPackages.kernel.version"
+done; uname -r
+# and, from the built toplevel, whether a database major moved:
+nix path-info -r <toplevel> | grep -oE 'postgresql-[0-9.]+' | sort -u
+```
+
+The 2026-10-15 run: services1/services2 6.18.55 → **6.18.56**, aibox 7.2.9 →
+**7.2.10** — three patch bumps, so `switch` and no reboot; postgresql stayed
+**17.11** on services1, so no migration. immich is a pinned *container* image
+(v3.0.3), so a nixpkgs bump cannot move it and the mobile-client check does not
+apply.
 
 ---
 
@@ -377,6 +470,33 @@ ssh -i ~/.ssh/agent-hop-key -o ConnectTimeout=5 leigh-admin@10.3.1.21 \
   'cd ~/Projects/infrastructure-nix-flake && sudo nixos-rebuild switch --flake .#services2 && sudo nixos-confirm'
 ```
 
+**`&&` is not decoration: never confirm a switch that failed.** A chained `;` (or
+the `systemd-run` recipe in `docs/nix-dev-workflow.md`, which ran `nixos-confirm`
+unconditionally until 2026-10-15) marks the generation *currently in
+`/run/current-system`* good even when activation aborted halfway — and that is
+exactly the state auto-rollback exists to catch. aibox hit this on the first run:
+activation died on a mount at status 4, `/run/current-system` had already been
+flipped to the new toplevel, and the chained confirm marked it good, disarming the
+only safety net. Use `&&`, or in a script `if [ "$SWITCH_EXIT" -eq 0 ]; then
+nixos-confirm; fi`, and treat `SWITCH_EXIT!=0` as "this box is half-activated,
+read the log before anything else".
+
+**A switch that outlives the tool call should be a detached unit, not a long ssh.**
+The 2026-10-15 run used the `systemd-run --no-block` recipe (in
+`docs/nix-dev-workflow.md`) with the absolute repo path and `HOME=/root`, logging
+to `/tmp/nu-switch-<machine>.log`, and polled `systemctl is-active <unit>` plus the
+log. Two things that recipe does not tell you:
+
+- `--setenv=HOME=/root` + `cd ~/Projects/…` resolves to `/root/Projects/…`. Use
+  the absolute path.
+- **Running the deploy as root needs `safe.directory` for the repo in root's git
+  config**, or nix refuses the checkout with `repository path … is not owned by
+  current user (libgit2 error code = 7)`. services1 and services2 have it in
+  `/root/.gitconfig`; **aibox did not**, and its first switch died in the first
+  second on exactly that. It is imperative, undeclared, per-host state that the
+  deploy depends on — check it in Phase 0 (below) and see `docs/follow-ups.md`
+  about declaring it.
+
 Notes:
 
 - **`switch`, not `boot`, unless the kernel changed.** `switch` activates now and
@@ -447,10 +567,27 @@ Then the things this network specifically needs:
 - **The monitor's view**: after the last box, read what gatus saw during the run
   — `journalctl -u gatus` on services2, or the Slack thread. It is the network's
   own record of the sequence, and it is the only witness to services1's outages.
+- **The monitor's own health, queried correctly** (measured 2026-10-15, because
+  every obvious guess was wrong): prometheus listens on **`0.0.0.0:9091`**, not
+  9090; gatus binds **`10.3.1.21:8080`** and not loopback, so `curl
+  127.0.0.1:8080` from services2 fails while the box is healthy; and gatus's
+  `/api/v1/endpoints/status` returns **404** on this build. The query that
+  actually answers "is anything down" is prometheus's:
+
+  ```bash
+  ssh -i ~/.ssh/agent-hop-key leigh-admin@10.3.1.21 \
+    'curl -s -m 10 "http://127.0.0.1:9091/api/v1/query?query=count(up)";      \
+     curl -s -m 10 "http://127.0.0.1:9091/api/v1/query?query=count(up==0)"'
+  ```
+
+  2026-10-15: 12 targets, empty `up==0` before and after all three switches.
 
 A box that switched but whose endpoints you have not re-checked is not upgraded.
 `curl -fsS -m 5` the handful of URLs that box serves (the list is
-`common/monitoring-endpoints.nix`), and the OIDC apps that matter to the run.
+`common/monitoring-endpoints.nix`), and the OIDC apps that matter to the run —
+then **diff that probe against Phase 0's baseline file, not against green**. On
+2026-10-15 the probe set was byte-identical after services1, after services2 and
+after aibox, which is the cheapest proof of "no interface moved" the run has.
 
 ---
 
@@ -464,6 +601,11 @@ run "finished but not upgraded":
   `ssh -i ~/.ssh/agent-hop-key root@10.3.1.1 'grep <name> /var/etc/dnsmasq-hosts'`.
   Never edit `/usr/local/etc/dnsmasq.conf`; `/conf/config.xml` is the source of
   truth. The router is not in the flake's deploy set and must not be.
+  **`just dns-sync-check` only audits `*.int.leighhack.org`** — a public
+  `*.leighhack.org` vhost with no DigitalOcean record passes it and stays
+  NXDOMAIN forever (that is how `status.leighhack.org` was found, with a gatus
+  check red since the day it was written). Public names are outside every gate
+  this repo has.
 - **Netboot**: the image is `machines/pi-room-sys/`, an **in-tree machine** —
   edit it and rebuild, there is no pin to move any more (it used to be a
   `git+file://` input with an `update-netboot-input` recipe to drag `flake.lock`
@@ -473,6 +615,29 @@ run "finished but not upgraded":
   only if the upgrade changed the image and someone asked for the clients to move
   now; otherwise let them pick it up on their next boot. Boot flow and what aibox
   exports: `machines/pi-room-sys/README.md`.
+- **The netboot export makes every aibox switch fail, and the fix is the umount,
+  not the reboot.** `/exports/netboot-squashfs` is a `fileSystems` bind mount of a
+  **store path baked at build time**, so a nixpkgs bump changes the mount's source
+  on every single upgrade. The unit is boot-generated from `/etc/fstab` (it has no
+  file in the toplevel's `etc/systemd/system`), so activation's `systemctl restart`
+  of it fails and `switch-to-configuration` exits **4** — on 2026-10-15 that was
+  the only thing that failed aibox's switch, and it failed *after* `/run/current-system`
+  had been flipped and after nginx/sshd/immich/strata had restarted. The dance
+  `just switch-netboot` already documents is the fix, and it does **not** need the
+  client reboot when you are only re-pointing the export:
+
+  ```bash
+  sudo ss -tn sport = :2049          # who is mounting it right now; empty = nobody
+  sudo umount -f -l /exports/netboot-squashfs && sudo mount -a
+  findmnt -no SOURCE /exports/netboot-squashfs   # must now be the NEW store path
+  sudo nixos-rebuild switch --flake .#aibox && sudo nixos-confirm   # now exits 0
+  ```
+
+  Lazy-umounting is safe for running clients (their open handles survive; new
+  mounts get the new image), and the clients pick the new image up on their next
+  boot. Check `ss -tn sport = :2049` first so you are not doing it under a client
+  that is mid-boot. Declaring the export so it stops moving is open in
+  `docs/follow-ups.md`.
 - **monster1**: nothing declarative. If the NAS was offline at any point in the
   run, expect `storage 'nas2-nfs' is not online` on VM starts and check
   `pvesm status` / `mount | grep nas2-nfs` **before** blaming a VM. HA-managed
@@ -501,6 +666,10 @@ run "finished but not upgraded":
 | What can go wrong | How you see it | What to do |
 | --- | --- | --- |
 | **A rollback fires mid-run** | `/run/current-system` is the *old* generation; the box rebooted | Prevent it: `nixos-confirm` in the same invocation as every switch. If it happened, the switch's changes are gone — re-run, do not patch on top |
+| **A switch confirmed that should not have been** | `SWITCH_EXIT=4` (or 1) in the log and `cur == good` anyway | The `&&` was a `;`. The half-activated generation is now marked good and the timer is disarmed. Read the log, fix the cause, switch again — and never confirm a non-zero exit |
+| **`sudo nixos-rebuild --flake .` dies in one second** | `repository path … is not owned by current user (libgit2 error code = 7)` | Root has no `safe.directory` for the repo on that box (aibox, 2026-10-15). `sudo git config --global --add safe.directory <path>`; Phase 0 checks all three |
+| **aibox's switch exits 4 after restarting everything** | `Failed to restart exports-netboot\x2dsquashfs.mount` | The netboot bind mount's source is a store path that moved. `umount -f -l` + `mount -a`, then switch again (Phase 7). No client reboot needed to re-point the export |
+| **The switch looks hung on aibox** | the unit stays `activating`, `building '…strata…'` / `mksquashfs` in the log | aibox is neither the build client nor the delegated builder, so it compiles what it does not have **during activation** (237+ derivations, ~15 min on 2026-10-15). Pre-seed it instead: `nix copy --to ssh://leigh-admin@10.3.1.32 <toplevel>` |
 | **Boxes on different commits** | Phase 1's proof fails | Stop. Fix Phase 1 before building. Deploying three trees is three networks (rule 20) |
 | **A dirty tree on a box** | `git status --short` non-empty | Commit or stash **before** any `reset --hard`. A reset on a dirty box deletes in-progress work with no undo |
 | **A stale `origin/main` ref on a box with no GitHub key** | `git status -sb` says `ahead 1` forever | That is a stale ref, not an unpushed commit (`machines/services2/README.md`); push through services1 |
@@ -600,4 +769,36 @@ README owns the detail:
 - **aibox** — `/etc/hosts` maps `aibox` to `127.0.0.2`, so use the IPs. The
   NVIDIA `nvidia.nix` + `legacy_580` patch on this box is **dead config** (the
   GTX 1060 was removed — `docs/gtx1060-followup.md`); the live GPU box for that
-  driver is services2. The netboot export and the ten clients live here.
+  driver is services2. The netboot export and the ten clients live here, and that
+  export is what makes a plain switch exit 4 (Phase 7). No tailscale unit at all.
+
+---
+
+## What the 2026-10-15 run left behind — the baseline the next run diffs against
+
+First execution of this runbook, start to finish. Commit range `e2b248d` →
+`192058d` (plus `2e93a4b` tools, `7a1dc29` justfile); inputs moved: nixpkgs
+`8edc0c72e3a` (2026-10-08) → `319e4cebef1` (2026-10-14), crane → `bd63bf1d0a0`,
+nixos-utils → `cc0052bc235`, sops-nix → `44931708c62`; **strata,
+nix-software-center and door-entry did not move** (offered to the same `nix flake
+update`, unchanged — strata's `main` had not advanced since 2026-10-13, so neither
+engine's flags changed and the per-card measurements in the `STRATA.md`s still
+describe what is deployed); llama-cpp left pinned on purpose.
+
+All three boxes: `26.11.20261008.8edc0c7` → **`26.11.20261014.319e4ce`**, 0 failed
+units, `cur == good`, `auto-rollback.timer Result=success`, **no reboots** (kernel
+bumps were patches: 6.18.55→6.18.56 on services1/services2, 7.2.9→7.2.10 on
+aibox). **Order used: services1 → services2 → aibox, which deviates from the
+stated default** (services1 → aibox → services2). It was benign here — Phase 3 had
+finished so nothing was delegated to the builder, and the only thing services2
+provides to the other two is the monitoring that aibox's switch would have wanted
+as a witness — but it is a deviation, and the reason it is the *wrong* way to deviate
+is in Phase 4: switching the monitor early blinds the run for every box after it.
+Post-run endpoint probe identical to the pre-run baseline; prometheus `count(up)`
+12, `count(up==0)` empty.
+
+Four things the runbook said that turned out to be false, all corrected above:
+`dry-build` builds nothing (Phase 3); `check-build` is a ~75-minute job, not a
+"few minutes" one (Phase 3); aibox's switch fails on the netboot mount until you
+re-point it (Phase 7); and the deploy depends on per-host imperative state
+(root's `safe.directory`) that only two of the three boxes had (Phase 0).

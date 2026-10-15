@@ -177,19 +177,39 @@ sudo systemd-run --no-block --unit=deploy-build --collect --service-type=oneshot
   --property=DynamicUser=no --property=TimeoutStartSec=3600 \
   --setenv=PATH=/run/current-system/sw/bin --setenv=HOME=/root \
   /run/current-system/sw/bin/bash -c \
-    'cd ~/Projects/infrastructure-nix-flake && nixos-rebuild switch --flake .#services1 \
-       > /tmp/deploy.log 2>&1; echo SWITCH_EXIT=$? >> /tmp/deploy.log; \
-       nixos-confirm >> /tmp/deploy.log 2>&1; echo CONFIRM_EXIT=$? >> /tmp/deploy.log; \
+    'cd /home/leigh-admin/Projects/infrastructure-nix-flake && nixos-rebuild switch --flake .#services1 \
+       > /tmp/deploy.log 2>&1; rc=$?; echo SWITCH_EXIT=$rc >> /tmp/deploy.log; \
+       if [ "$rc" -eq 0 ]; then nixos-confirm >> /tmp/deploy.log 2>&1; echo CONFIRM_EXIT=$? >> /tmp/deploy.log; \
+       else echo CONFIRM_SKIPPED=switch_failed >> /tmp/deploy.log; fi; \
        readlink -f /run/current-system /nix/var/nix/profiles/system >> /tmp/deploy.log'
 ```
 
+Three traps in that block, all hit for real on 2026-10-15 (first run of
+`docs/network-upgrade-runbook.md`), and all of them cheap to fix in a script file
+rather than inline — write `/tmp/nu-switch.sh` and `install -m 755 /dev/stdin`
+it onto the box:
+
+- **`--setenv=HOME=/root` means `cd ~/Projects/…` is `/root/Projects/…`.** Use the
+  absolute repo path.
+- **Confirm only if the switch exited 0.** Running `nixos-confirm` unconditionally
+  marks the generation *currently in `/run/current-system`* good even when
+  activation aborted halfway — and activation flips `/run/current-system` before it
+  finishes, so a switch that dies at the end (aibox: a bind mount of a store path
+  that moved, exit 4) leaves a half-activated system marked good and the
+  auto-rollback timer disarmed. `SWITCH_EXIT!=0` means "read the log", never
+  "confirm".
+- **Root must trust the checkout**: `sudo git config --global --get-all
+  safe.directory` must list the repo, or nix refuses it with libgit2's "not owned
+  by current user". services1/services2 have it, aibox did not
+  (`docs/follow-ups.md` has the item to declare it).
+
 Poll `/tmp/deploy.log` and the unit state (`systemctl is-active deploy-build`,
 `journalctl -u deploy-build`); do not sleep to the expected finish time. Chaining
-`nixos-confirm` inside the unit keeps the GOLDEN RULE intact. `nixos-rebuild
-switch` does link `/nix/var/nix/profiles/system`, so the boot target follows the
-switch; that only needs the manual `nix-env --profile ... --set` fix when
-activating a closure by hand with `switch-to-configuration switch` (see
-`docs/nix-build-sigkill-2026-10-11.md`).
+`nixos-confirm` inside the unit keeps the GOLDEN RULE intact — the unit *is* the
+shell invocation. `nixos-rebuild switch` does link `/nix/var/nix/profiles/system`,
+so the boot target follows the switch; that only needs the manual `nix-env
+--profile ... --set` fix when activating a closure by hand with
+`switch-to-configuration switch` (see `docs/nix-build-sigkill-2026-10-11.md`).
 
 ## Remote building (services2 is the builder)
 

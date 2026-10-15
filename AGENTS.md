@@ -50,7 +50,8 @@ X first", X has already cost someone a day.
 8. **Never evaluate this repo through a path literal**; kill the survivor of an
    aborted nix call before issuing another nix command.
 9. **`nix flake check --no-build` must stay warning-free** — a warning is a finding.
-   One error is pre-existing and not yours (see [Nix commands](#nix-commands)).
+   Re-read the baseline at the current lock before calling an error pre-existing
+   (see [Nix commands](#nix-commands)).
 10. **Changed `ExecStart`/flags? Read back the rendered unit** from a real build.
 11. **No `sleep` over 30 s in a tool call.** Poll. Bound every wait.
 12. **A service that needs the NAS declares `after` *and* `requires`
@@ -175,8 +176,10 @@ X first", X has already cost someone a day.
   the gatus endpoint guard is a module assertion in
   `machines/services1/services/monitoring.nix`, so `nix flake check` is what catches that
   drift) and, when anything is built rather
-  than just evaluated, `just check-build` (`nixos-rebuild dry-build` for all three
-  machines — compiles everything, activates nothing). `just test` runs the cargo
+  than just evaluated, `just check-build` (`nix build` of all three machines'
+  system toplevels — compiles everything, activates nothing, writes no boot entry;
+  it is **not** `nixos-rebuild dry-build`, which builds nothing). Budget ~75 min for
+  a nixpkgs bump. `just test` runs the cargo
   tests, `just clippy` the lints, `just filestore-test` and `just switch-gui-test` the
   headless-browser suites (the latter drives a fake ProCurve console —
   `crates/switch-gui/tests/README.md`), `just build-remote` offloads a build to
@@ -187,9 +190,13 @@ X first", X has already cost someone a day.
   auto-rollback timer**, which fires **once, five minutes later**, compares
   `/run/current-system` with `/nix/var/nix/profiles/system-good` and, if they differ,
   walls, sleeps 30 s and **reboots the box into `system-good`**. So the window is five
-  minutes — but you still confirm in the same shell invocation, for two reasons: a late
-  confirm marks the *old* generation good, and a rollback reboots the machine out from
-  under whatever the next tool call is doing.
+  minutes — but you still confirm in the same shell invocation, for three reasons: a
+  late confirm marks the *old* generation good, a rollback reboots the machine out
+  from under whatever the next tool call is doing, and a confirm of a **failed**
+  activation marks a half-activated system good and disarms the only safety net
+  (`nixos-rebuild switch` flips `/run/current-system` before it finishes, so
+  activation can die at the end and still leave the new generation current — hit on
+  aibox, 2026-10-15).
 
   ```bash
   readlink /run/current-system /nix/var/nix/profiles/system-good   # equal = confirmed
@@ -197,7 +204,8 @@ X first", X has already cost someone a day.
 
   1. Run `sudo nixos-confirm` **immediately** after `switch`/`boot`, in the **same
      shell invocation** (`... switch ... && sudo nixos-confirm`), on the machine that
-     was switched.
+     was switched. `&&`, never `;` — and in a script, confirm only when the switch's
+     own exit status is 0.
   2. Then verify `readlink -f /run/current-system` still points at the new generation.
   3. Over ssh, chain it all in one command — and `cd` first, because `--flake .`
      resolves against the cwd:
@@ -294,7 +302,7 @@ The full command reference, the rendered-unit workflow and the gotchas are
   does **not** read `.gitignore`, so it copies `crates/target/` (3.1 GB) into the store
   while holding the big lock. Through `self` the same directory arrives git-filtered, so
   nothing in a deploy hints at this. Read values out of the flake instead
-  (`nix flake check --no-build`, `nixos-rebuild dry-build`, then
+  (`nix flake check --no-build`, `nixos-rebuild dry-run`, then
   `$SYS/etc/systemd/system/<unit>.service`).
 - **Never evaluate to find out what a change does.** `nix eval --impure --expr` with
   `builtins.getFlake` starts a **cold** evaluation of every machine and crate, so it
@@ -302,15 +310,19 @@ The full command reference, the rendered-unit workflow and the gotchas are
   one-service change — and an aborted one keeps running while holding the big lock,
   which makes the next `just switch` look hung. Apply it and read the rendered file;
   to check without applying use `nixos-rebuild dry-run`/`dry-build`, which is the same
-  evaluation the deploy does and so stays cache-warm. Full ordering of methods:
-  `docs/nix-dev-workflow.md`.
+  evaluation the deploy does and so stays cache-warm — **neither of them builds
+  anything**; to prove a change compiles, `just check-build`. Full ordering of
+  methods: `docs/nix-dev-workflow.md`.
 - **`nix eval`/`nix build` on a bare path** from the repo root resolves against the *repo*
   flake, not nixpkgs.
 - **`nix flake check --no-build` is expected to be warning-free**, so a warning is a
-  finding. It still ends with `error: path
-  '...sops-secret-grafana_secret_key.drv' is not valid`, which predates everything and is
-  not yours to chase — **verify against clean HEAD (`git stash`) before hunting any error
-  you think your change caused.**
+  finding. The two at the 2026-10-14 lock (Grafana's plaintext `secret_key`, and four
+  `stdenv.is*` deprecations from the CUDA package set behind `packages.strata-cuda`)
+  are open in `docs/follow-ups.md`. The `error: path
+  '...sops-secret-grafana_secret_key.drv' is not valid` that used to end this command
+  **did not reproduce at the 2026-10-14 lock** — a baseline is a fact about a lock,
+  so re-read it rather than inheriting it, and **verify against clean HEAD (`git
+  stash`) before hunting any error you think your change caused.**
 - **Editing a service's `ExecStart`/flags: always re-run `nixos-rebuild build` and read
   back the rendered unit** — NixOS normalises quoting and expands `${...}` and
   line-continuations differently from what you typed.
