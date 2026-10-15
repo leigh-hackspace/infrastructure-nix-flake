@@ -84,7 +84,37 @@
     }
   ];
 
-  swapDevices = [];
+  # Swap.  This box runs Strata's Qwen3.8-Flash-Next Coder engine
+  # (./strata.nix, machines/services2/STRATA.md): the expert arena alone is
+  # 23.4 GiB of a 30 GiB box, so strata (28.3 GiB RSS measured) plus
+  # Prometheus/Grafana/gatus/exporters leaves ~1.5 GiB of headroom.  Without
+  # swap the box goes unresponsive under that pressure - journald logs
+  # "Under memory pressure, flushing caches" - and a build here (this box is
+  # the network's build machine, common/build-farm.nix, maxJobs 8) has nowhere
+  # to go and gets OOM-killed.  Swap is the safety net: the arena is page-
+  # locked where it can (`LimitMEMLOCK = infinity` in ./strata.nix), so what
+  # swaps is the overflow, not the model.
+  #
+  # A swap FILE, not a partition: unlike services1 (nvme0n1p3, 18 GiB) and
+  # aibox (a by-uuid partition), this NVMe is only p1 (512M vfat /boot) + p2
+  # (232G ext4 /), so there is no spare partition to enable and repartitioning
+  # a live 232 GB disk is not something a switch can do.  120 GB is free on /,
+  # and `size` is what makes nixpkgs create the file for us: it renders a
+  # /etc/fstab line (which systemd-fstab-generator turns into
+  # var-swap-services2.swap) plus an idempotent helper,
+  # mkswap-var-swap-services2.service (truncate + chattr +C + dd + mkswap),
+  # pulled in via var-swap-services2.swap.wants/ and ordered Before= it.  The
+  # helper only writes the file when its size differs from `size`, so a
+  # hand-created file of exactly this size is adopted, not overwritten - which
+  # is how this swap was brought up: the 16 GiB file had to exist *before* the
+  # switch, because evaluating this flake is itself a job the box had no room
+  # for (1.1 GiB available, and `just check` OOMs here).
+  swapDevices = [
+    {
+      device = "/var/swap/services2";
+      size = 16384; # MiB = 16 GiB, the headroom services1's 18 GiB partition gives its box
+    }
+  ];
 
   nixpkgs.hostPlatform = lib.mkDefault "x86_64-linux";
   hardware.cpu.amd.updateMicrocode = lib.mkDefault config.hardware.enableRedistributableFirmware;

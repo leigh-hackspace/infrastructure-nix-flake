@@ -42,16 +42,22 @@ Things that bind `0.0.0.0` because the proxy/scrape comes from another box: Graf
 
 - No services1-style NAT, WireGuard or `extraHosts` in `./networking.nix`. Fine for a
   box that hosts no apps; mirror services1's pieces here if it ever does.
-- **No `~/.ssh/agent-hop-key`.** The README previously claimed the shared machine-hop key
-  was in place; it is not — only `authorized_keys` is installed (by `common/users.nix`),
-  which lets you hop *in* but not *out*. So services2 cannot ssh to services1, and it has
-  no GitHub key of its own: reach GitHub from it with `ssh -A` from services1 (agent
-  forwarding — the key must be *in* the agent, `ssh-add ~/.ssh/id_ed25519`), or install the
-  key deliberately. Its own `nix.conf` also lives on a read-only symlink into the store, so
+- **It does have `~/.ssh/agent-hop-key`** (verified 2026-10-15: same md5 as services1's,
+  and `ssh -i ~/.ssh/agent-hop-key leigh-admin@10.3.1.20` hops out). The earlier claim that
+  only `authorized_keys` was installed is stale — `common/users.nix` installed the key too,
+  or it was rsynced in with the repo. What is still true is that it has **no GitHub key of
+  its own**: reach GitHub from here with `ssh -A` from services1 (agent forwarding — the key
+  must be *in* the agent, `ssh-add ~/.ssh/id_ed25519`), and check `ssh-add -l` before
+  suspecting the forwarding. Its own `nix.conf` also lives on a read-only symlink into the store, so
   a stateful edit needs replacing that symlink with a real file (see
   `docs/nix-build-sigkill-2026-10-11.md`).
-- No swap partition (services1 has 18 GB). Not a problem at the current load; worth
-  matching if this box starts running anything heavier.
+- **No swap *partition*** — the NVMe is only p1 (512 MiB ESP) + p2 (232 GiB ext4 root), so
+  there is no spare partition like services1's `nvme0n1p3` (18 GiB) or aibox's. It does have
+  **a 16 GiB swap *file*, `/var/swap/services2`**, declared in `./hardware-configuration.nix`
+  (added 2026-10-15: strata alone measured 28.3 GiB RSS against 30 GiB of RAM, which is what
+  made the box go unresponsive — journald was logging "Under memory pressure, flushing caches"
+  — and a build here had nowhere to go). `size` in that entry is what makes nixpkgs create and
+  `mkswap` the file at boot; see the comment there for why a file and not a partition.
 - `just check` cannot run here: it evaluates aibox, which needs the `whisper-ws` and
   `pi-room-sys` checkouts under `~/Projects/`. Run checks from services1.
 
@@ -93,7 +99,7 @@ Installed from the NixOS 26.05 live USB (the Ventoy stick it booted first) by
 building `.#services2` on services1, `nix copy`ing the closure to the installer,
 and running `nixos-install --system <path>` there. The NVMe is GPT with a 512 MiB
 ESP (`NIXBOOT`, UUID `FBB6-8ECF`) plus an ext4 root (`NIXROOT`, UUID
-`b4f380f9-e3a0-4e1b-aacc-538f78f4e36a`), no swap, systemd-boot; the Windows
+`b4f380f9-e3a0-4e1b-aacc-538f78f4e36a`), no swap partition, systemd-boot; the Windows
 install that occupied the disk was wiped first. The systemd-boot entry is first
 in the EFI boot order (the stale Windows Boot Manager entry was removed). The
 sops age key was placed at `/var/lib/sops-nix/key.txt` before first boot, and

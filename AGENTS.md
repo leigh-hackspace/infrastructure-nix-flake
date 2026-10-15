@@ -430,9 +430,12 @@ there is declarative. **Root SSH is keyed here** (unlike the flake machines):
 - Connect as **`leigh-admin`, never `root`** on the flake machines — root SSH is not keyed
   there (verified both directions). `leigh-admin` has passwordless sudo, so run
   `sudo nixos-rebuild ...` / `sudo nixos-confirm` after logging in.
-- **services2 is the exception:** it has the `authorized_keys` entry but not the private
-  key, so you can hop *in* to 10.3.1.21 but it cannot hop *out*, and it has no GitHub key
-  of its own. Do not fix that by copying a private key as a side effect of a deploy.
+- **services2 is no longer the exception** (verified 2026-10-15): it has the private
+  `~/.ssh/agent-hop-key`, identical to services1's, and hops out to 10.3.1.20. What is still
+  true is that it has **no GitHub key of its own**, so reach GitHub from it with `ssh -A`
+  from services1 (agent forwarding — the key must be *in* the agent, `ssh-add ~/.ssh/id_ed25519`;
+  check `ssh-add -l` before suspecting the forwarding). Do not copy a private key onto a box
+  as a side effect of a deploy.
 - **Git from a box with no key of its own: use agent forwarding.**
 
   ```bash

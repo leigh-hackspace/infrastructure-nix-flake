@@ -28,7 +28,7 @@ reason it fits. Its shard 2 (the `per_layer_token_embd` table, ~26.8 GiB) is the
 same file as the original model's shard 2 — the engine reads it from the SSD
 (`--ple-io direct`), it is not loaded into RAM.
 
-## Sizing (services2: ~30 GiB RAM, 12 GB VRAM, no swap)
+## Sizing (services2: ~30 GiB RAM, 12 GB VRAM, 16 GiB swap file)
 
 | item | size | where |
 | --- | ---: | --- |
@@ -53,6 +53,16 @@ KV is **not** streamed to RAM: `setup.py`'s rule (`kv_streaming_wanted`) needs
 KV stays in VRAM and costs expert-cache slots. A longer context is possible
 (`--max-context`), but every extra 32K of context is another ~0.44 GiB of VRAM
 taken from the cache; 131072 is the balance chosen here.
+
+**Swap is a 16 GiB file, `/var/swap/services2`** (`./hardware-configuration.nix`; there is
+no swap partition on this NVMe). It is not there for the model: the arena is page-locked where
+it can be (`LimitMEMLOCK = infinity` in `./strata.nix`), so what swaps is the overflow. It is
+there because strata measured **28.3 GiB RSS** against 30 GiB of RAM, which left ~1.5 GiB for
+Prometheus/Grafana/gatus/exporters and for the nix builds this box is the network's build
+machine for (`common/build-farm.nix`, `maxJobs 8`) — without it the box went unresponsive
+(journald: "Under memory pressure, flushing caches") and a build here was OOM material. If
+`--resident-experts` is ever lowered, or a bigger pack lands here, re-read this table: the
+swap file is headroom, not a licence to size the arena above RAM.
 
 **`--expert-cache` is `auto`, not a number.** On this discrete card `auto` reads
 dedicated VRAM (aibox's iGPU warning — that `auto` reads GTT and fills the
