@@ -42,6 +42,9 @@
     ./redis.nix
     # ./samba.nix  (PARKED, see the note at the top of this list)
     ./status.nix
+    # The vhost for services2's Strata engine (see machines/services2/strata.nix);
+    # the name must stay in that file's allowed_hosts too.
+    ./strata-proxy.nix
     # Ports and VLANs on the ProCurve core switch (10.3.1.2) over HTTPS.
     # Needs the switch_gui_env_file sops secret before it will start.
     ./switch-gui.nix

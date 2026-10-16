@@ -46,9 +46,11 @@
 #
 # Access: http://10.3.1.21:8080/v1 (OpenAI chat/completions, /v1/messages for
 # Anthropic-style clients, /v1/models, /health).  services2's firewall is off,
-# so this is reachable on the LAN directly; there is no nginx vhost on services1
-# yet (services2.int.leighhack.org already resolves to 10.3.1.21, so clients can
-# use that name without new DNS).
+# so this is reachable on the LAN directly; services1 also terminates TLS for it
+# as https://strata.int.leighhack.org (machines/services1/services/strata-proxy.nix).
+# Both names are in allowed_hosts below because upstream's server refuses any
+# Host it does not answer to (DNS-rebinding protection) — see the ⚠️ note there
+# for why the vhost and this list have to move together.
 # Logs: journalctl -u strata -f and /var/lib/strata/strata.log.
 let
   cfg = config.services.strata;
@@ -129,10 +131,15 @@ let
       tokenizer = "${packDir}/tokenizer";
       model_name = "qwen3.8-flash-next-coder-iq1m";
       log = "/var/lib/strata/strata.log";
+      # The names this server answers to.  Keep in step with the vhosts on
+      # services1 that proxy :8080 (machines/services1/services/strata-proxy.nix):
+      # nginx forwards the incoming Host header upstream, and host_allowed() in
+      # serve/server.py 403s anything not listed here (an IP passes on trust).
       allowed_hosts = [
         "10.3.1.21"
         "services2"
         "services2.int.leighhack.org"
+        "strata.int.leighhack.org"
       ];
       backend = "cuda";
       # serve/server.py prepends these to the engine's LD_LIBRARY_PATH. The CUDA

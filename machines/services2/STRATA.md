@@ -10,7 +10,10 @@ system RAM and the ~27 GiB n-gram table read from the NVMe.
 - Endpoint: `http://10.3.1.21:8080/v1` (OpenAI chat/completions,
   `/v1/messages` for Anthropic-style clients, `/v1/models`, `/health`).
   `services2.int.leighhack.org` already resolves to 10.3.1.21, so clients can
-  use that name with the port; there is no services1 vhost for it yet.
+  use that name with the port; services1 also terminates TLS for it as
+  `https://strata.int.leighhack.org` (`machines/services1/services/strata-proxy.nix`).
+  Both names are in `allowed_hosts` in `machines/services2/strata.nix` — see the
+  Host-check note below for why they have to be.
 - Logs: `journalctl -u strata -f`, `/var/lib/strata/strata.log`.
 
 The aibox instance (`machines/aibox/strata.nix`, `machines/aibox/STRATA.md`) runs
@@ -129,9 +132,14 @@ do not copy it from `machines/aibox/strata-package.nix`.
   `LD_LIBRARY_PATH`; the toolkit libraries are on the binary's RUNPATH.
 - **No `HSA_*` / `STRATA_HIP_*` workarounds** — those are ROCm/gfx1030-specific.
 - **No nginx wiring** on this box. aibox serves its instance through its own
-  nginx (`aibox.int.leighhack.org/llm`); services2 has no nginx. If this should
-  be a named vhost, add it on services1 (the network's TLS terminator) and run
-  `just dns-sync-sync`; that is deliberately not done here.
+  nginx (`aibox.int.leighhack.org/llm`); services2 has no nginx. The vhost lives
+  on services1 instead — `machines/services1/services/strata-proxy.nix`, added
+  2026-10-15, and `just dns-sync-sync` gave it its `*.int` record.  **The vhost
+  and this file's `allowed_hosts` move together**: upstream's server 403s any
+  `Host` it does not answer to (DNS-rebinding protection, `host_allowed()` in
+  `serve/server.py`) and nginx forwards the incoming header upstream, so a name
+  that is served but not listed answers every request
+  `Host '…' is not allowed (DNS rebinding protection)`.
 
 ## Operational notes
 

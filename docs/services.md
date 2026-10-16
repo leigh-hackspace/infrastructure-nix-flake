@@ -29,7 +29,7 @@ Every address is in `common/hosts.nix`.
 | status-dashboard | `crates/status-dashboard/` | both boxes | `common/status-dashboard.nix` |
 | whisper-ws | `crates/whisper-ws/` | aibox:8083 | `crates/whisper-ws/README.md` |
 | moonraker-exporter | `crates/moonraker-exporter/` | metrics | `docs/printer-servers.md` |
-| strata | `machines/*/strata.nix` | aibox:8080, services2:8080 | `machines/aibox/STRATA.md`, `machines/services2/STRATA.md` |
+| strata | `machines/*/strata.nix` | aibox:8080, services2:8080 → `strata.int.leighhack.org` | `machines/aibox/STRATA.md`, `machines/services2/STRATA.md` |
 
 ---
 
@@ -278,6 +278,14 @@ MTP runtime) is deliberately outside the store and prepared once by hand — the
 units have `ConditionPathExists` on the pack index so they never crash-loop
 before that. **Read the box's `STRATA.md` before changing engine flags**: the
 knobs were measured on different hardware and do not transfer.
+
+services1 terminates TLS for services2's engine as
+`https://strata.int.leighhack.org` (`machines/services1/services/strata-proxy.nix`,
+LAN-only behind the `LOCAL_NETWORK` ACL). **The vhost name and the engine's
+`allowed_hosts` are one fact in two files**: upstream's server refuses any `Host`
+it does not answer to (DNS-rebinding protection) and nginx forwards the incoming
+header upstream, so a vhost added without the name in
+`machines/services2/strata.nix` answers 403 to every request.
 
 ## `crates/status-dashboard/` and `crates/moonraker-exporter/`
 
