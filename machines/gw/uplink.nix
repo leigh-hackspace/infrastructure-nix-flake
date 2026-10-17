@@ -1,26 +1,37 @@
-# The router's route out: AAISP's tunnel, and the network's own tailnet presence.
-# Both are the uplink half of the old box's `<Interfaces>` XML — the FreeBSD box
-# called the relevant interfaces `enc0` and `l2tp0` (its own `uname`/`ifconfig`
-# said so), and the flake's equivalent is an L2TP tunnel dialled over the uplink
-# NIC, which is what AAISP's own Linux setup is.
+# The router's route out: AAISP's L2TP tunnel, the policy routing that keeps
+# the old box's split between that tunnel and the hub's own uplink, and the
+# network's tailnet presence.  This is the flake's version of the old box's
+# `enc0` + `l2tp0` pair: the physical NIC carries a DHCP address on the AAISP
+# hub's handoff VLAN, and the L2TP session dialled over it carries the public
+# address and the IPv6 prefix the network actually uses.
 #
-# WHY THIS IS THE PART OF THE REWRITE THAT CANNOT BE FINISHED WITHOUT THE
-# HARDWARE, and why that is not an accident: the tunnel is a property of the
-# *uplink*, not of the network.  Everything else in this machine's config is
-# generated from the network's own tables (common/vlans.nix, common/dns-records.nix)
-# and so is already as correct as those tables are; the tunnel needs the real box's
-# NIC, AAISP's credentials, and AAISP's own dial script.  The shape below is the
-# flake's version of the contract — a never-give-up unit, a generated peer file, a
-# secret from sops read by PID 1 only, a unit that fails visibly while the facts are
-# missing — and every TODO in it is a fact to read off the old box.  ./README.md
-# says which command reads which fact; this file is the open item in
-# docs/follow-ups.md for the same reason.
+# The facts in this file were read off the old OPNsense box on 2026-10-17, not
+# invented: `/conf/config.xml`'s `<ppps>` section has the endpoint, username and
+# password; `/var/etc/mpd_opt3.conf` has the link parameters; `ifconfig l2tp0`
+# and `netstat -rn` have the MTUs and the peer's link-local address; and the old
+# box's pf rules say which VLANs were policy-routed out of which uplink.  The
+# password is the one thing that is not here — it is `aaisp_ppp_password` in
+# secrets/secrets.yaml, and the unit reads it from /run/secrets at start, never
+# from the Nix store.
 #
-# ONE THING TO NOTICE BEFORE CHANGING ANY OF IT: the peer file below is *meant* to
-# fail.  A tunnel that dials a guessed endpoint and half-works is the worst outcome
-# this file could produce, because the network would then have a route out that
-# nobody can explain.  A unit that fails, retries forever and says why in the
-# journal is the state the network's own diagnostics are built to read.
+# WHY xl2tpd AND NOT `services.pppd`: pppd on its own has no L2TP client.  Its
+# `pppol2tp` plugin is handed an already-open L2TP socket by a daemon, and
+# xl2tpd is that daemon (and what AAISP's own Linux instructions use).  pppd
+# still does the PPP half — PAP/CHAP, IPCP, IPv6CP — which is why the auth and
+# interface options below look like a pppd peer file.
+#
+# THE PERSISTENCE CONTRACT, because a cable that is unplugged and replugged has
+# to heal without a human:
+#
+#   * xl2tpd redials forever (`redial = yes`, no `max redials` — xl2tpd only
+#     gives up when that value is non-zero);
+#   * pppd notices a dead session with LCP echoes (10 s, 6 misses) and exits,
+#     which makes xl2tpd tear the call down and redial;
+#   * if xl2tpd itself exits, systemd restarts it with the network's never-give-up
+#     policy (Restart=always, startLimitIntervalSec=0);
+#   * the unit refuses to start until `router-uplink` has an IPv4 address, so a
+#     dial while the cable is out fails visibly and is retried, rather than
+#     binding an L2TP socket to a NIC with no route to the endpoint.
 {
   config,
   lib,
@@ -28,119 +39,220 @@
   INFRA,
   ...
 }: let
-  # The network's runtime secret paths and tailnet facts, imported rather than
-  # passed in: `CONFIG` is not one of the flake's specialArgs (only `INFRA` is),
-  # and every other module in the repo imports it the same way.
   CONFIG = import ../../common/config.nix;
   COEXIST = import ./coexist.nix;
+  NICS = import ./constants.nix;
 
   # The tunnel is the route out of a box that *is* the network's router.  While
   # ./coexist.nix is on, this box is not: its own traffic goes via the live
   # router (./networking.nix's `routes`), and a second box dialling a second
   # AAISP session would be a second public IP and a second default route for a
   # network that has one of each.  So the whole tunnel is off here rather than
-  # "enabled and failing visibly": the failure it would show is this file's own
-  # missing facts, and they are already listed in ./README.md.
+  # "enabled and failing visibly".
   enableTunnel = !COEXIST.enable;
 
-  # The blocks to advertise to the tailnet, generated from the network's own table
-  # rather than written out — see the `--advertise-routes` line below for why a
-  # forgotten route is invisible.
-  VLANS = COEXIST.vlans;
+  # The pppd options that are not secrets.  Kept in a file rather than in the
+  # unit so `cat /etc/ppp/options.aaisp` answers "what did we ask AAISP for".
+  # The paths under /run are written by the unit's preStart, because they contain
+  # the password and the network's sops key is the only place it should live.
+  pppOptions = pkgs.writeText "options.aaisp" ''
+    # GENERATED by machines/gw/uplink.nix — do not edit on the box.
+
+    # We authenticate to AAISP; AAISP does not authenticate to us.  The old box's
+    # mpd config said the same thing in its own words ("disable chap pap" for the
+    # peer, "accept chap pap eap" from it).
+    noauth
+    name ${NICS.L2TP_USERNAME}
+    user ${NICS.L2TP_USERNAME}
+    hide-password
+
+    # The credentials are files, not options: pppd reads them as root and they
+    # are mode 0600 under /run, so the password never appears in a process
+    # listing or in this store path.
+    pap-secrets /run/xl2tpd-aaisp/pap-secrets
+    chap-secrets /run/xl2tpd-aaisp/chap-secrets
+
+    # AAISP hands out the addresses; do not insist on a local one.
+    noipdefault
+    ipcp-accept-local
+    ipcp-accept-remote
+
+    # The old interface's mtu: `ifconfig l2tp0` on OPNsense said 1460, and mpd's
+    # `set link mtu 1492` is the same number after L2TP's own overhead.  Do not
+    # raise this without measuring: an MTU that is too high blackholes DF packets
+    # and looks like a network that works for DNS and not for TLS.
+    mtu 1460
+    mru 1460
+
+    # A dead session is noticed in about a minute: the old box's keep-alive was
+    # `10 60`, which is a 10 s echo and six misses.
+    lcp-echo-interval 10
+    lcp-echo-failure 6
+
+    # systemd owns the lifecycle; xl2tpd launches pppd and watches it, so pppd
+    # must not fork away from the process xl2tpd is waiting on.
+    nodetach
+
+    # IPv6CP only negotiates the link-local half; the public address and the /48
+    # arrive over DHCPv6-PD on this interface (./networking.nix's `10-tunnel`).
+    +ipv6
+    ipv6cp-accept-local
+    ipv6cp-accept-remote
+
+    # The route out is not pppd's default route: the old box kept the hub's
+    # default and policy-routed VLAN 225 out of `l2tp0` (see ./firewall.nix and
+    # ./networking.nix).  pppd adds that table's route in the ip-up script.
+    nodefaultroute
+
+    # The scripts that make the policy route exist only while the tunnel does.
+    # IPv4 and IPv6 have separate hooks on purpose: IPCP and IPv6CP finish at
+    # different times, and a default route written from the IPv4 hook can be
+    # written before there is an IPv6 peer at all.
+    ip-up-script /etc/ppp/ip-up-aaisp
+    ip-down-script /etc/ppp/ip-down-aaisp
+    ipv6-up-script /etc/ppp/ipv6-up-aaisp
+    ipv6-down-script /etc/ppp/ipv6-down-aaisp
+
+    # Compression and Van Jacobson are off: this is a modern LNS and the old box
+    # did not need them either.  CCP itself is left negotiable (no `noccp`), which
+    # is what the old box's mpd did — it disabled compression, not the protocol.
+    novj
+    nopcomp
+    noaccomp
+  '';
+
+  # Runs after IPCP/IPv6CP are up.  pppd passes the interface name as argv[1].
+  # Table 100 is the "out through AAISP" table; ./networking.nix installs the
+  # fwmark rule that sends VLAN 225 there (the old box's `route-to (l2tp0 ...)`).
+  #
+  # The IPv4 policy route: VLAN 225's marked packets look in table 100, and the
+  # table's default exists only while the tunnel does.
+  ipUp = pkgs.writeShellScript "ppp-ip-up-aaisp" ''
+    set -eu
+    iface="$1"
+    ${pkgs.iproute2}/bin/ip -4 route replace default dev "$iface" table 100
+    ${pkgs.iproute2}/bin/ip route flush cache
+  '';
+
+  ipDown = pkgs.writeShellScript "ppp-ip-down-aaisp" ''
+    set -eu
+    iface="$1"
+    ${pkgs.iproute2}/bin/ip -4 route del default dev "$iface" table 100 || true
+    ${pkgs.iproute2}/bin/ip route flush cache
+  '';
+
+  # The IPv6 default, written by IPv6CP's own hook rather than DHCPv6 (which has
+  # no default-route option) and rather than the IPv4 hook (which can run before
+  # IPv6CP has a peer).  It is `dev`-based rather than `via` the old box's peer
+  # link-local (`netstat -rn -f inet6` read `fe80::9e89:1eff:fe3f:0`): a PPP link
+  # is point-to-point, so the peer is the only possible next hop, and naming the
+  # device survives AAISP changing the LNS.
+  ip6Up = pkgs.writeShellScript "ppp-ipv6-up-aaisp" ''
+    set -eu
+    iface="$1"
+    ${pkgs.iproute2}/bin/ip -6 route replace default dev "$iface"
+    ${pkgs.iproute2}/bin/ip route flush cache
+  '';
+
+  ip6Down = pkgs.writeShellScript "ppp-ipv6-down-aaisp" ''
+    set -eu
+    iface="$1"
+    ${pkgs.iproute2}/bin/ip -6 route del default dev "$iface" || true
+    ${pkgs.iproute2}/bin/ip route flush cache
+  '';
 in {
-  # The PPP suite.  nixpkgs' `services.pppd` module writes one peer file per entry
-  # in `peers` and one unit per peer (`pppd-<name>`), runs it `Type=notify` with
-  # `up_sdnotify`, and already sets Restart=always/RestartSec=5 — so the only thing
-  # added below is the rate-limit half, the one that lives on the unit rather than
-  # in serviceConfig (common/systemd.nix's whole comment).
-  services.pppd = lib.mkIf enableTunnel {
-    enable = true;
-
-    peers.aaisp-tunnel = {
-      # pppd's peer file.  Everything that is a fact about *this* tunnel is a TODO;
-      # everything that is a fact about how a tunnel should behave is written.
-      config = ''
-        # GENERATED by machines/gw/uplink.nix — the tunnel's parameters.  The
-        # credentials are in the sops file below, which pppd reads by path; no
-        # secret appears in this file, in the unit, or in a transcript.
-
-        # The dial script.  AAISP's L2TP setup on Linux is driven by a provider
-        # script AAISP ships (it is AAISP's artifact, it is not in nixpkgs, and
-        # ./README.md says where it comes from); until it is on the box there is
-        # nothing to dial, and this line is what says so in the journal instead of
-        # in a comment.
-        connect "/bin/sh -c 'echo machines/gw/uplink.nix: no AAISP dial script on this box - see machines/gw/README.md; exit 1'"
-
-        # A dead tunnel has to be noticed in about a minute rather than at the next
-        # reboot: LCP echoes every 30 s, four misses is a dead session, and the unit
-        # restarts it (which is the never-give-up half of this file).
-        lcp-echo-interval 30
-        lcp-echo-failure 4
-
-        # systemd owns the lifecycle — the module's unit is Type=notify and pppd
-        # must not fork away from it, or the unit reports "running" forever while
-        # the tunnel is gone.
-        nodetach
-
-        # The tunnel is the network's only route out, so it takes the default
-        # route; and it does *not* take the tunnel's DNS, because the network
-        # resolves through its own dnsmasq (./dns.nix) and the old box's own
-        # resolvers were 1.1.1.1 and 8.8.8.8 rather than AAISP's.
-        defaultroute
-        replacedefaultroute
-
-        # TODO (needs the old box): the username, the L2TP endpoint and the tunnel
-        # MTU.  All three are facts about the uplink: the old box kept the first two
-        # in OPNsense's config and the third fell out of the handshake.  Do not
-        # invent an MTU — a tunnel whose MTU is too high blackholes the packets with
-        # the DF bit set, which is a network that works for DNS and not for TLS.
-      '';
-    };
+  # The tunnel's pppd options, the scripts, and the two runtime secret files.
+  # The secret files are written by the unit, not by this module: sops-nix puts
+  # the password in /run/secrets at activation, and copying it into a world-
+  # readable store path is the one thing this file must not do.
+  environment.etc = lib.mkIf enableTunnel {
+    "ppp/options.aaisp".source = pppOptions;
+    "ppp/ip-up-aaisp".source = ipUp;
+    "ppp/ip-down-aaisp".source = ipDown;
+    "ppp/ipv6-up-aaisp".source = ip6Up;
+    "ppp/ipv6-down-aaisp".source = ip6Down;
   };
 
-  # The kernel side of an L2TP-carried PPP session.  These are the module names as
-  # the kernel spells them (`l2tp_core`, `l2tp_ppp`), not the names a distribution's
-  # meta-package uses; if the dial turns out to be IPsec-encapsulated instead, the
-  # ESP modules join them here.  They belong in this file rather than in
-  # ./hardware-configuration.nix because they are a fact about the *uplink*, which
-  # is the same fact this file dials — and not about the board, which is what
-  # hardware-configuration.nix owns.
+  # The kernel side of an L2TP-carried PPP session.  These are the module names
+  # as the kernel spells them (`l2tp_core`, `l2tp_ppp`), not the names a
+  # distribution's meta-package uses; if the dial turns out to be
+  # IPsec-encapsulated instead, the ESP modules join them here.  They belong in
+  # this file rather than in ./hardware-configuration.nix because they are a fact
+  # about the *uplink*, which is the same fact this file dials.
   boot.kernelModules = [
     "ppp_generic"
     "pppox"
     "l2tp_core"
+    "l2tp_netlink"
     "l2tp_ppp"
   ];
 
-  # The directories AAISP's provider script and its presets install into.  Created
-  # empty rather than assumed: the peer file's `connect` line names a path under
-  # here, and a missing directory is a confusing failure while a missing script is
-  # the honest one.
-  systemd.tmpfiles.rules = [
-    "d /etc/ppp/providers 0755 root root -"
-    "d /etc/ppp/presets 0755 root root -"
-  ];
+  # The daemon.  `-D` keeps it in the foreground so systemd can supervise it;
+  # `-c` is the config written below; `-s` is xl2tpd's own shared-secret file
+  # (unused by a LAC that does not challenge, but the daemon wants the path);
+  # `-p`/`-C` are the pid and control FIFO.
+  #
+  # `preStart` is where the password goes from sops into a mode-0600 file.  It is
+  # a copy rather than a symlink on purpose: pppd's secrets parser wants a plain
+  # file, and the same file is read by both PAP and CHAP.
+  systemd.services.xl2tpd-aaisp = lib.mkIf enableTunnel (INFRA.mkNeverGiveUp {
+    description = "AAISP L2TP client (${NICS.UPLINK_TUNNEL})";
+    wantedBy = ["multi-user.target"];
+    after = ["systemd-networkd.service"];
+    wants = ["systemd-networkd.service"];
 
-  # The tunnel's rate-limit half: the module sets Restart=always and RestartSec=5
-  # but not the start limit, so a tunnel that fails a handful of times in a row is
-  # permanently stopped — exactly the power-cut case the network exists to survive.
-  #
-  # One assignment, with the ordering in the same attrset: `systemd.services.X = …`
-  # and `systemd.services.X.after = …` are the same attribute twice in one attrset,
-  # which Nix rejects before the module system sees it.
-  #
-  # The ordering is a `wants` as well as an `after` because the tunnel is dialled
-  # *through* the uplink NIC, whose address systemd-networkd gives it
-  # (./networking.nix): nothing else pulls networkd in for a box that has no
-  # DHCP client, and a tunnel dialled before its NIC has an address fails in a way
-  # that looks like AAISP's fault.
-  systemd.services.pppd-aaisp-tunnel =
-    lib.mkIf enableTunnel
-    (INFRA.mkNeverGiveUpOverride
-      // {
-        after = ["systemd-networkd.service"];
-        wants = ["systemd-networkd.service"];
-      });
+    path = [
+      pkgs.coreutils
+      pkgs.gnugrep
+      pkgs.iproute2
+      pkgs.ppp
+      pkgs.xl2tpd
+    ];
+
+    preStart = ''
+      set -eu
+      install -d -m 0700 /run/xl2tpd-aaisp
+
+      # Do not dial until the hub has given the uplink NIC an address: the L2TP
+      # socket needs a route to the endpoint, and a dial before DHCP fails in a
+      # way that looks like AAISP's fault.  The unit's Restart=always turns a
+      # failure here into a retry every RestartSec, which is the cable-out case.
+      ${pkgs.iproute2}/bin/ip -4 addr show dev ${NICS.UPLINK_NIC} | ${pkgs.gnugrep}/bin/grep -q 'inet '
+
+      password="$(cat /run/secrets/aaisp_ppp_password)"
+      printf '%s * %s *\n' '${NICS.L2TP_USERNAME}' "$password" > /run/xl2tpd-aaisp/pap-secrets
+      printf '%s * %s *\n' '${NICS.L2TP_USERNAME}' "$password" > /run/xl2tpd-aaisp/chap-secrets
+      chmod 0600 /run/xl2tpd-aaisp/pap-secrets /run/xl2tpd-aaisp/chap-secrets
+
+      # xl2tpd reads this even when the LAC does not challenge; a fresh random
+      # value is enough and is never used as a network credential.
+      printf '* * %s\n' "$(head -c 32 /dev/urandom | base64 | tr -d '\n')" > /run/xl2tpd-aaisp/l2tp-secrets
+      chmod 0600 /run/xl2tpd-aaisp/l2tp-secrets
+
+      cat > /run/xl2tpd-aaisp/xl2tpd.conf <<EOF
+      [global]
+      access control = no
+
+      [lac aaisp]
+      lns = ${NICS.L2TP_ENDPOINT}
+      name = ${NICS.L2TP_USERNAME}
+      autodial = yes
+      redial = yes
+      redial timeout = 10
+      length bit = yes
+      pppoptfile = /etc/ppp/options.aaisp
+      EOF
+    '';
+
+    serviceConfig = {
+      Type = "simple";
+      ExecStart = "${pkgs.xl2tpd}/bin/xl2tpd -D -c /run/xl2tpd-aaisp/xl2tpd.conf -s /run/xl2tpd-aaisp/l2tp-secrets -p /run/xl2tpd-aaisp/xl2tpd.pid -C /run/xl2tpd-aaisp/control";
+      # A tunnel that exits must take its pppd with it; the default control-group
+      # kill does that, and `KillMode=mixed` would leave pppd holding ppp0.
+      KillMode = "control-group";
+      RestartSec = "10s";
+    };
+  });
 
   # The network's tailnet presence, which the old box ran as `tailscale0` (it is in
   # its generated dnsmasq conf's interface list, and the `ts.leighhack.org` exception
@@ -177,30 +289,25 @@ in {
         "--advertise-exit-node"
       ]
       # The network's own blocks, advertised to the tailnet: this is the rule that
-      # makes a laptop on the tailnet able to reach 10.3.1.20, and it is generated
-      # from common/vlans.nix so a new VLAN is a new advertised route rather than a
-      # forgotten line.  It is also the part to check against the old box: an
-      # advertisement headscale has not approved does nothing at all, so a wrong list
-      # here is invisible until someone wonders why a route is missing.
-      #
-      # TODO (needs the tailnet): read the old box's advertised routes
-      # (`tailscale status` / headscale's node record) and confirm this list is the
-      # same one, including whether the IPv6 blocks were advertised too.  One flag
-      # with a comma-separated list, because `tailscale up` takes the last
-      # `--advertise-routes` it is given rather than the union of them.
+      # makes a laptop on the tailnet able to reach 10.3.1.20.  The list is the
+      # aggregate blocks rather than one /24 per VLAN because that is what the
+      # tailnet's other route advertiser uses (machines/services1/README.md's
+      # `--advertise-routes`), and two advertisers announcing overlapping but
+      # unequal prefixes is a routing table that depends on which one headscale
+      # approved first.  The IPv6 blocks are the public /48 and the ULA /48 from
+      # common/config.nix; the ULA /48 contains every VLAN's `fd99:...:225d::/64`
+      # and `...:227d::/64`.
       ++ lib.optionals (!COEXIST.enable) [
-        ("--advertise-routes=" + builtins.concatStringsSep "," (map (v: v.net) VLANS))
+        "--advertise-routes=10.3.0.0/16,192.168.2.0/24,2001:8b0:1d14::/48,fd99:dead:beef::/48"
       ];
   };
 
   # The tailnet's DNS exception, which is the reason dnsmasq is in on this at all:
   # `*.ts.leighhack.org` is answered from the tailnet's own records rather than
   # forwarded, and the old box did it with a nameserver bound to the tailscale
-  # interface.  ./dns.nix carries the `rebind-domain-ok` half of that and points
-  # here for the address, which is a fact about the tailnet rather than the network.
-  #
-  # TODO (needs the tailnet): the old box's dnsmasq conf named the address it
-  # forwarded that suffix to (100.87.160.113).  It is a tailnet address, so it can
-  # change without anything in this repo changing, and ./README.md says how to read
-  # it again rather than leaving the number here as if it were a fact.
+  # interface.  ./dns.nix carries the `rebind-domain-ok` half of that; the address
+  # below is the old box's own (`grep ts.leighhack /usr/local/etc/dnsmasq.conf`,
+  # read 2026-10-17: `server=/ts.leighhack.org/100.100.100.100`).  It is a tailnet
+  # address, so it can change without anything in this repo changing — re-read it
+  # from the old box or from `tailscale status` rather than trusting it forever.
 }

@@ -1,10 +1,8 @@
-# The interface names this box's config keys on, in one place because three files
-# read them: ./hardware-configuration.nix creates the two NIC names with `links`
-# rules, ./networking.nix hangs the VLAN devices off `LAN_NIC` and puts an address
-# on `UPLINK_NIC`, and ./firewall.nix masquerades out of `UPLINK_TUNNEL`.  A name
-# written twice is two facts that can be moved apart, and the failure they move
-# apart into is a router that answers nothing — or, for `UPLINK_TUNNEL`, a router
-# that routes everything with its real source address and gets no replies.
+# The interface names this box's config keys on, and the two facts about the
+# AAISP uplink that more than one file needs.  A name written twice is two facts
+# that can be moved apart, and the failure they move apart into is a router that
+# answers nothing — or, for `UPLINK_TUNNEL`, a router that routes everything
+# with its real source address and gets no replies.
 #
 # The two NIC names are *names* rather than MACs because a VLAN device has no MAC
 # of its own to match on, so everything on the LAN side is keyed by name and the
@@ -28,4 +26,24 @@
   # name ./firewall.nix's masquerade rule matches — read it off the real box with
   # `ip link` before trusting that rule (./README.md, "read the rendered file").
   UPLINK_TUNNEL = "ppp0";
+
+  # The hub's own address on the handoff VLAN.  The old box's `netstat -rn`
+  # (2026-10-17) had `default 192.168.20.1 UG em3`, and the static endpoint route
+  # below has to point at the box that can reach AAISP's L2TP LNS.  It is a
+  # static route rather than the DHCP default because the tunnel is the network's
+  # route out and the hub's default would otherwise keep winning.
+  UPLINK_HUB_GATEWAY = "192.168.20.1";
+
+  # AAISP's L2TP endpoint and the username the old box used (`<ppps>` in
+  # /conf/config.xml, read 2026-10-17).  The password is not here: it is
+  # `aaisp_ppp_password` in secrets/secrets.yaml.
+  L2TP_ENDPOINT = "194.4.172.12";
+  L2TP_USERNAME = "lhc1@a";
+
+  # The peer's link-local address, which is the old box's IPv6 default gateway
+  # (`netstat -rn -f inet6`: `default fe80::9e89:1eff:fe3f:0%l2tp0`).  DHCPv6
+  # carries prefixes and addresses but no default route, so the route has to be
+  # written down; pppd's ip-up script adds it to the main table when the tunnel
+  # comes up and removes it when the tunnel goes down.
+  UPLINK_TUNNEL_PEER6 = "fe80::9e89:1eff:fe3f:0";
 }

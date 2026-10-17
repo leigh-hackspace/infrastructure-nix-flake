@@ -97,7 +97,12 @@
     net = "10.3.14.0/24";
     dynFrom = "10.3.14.150";
     dynTo = "10.3.14.253";
-    ipv6 = []; # the old box had no IPv6 of its own here, only RA ranges
+    # The old box's only IPv6 address on this VLAN was the ULA VIP
+    # `fd99:dead:beef:227d::1` (its <virtualip>, read 2026-10-17); the public
+    # /64 is this router's delegated prefix, so it is not a fixed fact and is
+    # not written here.  The ULA is what `gw` answers on when a client has only
+    # the ULA prefix.
+    ipv6 = ["fd99:dead:beef:227d::1"];
     ra = [
       {
         from = "2001:8b0:1d14:227::1000";

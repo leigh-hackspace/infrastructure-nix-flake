@@ -61,7 +61,14 @@
   # systemd-networkd has finished creating the VLAN devices.  With either bind
   # option, a VLAN device that does not exist yet is a fatal error at startup and
   # the never-give-up policy turns it into a restart loop.
-  interfaces = map TABLES.vlanDevice VLANS;
+  # The VLAN devices plus the tailnet interface.  `tailscale0` is not a LAN: it
+  # is there because the old box answered on it (`interface=...,tailscale0` in
+  # its generated /usr/local/etc/dnsmasq.conf, read 2026-10-17) and because the
+  # tailnet is how the network's names are reached when the LAN is what is
+  # broken.  The unit starts whether or not tailscaled has made the device —
+  # dnsmasq binds the wildcard and filters by name, so a missing device is not a
+  # startup failure.
+  interfaces = map TABLES.vlanDevice VLANS ++ ["tailscale0"];
 
   # The zone this box is authoritative for, in the one place. It appears three
   # times below (dnsmasq's `domain`, its `local`, and the suffix on every generated
@@ -227,9 +234,9 @@ in {
       # The two plain addresses are the old box's own upstreams.  The
       # `/ts.leighhack.org/<addr>` form is not an upstream at all but a conditional
       # forward — one suffix to the tailnet's own resolver — and it is the reason the
-      # `rebind-domain-ok` exception below exists.  Its address is a placeholder: it
-      # is a tailnet address, and ./README.md says how to read the real one off the
-      # old box rather than trusting the number here.
+      # `rebind-domain-ok` exception below exists.  The address is the old box's own,
+      # read from its generated dnsmasq.conf on 2026-10-17; it is a tailnet address,
+      # so re-read it from the box rather than trusting it forever.
       #
       # A list, because nixpkgs' dnsmasq module makes `server` a real option (a list
       # of strings) rather than a freeform key, and a string here is a type error at

@@ -290,44 +290,44 @@ named server for, so the path and the server address are one fact and
 `./lib/network-tables.nix` keeps them together). Moving netboot to the router means
 moving the three files *and* the server address, not one of them.
 
-## Facts still missing, and the command that reads each one
+## Facts that were read off the old box, and what is still open
 
-This is the list to work through before the cutover — the box exists now, and every
-line here is still a TODO in the file that needs it. Reading them off the old box is
-what turns `enable = false` from a gamble into a switch.
+The old box was reachable until 2026-10-17, and its config, pf rules, interface
+state and generated PPP files were archived under
+`~/tmp/opnsense-archive-20261017` on services1.  What that settled:
 
-| Fact | Where it goes | How to read it |
+| Fact | Where it went | State |
 | --- | --- | --- |
-| ~~The LAN NIC's and uplink NIC's MACs~~ **read** | `hardware-configuration.nix` `links` rules | done: both e1000e MACs are in the `links` rules and the rename was proven on the live box. **Which port is which is still an assumption** — "the one carrying the network today is the LAN" is strong evidence, not proof; re-check when the AAISP handoff cable physically moves (`ip -br link`) |
-| Whether the uplink takes its address from the hub by DHCP | `networking.nix` `10-uplink` | on the old box: `ifconfig enc0`, and `ps -ax \| grep dhclient`. On the new box `router-uplink` has no carrier, so nothing about it is observable yet |
-| The tunnel's L2TP endpoint, username, MTU | `uplink.nix` peer file | old box: `cat /conf/config.xml` (the l2tp client section), `ifconfig l2tp0`, `netstat -rn -f inet \| grep l2tp` |
-| AAISP's dial script | `uplink.nix` (`/etc/ppp/providers`) | AAISP's own Linux setup; it is their artifact, not the network's |
-| `aaisp_ppp_chat_secrets` | `secrets/secrets.yaml` | old box: the l2tp/ppp secrets in `/conf/config.xml`. **This secret does not exist yet** — sops-nix will fail *activation*, not evaluation, until it is added |
-| The tailnet's `ts.leighhack.org` resolver address | `dns.nix` `server` line | old box: `grep ts.leighhack /usr/local/etc/dnsmasq.conf`. The `100.100.100.100` in `dns.nix` is a placeholder |
-| The routes the old box advertised to the tailnet | `uplink.nix` `--advertise-routes` | old box: `tailscale status`; headscale: `headscale nodes list` on services1 |
-| The OpenVPN servers' ports, bridges, pools, auth | `openvpn.nix` | old box: `grep -A40 ovpns /conf/config.xml`, `ls /var/etc/openvpn` |
-| Whether the tailnet node was an exit node, and who used it | `uplink.nix` `--advertise-exit-node` | headscale's node record on services1 |
-| How the network's IPv6 prefix arrives | `networking.nix`, `firewall.nix` | old box: `ifconfig`, `dhclient -s` lease files, `radvd`/dnsmasq RA config. **Nothing here acquires a prefix yet**, so the `ra-only` ranges in `common/vlans.nix` advertise prefixes this box would not own |
-| The old box's actual nft ruleset | `firewall.nix` | old box: `cat /var/etc/nftables.conf`, `nft list ruleset` (read-only). Anything `firewall.nix` contradicts is an accident |
+| LAN/uplink MACs | `hardware-configuration.nix` `links` rules | **read and proven** on the live box; which physical port is which is still an assumption (re-check `ip -br link` when the handoff cable moves) |
+| The uplink takes its address from the hub by DHCP | `networking.nix` `10-uplink` | **read**: old `enc0` was `192.168.20.41` on the hub's handoff, and networkd now requests the same |
+| L2TP endpoint, username, password | `constants.nix`, `sops.nix`, `uplink.nix` | **read**: `194.4.172.12`, `lhc1@a`, and the password is now `aaisp_ppp_password` in `secrets/secrets.yaml` |
+| Tunnel MTU and keep-alive | `uplink.nix` pppd options | **read**: `ifconfig l2tp0` was MTU 1460, and the old keep-alive was `10 60` |
+| The peer's IPv6 default | `constants.nix` `UPLINK_TUNNEL_PEER6` | **read**: `fe80::9e89:1eff:fe3f:0` from `netstat -rn -f inet6` |
+| AAISP's dial script | replaced by `xl2tpd` | **not needed**: `xl2tpd` is the daemon pppd's `pppol2tp` plugin expects, and it dials the same L2TP endpoint |
+| The tailnet's `ts.leighhack.org` resolver address | `dns.nix` `server` line | **read**: `100.100.100.100`, exactly as the placeholder guessed |
+| The routes the old box advertised to the tailnet | `uplink.nix` `--advertise-routes` | **open**: the new list is the network's aggregate blocks; headscale still has to approve them for this node |
+| The OpenVPN server | `openvpn.nix` | **read but not migrated**: one TUN server `MembersVPN`, UDP 1194, pool `10.3.254.0/24`, push `10.3.0.0/16`, Authentik LDAP auth, certificates in the old XML |
+| How the network's IPv6 prefix arrives | `networking.nix` `10-tunnel` and `50-vlan226/227` | **read**: DHCPv6-PD, `/48` hint, VLAN id as `SubnetId`; networkd now requests it and assigns the per-VLAN /64s |
+| The old box's firewall | `firewall.nix` | **read**: `pfctl -sr`/`-sn`/`-sa`; the per-VLAN `route-to` split is copied as fwmark policy routing |
+
+Still open for the cutover itself: the old box's **OpenVPN server** and its
+**port-forward/round-robin NAT rules** are not reproduced here (the tunnel and the
+LAN routing are).  If those are still in use, they need a follow-up before the old
+box goes away for good.  `network-status` and `dns-sync` on services1 still speak
+OPNsense's XML and command set, so they will fail against this box.
 
 ## Known-incomplete, by name
 
-* **dns-sync still points at the old box.** It is the half of this box's DNS that the
-  flake does not generate — the `*.int` vhost names in
-  `/var/lib/dnsmasq/names.hosts`, which is created empty and stays empty — and it
-  edits OPNsense's XML and runs `configctl dnsmasq restart` as root on `10.3.1.1`.
-  All four of those have to change before this box is the router, or new vhosts get no
-  DNS. `docs/follow-ups.md` has the list.
-* **IPv6 is not finished.** The RA ranges and the fixed v6 addresses are in the tables
-  and dnsmasq advertises them, but no part of this config obtains the /48 from the
-  uplink. Until it does, IPv6 to the outside world will not work even though every
-  address in `common/dns-records.nix` is correct. Invisible on this box while
-  co-existence is on, which advertises nothing at all.
-* **Nothing here is the network's router yet** — that is `./coexist.nix`, not a bug, and
-  its four switches are in the table above. The corollary is that everything which only
-  matters once the box *is* the router is still unproven: the firewall's per-VLAN
-  anti-spoof rules are loaded and forward nothing, the tunnel has never dialled, and no
-  router advertisement of ours has ever been sent.
+* **dns-sync still points at the old box.** It edits OPNsense's XML and runs
+  `configctl dnsmasq restart` as root on `10.3.1.1`. `docs/follow-ups.md` has the
+  list of what has to change before new vhosts get DNS from this box; the records
+  the flake owns come from `common/dns-records.nix` and do not depend on it.
+* **Nothing here is the network's router yet** — that is `./coexist.nix`, not a bug.
+  On the next boot with `enable = false` it becomes one: `.1` addresses, DHCP, RAs,
+  the AAISP tunnel and the policy routing all switch on together.  The first boot is
+  therefore the first time the tunnel, the fwmark rules and the delegated IPv6
+  prefixes are exercised for real; `journalctl -u xl2tpd-aaisp`, `ip route show
+  table 100`, `ip -6 route` and `networkctl status ppp0` are the checks.
 * **The LAN port is doing 100 Mbit, not gigabit** (measured at install). Cable, PHY, or
   the switch port it lands on. Irrelevant while it is a shadow; it is the ceiling on
   every byte the network sends once it is not, so read the switch port's own config
@@ -336,13 +336,10 @@ what turns `enable = false` from a gamble into a switch.
   unlike the other three machines. The tradeoff is `common/base.nix`'s to make, and the
   cutover is the moment to make it for this box;
   `hardware-configuration.nix` says why the installer did not decide it.
-* **The tunnel does not dial.** `pppd-aaisp-tunnel` starts, runs the `connect` script,
-  and that script prints a pointer to this README and exits 1. The unit retries
-  forever, which is the network's standard "not working, visibly" state. Do not make
-  it quiet.
 * **OpenVPN is off** (`infra.gw.openvpn.enable = false`). An OpenVPN listener with
   guessed certificates on the network's public address is worse than none; the
   firewall rule for its port lives in `openvpn.nix` so it cannot outlive the service.
+  The facts needed to turn it on are in the table above.
 * **The `nftables` unit gets no never-give-up override**, unlike every other unit here,
   because it is `Type=oneshot` and systemd does not restart those. What protects the
   ruleset instead: nixpkgs validates it against a user-mode kernel at *build* time

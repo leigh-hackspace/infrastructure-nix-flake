@@ -35,8 +35,29 @@
   TABLES = import ./lib/network-tables.nix;
 
   # Does this VLAN carry the box's way out?  Only one does, and it is worked out
-  # from the table by ./coexist.nix rather than assumed to be 225.
+  # from the table by ./coexist.nix rather than assumed to be 225.  At cutover
+  # this is false everywhere: the way out is ./uplink.nix's tunnel, and the live
+  # router's address is now this box's own.
   isTransit = v: COEXIST.enable && v.id == COEXIST.transitVlan.id;
+
+  # The two policy-routing marks ./firewall.nix's prerouting chain sets.  They
+  # are the flake's version of the old box's `route-to` pf rules, and they are
+  # *marks* rather than source-address routes because the same VLAN has a
+  # different upstream depending on what it is talking to: the old box sent
+  # VLAN 225 out of the AAISP tunnel but sent the rest of the network, and
+  # everything that was talking to the hub's own address, out of the hub's
+  # default.  A rule keyed on a packet mark can say that; a route keyed on the
+  # source VLAN cannot.
+  MARK_AAISP = 1;
+  MARK_HUB = 2;
+
+  # Table 100 is the AAISP tunnel's table and 200 the hub's.  The hub's default is
+  # also in the main table, because the box's own traffic and any socket that does
+  # not carry a mark must still find a default; the tunnel's is not, because a
+  # default in the main table would be chosen by unmarked traffic and would hide a
+  # dead tunnel behind a working hub.
+  TABLE_AAISP = 100;
+  TABLE_HUB = 200;
 
   # The NIC names machines/constants.nix owns (see that file's header: they are
   # hardware facts, keyed by name because a VLAN device has no MAC of its own,
@@ -155,10 +176,98 @@ in {
           # would make the router's own name resolution depend on the thing it is
           # supposed to be shielding.  A separate section, not a key of [Network]:
           # networkd's own schema, and the NixOS module's.
-          dhcpV4Config.UseDNS = false;
+          # The hub's DHCP route does not become this box's default route by
+          # itself: the old box's main table had the hub's default, and its
+          # `route-to` rules chose the tunnel or the hub per VLAN.  The same split
+          # is written below as two tables and two marks.  `UseRoutes = false`
+          # leaves only the connected route, and the endpoint /32 and defaults
+          # below are written explicitly — a DHCP default that appeared and
+          # disappeared with the hub's lease would race the tunnel's own default
+          # and make the failure depend on lease timing.
+          dhcpV4Config = {
+            UseDNS = false;
+            UseRoutes = false;
+          };
+          # The L2TP endpoint is reached through the hub, so its /32 has to be
+          # in the main table or the dial has no route to its own LNS.  The next
+          # two routes are the hub's default in its own table (selected by
+          # MARK_HUB) and the box's own default in the main table.
+          routes = [
+            {
+              Destination = "${NICS.L2TP_ENDPOINT}/32";
+              Gateway = NICS.UPLINK_HUB_GATEWAY;
+              GatewayOnLink = true;
+              Metric = 10;
+            }
+            {
+              Destination = "0.0.0.0/0";
+              Gateway = NICS.UPLINK_HUB_GATEWAY;
+              GatewayOnLink = true;
+              Table = TABLE_HUB;
+              Metric = 200;
+            }
+            # The box's own default: the hub, exactly as the old box's main table
+            # had `default 192.168.20.1 UG em3`.  Its traffic (dnsmasq's upstreams,
+            # tailscaled, the AAISP dial itself) is not the forwarded traffic the
+            # marks above are about, and it must not be sent into a tunnel whose
+            # endpoint it is still trying to reach.
+            {
+              Destination = "0.0.0.0/0";
+              Gateway = NICS.UPLINK_HUB_GATEWAY;
+              GatewayOnLink = true;
+              Metric = 300;
+            }
+          ];
+          # The old box's `pass out route-to (em3 192.168.20.1)` half: traffic
+          # marked 2 by ./firewall.nix's prerouting chain looks in table 200, and
+          # that table's default is the hub.  `Family = "ipv4"` because the hub
+          # is an IPv4-only handoff and there is no IPv6 default here at all.
+          routingPolicyRules = [
+            {
+              FirewallMark = MARK_HUB;
+              Table = TABLE_HUB;
+              Priority = 200;
+              Family = "ipv4";
+            }
+          ];
           # (No `RequiredForOnline` here either — see ./networking.nix's own note
           # about the LAN NIC: the key is a .link-file setting, and the tunnel's
           # interface is not something networkd creates in any case.)
+        };
+
+        # The tunnel itself, once pppd has made it.  pppd owns the interface's
+        # addresses (IPCP and IPv6CP) and ./uplink.nix's ip-up script owns the
+        # IPv6 default route, but DHCPv6-PD is networkd's: AAISP delegates a
+        # prefix, and networkd has to request it and hand the per-VLAN /64s out
+        # (see the VLAN files below).  `DHCP = "ipv6"` asks for the delegated
+        # prefix; `PrefixDelegationHint` is the old box's `/48` and is what makes
+        # AAISP's server delegate the whole block rather than a single /64.
+        #
+        # The unit is present even while ./coexist.nix is on, when ppp0 does not
+        # exist: networkd writes a .network file for a device that is not there
+        # and does nothing with it, which is the least surprising way to have the
+        # cutover be "flip the flag and reboot" rather than "add a file at the
+        # same time as the flag".
+        "10-tunnel" = {
+          matchConfig.Name = NICS.UPLINK_TUNNEL;
+          networkConfig = {
+            DHCP = "ipv6";
+            IPv6AcceptRA = false;
+          };
+          dhcpV6Config = {
+            UseDNS = false;
+            PrefixDelegationHint = "::/48";
+          };
+          # The old box's `route-to (l2tp0 81.187.81.187)` half: VLAN 225 looks
+          # in table 100, whose default ./uplink.nix's ip-up script writes.
+          routingPolicyRules = [
+            {
+              FirewallMark = MARK_AAISP;
+              Table = TABLE_AAISP;
+              Priority = 100;
+              Family = "ipv4";
+            }
+          ];
         };
       }
       // builtins.listToAttrs (
@@ -177,7 +286,17 @@ in {
                 # mask, not the block address: `10.3.1.1/10.3.1.0` is what writing
                 # the wrong half of `net` produces, and networkd calls it an
                 # invalid prefix at boot rather than at eval.
-                Address = ["${v.ipv4}/${TABLES.maskOf v.net}"];
+                Address =
+                  ["${v.ipv4}/${TABLES.maskOf v.net}"]
+                  # The VLAN's own IPv6 addresses (common/vlans.nix's `ipv6`), at
+                  # the /64 the RA ranges are in.  They were missing from the
+                  # first version of this file, which is why the router had no
+                  # address in the prefix it was advertising: dnsmasq can hand
+                  # out an RA for a prefix the interface does not have, and the
+                  # result is clients that configure an address and cannot reach
+                  # their gateway.  The delegated VLANs' addresses are not here —
+                  # networkd assigns those from the prefix it gets on ppp0.
+                  ++ map (a: "${a}/64") v.ipv6;
                 # No `DNS=` here, and no default route on the other VLANs.  This
                 # box *is* the network's resolver: its own resolution comes from
                 # /etc/resolv.conf, which ./dns.nix writes to point at dnsmasq on
@@ -187,10 +306,24 @@ in {
                 # so with resolved gone it would be decoration, and decoration about
                 # the one port this box most needs free is the worst kind.
                 #
-                # Only the VLANs that have IPv6 of their own accept router
-                # advertisement; the old box answered IPv4-only on the others
-                # (common/vlans.nix says which, per VLAN).
-                IPv6AcceptRA = v.ipv6 != [];
+                # No VLAN accepts router advertisements, including the ones with
+                # IPv6 of their own.  A router that accepts an RA on a downstream
+                # interface is a router that can install a default route via
+                # itself: dnsmasq advertises on these VLANs (./dns.nix), and the
+                # old box's `enable-ra` plus a `UseGateway=true` was a loop
+                # waiting for the day the two boxes stopped coexisting.  The IPv6
+                # addresses below are written, not learned.
+                IPv6AcceptRA = false;
+                # The public /64s on the VLANs the old box tracked from AAISP's
+                # delegation.  common/vlans.nix leaves `ipv6` empty on 226 and
+                # carries only the old box's ULA VIP on 227, because the public
+                # addresses are not fixed facts — they are the prefix networkd
+                # requests on ppp0, with the VLAN's id as the subnet id (the old
+                # box's `track6-prefix-id` was the same number).  VLAN 225 is
+                # static and already in `ipv6`; assigning the delegated prefix
+                # there too would add a second public address to the same router
+                # for no reason.
+                DHCPPrefixDelegation = v.id == 226 || v.id == 227;
               };
               # This box's own default route, while it has no uplink: the live
               # router, on the one VLAN that can reach it.  A [Route] section rather
@@ -201,18 +334,28 @@ in {
               # route via the old router would survive into the cutover and point the
               # new router's traffic at the old one — a loop with two DNS servers in
               # it.  `ip route` on the box is the check that this is the only one.
-              routes = lib.optionals (isTransit v) [{Gateway = COEXIST.transitGateway;}];
-              # The RA prefix is for routing only: the addresses on a VLAN are the
-              # fixed reservations in common/dns-records.nix and the leases dnsmasq
-              # hands out, and letting networkd invent a third kind of address from
-              # the prefix this same box advertises is what would move a device off
-              # the address the rest of the flake promises.  Same setting as
-              # machines/services1/networking.nix, for the same reason.
-              ipv6AcceptRAConfig = {
-                UseAutonomousPrefix = false;
-                UseOnLinkPrefix = true;
-                UseGateway = true;
-                UseDNS = false;
+              #
+              # The static route is the old box's `192.168.49.0/24 via 10.3.1.20`
+              # (its <staticroutes> section, read 2026-10-17): a tailnet subnet
+              # route served by services1, which is on the LAN and must be reached
+              # through it rather than through the tunnel.
+              routes =
+                lib.optionals (isTransit v) [{Gateway = COEXIST.transitGateway;}]
+                ++ lib.optionals (v.id == 225) [
+                  {
+                    Destination = "192.168.49.0/24";
+                    Gateway = "10.3.1.20";
+                  }
+                ];
+              # The delegated prefix's per-VLAN half: networkd takes the /64 it
+              # asked for on ppp0, appends `SubnetId` (the old box's track6 prefix
+              # id), gives the VLAN an address from it, and routes the /64 here.
+              # `Assign = true` is what makes the router reachable at an address in
+              # the prefix it is advertising; without it the VLAN would route the
+              # prefix but have no address in it.
+              dhcpPrefixDelegationConfig = lib.mkIf (v.id == 226 || v.id == 227) {
+                SubnetId = toString v.id;
+                Assign = true;
               };
             };
           }

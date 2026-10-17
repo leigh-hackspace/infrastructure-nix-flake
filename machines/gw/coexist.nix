@@ -40,7 +40,7 @@ let
   TABLES = import ./lib/network-tables.nix;
 
   # On while the old router is.  Flip to false to cut over.
-  enable = true;
+  enable = false;
 
   # The last octet this box takes on every VLAN, replacing the .1 that
   # common/vlans.nix says each VLAN's router owns.  254 because it is the

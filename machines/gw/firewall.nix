@@ -1,9 +1,10 @@
 # The router's packet decisions: what may be forwarded, and what may reach the
-# router itself.  This is the flake's version of the rules the old box ran —
-# OPNsense generated nftables from its `<Interfaces>` XML and ran
-# `/usr/local/sbin/nft -f /var/etc/nftables.conf` (its own `ps` said so), so the
-# tool is inherited and only the source of truth changes: common/vlans.nix and
-# common/config.nix here instead of the XML there.
+# router itself.  This is the flake's version of the rules the old box ran.  The
+# old box ran **pf** (OPNsense's generated ruleset; `pfctl -sr`/`-sn` read on
+# 2026-10-17), while this box runs nftables — the tool changes, and the source of
+# truth changes with it: common/vlans.nix and common/config.nix here instead of
+# the XML there.  The old pf rules are quoted where they matter below because the
+# semantics are what is being copied, not the syntax.
 #
 # WHAT THE OLD BOX'S FIREWALL WAS FOR, in one paragraph, because it is not
 # obvious and it is the reason this file exists at all: the network is one uplink
@@ -29,12 +30,13 @@
 #      both), because the honest answer is "one of these is redundant and the real
 #      box says which".  Delete the redundant one once it is known — and read the
 #      rendered ruleset, not this comment, to decide.
-#   2. **The old box's exact rules.**  They have never been read: the box was
-#      found to *run* nft from `/var/etc/nftables.conf`, which is not the same as
-#      knowing what that file said.  ./README.md gives the read-only commands
-#      (`cat /var/etc/nftables.conf`, `nft list ruleset`); anything below that
-#      contradicts them is an accident, not a decision, and "the rules parse" is
-#      not "the rules are the network's rules".
+#   2. **The old box's exact rules.**  They were read on 2026-10-17 with
+#      `pfctl -sr`, `pfctl -sn` and `pfctl -sa` (the old box runs pf, not nft,
+#      despite the comment above): the per-VLAN `route-to` split is what the
+#      marks below copy, and the old box's NAT was the two `nat on` rules in
+#      `pfctl -sn`.  Anything below that contradicts the archive is an accident,
+#      not a decision, and "the rules parse" is not "the rules are the network's
+#      rules".
 #   3. **The uplink's interface name.**  NAT below matches the tunnel's own
 #      interface (./constants.nix's `UPLINK_TUNNEL`), which is a name pppd gives
 #      the device at runtime and nothing in the flake can check.
@@ -123,7 +125,55 @@
   # of a bad 04:00.
   uplinkServiceRules = ''
     iifname "${NICS.UPLINK_NIC}" udp sport 67 udp dport 68 accept
+    # The tunnel's DHCPv6 client, which asks AAISP for the /48 and the public
+    # address.  The reply comes from the peer's link-local address and is not
+    # `established` from the client's point of view, exactly like the DHCPv4
+    # reply above.
+    iifname "${NICS.UPLINK_TUNNEL}" udp sport 547 udp dport 546 accept
   '';
+
+  # The destinations that are *not* the internet for the purpose of the routing
+  # marks below: the old box's `<Local>` alias (10.3.0.0/16 and 192.168.2.0/24),
+  # the tailnet (100.64.0.0/16 — the old alias's `TAILSCALE` was 100.64.0.0/16
+  # too), the tailnet subnet route at Chris's house, and the AAISP hub's own
+  # handoff network.  Traffic to one of these must keep the route it already has
+  # (connected, LAN, tailscale0, or the hub's own link) rather than being forced
+  # into a table whose default is further away.
+  markLocalV4 = TABLES.setOf [
+    "10.3.0.0/16"
+    "192.168.2.0/24"
+    "192.168.49.0/24"
+    "100.64.0.0/16"
+    "192.168.20.0/24"
+  ];
+
+  # One VLAN's mark, which is the flake's version of the old box's
+  # `pass in quick on vlan0.<id> route-to (...)`.  VLAN 225 (the trusted wired
+  # LAN) was the one the old box sent out of the AAISP tunnel on IPv4; every
+  # other VLAN went out of the hub's own uplink.  VLAN 225's IPv6 went out of the
+  # tunnel like every other VLAN's, which needs no mark here because the tunnel's
+  # ip-up script owns the IPv6 default.
+  #
+  # The mark is set in prerouting, before the route decision, and the matching
+  # `ip rule` is in ./networking.nix.  `meta mark set` on a packet in a table
+  # that is only used for this is safe: nothing else on the box reads marks, and
+  # conntrack keeps the decision for the connection's later packets through the
+  # established rule.
+  vlanMarkRules =
+    builtins.concatStringsSep "\n"
+    (
+      map
+      (
+        v: ''
+          iifname "${TABLES.vlanDevice v}" ip daddr != ${markLocalV4} meta mark set ${
+            if v.id == 225
+            then "1"
+            else "2"
+          }
+        ''
+      )
+      VLANS
+    );
 in {
   # The router forwards: that is the whole point of it.  Written as sysctls rather
   # than as networkd's `IPForward=` per interface, because the answer is the same
@@ -144,6 +194,22 @@ in {
         family = "ip";
         name = "router";
         content = ''
+          # The policy-routing half: mark before the routing decision, then let
+          # ./networking.nix's two fwmark rules pick table 100 (AAISP) or table
+          # 200 (the hub).  This is the old box's `route-to` split, and it is in
+          # the same table as the forward chain so the two halves cannot be
+          # installed apart.
+          chain prerouting {
+            type filter hook prerouting priority mangle; policy accept;
+            ${vlanMarkRules}
+            # The tailnet is a LAN-side network: a packet arriving on tailscale0
+            # for the internet is forwarded traffic from a remote node, and the
+            # old box sent it out of the hub (`route-to (em3 ...)` on
+            # tailscale0).  A packet for the LAN never reaches this mark because
+            # its destination is in markLocalV4.
+            iifname "tailscale0" ip daddr != ${markLocalV4} meta mark set 2
+          }
+
           chain forward {
             type filter hook forward priority 0; policy drop;
 
@@ -242,7 +308,20 @@ in {
         content = ''
           chain srcnat {
             type nat hook postrouting priority srcnat; policy accept;
+            # The trusted VLAN out of the AAISP tunnel (the old box's
+            # `nat on l2tp0 ... -> (l2tp0:0)` half).
             oifname "${NICS.UPLINK_TUNNEL}" ip saddr ${TABLES.blockSet VLANS} masquerade
+            # Every other VLAN out of the hub, which the old box did not need a
+            # nat rule for because its `nat on em3` rule covered the interface
+            # rather than the source; the same rule here is written with the
+            # source block so a packet arriving from the hub cannot be
+            # masqueraded back out of it.
+            oifname "${NICS.UPLINK_NIC}" ip saddr ${TABLES.blockSet VLANS} masquerade
+            # The tailnet, when this box is its exit node: the old box sent
+            # tailscale0's traffic out of the hub (`route-to (em3 ...)` on
+            # tailscale0), and the hub only routes the address it gave this box.
+            # 100.64.0.0/16 is the tailnet's own range (common/config.nix's ACL).
+            oifname "${NICS.UPLINK_NIC}" ip saddr 100.64.0.0/16 masquerade
           }
         '';
       };
