@@ -166,6 +166,20 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   container only shows up as a failed nightly job — and one nightly run has already
   failed with no recorded reason. Details: `docs/nas-and-borg.md`.
 
+- **Nothing measures services1 from outside itself** (opened 2026-10-17 by the move
+  that put gatus, Prometheus and Grafana on services1). Every check that used to
+  watch services1 — gatus's ping of 10.3.1.20, and the https checks that go through
+  its nginx — now runs on the box they watch, so a dead services1 goes down with its
+  own monitor and reports nothing, and the dashboards are unreachable at the same
+  moment they stop being updated.  The other boxes are still measured from here
+  (gatus pings services2/aibox/router/NAS/switches, Prometheus scrapes their
+  exporters), so the gap is one-sided.  The fix is a second, minimal monitor on a
+  box that is not services1 — gatus is a small Go binary and aibox has the
+  headroom — or a cron/one-shot on aibox that curls services1 and alerts to Slack.
+  Do not "fix" it by keeping the services1 self-ping in
+  `common/monitoring-endpoints.nix`: a check on the box that runs it can only ever
+  catch a hung nginx, and it was removed on 2026-10-17 for that reason.
+
 ## Router (gw)
 
 - **`machines/gw/` is a router with no hardware** (started 2026-10-14). It is in the

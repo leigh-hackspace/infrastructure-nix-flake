@@ -8,35 +8,62 @@ replacing the Windows install that shipped on the NVMe; the RTX 3060 arrived
 
 ## What it runs
 
-The observability stack, its own status dashboard, and a Strata instance:
+Its own status dashboard, the Strata engine, and the exporters — that is all.
+The observability stack that used to be here moved to services1 on 2026-10-17:
 
-- `./gatus.nix` — the endpoint checks and the Slack alerting.
-- `./monitoring.nix` — Prometheus (9091) + Grafana (3000) and the alert rules.
 - `./status.nix` — services2's own dashboard, proxied by services1 as
-  `services2-status.int.leighhack.org`.
+  `services2-status.int.leighhack.org`.  It is the thing that keeps answering
+  while strata is thrashing, and it is the box's only self-measurement.
 - `./strata.nix` + `./strata-package.nix` — the Qwen3.8-Flash-Next **Coder**
   engine on the RTX 3060 (`http://10.3.1.21:8080/v1`), the box's second Strata
-  instance after aibox's. `./nvidia.nix` is the driver for that card. The
+  instance after aibox's.  `./nvidia.nix` is the driver for that card.  The
   memory sizing and the one-time model prep are in `./STRATA.md`.
-- `common/exporters.nix` — the per-box exporters, so this box is measured too.
+- `common/exporters.nix` — the per-box exporters, scraped by services1's
+  Prometheus at fixed IPs (`10.3.1.21:9100`, `:9558`, `:9633`).
+- What is **not** here any more, and where it went: `gatus.nix` →
+  `machines/services1/services/gatus.nix`, `monitoring.nix` (Prometheus + Grafana
+  + the alert rules) → `machines/services1/services/observability.nix`, and its
+  dashboards → `machines/services1/services/monitoring-dashboards.nix`.  The
+  vhosts stayed where they were (`machines/services1/services/monitoring.nix`),
+  so they now proxy to a loopback bind on services1 rather than across the LAN.
 
-Monitoring lives here rather than on services1 for one reason: **the box that
-answers "is this thing down" must not be the box being asked.** Gatus on services1
-could never report services1 as down, and a services1 failure took the alerting with
-it — including the checks for everything else on the LAN. The endpoint list is data in
-`common/monitoring-endpoints.nix`; the drift guard that goes with it stays on services1,
-where the vhosts are.
+The reason for the move is the one that used to be the reason for the other
+arrangement: **this box's 30 GiB of RAM is strata's.** The Coder engine measured
+28.3 GiB RSS against it on 2026-10-15, and journald was already logging "Under
+memory pressure, flushing caches" with gatus, Prometheus and Grafana living
+alongside it.  Whatever else lives here is what the kernel reaps when the engine
+asks for the next page — and the OOM victim does not have to be the engine, so
+the monitor was the thing that died while the thing it watches stayed up (the
+record is in `docs/work-log-2026-10.md`).  services1 has the headroom and already
+serves these vhosts, so the apps moved to it.
 
-It is also the network's build machine (`common/build-farm.nix`): 211 GB of free store
-against services1's 84%-full root, and no services worth protecting from a build.
+What that gives up is the rule it was built on — "the box that answers *is this
+thing down* must not be the box being asked" — for services1 itself: gatus,
+Prometheus, Grafana and services1's own exporters now live on the box they
+measure, so a dead services1 goes down with its own monitor and reports nothing.
+What still works from here, and is the half that keeps being worth having:
 
-The vhosts stay on services1, which terminates TLS for the whole network, so they are in
-`machines/services1/services/monitoring.nix` and `machines/services1/services/status.nix`
-and proxy here. That is the one dependency this box cannot remove: if services1 is down
-the dashboards are unreachable even though gatus is still alerting to Slack.
+- gatus's ping of **10.3.1.21** (the check that replaced the one of services1 —
+  see `common/monitoring-endpoints.nix`), plus its checks on aibox, the router,
+  the NAS, the switches, the printers and the cameras;
+- services1's Prometheus scraping **this box's** exporters, so a strata-driven
+  death on services2 is still visible from the box that cannot report it;
+- `services2-status.int.leighhack.org`, this box's own dashboard, which is what
+  answers "is services2 down" while the engine is thrashing.
 
-Things that bind `0.0.0.0` because the proxy/scrape comes from another box: Grafana
-(`http_addr`), gatus, Prometheus, the exporters, and services2's status dashboard.
+It is also the network's build machine (`common/build-farm.nix`): 211 GB of free
+store against services1's busier root, and no services worth protecting from a
+build.  That half of the trade-off is untouched — remote building still offloads
+to here, and `just build-remote` still refuses to fall back.
+
+The vhosts no longer depend on this box at all: they are on services1, which
+terminates TLS for the whole network, and since the move they proxy to a loopback
+bind, so a dead services2 shows up as a dead *check* rather than as an
+unreachable dashboard.
+
+Things that bind `0.0.0.0` because the scrape/proxy comes from another box: the
+exporters and services2's status dashboard.  Grafana, gatus and Prometheus used
+to be in that list; they are on services1 now and bind loopback.
 
 ## What it does not have
 

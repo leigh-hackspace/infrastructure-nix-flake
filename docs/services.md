@@ -11,7 +11,8 @@ deeper document that owns the long version, if there is one — this file is the
 index, not the final word.
 
 Machines: `services1` (10.3.1.20, the services box and TLS terminator),
-`services2` (10.3.1.21, observability + build machine), `aibox` (10.3.1.32).
+`services2` (10.3.1.21, strata + build machine — the observability stack that used
+ to live there moved to services1 on 2026-10-17), `aibox` (10.3.1.32).
 Every address is in `common/hosts.nix`.
 
 ---
@@ -105,10 +106,11 @@ external crates**) ssh's to the router every 5 s, keeps a rolling history and
 serves the JSON API (`/api/snapshot`, `/api/history`, `/api/config`) plus static
 files via `--static-dir`.
 
-It listens on **0.0.0.0:8091**, not loopback, on purpose: Prometheus on services2
-scrapes its `/metrics` and a scrape from another box cannot reach a loopback bind.
-Access control is the vhost ACL, not the bind — the JSON API has always been
-unauthenticated.
+It listens on **0.0.0.0:8091**, not loopback: Prometheus scrapes its `/metrics`
+(`machines/services1/services/observability.nix`) and the bind used to have to be
+wide because the scraper was on services2.  It is on this box now, so the wide
+bind is a habit rather than a requirement — access control is the vhost ACL, not
+the bind, and the JSON API has always been unauthenticated.
 
 The frontend is **SolidJS + TypeScript** (`frontend/`, esbuild +
 `esbuild-plugin-solid`, no router/state/chart libraries) and is the **one SPA

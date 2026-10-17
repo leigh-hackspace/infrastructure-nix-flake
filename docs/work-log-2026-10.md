@@ -9,6 +9,70 @@ Still-open items live in `docs/follow-ups.md`.
 
 ---
 
+## 2026-10-17 — the observability stack moved from services2 to services1
+
+The ask was "move everything off services2 except strata".  What was on services2
+was gatus, Prometheus, Grafana, its dashboards and its own status dashboard; what
+stayed is strata, `status.nix`, the exporters and the build farm.
+
+**Why the move, in the direction that surprised me:** the file that owned the
+arrangement argued the opposite of the ask — "the box that answers *is this thing
+down* must not be the box being asked", which is why gatus was on services2 at
+all.  The reason it stopped holding is in `machines/services2/STRATA.md` and
+`docs/work-log-2026-10.md`: the Coder engine measured **28.3 GiB RSS against
+services2's 30 GiB of RAM**, journald was logging "Under memory pressure,
+flushing caches" with the monitor living alongside it, and the OOM victim does not
+have to be the engine — so the thing that was meant to survive a failure was the
+thing being reaped during one.  services1 has the headroom (96 GB free on its root
+at the time of the move, against services2's 121 GB) and already terminates TLS
+for these vhosts, so the apps moved to it and the vhosts stayed where they were.
+
+What moved, and the shape it left behind:
+
+- `machines/services2/gatus.nix` → `machines/services1/services/gatus.nix`
+- `machines/services2/monitoring.nix` → `machines/services1/services/observability.nix`
+  (named for what it is, so it cannot be confused with the vhost file that was
+  already called `monitoring.nix` one directory up)
+- `machines/services2/monitoring-dashboards.nix` →
+  `machines/services1/services/monitoring-dashboards.nix`, pulled in by
+  `observability.nix` rather than by the services list
+- the vhosts (`machines/services1/services/monitoring.nix`) kept their names and
+  their ports — 8999 gatus, 3000 Grafana, 9091 Prometheus — and their `proxyPass`
+  went from `${HOSTS.services2}:<port>` to `127.0.0.1:<port>`
+- Grafana's `http_addr` went `0.0.0.0` → `127.0.0.1`: the proxy is on the same box
+  now.  Prometheus and gatus keep their ports and are reached over loopback either
+  way, so nothing about them changed except which unit runs them
+- `machines/services2/sops.nix` is now empty: Grafana's authentik OIDC client
+  secret was its only runtime secret, and services1 already declared the same one
+  (`machines/services1/sops.nix`) — one secret, one client, and it has one reader
+  now instead of two
+- `common/monitoring-endpoints.nix` swapped its `Services1` ping for a `Services2`
+  one: gatus now runs on the box it used to ping, so that check is one that can
+  only ever catch a hung nginx, while the check of 10.3.1.21 is the one that is
+  worth having — and there was no check of services2 before, only of services1
+- `common/check-printer-states.nix` reads the two files it asserts over by path,
+  so it moved with them; its message strings now name `observability.nix`
+
+**What the move costs, stated so the next reader does not re-derive it:** gatus,
+Prometheus, Grafana and services1's own exporters now live on the box they
+measure, so a dead services1 goes down with its own monitor and reports nothing.
+What still works is the half that keeps being worth having — gatus pinging
+services2 / aibox / the router / the NAS / the switches / the printers, and
+services1's Prometheus scraping services2's exporters, which is how a strata-driven
+death on the box that cannot report itself stays visible.  `services2-status.int.leighhack.org`
+is that box's only self-measurement and is the thing that answers while the engine
+is thrashing.
+
+Verified after the deploy, on services1: the three vhosts answer over the same
+names and ports they did before; the rendered units read back with the loopback
+binds and the ports unchanged (`just switch` then `/etc/nginx/nginx.conf` and the
+unit files, per the rule about reading rendered output rather than evaluating);
+`nix flake check --no-build` stays warning-free at the new lock; the gatus drift
+assertion still passes with the new endpoint list; and services2's own switch
+removes the three services without touching strata or the status dashboard.
+
+---
+
 ## 2026-10-15 — the first full network upgrade, and the four things its runbook got wrong
 
 `docs/network-upgrade-runbook.md` was written the day before it was first executed.

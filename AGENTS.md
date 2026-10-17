@@ -86,8 +86,8 @@ X first", X has already cost someone a day.
   entry system. Nothing is read out of `~/Projects` any more — the two things
   that used to be (`whisper-ws`, `pi-room-sys`) are in-tree now, so a clone of
   this repo evaluates every machine and `just check` runs anywhere. Machines:
-  `services1` (main services box, 10.3.1.20), `services2` (observability +
-  the network's build machine, 10.3.1.21 — `machines/services2/README.md`),
+  `services1` (main services box, 10.3.1.20), `services2` (strata + its own status
+  dashboard + the network's build machine, 10.3.1.21 — `machines/services2/README.md`),
   `aibox` (10.3.1.32), `gw` (the router, no hardware yet) and `pi-room-sys`
   (a machine that is *built by* aibox rather than deployed —
   `machines/pi-room-sys/README.md`).
