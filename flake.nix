@@ -245,10 +245,11 @@
       # The why of the whole thing is in machines/pi-room-sys/README.md.
       pi-room-sys = piRoomSys;
 
-      # The router.  It has no hardware yet — machines/gw/README.md is the reason,
-      # and the short version is that this entry exists so the config is *evaluated*
-      # by `nix flake check` (and its table assertions by `just check`) rather than
-      # so it can be deployed.  Two consequences of that, both deliberate:
+      # The router.  The box exists (machines/gw/README.md: a Supermicro
+      # X9SCL/X9SCM at 10.3.1.254) and this entry is deployed to it — but in
+      # *co-existence* mode, beside the router it is meant to replace rather than
+      # in its place, which is machines/gw/coexist.nix's whole job.  Two
+      # consequences of how it is built, both deliberate:
       #
       #   * No ./common/nas.nix and no ./common/tools.nix: the router is the thing
       #     the network's DNS depends on, so it must not grow a dependency on a NAS

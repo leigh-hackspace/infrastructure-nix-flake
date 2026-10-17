@@ -13,25 +13,35 @@
 # `vlan = [...]` on the parent's network file to hang them off it, and the VLAN's
 # own network file carrying its address.  Two things services1 does that this box
 # must not: it must not ask for a default route on the VLANs (it *is* the default
-# route — its own gateway comes from the uplink, ./uplink.nix), and it must not
-# let networkd take an address from the RA prefix it is itself advertising.
+# route — its own gateway comes from the uplink, ./uplink.nix, except while
+# ./coexist.nix is on, when it comes from the router still in that job), and it
+# must not let networkd take an address from the RA prefix it is itself
+# advertising.
 {
   config,
   lib,
   pkgs,
   ...
 }: let
-  HOSTS = import ../../common/hosts.nix;
-  VLANS = import ../../common/vlans.nix;
+  COEXIST = import ./coexist.nix;
+
+  # The VLANs as this box must read them — ./coexist.nix, which is common/vlans.nix
+  # with this box's own host address substituted while the old router is still
+  # live.  Nothing in this file reads common/vlans.nix directly: a file that read
+  # the raw table would take .1 on one VLAN and .254 on the next.
+  VLANS = COEXIST.vlans;
 
   NICS = import ./constants.nix;
   TABLES = import ./lib/network-tables.nix;
 
+  # Does this VLAN carry the box's way out?  Only one does, and it is worked out
+  # from the table by ./coexist.nix rather than assumed to be 225.
+  isTransit = v: COEXIST.enable && v.id == COEXIST.transitVlan.id;
+
   # The NIC names machines/constants.nix owns (see that file's header: they are
   # hardware facts, keyed by name because a VLAN device has no MAC of its own,
-  # and the `links` rules that pin a name to a MAC are in
-  # hardware-configuration.nix).  Until those rules exist these files match
-  # nothing — the honest state of a machine that has no hardware yet.
+  # and the `links` rules that pin each name to a MAC are in
+  # hardware-configuration.nix, so these two names are what the box answers on.
   LAN_NIC = NICS.LAN_NIC;
   UPLINK_NIC = NICS.UPLINK_NIC;
 in {
@@ -60,8 +70,16 @@ in {
   # the names it serves).  Same shape as machines/services1/networking.nix's
   # extraHosts, one line shorter: the router is the thing the names point at, and
   # its own address must not come from the dnsmasq that is being started.
+  #
+  # The address is this box's own, on the VLAN it reaches the network through:
+  # `gw` is this box's name (./default.nix sets the hostname), and while
+  # ./coexist.nix is on, this box is not at the address common/hosts.nix gives the
+  # name it shares with the live router.  Pointing it at 10.3.1.1 would make
+  # `getent hosts gw` answer with a different machine than `hostname` — which is
+  # exactly the kind of two-facts-about-one-name confusion the rest of this
+  # directory refuses.
   networking.extraHosts = ''
-    ${HOSTS.router} gw gw.int.leighhack.org
+    ${COEXIST.transitVlan.ipv4} gw gw.int.leighhack.org
   '';
 
   systemd.network = {
@@ -160,17 +178,30 @@ in {
                 # the wrong half of `net` produces, and networkd calls it an
                 # invalid prefix at boot rather than at eval.
                 Address = ["${v.ipv4}/${TABLES.maskOf v.net}"];
-                # The router resolves through its own dnsmasq, on the address of
-                # the VLAN the query came in on.  No `Gateway=` on a VLAN: this box
-                # is the gateway its clients point at, and its own default route
-                # belongs to the uplink tunnel — a route "via myself" on five
-                # interfaces is five ways to shadow the real one.
-                DNS = [v.ipv4];
+                # No `DNS=` here, and no default route on the other VLANs.  This
+                # box *is* the network's resolver: its own resolution comes from
+                # /etc/resolv.conf, which ./dns.nix writes to point at dnsmasq on
+                # loopback, and systemd-resolved — which would otherwise own
+                # 127.0.0.53:53 and refuse to start dnsmasq at all — is switched off
+                # there too.  A `DNS=` line in a .network file is read by resolved,
+                # so with resolved gone it would be decoration, and decoration about
+                # the one port this box most needs free is the worst kind.
+                #
                 # Only the VLANs that have IPv6 of their own accept router
                 # advertisement; the old box answered IPv4-only on the others
                 # (common/vlans.nix says which, per VLAN).
                 IPv6AcceptRA = v.ipv6 != [];
               };
+              # This box's own default route, while it has no uplink: the live
+              # router, on the one VLAN that can reach it.  A [Route] section rather
+              # than [Network] Gateway=, which systemd deprecated in favour of it.
+              #
+              # Not on every VLAN, and not when co-existence is off: the router's
+              # own route out is the AAISP tunnel ./uplink.nix dials, and a default
+              # route via the old router would survive into the cutover and point the
+              # new router's traffic at the old one — a loop with two DNS servers in
+              # it.  `ip route` on the box is the check that this is the only one.
+              routes = lib.optionals (isTransit v) [{Gateway = COEXIST.transitGateway;}];
               # The RA prefix is for routing only: the addresses on a VLAN are the
               # fixed reservations in common/dns-records.nix and the leases dnsmasq
               # hands out, and letting networkd invent a third kind of address from

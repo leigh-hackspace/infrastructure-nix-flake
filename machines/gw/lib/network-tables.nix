@@ -91,12 +91,32 @@ in rec {
   # `services1.int.leighhack.org` query answer from the same record and cannot
   # disagree with the reservation.  Generated, which is the point: the names are
   # the table's keys.
-  recordsHosts = records:
+  #
+  # One line per address, with both names on it — `<addr> <name>.<zone> <name>` —
+  # which is the shape the old box's generated `/var/etc/dnsmasq-hosts` has, and two
+  # parts of it are not interchangeable:
+  #
+  #   * The FQDN has to be spelled out. `domain=` and `local=` make this box
+  #     authoritative for the zone; they do not *complete* a hosts entry. A file of
+  #     bare names answers `services1` and answers `services1.int.leighhack.org`
+  #     with nothing at all — measured on the box against the old router on
+  #     2026-10-17, which is how this was found: the old box answered the FQDN, this
+  #     one answered the short name only, and every vhost, monitoring endpoint and
+  #     `just dns-sync` consumer on the network asks for the FQDN.
+  #   * Only the first address on a line is an address; everything after it is a
+  #     name. So a record's IPv4 and its IPv6 cannot share a line — that would
+  #     register the v6 address as an alias *name* for the host, which is a silently
+  #     wrong answer rather than an error. The old box's file has one line per
+  #     address for the same reason.
+  recordsHosts = zone: records:
     builtins.concatStringsSep "\n"
     (
-      map
-      (r: builtins.concatStringsSep " " ([r.ipv4] ++ r.ipv6 ++ [r.name]))
-      (builtins.attrValues (named records))
+      builtins.concatLists
+      (
+        map
+        (r: map (addr: "${addr} ${r.name}.${zone} ${r.name}") ([r.ipv4] ++ r.ipv6))
+        (builtins.attrValues (named records))
+      )
     );
 
   # The VLANs' dynamic ranges and their router-advertisement ranges, one block
@@ -273,4 +293,56 @@ in rec {
   # lists, so the strings are filtered out first — the same reason
   # common/check-printer-states.nix's `tokens` helper filters).
   lines = s: builtins.filter builtins.isString (builtins.split "\n" s);
+
+  # --- the helpers ./../coexist.nix and its consumers need ------------------
+  #
+  # Co-existence is one fact about this box (it owns every VLAN's gateway
+  # address except the number, because the router it is replacing is still
+  # live), and these four helpers are what turn that fact into the table read
+  # differently rather than into a second table.  They are here rather than in
+  # ./../coexist.nix because ./../dns.nix, ./../networking.nix and
+  # ./../firewall.nix all read the rewritten table and ./check-network-tables.nix
+  # has to be able to ask the same questions of it — three renderers and a check
+  # agreeing on one relation is the whole reason this file exists.
+
+  # Is this address inside that address-notation block?  The same prefix
+  # relation as "is this VLAN's block inside the ACL", which is the point: the
+  # check and the firewall must not have two ideas about containment.  It is a
+  # string test because the notation is what dnsmasq and nftables are handed.
+  inBlock = addr: net: has (blockPrefix net) addr;
+
+  # Replace an IPv4 address's host part, leaving its network part alone.  A
+  # dotted quad is the only shape accepted (the assert is on the *split*, so a
+  # block in CIDR notation or an IPv6 address fails here rather than coming out
+  # as a one-and-a-half octet address in a rendered conf).
+  hostAddr = host: addr: let
+    q = quadsOf addr;
+  in
+    assert (builtins.match "[0-9]+" host != null);
+    assert (builtins.length q == 4); "${builtins.elemAt q 0}.${builtins.elemAt q 1}.${builtins.elemAt q 2}.${host}";
+
+  # A VLAN list with each VLAN's own address rewritten and nothing else: the ids,
+  # blocks, dynamic ranges and comments are facts about the network and stay,
+  # `ipv4` is a fact about this box and moves.  Every renderer downstream reads
+  # the result, which is what makes the mode one substitution rather than a
+  # branch in four files.
+  hostAddrs = host: vlans: map (v: v // {ipv4 = hostAddr host v.ipv4;}) vlans;
+
+  # Comment out a generated block instead of deleting it.  ./../dns.nix emits the
+  # DHCP and RA blocks commented while another router is live: a block that is
+  # *absent* is indistinguishable from a bug in the generator, and whoever runs
+  # the cutover has to be able to read what they are about to enable.  dnsmasq's
+  # comment character is '#', and blank lines stay blank so the blocks are still
+  # blocks.
+  commentBlock = text:
+    builtins.concatStringsSep "\n"
+    (map
+      (l:
+        (
+          if l == ""
+          then ""
+          else "# "
+        )
+        + l)
+      (builtins.filter builtins.isString (builtins.split "\n" text)));
 }

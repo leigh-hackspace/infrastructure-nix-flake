@@ -13,8 +13,9 @@ crates/        every Rust crate; one cargo workspace (crates/Cargo.toml)
                  which are wasm, and `whisper-ws/`, which is packaged on its own)
 common/        Nix modules shared by every machine (crane helpers, hosts, nginx)
 machines/      one directory per machine; services/ one file per service
-               (`pi-room-sys/` is the image aibox netboots the Pi Room with, and
-               `gw/` is the router with no hardware yet — neither is deployed)
+               (`pi-room-sys/` is the image aibox netboots the Pi Room with, so it
+               runs on no box of its own, and `gw/` is the router, deployed at
+               10.3.1.254 *beside* the live router — machines/gw/README.md)
 secrets/       sops-encrypted
 docs/          reference docs (services, builds, DNS, switches, backups) plus the
                write-ups, post-mortems and audits the backstory points to

@@ -32,18 +32,28 @@
   # passed in: `CONFIG` is not one of the flake's specialArgs (only `INFRA` is),
   # and every other module in the repo imports it the same way.
   CONFIG = import ../../common/config.nix;
+  COEXIST = import ./coexist.nix;
+
+  # The tunnel is the route out of a box that *is* the network's router.  While
+  # ./coexist.nix is on, this box is not: its own traffic goes via the live
+  # router (./networking.nix's `routes`), and a second box dialling a second
+  # AAISP session would be a second public IP and a second default route for a
+  # network that has one of each.  So the whole tunnel is off here rather than
+  # "enabled and failing visibly": the failure it would show is this file's own
+  # missing facts, and they are already listed in ./README.md.
+  enableTunnel = !COEXIST.enable;
 
   # The blocks to advertise to the tailnet, generated from the network's own table
   # rather than written out — see the `--advertise-routes` line below for why a
   # forgotten route is invisible.
-  VLANS = import ../../common/vlans.nix;
+  VLANS = COEXIST.vlans;
 in {
   # The PPP suite.  nixpkgs' `services.pppd` module writes one peer file per entry
   # in `peers` and one unit per peer (`pppd-<name>`), runs it `Type=notify` with
   # `up_sdnotify`, and already sets Restart=always/RestartSec=5 — so the only thing
   # added below is the rate-limit half, the one that lives on the unit rather than
   # in serviceConfig (common/systemd.nix's whole comment).
-  services.pppd = {
+  services.pppd = lib.mkIf enableTunnel {
     enable = true;
 
     peers.aaisp-tunnel = {
@@ -125,11 +135,12 @@ in {
   # DHCP client, and a tunnel dialled before its NIC has an address fails in a way
   # that looks like AAISP's fault.
   systemd.services.pppd-aaisp-tunnel =
-    INFRA.mkNeverGiveUpOverride
-    // {
-      after = ["systemd-networkd.service"];
-      wants = ["systemd-networkd.service"];
-    };
+    lib.mkIf enableTunnel
+    (INFRA.mkNeverGiveUpOverride
+      // {
+        after = ["systemd-networkd.service"];
+        wants = ["systemd-networkd.service"];
+      });
 
   # The network's tailnet presence, which the old box ran as `tailscale0` (it is in
   # its generated dnsmasq conf's interface list, and the `ts.leighhack.org` exception
@@ -152,6 +163,17 @@ in {
     extraUpFlags =
       [
         "--login-server=https://${CONFIG.HEADSCALE_DOMAIN}"
+      ]
+      # What this box tells the tailnet it can carry.  Nothing, while
+      # ./coexist.nix is on: an advertised route is a route headscale can hand to
+      # every other node on the tailnet, and a box that is not the network's router
+      # must not offer to carry traffic for it — it would send 10.3.1.0/24 to a
+      # machine whose own route to 10.3.1.20 goes via the router that route is
+      # supposed to replace.  The join itself is still worth having (it is how this
+      # box is reachable when its own LAN config is what is broken), and
+      # `tailscale status --json` on the box is what proves nothing is being
+      # advertised.
+      ++ lib.optionals (!COEXIST.enable) [
         "--advertise-exit-node"
       ]
       # The network's own blocks, advertised to the tailnet: this is the rule that
@@ -166,7 +188,9 @@ in {
       # same one, including whether the IPv6 blocks were advertised too.  One flag
       # with a comma-separated list, because `tailscale up` takes the last
       # `--advertise-routes` it is given rather than the union of them.
-      ++ [("--advertise-routes=" + builtins.concatStringsSep "," (map (v: v.net) VLANS))];
+      ++ lib.optionals (!COEXIST.enable) [
+        ("--advertise-routes=" + builtins.concatStringsSep "," (map (v: v.net) VLANS))
+      ];
   };
 
   # The tailnet's DNS exception, which is the reason dnsmasq is in on this at all:

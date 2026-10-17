@@ -28,7 +28,7 @@ Skim this; the detail below is what each step means.
 3. Put the whole network on **one commit**: push local work, then reset each box to it.
 4. Decide, per input, whether the upgrade moves it. Update `flake.lock` deliberately, commit it.
 5. `just check` (evaluate everything, activate nothing). Re-read the baseline at the new lock.
-6. `just check-build` (build all three machines' toplevels, activate nothing) — detached, polled, ~75 min for a nixpkgs bump.
+6. `just check-build` (build all four machines' toplevels, activate nothing) — detached, polled, ~75 min for a nixpkgs bump.
 7. Read the diff for **interface** changes (ports, addresses, APIs). They reorder step 10.
 8. Decide per box whether the upgrade changes the kernel. A kernel change means a reboot.
 9. Pick the order: services1 → aibox → services2, unless 7 said otherwise.
@@ -52,7 +52,7 @@ statement about *that day*; re-probe it, do not inherit it.
 | services1 | 10.3.1.20 | `leigh-admin` + hop key | full `switch`. The choke point: nginx terminates TLS for the whole network, nginx-sso answers every `X-WEBAUTH-USER` app, postgres serves five DBs, `dns-sync` writes the router's host overrides | a reboot that takes nginx/postgres/SSO down without knowing who is up |
 | services2 | 10.3.1.21 | `leigh-admin` + hop key | full `switch`. Also the network's **builder** and the **monitor** (gatus + Slack alerting) | being switched while a build is delegated to it; being switched before the boxes it watches |
 | aibox | 10.3.1.32 | `leigh-admin` + hop key | full `switch`. Hosts immich, frigate, whisper, strata, the netboot server, a status dashboard | deploying from its **dirty** tree (see Phase 0) |
-| gw (the router) | 10.3.1.1 | `root` + hop key; **the root shell is tcsh** | **nothing.** `machines/gw/` is the flake's rewrite of this box and has no hardware behind it — the OPNsense box stays the router | deploying `.#gw`; editing `/usr/local/etc/dnsmasq.conf`; anything that takes the router down |
+| gw (the router) | 10.3.1.1 is the **live** OPNsense box; 10.3.1.254 is the flake's replacement, deployed beside it | old box: `root` + hop key, **the root shell is tcsh**. New box: `leigh-admin` + hop key, like the others | the **new box only**, and only while `machines/gw/coexist.nix` is on (addresses end in `.254`, no DHCP, no RA, no advertised tailnet routes). The OPNsense box stays the router and stays out of this runbook | deploying `.#gw` with co-existence switched off; anything that takes the live router down; a second DHCP server or RA on a VLAN |
 | NAS | 10.3.1.6 | `leigh-admin` + hop key (root is **not** keyed) | nothing declarative. It must stay online: services1 and aibox NFS-mount it, borg runs on it | editing `/etc/sudoers` (middleware regenerates it); blaming a mount failure on the flake |
 | monster1 | 10.3.1.11 | `root` + hop key | nothing declarative. Its VMs' disks live on the NAS | `qm start` on an HA-managed VM; treating `storage 'nas2-nfs' is not online` as a VM fault |
 | authentik appliance | 10.3.1.36 | **not reachable** — the hop key was refused (`Permission denied (publickey,password)`) | nothing. It is the live IdP every app and every switch login goes through | un-parking `machines/services1/services/authentik.nix` (the shadow is **parked** for a reason) |
@@ -291,13 +291,16 @@ network's date.
 
 ## Phase 3 — build everything, activate nothing
 
-`just check-build` builds all three machines' system toplevels and activates
+`just check-build` builds all four machines' system toplevels and activates
 nothing. It is the gate that catches "evaluates but will not build", which
-`nix flake check` does not.
+`nix flake check` does not. The fourth is `gw`, the replacement router: it builds
+here because it is deployed, and it is *not* in the deploy order below — it runs in
+co-existence mode beside the live router and `machines/gw/README.md` owns when it
+may be switched over.
 
 ```bash
 just check          # nix flake check + the assertion evals + alejandra --check
-just check-build    # all three machines, nothing activated
+just check-build    # all four machines, nothing activated
 ```
 
 **`just check-build` used to be `nixos-rebuild dry-build`, and it never built

@@ -8,10 +8,11 @@
 #
 # The two NIC names are *names* rather than MACs because a VLAN device has no MAC
 # of its own to match on, so everything on the LAN side is keyed by name and the
-# one place a MAC appears is the `links` rule that creates the name.  All three
-# names are placeholders until the hardware exists (see
-# ./hardware-configuration.nix and ./README.md): nothing in this box matches a real
-# NIC yet, which is the honest state of a machine that has no hardware, not a bug.
+# one place a MAC appears is the `links` rule that creates the name — those rules
+# are in ./hardware-configuration.nix, pinned to the two e1000e MACs measured on
+# the box.  `UPLINK_TUNNEL` is the one name here the flake cannot create: pppd
+# makes it at runtime, and ./README.md says to read it back off a box that has
+# dialled.
 {
   LAN_NIC = "router-lan"; # the NIC the VLAN devices hang off
 

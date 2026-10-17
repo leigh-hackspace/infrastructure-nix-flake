@@ -4,23 +4,86 @@ The flake's replacement for the network's OPNsense box at `10.3.1.1`: DNS and DH
 for every VLAN, the firewall that decides what may leave the building, the AAISP
 tunnel that leaves it through, and the network's tailnet presence.
 
-**There is no hardware for this machine.** It is in the flake so that its config is
-*evaluated* by `nix flake check` and its tables checked by `just check`, and so that
-the day a board exists the work is `nixos-generate-config` plus a list of facts to
-read off the old box — not writing five files from scratch under time pressure. Read
-this file before changing anything in this directory; it is the difference between
-this being a head start and being a trap.
+**The box exists and is deployed: a Supermicro X9SCL/X9SCM at `10.3.1.254`.** It is
+*not* the network's router. The OPNsense box at `10.3.1.1` still is, and this box runs
+beside it in **co-existence mode** — `./coexist.nix`, which is the single most
+important thing to understand before editing anything here, because every one of the
+four ways a shadow router can become the real one by accident is a way that affects
+every client on the network, not this box. Read that file, then this section, then
+the config.
 
-```
+```bash
+# from services1, the whole loop: sync this tree, build it there, switch, confirm
+just switch-gw
+
+# what it will do, without touching a box
 just check                                    # evaluates gw, checks the tables
 nix build .#nixosConfigurations.gw.config.system.build.etc -o /tmp/gw-etc
                                               # renders dnsmasq's conf, the networkd
                                               # files, the nftables ruleset — read them
 nixos-rebuild dry-build --flake .#gw          # builds the system, activates nothing
+
+# on the box, which is the same thing with the steps visible
+ssh -i ~/.ssh/agent-hop-key leigh-admin@10.3.1.254
+just switch                                   # `--flake .` resolves against hostname=gw
 ```
 
-`gw` is deliberately **not** in `just check-build`'s machine list yet: that recipe is
-"about to deploy", and this machine is not. Add it when the box exists.
+`gw` **is** in `just check-build` now, and that is the whole meaning of the box
+existing: the recipe says "about to deploy", and this machine is.
+
+## The box, as installed
+
+Measured on the box, 2026-10-17, when it was installed over the Windows it arrived
+running (that is what "erase Windows" meant, and it is why the disk layout below is
+written down rather than assumed):
+
+| | |
+| --- | --- |
+| Board | Supermicro X9SCL/X9SCM, BIOS 2.3a (2021-01-06), **UEFI** (`bootctl`: firmware supported, Secure Boot disabled in setup) |
+| CPU / RAM | Xeon E3-1220 v2 (4 cores, no SMT) / 8 GB |
+| Disk | Micron MTFDDAK256TDL 256 GB SATA (`/dev/disk/by-id/ata-Micron_MTFDDAK256TDL_2007267FBA4B`) |
+| Layout | GPT: 1 GB ESP `NIXBOOT` (vfat), rest ext4 `NIXROOT`, no swap |
+| Boot | systemd-boot from `common/base.nix`, entry `NixOS`, `root=fstab` (the same shape services1 and aibox boot with), `BootOrder` = Linux Boot Manager, its fallback, then the installer USB |
+| NICs | two Intel e1000e: `00:25:90:d3:f0:ea` → `router-lan` (link up, **100 Mbit**, carrying the VLAN 225 trunk), `00:25:90:d3:f0:eb` → `router-uplink` (no carrier) |
+| stateVersion | `26.05` — the release of the installer image the disk was laid out from, which is *not* the release this flake evaluates (26.11-pre). Do not "fix" it to another machine's value |
+
+Installed from a NixOS 26.05 live USB (its own SSH endpoint, `root`/`password`), which
+is gone now: the box runs the flake, its SSH is the fleet's (`leigh-admin` + the hop
+key, root login `prohibit-password`), and the installer's own store was an overlay —
+so the closure had to be copied onto the disk's store, not merely into the running
+system's. That is the trap in any installer-based deploy here: **`nixos-install
+--store-path` does not copy the closure to the target disk** (it registers it in the
+chroot's view of the store, which on a live image is a tmpfs overlay), and the result
+looks like a finished install until you reboot into a system with no bootloader.
+
+## Co-existence mode, and the four ways to be the router by accident
+
+`./coexist.nix` is on. It rewrites exactly one thing in the tables — the host part of
+every VLAN's gateway address, `.1` → `.254` — and switches off four behaviours, each
+of which is a router answering a request that belongs to `10.3.1.1`:
+
+| It must not… | How that is done | How to prove it on the box |
+| --- | --- | --- |
+| take `.1` on any VLAN | `coexist.nix`'s `hostAddr`, applied to the VLAN list every renderer reads | `ip -4 addr show` — every address ends `.254`; `getent hosts gw` answers `10.3.1.254`, not the `hosts.nix` value |
+| hand out leases | `no-dhcp-interface=` for all five VLAN devices, and the generated `dhcp-range`/`dhcp-host`/`dhcp-boot` blocks emitted **commented** | `grep -c '^[^#]' /etc/dnsmasq.d/network.conf` is `0`; `/var/lib/dnsmasq/dnsmasq.leases` is empty |
+| announce a default gateway (RA) | `enable-ra = false`; the `ra-only`/`ra-param` lines are in the conf, commented | `grep -c '^# *ra-' /etc/dnsmasq.d/network.conf` is non-zero, `^[^#]` is zero |
+| advertise tailnet routes | `--advertise-routes`/`--advertise-exit-node` are not passed at all | `sudo tailscale status --json \| jq .Self.AllowedIPs` — two `/128`s and nothing else |
+
+Commented rather than omitted, deliberately: whoever runs the cutover has to be able
+to read what they are about to enable, and an absent block looks exactly like a bug in
+the generator.
+
+The mode is one substitution rather than a branch in four files because `coexist.nix`
+exports the VLAN list and `dns.nix`, `networking.nix`, `firewall.nix` and
+`uplink.nix` all read *that* instead of `common/vlans.nix`. A file that read the raw
+table would take `.1` on one VLAN and `.254` on the next, and `check-network-tables.nix`
+cannot see that from here.
+
+**The cutover is `enable = false` in `./coexist.nix`** — and not before the old box's
+facts have been read (the table below), the AAISP secret exists, and the old router
+has actually been taken out of service. Two DHCP servers and two RA advertisers on one
+VLAN do not fail loudly: clients get two leases for one address and pick a gateway at
+random, hours later, on a machine that is not this one.
 
 ## The rule this directory is written to
 
@@ -47,15 +110,16 @@ evaluation of this machine succeeds with tables that disagree, and standalone vi
 | File | Owns |
 | --- | --- |
 | `default.nix` | the import list, and the machine's name (`gw`, the name `common/hosts.nix` and dns-sync's known-hosts file use) |
-| `configuration.nix` | system-level: packages, time, `stateVersion`. No NAS, deliberately |
-| `hardware-configuration.nix` | the placeholder root FS and the NIC-naming contract. **Replace wholesale** when the box exists |
+| `coexist.nix` | **the mode this box runs in**: the host part it takes, the router it is a shadow of, the VLAN list everyone else reads. `enable = false` is the cutover |
+| `configuration.nix` | system-level: packages (including the self-build trio `git`/`just`/`jq`), time, `stateVersion`, the daemon trust the fallback deploy needs. No NAS, deliberately |
+| `hardware-configuration.nix` | the measured root FS, the ESP, and the two `links` rules that pin `router-lan`/`router-uplink` to the two e1000e MACs |
 | `constants.nix` | `LAN_NIC`, `UPLINK_NIC`, `UPLINK_TUNNEL` — the three interface names the rest of the directory keys on |
 | `networking.nix` | the VLAN netdevs, the addresses on them, the uplink NIC's DHCP |
 | `dns.nix` | dnsmasq: the generated conf, the records file, the netboot variants |
 | `firewall.nix` | nftables: forward, input, NAT, and the IPv6 pair |
 | `uplink.nix` | pppd's tunnel, the tailnet (headscale) client |
 | `openvpn.nix` | the old box's two OpenVPN servers, **off by default** |
-| `sops.nix` | the two secrets this box needs, one of which does not exist yet |
+| `sops.nix` | the secrets this box needs. One of them does not exist yet, which is why the tunnel's is declared only when there is a tunnel |
 | `lib/network-tables.nix` | the renderers: tables → dnsmasq lines, nft set literals, device names |
 | `lib/check-network-tables.nix` | the assertions over those tables (standalone, prints findings) |
 | `lib/assert-network-tables.nix` | the three-line module wrapper that runs them at eval time |
@@ -80,9 +144,139 @@ containing `<`/`>`). The artifacts that were read:
 * **`uname`** — FreeBSD 15.1 on an mpc858 board. A fact about the *old* box: nothing
   here assumes the new one is the same board.
 
-Everything not in that list is inferred or marked. The two lists are worth
-distinguishing: the old box's *shape* (one generated file, tags from device names,
-nft from XML) is inherited; its *values* are inherited only where they were read.
+And, since 2026-10-17, proven **on the new box** — a different kind of proof, and
+worth keeping separate from the list above because it says nothing about the old one:
+
+* the disk, its UUIDs, the board, the two NIC MACs, UEFI, and the 100 Mbit LAN link,
+  all in `hardware-configuration.nix`, from `nixos-generate-config` and `ip -br link`;
+* the `.link` mechanism itself, validated by hand on the live box (`udevadm test` →
+  `Set network interface name: router-uplink`, then the interface answering under that
+  name) before it was trusted at boot — a wrong name here is a router with no
+  interfaces, and the failure is silent until something needs one;
+* the rendered conf, the networkd files and the ruleset, read back off the **running
+  box** rather than off the build: `ip -4 addr` shows `.254` on all five VLANs, exactly
+  one default route (`via 10.3.1.1 dev vlan225`), `nft list ruleset` loaded, dnsmasq
+  answering on `:53`, zero leases handed out, tailnet joined and advertising nothing.
+
+Everything not in those lists is inferred or marked. The old box's *shape* (one
+generated file, tags from device names, nft from XML) is inherited; its *values* are
+inherited only where they were read.
+
+## Port 53, or why the first boot had no DNS
+
+The box's first boot looked healthy. `systemctl is-system-running` said `running`, the
+addresses were right, the ruleset was loaded — and the router answered no DNS at all,
+because dnsmasq had exited 2 and was being retried forever:
+
+```
+dnsmasq: failed to create listening socket for port 53: Address already in use
+```
+
+`networking.useNetworkd` (which this box needs, for the VLAN netdevs) enables
+systemd-resolved; resolved binds its stub to `127.0.0.53:53`; dnsmasq binds the
+wildcard and filters by interface. The two cannot coexist, and a router that serves no
+DNS has no failed unit to show for it. `dns.nix` now turns resolved off — and
+openresolv's resolvconf with it, whose module asserts once `/etc/resolv.conf` is
+managed elsewhere — and writes `/etc/resolv.conf` pointing at `127.0.0.1`. dnsmasq's
+`no-resolv` is what stops that being a loop: the box resolves through itself, and
+dnsmasq's upstreams are its own `server=` lines.
+
+The tempting alternative was `bind-interfaces`, and it is the wrong way round twice
+over: a VLAN device networkd has not created yet is a *fatal* error for dnsmasq with
+that option (which is why `dns.nix` says not to set it), and a stub cache in front of
+the network's authoritative answer is a second behaviour to reason about on the one box
+whose answer *is* the network's.
+
+## Comparing the two routers, which is how to find what is wrong here
+
+While both boxes are up there is a check better than reading this directory: ask the
+same question of each and compare.
+
+```bash
+for n in services1 services1.int.leighhack.org aibox.int.leighhack.org 3d-blue.int.leighhack.org; do
+  printf "%-36s old=%-14s new=%s\n" "$n" "$(dig +short @10.3.1.1 $n)" "$(dig +short @10.3.1.254 $n)"
+done
+```
+
+That loop found two real bugs on 2026-10-17, and neither was visible any other way:
+
+* **the generated records file answered short names and not FQDNs** — `local=` makes
+  dnsmasq authoritative for a zone and does not complete a hosts entry, so every
+  `*.int.leighhack.org` name would have gone NXDOMAIN at the cutover. Fixed in
+  `lib/network-tables.nix`'s `recordsHosts` (one line per address, both names on it,
+  the old box's shape), with two assertions in `lib/check-network-tables.nix` behind
+  it: every record's FQDN must appear in the rendered text, and the line count must
+  equal the address count, because dnsmasq reads only the first field of a hosts line
+  as an address and the rest as names.
+* **a records change never reached the running dnsmasq** — nixpkgs restarts it only
+  for `/etc/hosts`, and dnsmasq reads `addn-hosts` at startup. Fixed with
+  `restartTriggers` in `dns.nix`, verified by moving a record, switching, and watching
+  dnsmasq restart and answer the new address.
+
+Both had a healthy-looking system: `is-system-running` said `running`, the switch
+exited 0, and the config read correctly. The bug was in the gap between the file and
+the process, which is exactly what a second router answering the same question
+exposes.
+
+## How this box is deployed, and the four imperative facts that make it work
+
+`just switch-gw` from services1: rsync this tree over, then `sudo nixos-rebuild switch
+--flake .` **on the box**, then `sudo nixos-confirm` — in the same remote invocation
+(AGENTS.md's GOLDEN RULE, and `nixos-confirm` run on services1 confirms nothing,
+because it confirms the local system). The box builds its own system: it has the
+checkout at `~/Projects/infrastructure-nix-flake`, `git`/`just`/`jq` in its own
+`environment.systemPackages` (not from `common/tools.nix`, which this machine must not
+import because tools.nix and nas.nix arrive as a pair), and it reaches GitHub for the
+flake inputs over its own route out.
+
+Four things are needed for that and none of them are in the flake. Three were set on
+this box during the install; the fourth is a habit:
+
+1. `sudo git config --global --add safe.directory /home/leigh-admin/Projects/infrastructure-nix-flake`
+   — root's config, because `sudo` here sets `HOME=/root`, so the same command run
+   without `sudo` writes a file nix never reads and the build dies with "repository
+   path … is not owned by current user". Every machine in the fleet has it; it is one
+   of the imperative pre-flight checks in `docs/network-upgrade-runbook.md`.
+2. `/var/lib/sops-nix/key.txt` — the network's age key, `root:nixbld 0440`, from
+   services1. `common/sops.nix` reads it at *evaluation* time (the secret derivations
+   are built during eval), so without it the box cannot evaluate its own config, let
+   alone build it.
+3. `~/.ssh/agent-hop-key` (+ `.pub`) for `leigh-admin` — the fleet's shared hop key, so
+   the box can `git fetch infra`, a remote named for services1's checkout and the only
+   one it can reach without a GitHub key of its own (`origin` still points at GitHub,
+   like everywhere else).
+4. The tree is a **mirror of the admin's working tree**, kept with `just sync-gw`
+   (`rsync -a --delete`, excluding `target/` and `node_modules/`). It is not a clone to
+   edit on the box: edit here, sync there. Discovering a divergence at the cutover is
+   the failure this rule exists to prevent.
+
+The fallback, for when the box cannot build its own next generation: build on
+services1 and push it — `nixos-rebuild switch --flake .#gw --target-host
+leigh-admin@10.3.1.254 --elevate=sudo`. Two gotchas there, both hit for real:
+
+* **`--elevate=sudo` is not the default.** This nixpkgs ships `nixos-rebuild-ng`, which
+  does not elevate remotely where the old shell script did, so without the flag the
+  deploy builds, copies, and dies with `Permission denied` creating the profile
+  symlink. Running the *client* under `sudo` does not substitute for it — the elevator
+  is a separate decision from the client's uid.
+* The copy needs **daemon trust**, which is what `nix.settings.trusted-users` in
+  `configuration.nix` grants; without it the push dies with "lacks a signature by a
+  trusted key". Neither exists on a fresh install, so the first generation has to be
+  laid down by `nixos-install` from the installer, or streamed into the disk's store as
+  root (`nix-store --export … | sudo nix-store --import`) — which is how gen 2 arrived.
+
+Two more things about this box that its files do not mention, both worth knowing before
+you read `/run/secrets` and wonder:
+
+* `common/sops.nix` declares two *shared* secrets (`immich_oidc_client_secret`,
+  `status_dashboard_lan_token`) for every machine that imports it, so they render on
+  the router too. Harmless (root:secrets, 0440) and the price of one shared secrets
+  module; `machines/gw/sops.nix` owns only the router's own.
+* The tailnet node joined as **`gw-1`**, not `gw`: headscale already had a node called
+  `gw` (id 15, 100.64.0.11, registered 2025-08-25, offline since 2026-04-13;
+  `docs/follow-ups.md` has it). Rename or expire that one before the cutover, or the
+  tailnet has two `gw`s and the ACLs and the humans reading them mean different
+  machines.
 
 ## Netboot is a two-box path, and the split is easy to get wrong
 
@@ -98,13 +292,14 @@ moving the three files *and* the server address, not one of them.
 
 ## Facts still missing, and the command that reads each one
 
-This is the list to work through when the box exists. Each line is a TODO in the file
-that needs it.
+This is the list to work through before the cutover — the box exists now, and every
+line here is still a TODO in the file that needs it. Reading them off the old box is
+what turns `enable = false` from a gamble into a switch.
 
 | Fact | Where it goes | How to read it |
 | --- | --- | --- |
-| The LAN NIC's and uplink NIC's MACs | `hardware-configuration.nix` `links` rules | on the new box: `ip -br link`; then set nothing else — `constants.nix` already owns the names |
-| Whether the uplink takes its address from the hub by DHCP | `networking.nix` `10-uplink` | on the old box: `ifconfig enc0`, and `ps -ax \| grep dhclient` |
+| ~~The LAN NIC's and uplink NIC's MACs~~ **read** | `hardware-configuration.nix` `links` rules | done: both e1000e MACs are in the `links` rules and the rename was proven on the live box. **Which port is which is still an assumption** — "the one carrying the network today is the LAN" is strong evidence, not proof; re-check when the AAISP handoff cable physically moves (`ip -br link`) |
+| Whether the uplink takes its address from the hub by DHCP | `networking.nix` `10-uplink` | on the old box: `ifconfig enc0`, and `ps -ax \| grep dhclient`. On the new box `router-uplink` has no carrier, so nothing about it is observable yet |
 | The tunnel's L2TP endpoint, username, MTU | `uplink.nix` peer file | old box: `cat /conf/config.xml` (the l2tp client section), `ifconfig l2tp0`, `netstat -rn -f inet \| grep l2tp` |
 | AAISP's dial script | `uplink.nix` (`/etc/ppp/providers`) | AAISP's own Linux setup; it is their artifact, not the network's |
 | `aaisp_ppp_chat_secrets` | `secrets/secrets.yaml` | old box: the l2tp/ppp secrets in `/conf/config.xml`. **This secret does not exist yet** — sops-nix will fail *activation*, not evaluation, until it is added |
@@ -117,10 +312,30 @@ that needs it.
 
 ## Known-incomplete, by name
 
+* **dns-sync still points at the old box.** It is the half of this box's DNS that the
+  flake does not generate — the `*.int` vhost names in
+  `/var/lib/dnsmasq/names.hosts`, which is created empty and stays empty — and it
+  edits OPNsense's XML and runs `configctl dnsmasq restart` as root on `10.3.1.1`.
+  All four of those have to change before this box is the router, or new vhosts get no
+  DNS. `docs/follow-ups.md` has the list.
 * **IPv6 is not finished.** The RA ranges and the fixed v6 addresses are in the tables
   and dnsmasq advertises them, but no part of this config obtains the /48 from the
   uplink. Until it does, IPv6 to the outside world will not work even though every
-  address in `common/dns-records.nix` is correct.
+  address in `common/dns-records.nix` is correct. Invisible on this box while
+  co-existence is on, which advertises nothing at all.
+* **Nothing here is the network's router yet** — that is `./coexist.nix`, not a bug, and
+  its four switches are in the table above. The corollary is that everything which only
+  matters once the box *is* the router is still unproven: the firewall's per-VLAN
+  anti-spoof rules are loaded and forward nothing, the tunnel has never dialled, and no
+  router advertisement of ours has ever been sent.
+* **The LAN port is doing 100 Mbit, not gigabit** (measured at install). Cable, PHY, or
+  the switch port it lands on. Irrelevant while it is a shadow; it is the ceiling on
+  every byte the network sends once it is not, so read the switch port's own config
+  before blaming the NIC.
+* **`mitigations=off` is deliberately absent** from this box's kernel command line,
+  unlike the other three machines. The tradeoff is `common/base.nix`'s to make, and the
+  cutover is the moment to make it for this box;
+  `hardware-configuration.nix` says why the installer did not decide it.
 * **The tunnel does not dial.** `pppd-aaisp-tunnel` starts, runs the `connect` script,
   and that script prints a pointer to this README and exits 1. The unit retries
   forever, which is the network's standard "not working, visibly" state. Do not make
@@ -137,24 +352,59 @@ that needs it.
   `iifname "vlanN"` per VLAN because they match at different points in the kernel's
   VLAN path and which one is redundant is a question about the real box. Read
   `nft list ruleset` and the counters on it, then delete the half that never matches.
-* **`system.stateVersion` is a placeholder** (`25.05`). Set it to the release of the
-  box's *first* install, like every other machine, and do not copy another machine's.
+  The box now *loads* the ruleset, so those counters are readable — and they are all
+  zero for forwarded traffic while co-existence is on, which is expected and is not
+  evidence of anything.
+* **`system.stateVersion` is `26.05`** — the installer's release, which is a measurement
+  of this disk rather than a copy of another machine's value. It is the one number here
+  meant to disagree with the flake's nixpkgs (26.11-pre).
 
-## Getting a real `hardware-configuration.nix`
+## Re-installing this box, or installing the next one
 
-1. Boot the installer on the new box, mount the target as `/mnt`, run
-   `nixos-generate-config --root /mnt`.
-2. Replace `hardware-configuration.nix` wholesale with what it writes — including the
-   `fileSystems` entries, whose labels here are the installer's defaults and are not a
-   measurement of anything.
-3. Re-apply the NIC naming: add `systemd.network.links` rules renaming the two NICs to
-   `constants.nix`'s `LAN_NIC` and `UPLINK_NIC` (match on `MACAddress`, name with
-   `Name=` — the `[Match]`/`[Link]` split is nixpkgs' `matchConfig`/`ruleConfig`, and
-   putting the MAC in `ruleConfig` is a silent no-match).
-4. `nixos-rebuild dry-build --flake .#gw`, then `switch`, then `sudo nixos-confirm`
-   **in the same shell invocation** (GOLDEN RULE: `system.autoRollback` reboots this
-   box into the previous generation five minutes after a switch, and this box is the
-   one every other machine's DNS depends on).
+The procedure that actually produced the current box, including the steps that are easy
+to skip and one reboot away from an unbootable machine:
+
+1. Boot the installer, get onto the network, and **partition the target disk** (the old
+   OS is not "going away": `wipefs -a`, then GPT, 1 GB ESP (`esp`, fat32), the rest
+   ext4, `mkfs.vfat -F 32`, `mkfs.ext4`, mounted at `/mnt` and `/mnt/boot`). If the
+   disk was partitioned earlier in this session, `partprobe` and `udevadm settle`
+   before `mkfs` — the node for the new partition may not exist yet.
+2. `nixos-generate-config --root /mnt`, then put the flake's
+   `hardware-configuration.nix` in place of the generated one. The generator cannot
+   know the two `links` rules (`matchConfig.MACAddress` + `linkConfig.Name`); the MAC
+   in `ruleConfig` is a silent no-match, which is how this file was first written.
+3. Lay the closure on the **disk**, not in the live system: `nix copy --to /mnt`, or
+   `nixos-install --store-path <toplevel>` — which builds nothing and copies nothing,
+   it only registers and links. Then
+   `nix-env --store /mnt -p /mnt/nix/var/nix/profiles/system --set <toplevel>`.
+   **The trap:** a live image's `/nix/store` is an overlay, so a copy that never named
+   `/mnt` leaves 12 GB of store that the reboot deletes, and every command in between
+   looks like it worked.
+4. Put the sops key at `/mnt/var/lib/sops-nix/key.txt` (`root:nixbld 0440`; the gid is
+   `nixbld`'s because `common/sops.nix` reads the file during *evaluation*) and `touch
+   /mnt/etc/NIXOS`.
+5. Set the root password **on the disk**
+   (`nixos-enter -c '/nix/var/nix/profiles/system/sw/bin/chpasswd'`), because the flake
+   sets no `passwordFile` and a fresh NixOS has no console login. Do it while the
+   installer is still reachable.
+6. Install the bootloader, because step 3 skipped the step that does it:
+   `NIXOS_INSTALL_BOOTLOADER=1 nixos-enter -c '<install-systemd-boot.sh>'`, taking the
+   script's path from the new system's own `INSTALL_BOOTLOADER` export in
+   `<toplevel>/bin/switch-to-configuration` — running the *new system's* copy is what
+   keeps the installed version the one `switch` will use. Verify the ESP has
+   `loader/entries/` and `EFI/systemd/` before rebooting.
+7. Check the firmware will boot it: `BootOrder` under `/sys/firmware/efi/efivars`. The
+   installer's USB entry is a live one and disappears, but a `Windows Boot Manager`
+   entry pointing at a disk you just erased does not, and it outranks the new entry
+   until something fixes the order.
+8. Then unmount, reboot, and **confirm on the way back in**: `sudo nixos-confirm`, and
+   `readlink -f /run/current-system /nix/var/nix/profiles/system-good` equal. Note that
+   on a fresh install there is no `system-good` yet, so the rollback timer disarms
+   itself (`No generation is marked as good yet`) instead of saving you: the first
+   confirm creates the safety net rather than checking it, and it has to be in the same
+   invocation as the switch that needed it.
+9. Then the four imperative facts from the section above, after which
+   `just switch-gw` is the way forward.
 
 ## Verifying what this directory claims
 
@@ -169,11 +419,23 @@ nix build .#nixosConfigurations.gw.config.system.build.toplevel -o /tmp/gw-top  
 ```
 
 On a running box: `nft list ruleset` (read-only), `systemctl status pppd-aaisp-tunnel`,
-`journalctl -u dnsmasq -n 50`, `dig @10.3.1.1 services1.int.leighhack.org`,
-`tail /var/lib/dnsmasq/dnsmasq.leases`, `ip -d link show vlan225`.
+`journalctl -u dnsmasq -n 50`, `dig @10.3.1.254 services1.int.leighhack.org` — `.254`
+while co-existence is on, and `@10.3.1.1` is the *other* router, so comparing the two
+answers is the fastest way to tell whether the tables and the live box agree —
+`ip -4 addr` and `ip route show default` (one default route, via the old router),
+`sudo tailscale status --json | jq .Self.AllowedIPs`,
+`tail /var/lib/dnsmasq/dnsmasq.leases` (empty, and it has to stay empty until the
+cutover), `ip -d link show vlan225`.
 
 ## Security notes
 
+* **The mode is the security property as much as the networking one:** while
+  `./coexist.nix` is on, this box refuses DHCP by interface name, sends no router
+  advertisement, takes no `.1`, and advertises no tailnet routes. Those are not
+  conveniences — a second authoritative DHCP server and a second RA advertiser are an
+  availability attack on the whole network launched by an well-meant deploy, and the
+  assertions in `./lib/check-network-tables.nix` are what stop an edit to `hostAddr`
+  (`.1`, or an address inside a lease range) from evaluating at all.
 * `--dev-user`-style test hooks do not exist here, and nothing in this directory
   listens on the WAN: dnsmasq's `interface=` list is the VLANs only (the old box's
   generated file listed every interface OPNsense knew, WAN included, because it was

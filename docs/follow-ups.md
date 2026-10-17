@@ -182,20 +182,89 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
 
 ## Router (gw)
 
-- **`machines/gw/` is a router with no hardware** (started 2026-10-14). It is in the
-  flake so its config is evaluated by `nix flake check` and its tables checked by
-  `just check`, and so the eventual cutover is `nixos-generate-config` plus reading
-  facts off the old box rather than writing five files under pressure. Blocked on:
-  the board existing. `machines/gw/README.md` owns the whole list — what is proven
-  from the old box's generated files, what is inferred, and the table of "fact → the
-  file it goes in → the command that reads it". Do not deploy it, and do not add it
-  to `just check-build` (that recipe means "about to deploy").
+- **`CONFIG.LOCAL_DOMAIN` exists; most of the network does not use it yet** (added
+  2026-10-17). The router needed the zone name in one place because three uses of it
+  have to agree exactly (`domain=`, `local=`, and the suffix on every generated
+  record — see `machines/gw/dns.nix`), and the failure of them disagreeing is a silent
+  empty answer for the whole zone. `common/nginx/`, `common/monitoring-endpoints.nix`
+  and the machines' `networking.search` still spell `int.leighhack.org` out. Converting
+  them is mechanical and worth a pass of its own, not a ride-along with a router
+  change.
+
+- **dns-sync is OPNsense-shaped and the cutover has to move it** (found
+  2026-10-17, while checking what the shadow router answers). It is the half of the
+  old box's DNS that the flake does not generate — the `*.int.leighhack.org` vhost
+  names — and every part of it is specific to the appliance:
+  `DEFAULT_ROUTER = "root@10.3.1.1"` (the new box has root login
+  `prohibit-password`, so it must connect as `leigh-admin` and sudo the restart),
+  edits `/conf/config.xml`'s `<dnsmasq>` host overrides with a python3 script run on
+  the router (the new box has no XML; the names belong in
+  `/var/lib/dnsmasq/names.hosts`, which `machines/gw/dns.nix` already creates empty
+  for exactly this), restarts dnsmasq with `configctl dnsmasq restart` (on NixOS:
+  `systemctl restart dnsmasq`, or SIGHUP, which is enough because dnsmasq re-reads
+  `addn-hosts` on that signal and the file is not in the store so it cannot be a
+  `restartTriggers` value), and pins the router's host keys via
+  `just router-known-hosts` (regenerate against `10.3.1.254`, and keep the old
+  entries until the old box is gone). Until this is done, **new vhosts get no DNS on
+  the new router** and `just dns-sync-sync` keeps working against the old one — which
+  is correct today and silently useless after the cutover.
+
+- **Two dnsmasq bugs found by running the shadow box beside the live one**
+  (2026-10-17, both fixed). Neither was visible in the config, in the build, or in
+  `systemctl is-system-running`; both were visible only by asking the two routers the
+  same question:
+
+  1. **The generated records file had bare names, so the zone did not resolve.**
+     `dig @10.3.1.254 services1` answered and
+     `dig @10.3.1.254 services1.int.leighhack.org` answered *nothing*, while the old
+     box answered the FQDN. dnsmasq's `local=` makes the box authoritative for a zone
+     and does not complete a hosts entry, so every vhost, gatus endpoint and
+     dns-sync name on the network would have gone NXDOMAIN at the cutover. The old
+     box's `/var/etc/dnsmasq-hosts` spells both names on every line
+     (`10.3.1.20 services1.int.leighhack.org services1`) and one line per address;
+     `TABLES.recordsHosts` now generates that shape, and
+     `machines/gw/lib/check-network-tables.nix` refuses a file whose FQDNs are
+     missing or whose lines carry more than one address (dnsmasq reads the first
+     field as the address and the rest as names, so an IPv4 and its IPv6 on one line
+     registers the v6 address as an alias *name*).
+  2. **A records change never reached the running dnsmasq.** nixpkgs' module
+     restarts it only when `/etc/hosts` changes, and dnsmasq reads `addn-hosts` at
+     startup, so a switch that moved a device's address wrote the file, exited 0 and
+     kept answering the old address. `dns.nix` now puts the generated file in
+     `restartTriggers`; verified by moving a record's address, switching, and seeing
+     dnsmasq restart and answer the new value (and then moving it back).
+
+  The habit worth keeping from this: **compare the two routers rather than reading
+  the config** — `for n in <names>; do dig @10.3.1.1 $n; dig @10.3.1.254 $n; done`
+  is a few seconds and finds the class of bug where the new box is self-consistent
+  and wrong.
+
+- **The six `iptables-nft` tables on the router are tailscaled's, not a second
+  firewall** (checked 2026-10-17). `nft list tables` on `gw` shows `filter`/`nat`/
+  `mangle` for both families alongside this flake's `router`/`routerIn`/`routerNat`/
+  `router6`, and `nft` warns `table ip filter is managed by iptables-nft, do not
+  touch!`. They are `ts-input`/`ts-forward`/`ts-postrouting`, inserted by
+  `services.tailscale`; `ip filter FORWARD` has policy `accept` and only jumps to
+  `ts-forward`, and there is no `inet firewall` table (NixOS's host firewall is not
+  adding a second set of decisions). So there is nothing to clean up — but at the
+  cutover, when forwarding starts working or not, know which chains are whose before
+  blaming `firewall.nix`.
+
+- **`gw` is deployed at 10.3.1.254 in co-existence mode; the cutover has not
+  happened** (installed 2026-10-17). The box is a Supermicro X9SCL/X9SCM that used to
+  run Windows; `machines/gw/README.md` has the install, the layout and the four things
+  `machines/gw/coexist.nix` switches off so a shadow router cannot become the real one
+  by accident. What is left before `enable = false` is meaningful is the list in that
+  README's "cutover" section, of which the blocking ones are the three below.
 
 - **`aaisp_ppp_chat_secrets` does not exist** (found while writing
   `machines/gw/sops.nix`, 2026-10-14). The tunnel's credentials have never been in
   `secrets/secrets.yaml`: the old box kept them in OPNsense's own config and nobody
   has read them off it. sops-nix fails *activation*, not evaluation, on a missing
-  key, so `gw` builds fine and would refuse to come up. Read them from the old box's
+  key, so a `gw` that declares the secret and lacks it would refuse to come up — which
+  is why `machines/gw/sops.nix` now declares it only when the tunnel is enabled, i.e.
+  only when co-existence is off. So this is no longer a reason the box cannot boot;
+  it is still the reason the box cannot dial. Read them from the old box's
   `/conf/config.xml` and `echo … | sops edit secrets/secrets.yaml` — never into a
   transcript (rule 13).
 
@@ -204,7 +273,8 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   `common/dns-records.nix` are correct and dnsmasq advertises them, but no part of
   the new router's config asks the uplink for the /48, so IPv6 to the outside world
   will not work on a cutover today. How the old box got its prefix (DHCPv6-PD from
-  AAISP, or a static assignment) is the first thing to read off it.
+  AAISP, or a static assignment) is the first thing to read off it. Invisible on the
+  shadow box, which does not advertise at all in this mode.
 
 - **The new firewall's rules are shape-correct, not value-verified**
   (`machines/gw/firewall.nix`, 2026-10-14). nixpkgs validates the ruleset against a
@@ -214,7 +284,37 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   `/var/etc/nftables.conf` and `nft list ruleset` have never been read; do that
   before trusting any rule here, and note the per-VLAN anti-spoof rule emits *two*
   match forms (`vlan id N` and `iifname "vlanN"`) because which one the kernel
-  actually matches on is a question about the real box.
+  actually matches on is a question about the real box. The shadow box loads the
+  ruleset and forwards nothing, so this is still unproven.
+
+- **A stale headscale node called `gw` may own the name** (noticed 2026-10-17,
+  during the install). `sudo headscale nodes list` on services1 listed a `gw` at
+  100.64.0.11, registered 2025-08-25 and offline since 2026-04-13 — some earlier life
+  of this box, or of the old router's tailnet client. Nothing in the flake references
+  that address, but headscale's node names are what ACLs and humans read, so a second
+  `gw` is a finding either way: rename or expire the old node at the cutover, and
+  check `tailscale status --json` on the new box says it advertises no routes.
+
+- **The LAN port is doing 100 Mbit, not gigabit** (measured on the box,
+  2026-10-17: `eno1` at 100Mb/s, full duplex). Either the cable, the SFP/PHY setting,
+  or the switch port it lands on. It does not matter while the box is a shadow and it
+  matters enormously when it is the router, because every byte to and from the
+  network passes through that one interface. Check the switch port's own config before
+  blaming the NIC (`crates/switch-gui/` reads the ProCurve's port state).
+
+- **`mitigations=off` is deliberately NOT on this box's kernel command line**
+  (`machines/gw/hardware-configuration.nix`, 2026-10-17). The other machines carry it
+  on the "trusted LAN, single operator" argument in `common/base.nix`; a router is the
+  one box where that argument is weaker (it is the box with an interface towards the
+  internet) and the decision belongs to whoever cuts it over, not to whoever installed
+  the OS. Say so in the README when it is decided either way.
+
+- **Which physical port is the LAN is an assumption**
+  (`machines/gw/hardware-configuration.nix`). The two `links` rules pin `router-lan`
+  and `router-uplink` to the two e1000e MACs, and the assignment came from "this one
+  is carrying the network today / that one has no carrier", which is strong evidence
+  and not proof. Re-check at the cutover, when the AAISP handoff cable actually moves:
+  `ip -br link` and which port answers.
 
 
 ## Postgres

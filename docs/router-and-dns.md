@@ -16,10 +16,14 @@ declarative.
 `machines/gw/` is the flake-managed replacement for everything in this file: dnsmasq
 generated from `common/vlans.nix` and `common/dns-records.nix` instead of from
 `<Interfaces>` XML, nftables from `common/config.nix` instead of the web UI, the
-AAISP tunnel and the tailnet client. It has **no hardware**, so the OPNsense box is
-still the router and everything below is still how the network actually behaves — but
-read `machines/gw/README.md` before changing either side, because it is the document
-that says which of these facts the new config has inherited and which are still open.
+AAISP tunnel and the tailnet client. It is now **deployed on real hardware**
+(10.3.1.254) but in **co-existence mode** — every address ends in `.254` rather than
+`.1`, its DHCP and router advertisement are emitted commented-out and refused by
+interface name, and it advertises no tailnet routes — so the OPNsense box is still
+the router and everything below is still how the network actually behaves. Read
+`machines/gw/README.md` before changing either side: it says which of these facts the
+new config has inherited, which are still open, and what has to be read off the old
+box before the two can swap places.
 
 ```bash
 ssh -i ~/.ssh/agent-hop-key root@10.3.1.1        # root IS keyed on the router

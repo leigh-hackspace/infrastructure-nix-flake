@@ -49,7 +49,12 @@
   pkgs,
   ...
 }: let
-  VLANS = import ../../common/vlans.nix;
+  COEXIST = import ./coexist.nix;
+  # The VLANs as this box reads them (./coexist.nix).  Only the addresses move in
+  # co-existence mode and this file rules on blocks, not addresses — but it reads
+  # the same list dnsmasq and the VLAN devices are generated from, because two
+  # lists that happen to agree today are the drift this directory keeps removing.
+  VLANS = COEXIST.vlans;
   CONFIG = import ../../common/config.nix;
   NICS = import ./constants.nix;
   TABLES = import ./lib/network-tables.nix;

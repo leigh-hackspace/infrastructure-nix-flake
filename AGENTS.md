@@ -17,7 +17,7 @@ X first", X has already cost someone a day.
 | change any service's behaviour, flags, API, ports, or deploy | `docs/services.md` (the crate's README too where one exists) |
 | touch how Rust is built: `common/crane.nix`, a `Cargo.toml`, `build.rs`, a Dioxus SPA | `docs/building-rust-code.md` |
 | run non-trivial nix, debug a wedged/hanging nix, build detached, remote-build | `docs/nix-dev-workflow.md` |
-| touch DNS, dnsmasq, the router, the DigitalOcean zone, a new vhost's name | `docs/router-and-dns.md` (+ `machines/gw/README.md` — the flake's replacement router lives there, with no hardware: it says what is proven and what is a guess) |
+| touch DNS, dnsmasq, the router, the DigitalOcean zone, a new vhost's name | `docs/router-and-dns.md` (+ `machines/gw/README.md` — the flake's replacement router is *deployed* at 10.3.1.254 in co-existence mode: it says what is proven on that box, what is still a guess, and what must not move until the cutover) |
 | touch the ProCurve switches (device side, RADIUS, logins) | `docs/procurve-switches.md` + `crates/switch-gui/README.md` |
 | touch NAS mounts, the NAS itself, or backups/borg | `docs/nas-and-borg.md` |
 | touch the UniFi controller, its backups, or UniFi OS Server | `docs/unifi-os-server.md` — the appliance is a *downgrade* of the running controller, and `.unf` backups are encrypted with a key that is not on disk |
@@ -88,7 +88,8 @@ X first", X has already cost someone a day.
   this repo evaluates every machine and `just check` runs anywhere. Machines:
   `services1` (main services box, 10.3.1.20), `services2` (strata + its own status
   dashboard + the network's build machine, 10.3.1.21 — `machines/services2/README.md`),
-  `aibox` (10.3.1.32), `gw` (the router, no hardware yet) and `pi-room-sys`
+  `aibox` (10.3.1.32), `gw` (the network's replacement router, deployed at
+  10.3.1.254 *beside* the live router — `machines/gw/README.md`) and `pi-room-sys`
   (a machine that is *built by* aibox rather than deployed —
   `machines/pi-room-sys/README.md`).
 - `docs/` — reference docs (`services.md`, `building-rust-code.md`,
@@ -139,12 +140,16 @@ X first", X has already cost someone a day.
   client, secrets habits).
 - `machines/gw/` — the network's **replacement router**, generated from
   `common/vlans.nix` + `common/dns-records.nix` (dnsmasq, nftables, the AAISP tunnel,
-  the tailnet client). **There is no hardware for it**: it is in the flake to be
-  evaluated and table-checked, not deployed, and it is not in `just check-build`.
-  `machines/gw/README.md` is mandatory before any change here — it separates what was
-  read off the old OPNsense box from what is a placeholder, and lists the fact → file
-  → command table for the cutover. `machines/gw/lib/check-network-tables.nix` runs
-  from `just check` and as a module assertion.
+  the tailnet client). It is **deployed** (a Supermicro X9SCL/X9SCM at 10.3.1.254)
+  but in **co-existence mode** (`machines/gw/coexist.nix`): every address ends in
+  `.254` instead of `.1`, DHCP and router advertisement are emitted commented-out and
+  refused by name, and it advertises no tailnet routes, because the OPNsense box at
+  10.3.1.1 is still the network's router. `machines/gw/README.md` is mandatory before
+  any change here — it separates what was read off the old box from what is a
+  placeholder, says which four things make a shadow router into the real one by
+  accident, and lists the cutover. `machines/gw/lib/check-network-tables.nix` runs
+  from `just check` and as a module assertion, and it is what refuses a co-exist
+  address that a lease could still claim.
 - `machines/pi-room-sys/` — the image the Pi Room computers **netboot**: a real
   `nixosConfiguration`, but one that runs on no box. aibox builds it and serves
   its kernel, initrd and squashfs store over iPXE + NFS

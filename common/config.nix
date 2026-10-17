@@ -34,6 +34,17 @@
 
   BACKUP_KEY_FILE = "/run/secrets/backup_key";
 
+  # The zone the router is authoritative for and every internal vhost lives in:
+  # `*.int.leighhack.org`. It is here because the router has to agree with itself —
+  # dnsmasq's `domain=`, its `local=`, and the suffix on every record it generates
+  # are three uses of one fact, and `local=` without the suffix on the records is a
+  # silent NXDOMAIN for the whole zone rather than a wrong answer
+  # (machines/gw/README.md, found by comparing the shadow router with the live one).
+  #
+  # Not yet used by the files that also spell the name out (common/nginx/, the gatus
+  # endpoints, the machines' `networking.search`): open in docs/follow-ups.md.
+  LOCAL_DOMAIN = "int.leighhack.org";
+
   # NGINX Firewall for "*.int.leighhack.org"
   # Allow only LAN access for internal services
   LOCAL_NETWORK = ''

@@ -12,9 +12,9 @@ hard-reboot:
     sync
     sudo bash -c "echo b > /proc/sysrq-trigger"
 
-# Both recipes chain `sudo nixos-confirm` in the same shell invocation: both
-# machines set system.autoRollback.enable = true, so the auto-rollback timer
-# rolls back to the last confirmed generation within a minute or two of a
+# Both recipes chain `sudo nixos-confirm` in the same shell invocation: every
+# machine in the flake sets system.autoRollback.enable = true, so the auto-rollback
+# timer rolls back to the last confirmed generation within a minute or two of a
 # switch.  Confirming in a later session can land _after_ the rollback and mark
 # the old generation good, which defeats the point (see AGENTS.md, GOLDEN RULE).
 boot:
@@ -22,6 +22,49 @@ boot:
 
 switch:
     sudo nixos-rebuild switch --flake . && sudo nixos-confirm
+
+# --- the router (gw, 10.3.1.254)
+#
+# Deployed the same way as every other machine — built and switched from its own
+# checkout, because that box has the repo, `git`/`just`, root's `safe.directory`
+# for the checkout and the sops key (machines/gw/README.md says how it got them).
+# It is a ssh recipe rather than something you run there because the change you are
+# deploying is in *this* working tree, and the router cannot read it until it is
+# copied over — which is what `sync-gw` is for, and why `switch-gw` depends on it.
+#
+# The switch and the confirm are in one remote invocation, chained with &&, on the
+# machine that was switched: AGENTS.md's GOLDEN RULE, and `nixos-confirm` here on
+# services1 would confirm nothing (it confirms the local system).
+#
+# `--flake .` on the router resolves against its hostname, which is `gw`, so it
+# cannot build the wrong machine by forgetting an argument.
+
+# Mirror this checkout onto the router.  The excludes are the build trees: 6.7 GB
+# of crates/target and node_modules that the flake rebuilds itself (and that
+# `lib.cleanSourceFilter` does not read .gitignore, so carrying them over is how a
+# stray 3 GB directory ends up next to a router's config — see
+# docs/nix-dev-workflow.md).  `--delete` so a file removed here is gone there too:
+# the router's checkout is a mirror, not a second place to edit.
+#
+# `.git/config` is the one file that is *not* mirrored, because it is the only part
+# of `.git` that is per-box rather than per-commit: the router's own remotes (it has
+# an `infra` remote pointing at services1's checkout, because it has no GitHub key of
+# its own) are wiped by a mirror of services1's config, which is how the first
+# version of this recipe silently deleted it.
+sync-gw:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    rsync -a --delete \
+      --exclude='target/' --exclude='node_modules/' --exclude='/result' --exclude='/result-*' \
+      --exclude='/.git/config' \
+      -i -e "ssh -i ~/.ssh/agent-hop-key -o BatchMode=yes -o ConnectTimeout=5" \
+      ./ leigh-admin@10.3.1.254:/home/leigh-admin/Projects/infrastructure-nix-flake/
+
+switch-gw: sync-gw
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ssh -i ~/.ssh/agent-hop-key -o BatchMode=yes -o ConnectTimeout=5 leigh-admin@10.3.1.254 \
+      'cd ~/Projects/infrastructure-nix-flake && sudo nixos-rebuild switch --flake . && sudo nixos-confirm'
 
 # --- Nix formatting ---
 
@@ -314,11 +357,11 @@ check:
 check-build:
     #!/usr/bin/env bash
     set -euo pipefail
-    for m in services1 services2 aibox; do
+    for m in services1 services2 aibox gw; do
         echo "=== nix build $m toplevel"
         nix build --no-link --print-out-paths ".#nixosConfigurations.$m.config.system.build.toplevel"
     done
-    echo "all three systems build"
+    echo "all four systems build"
 
 # Offload a build to services2 and refuse to fall back (common/build-farm.nix).
 # `nix.distributedBuilds` is true, so nix already prefers the external builder for
