@@ -147,10 +147,13 @@
       };
 
       # The second services box: a clone of services1 on AMD/Radeon hardware.  It
-      # runs the observability stack (gatus, Prometheus, Grafana) and its own
-      # status dashboard — see machines/services2/README.md and
-      # common/monitoring-endpoints.nix for why monitoring is here rather than on
-      # services1.
+      # runs its own status dashboard and (since the RTX 3060 arrived) the Strata
+      # CUDA engine — and nothing else, because its 30 GB of RAM is strata's: the
+      # observability stack that used to live here (gatus, Prometheus, Grafana)
+      # moved to services1 on 2026-10-17.  It is still this network's build
+      # machine, and it is still measured — by services1's Prometheus and by gatus
+      # from here.  See machines/services2/README.md for what runs and what is
+      # left to measure it, and machines/services2/STRATA.md for the engine.
       services2 = nixpkgs.lib.nixosSystem {
         inherit system;
         pkgs = import nixpkgs {

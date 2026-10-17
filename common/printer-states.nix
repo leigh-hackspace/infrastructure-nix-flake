@@ -2,8 +2,8 @@
 #
 # moonraker-exporter emits `moonraker_klippy_state` / `moonraker_print_state` with
 # the state as a `state=` tag and the *index into its own table* as the value.
-# The Grafana value mappings (machines/services2/monitoring-dashboards.nix) and the
-# Prometheus alert rules (machines/services2/monitoring.nix) used to restate those
+# The Grafana value mappings (machines/services1/services/monitoring-dashboards.nix) and the
+# Prometheus alert rules (machines/services1/services/observability.nix) used to restate those
 # tables by hand — three copies kept in step by a comment, which is exactly the
 # drift docs/repo-audit-2026-10-07.md §3.6 calls out.  They are generated from the
 # exporter instead:

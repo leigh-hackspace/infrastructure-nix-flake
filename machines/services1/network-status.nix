@@ -20,10 +20,12 @@
 # Exposed at network-info.int.leighhack.org (nginx vhost in http.nix,
 # ACL-restricted to the local network).
 #
-# It listens on 0.0.0.0 rather than loopback: Prometheus on services2 scrapes this
-# service's /metrics, and a scrape from another box cannot reach a loopback bind.
-# Access control is the vhost ACL, not the bind — the JSON API has always been
-# unauthenticated, and the tailnet is already allowed by LOCAL_NETWORK.
+# It listens on 0.0.0.0 rather than loopback: Prometheus scrapes this service's
+# /metrics (machines/services1/services/observability.nix), and since 2026-10-17
+# that scraper is on this box, so the wide bind is a habit rather than a
+# requirement.  Access control is the vhost ACL, not the bind — the JSON API has
+# always been unauthenticated, and the tailnet is already allowed by
+# LOCAL_NETWORK.
 {
   config,
   lib,

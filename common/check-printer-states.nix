@@ -2,8 +2,8 @@
 #
 # Assertions over ./printer-states.nix — the klippy / print_stats state tables
 # that are read out of crates/moonraker-exporter/src/main.rs and used to generate the
-# Grafana value mappings (machines/services2/monitoring-dashboards.nix) and the
-# Prometheus alert numbers (machines/services2/monitoring.nix).  Run it with:
+# Grafana value mappings (machines/services1/services/monitoring-dashboards.nix) and the
+# Prometheus alert numbers (machines/services1/services/observability.nix).  Run it with:
 #
 #   nix eval --impure --raw -f common/check-printer-states.nix
 #
@@ -24,8 +24,8 @@
 let
   PRINTER = import ./printer-states.nix;
 
-  monitoring = builtins.readFile ../machines/services2/monitoring.nix;
-  dashboards = builtins.readFile ../machines/services2/monitoring-dashboards.nix;
+  monitoring = builtins.readFile ../machines/services1/services/observability.nix;
+  dashboards = builtins.readFile ../machines/services1/services/monitoring-dashboards.nix;
 
   has = sub: src: builtins.replaceStrings [sub] [""] src != src;
 
@@ -97,11 +97,11 @@ in
     && need
     (has "PRINTER.klippy.code.error" monitoring
       && has "PRINTER.klippy.code.shutdown" monitoring)
-    "monitoring.nix no longer derives the klippy alert numbers from printer-states.nix"
+    "observability.nix no longer derives the klippy alert numbers from printer-states.nix"
     && need
     (has "PRINTER.klippy.mapping" dashboards
       && has "PRINTER.print.mapping" dashboards)
-    "monitoring-dashboards.nix no longer uses the generated state mappings"
+    "monitoring-dashboards.nix no longer uses the generated state mappings (it moved to machines/services1/services/ with Grafana)"
     # ... and must not have grown a hand-written copy back.
     && need
     (!has "\"0\" = \"startup\"" dashboards && !has "\"0\" = \"standby\"" dashboards)
@@ -110,6 +110,6 @@ in
     && need
     (!has "state=\\\"error\\\"} == 2" monitoring
       && !has "state=\\\"shutdown\\\"} == 3" monitoring)
-    "monitoring.nix hardcodes a klippy state number again"
+    "observability.nix hardcodes a klippy state number again"
   )
   "ok\n"

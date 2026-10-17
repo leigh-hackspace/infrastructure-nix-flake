@@ -1,12 +1,21 @@
 # The gatus endpoint list — the hand-maintained half of "is this thing up".
 #
-# Kept as plain data (no `config` dependency) for one reason: gatus runs on
-# services2, so it cannot read the vhost list of the box it is checking.  The
-# guard that used to sit inside gatus.nix therefore moved to services1, where the
-# vhosts actually are (see machines/services1/services/monitoring.nix): every
-# https `*.int.leighhack.org` endpoint here must be a name services1's nginx
-# serves, or a renamed/removed app leaves gatus alerting on a name that no longer
-# exists, forever.
+# Kept as plain data (no `config` dependency) so the two readers of it stay
+# independent: gatus (machines/services1/services/gatus.nix) imports the list and
+# the drift guard (machines/services1/services/monitoring.nix) reads the vhost
+# side.  It used to matter *why* it could not be read off the box being checked —
+# gatus ran on services2 and the vhosts were on services1 — and since 2026-10-17
+# they are the same box, but the list stays hand-maintained data for the reason
+# below, not that one: generating it from `services.nginx.virtualHosts` is
+# deliberately *not* done (repo audit §3.7): it mixes nginx-served apps with ICMP/TCP
+# targets that are dnsmasq hosts rather than vhosts (cameras, switches, the printers,
+# the NAS), it watches public names too, and every entry carries its own group and
+# status condition.  Auto-generating would invent checks for things that are not
+# meant to be watched and quietly change what alerts fire.
+#
+# The drift guard: every https `*.int.leighhack.org` endpoint here must be a name
+# services1's nginx serves, or a renamed/removed app leaves gatus alerting on a
+# name that no longer exists, forever.
 #
 # Generating this list from `services.nginx.virtualHosts` is deliberately *not*
 # done (repo audit §3.7): it mixes nginx-served apps with ICMP/TCP targets that
@@ -134,12 +143,16 @@
 
   list = [
     # --- Infrastructure ----------------------------------------------
-    # The machines themselves. These only make sense because gatus is not running
-    # on the box it is pinging: services1 was checking itself before the move,
-    # which is a check that can never fail.
+    # The machines themselves.  gatus now runs on services1, so the check that is
+    # worth having is the *other* box: services2, whose RAM is strata's and whose
+    # own status dashboard is what survives the engine thrashing (see
+    # machines/services1/services/gatus.nix for the trade-off).  A ping of the box
+    # gatus lives on can only ever catch a hung nginx, never a dead box, so the
+    # Services1 entry that used to be here is gone rather than kept as a check
+    # that can never fail.
     (mkPing {
-      name = "Services1";
-      url = HOSTS.services1;
+      name = "Services2";
+      url = HOSTS.services2;
       group = "Infrastructure";
     })
     (mkPing {

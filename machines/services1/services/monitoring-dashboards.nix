@@ -1,17 +1,18 @@
 {lib}:
-# Declarative Grafana dashboards for the services1 monitoring stack.
+# Declarative Grafana dashboards for the network's monitoring stack, which now
+# lives on services1 (see ./observability.nix).
 #
 # Each top-level attribute is one dashboard (attribute name = dashboard
 # uid). The whole set is rendered to JSON and provisioned into Grafana by
-# monitoring.nix on every build — edit here, `just switch`, done.
+# observability.nix on every build — edit here, `just switch`, done.
 #
 # Panel helpers below keep the individual dashboards compact; everything
 # else is plain Grafana dashboard JSON.
 let
   # The klippy / print_stats state tables, read out of the exporter's own Rust
-  # arrays (lib/printer-states.nix).  The panels and the Prometheus alert rules
+  # arrays (common/printer-states.nix).  The panels and the Prometheus alert rules
   # both come from there, so the number -> label tables cannot drift.
-  PRINTER = import ../../common/printer-states.nix;
+  PRINTER = import ../../../common/printer-states.nix;
 
   DS = {
     type = "prometheus";

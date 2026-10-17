@@ -1,13 +1,19 @@
 # Metrics exporters: the per-box half of the monitoring setup.
 #
-# Every machine runs these; Prometheus and Grafana run on services2 only (see
-# machines/services2/monitoring.nix).  The split matters: the box that decides
-# "is this thing down" must not be the box being asked, otherwise a dead services1
-# takes the alerting with it (see machines/services2/gatus.nix).
+# Every machine runs these; Prometheus and Grafana run on services1 (see
+# machines/services1/services/observability.nix).  The exporters stay on every
+# box so each one is still measured from the box that scrapes it: services1's
+# Prometheus scrapes all three by fixed IP out of common/hosts.nix, which is why
+# they bind 0.0.0.0 — a scrape from another box cannot reach a loopback bind.
+#
+# What the move costs: since 2026-10-17 the scraper and services1's own exporters
+# live on the same box, so a dead services1 stops reporting itself (see
+# machines/services1/services/gatus.nix for the trade-off).
 #
 # Exporters bind 0.0.0.0 by default, which is what makes cross-machine scraping
-# possible — the scrape targets in machines/services2/monitoring.nix are fixed IPs
-# from common/hosts.nix, so monitoring does not depend on the resolver.
+# possible — the scrape targets in machines/services1/services/observability.nix
+# are fixed IPs from common/hosts.nix, so monitoring does not depend on the
+# resolver.
 #
 # Ports: 9100 (node), 9558 (systemd), 9633 (smartctl).
 {

@@ -1,37 +1,49 @@
-# Prometheus + Grafana — the observability half of services2.
+# Prometheus + Grafana — the observability half of the network, on services1.
 #
-# Both live on services2 rather than services1 for the same reason as gatus: the
-# box that answers "is this thing down" must not be the box being asked, and the
-# dashboards are where you go when a box is down.  The exporters stay on every
-# machine (common/exporters.nix); this file is only the scraper, the rules and the
-# dashboards.
+# They used to live on services2, and the reason given for that was that the box
+# answering "is this thing down" must not be the box being asked.  That reason
+# stopped holding on 2026-10-17: services2 has 30 GB of RAM and strata's Coder
+# engine runs at ~28 GiB RSS against it, so anything else living there is what
+# takes the monitor down under memory pressure (see machines/services2/README.md
+# and machines/services2/STRATA.md).  services1 has the headroom and already
+# terminates TLS for these two vhosts, so the apps moved to it and the vhosts
+# stayed where they were.
+#
+# What that costs is the one check that used to be worth having: gatus and
+# Prometheus now run on the box they watch, so a dead services1 goes down with
+# its own monitor and reports nothing.  What still works from here is everything
+# that measures the *other* boxes — the exporters, the scrape of services2 and
+# aibox, and gatus's ping of 10.3.1.21 — and services2's own status dashboard,
+# which is the thing that keeps running while strata is thrashing.
 #
 # Dashboards are declarative: see ./monitoring-dashboards.nix; edit there and
-# `just switch` on services2.
+# `just switch` on services1.
 #
 #   https://grafana.int.leighhack.org      (anonymous view; admin via sops)
 #   https://prometheus.int.leighhack.org   (LAN/tailnet only)
 #
-# Both vhosts stay on services1, which terminates TLS for the whole network (the
-# ACME cert and nginx-sso live there), so they are in
-# machines/services1/services/monitoring.nix and proxy here.  That is the one
-# dependency this box cannot remove: if services1 is down the dashboards are
-# unreachable even though gatus is still alerting to Slack.
+# Both vhosts are on this box now (machines/services1/services/monitoring.nix),
+# which is also where the ACME cert and nginx-sso live, so they proxy to a
+# loopback bind rather than across the LAN.  The exporters stay on every machine
+# (common/exporters.nix): this file is only the scraper, the rules and the
+# dashboards.
 #
-# Ports: 9091 for Prometheus (9090 is taken by cockpit on services1), 3000 for
-# Grafana, exporters on 9100 (node), 9558 (systemd), 9633 (smartctl).
+# Ports: 9091 for Prometheus (9090 is taken by cockpit on this box), 3000 for
+# Grafana, exporters on 9100 (node), 9558 (systemd), 9633 (smartctl).  None of
+# the three collide with anything else on services1 — checked against the
+# rendered units before the move.
 {
   config,
   lib,
   pkgs,
   ...
 }: let
-  CONFIG = import ../../common/config.nix;
-  HOSTS = import ../../common/hosts.nix;
+  CONFIG = import ../../../common/config.nix;
+  HOSTS = import ../../../common/hosts.nix;
 
   # Printer state enums (klippy / print_stats) come from the exporter's own
   # arrays, so the alert numbers below are the exporter's, not a copy.
-  PRINTER = import ../../common/printer-states.nix;
+  PRINTER = import ../../../common/printer-states.nix;
 
   PROM_PORT = 9091;
 
@@ -218,10 +230,11 @@ in {
         scrape_timeout = "30s";
       }
       # OPNsense router (10.3.1.1), re-exported by the network-status service's
-      # /metrics endpoint on services1 — the same data the
-      # network-info.int.leighhack.org SPA shows.  network-status used to bind
-      # loopback only; it listens on 0.0.0.0 now so a scrape from another box can
-      # reach it (see machines/services1/network-status.nix).
+      # /metrics endpoint on this box — the same data the
+      # network-info.int.leighhack.org SPA shows.  network-status binds 0.0.0.0
+      # rather than loopback (see machines/services1/network-status.nix); that
+      # used to be required by a scrape from services2 and is now only a habit,
+      # since Prometheus and network-status share this box.
       {
         job_name = "router";
         metrics_path = "/metrics";
@@ -251,10 +264,10 @@ in {
     settings = {
       server = {
         http_port = 3000;
-        # Must bind 0.0.0.0, not the module default (localhost): the vhost is on
-        # services1, which terminates TLS for the network, so the proxy comes from
-        # another box. Same reasoning as the exporters in common/exporters.nix.
-        http_addr = "0.0.0.0";
+        # Loopback is enough now: the vhost is on this box (../monitoring.nix), so
+        # nginx proxies here rather than across the LAN.  It was 0.0.0.0 while
+        # Grafana lived on services2, because the proxy came from services1.
+        http_addr = "127.0.0.1";
         root_url = "https://grafana.int.leighhack.org";
       };
       security = {

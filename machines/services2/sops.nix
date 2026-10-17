@@ -6,17 +6,13 @@
 # ones embedded into configs at build time (slack_url, grafana_admin_password,
 # grafana_secret_key, status_dashboard_lan_token) are read via
 # config.sopsSecretText instead and are deliberately not listed here.
+#
+# There are none now.  The only runtime secret this box used was Grafana's
+# authentik OIDC client secret, and Grafana moved to services1 on 2026-10-17,
+# which declares it (machines/services1/sops.nix) — the authentik provider (pk 3)
+# is one client regardless of which box Grafana runs on, so there is still one
+# secret, it just has one reader now.  What is left here — the status dashboard
+# and strata — reads its secrets via config.sopsSecretText, at build time.
 {
-  sops.secrets = {
-    # Grafana's authentik OIDC client secret (monitoring.nix).
-    #
-    # The same secret as on services1: the authentik provider (pk 3) is one
-    # client regardless of which box Grafana runs on, so there is one secret and
-    # two readers. Client secrets are write-only in authentik — it can never be
-    # read back, only re-generated.
-    grafana_oidc_client_secret = {
-      group = "secrets";
-      mode = "0440";
-    };
-  };
+  sops.secrets = {};
 }

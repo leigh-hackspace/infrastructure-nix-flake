@@ -21,6 +21,10 @@
     ./filestore.nix
     ./frigate-monitor.nix
     ./frigate.nix
+    # Gatus — the endpoint checks and the Slack alerting.  Moved here from
+    # machines/services2/gatus.nix on 2026-10-17; the endpoint list is data in
+    # common/monitoring-endpoints.nix and the vhost is ./monitoring.nix.
+    ./gatus.nix
     # Disabled: the GitLab container is not deployed.  Its config is still
     # rendered by lib/config-to-gitlab.nix, which lib/check-config-to-gitlab.nix
     # keeps tested against the attrset in ./gitlab.nix — re-enable this line and
@@ -31,11 +35,16 @@
     ./librespeed.nix
     ./matrix.nix
     ./mattermost.nix
-    # The observability vhosts + the gatus drift guard.  gatus, Prometheus and
-    # Grafana themselves run on services2 (see machines/services2/monitoring.nix
-    # and machines/services2/gatus.nix); this box only terminates TLS for them.
+    # The observability vhosts + the gatus drift guard.  The apps themselves are
+    # ./gatus.nix and ./observability.nix — since 2026-10-17 both the apps and the
+    # vhosts are on this box (services2 keeps only strata), so the vhosts proxy to
+    # a loopback bind.  The dashboards are ./monitoring-dashboards.nix, pulled in
+    # by ./observability.nix rather than from this list.
     ./monitoring.nix
     ./mqtt.nix
+    # Prometheus + Grafana, moved off services2 on 2026-10-17 (see ./observability.nix
+    # for why: services2's 30 GB is strata's).
+    ./observability.nix
     ./outline.nix
     ./postgres.nix
     ./printer-monitoring.nix
