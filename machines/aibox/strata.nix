@@ -9,6 +9,11 @@
 # Radeon 660M iGPU + system RAM + NVMe, replacing the dense 27B that decodes at
 # ~2 tok/s here.
 #
+# PARKED 2026-10-17: the service is disabled in ./default.nix (the import is
+# commented out) so this box can be the network's build machine — the expert
+# arena is ~33 GiB of RAM a build needs.  The module is kept for reference and
+# for bringing the engine back; see ./STRATA.md for what it measured.
+#
 # Why this can work on a box with no VRAM:
 #   Strata is not an offloader. Its tiers are: experts resident in RAM (the
 #   arena), a GPU expert cache for the hot ones, a CPU pool for the cold ones,

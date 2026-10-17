@@ -3,12 +3,17 @@
 # Two separate things, both about balance rather than features:
 #
 #   1. GC on every machine. The crane dependency derivations (common/crane.nix)
-#      accumulate in the store and nothing else in this repo pruned them; services1
-#      is at 84% of its root partition (116 GB of store on 216 GB).
+#      accumulate in the store and nothing else in this repo pruned them; services1's
+#      root is the tightest of the three and is what a three-machine build fills.
 #
-#   2. services2 as the build machine. It has 211 GB free and no services worth
-#      protecting from a build, while services1 is the box that runs the services and
-#      is running out of room. `just build-remote` offloads a build there.
+#   2. aibox as the build machine.  It has 59 GiB of RAM, 6c/12t, and — since
+#      strata was parked on 2026-10-17 (machines/aibox/default.nix) — no engine
+#      holding ~33 GiB of that RAM.  Its own apps are leaf services that services1
+#      proxies, so a build storm costs frigate/immich/whisper rather than the box
+#      every public request goes through.  services1 is the box that runs the
+#      services and is running out of room; services2's 30 GiB is strata's, so a
+#      build there competed with the engine (the reason it was the builder until
+#      2026-10-17).  `just build-remote` offloads a build to aibox.
 #
 # GC deletes old *system* generations, which is safe for auto-rollback: `system-good`
 # is a separate profile (`/nix/var/nix/profiles/system-good`) and therefore its own GC
@@ -19,15 +24,16 @@
 # prefers an available external builder for every build ("Default preference is a remote
 # build", derivation-building-goal.cc) and only falls back to local when no builder can do
 # it. `--max-jobs 0` therefore does not enable delegation — it removes the local fallback.
-# So a plain `nix build` / `just switch` on services1 compiles on services2 and copies the
-# result back; if services2 is down nix builds locally instead. To go back to local-only,
+# So a plain `nix build` / `just switch` on services1 compiles on aibox and copies the
+# result back; if aibox is down nix builds locally instead. To go back to local-only,
 # set `nix.distributedBuilds = false` (which also makes `--max-jobs 0` fail with "local
 # builds are disabled", since nothing is left to delegate to).
 #
 # Per machine (see the two default.nix files):
 #
-#   services1:  infra.buildFarm.builderHost = HOSTS.services2;
-#   services2:  infra.buildFarm.serveBuilds = true;
+#   services1:  infra.buildFarm.builderHost = HOSTS.aibox; maxJobs = 6;
+#   aibox:      infra.buildFarm.serveBuilds = true;
+#   services2:  neither — served builds until 2026-10-17, now a client with no builder.
 {
   config,
   lib,
@@ -56,12 +62,12 @@ in {
       speedFactor = lib.mkOption {
         type = lib.types.int;
         default = 20;
-        description = "Builder speed factor. services2 is preferred over local builds.";
+        description = "Builder speed factor. The external builder is preferred over local builds.";
       };
       maxJobs = lib.mkOption {
         type = lib.types.int;
-        default = 8;
-        description = "Jobs the builder may run at once (its core count).";
+        default = 6;
+        description = "Jobs the builder may run at once (aibox's 6 cores; the default was services2's 8).";
       };
     };
   };
@@ -127,8 +133,8 @@ in {
         # sshKey has to be spelled out: the daemon runs as root, so it does not look
         # in leigh-admin's home by itself.
         sshKey = "/home/leigh-admin/.ssh/agent-hop-key";
-        # services2 is faster per job than services1 (8c/16t) and has the disk, so it
-        # is preferred when both are available.
+        # aibox is faster per job than services1 (6c/12t vs 4c/8t) and its RAM is
+        # free since strata was parked, so it is preferred when both are available.
         speedFactor = cfg.speedFactor;
         maxJobs = cfg.maxJobs;
       }

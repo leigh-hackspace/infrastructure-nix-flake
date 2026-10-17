@@ -89,9 +89,9 @@
   # 23.4 GiB of a 30 GiB box, so strata (28.3 GiB RSS measured) plus
   # Prometheus/Grafana/gatus/exporters leaves ~1.5 GiB of headroom.  Without
   # swap the box goes unresponsive under that pressure - journald logs
-  # "Under memory pressure, flushing caches" - and a build here (this box is
-  # the network's build machine, common/build-farm.nix, maxJobs 8) has nowhere
-  # to go and gets OOM-killed.  Swap is the safety net: the arena is page-
+  # "Under memory pressure, flushing caches" - and a build here (this box was the
+  # network's builder until 2026-10-17, common/build-farm.nix; maxJobs was 8) has
+  # nowhere to go and gets OOM-killed.  Swap is the safety net: the arena is page-
   # locked where it can (`LimitMEMLOCK = infinity` in ./strata.nix), so what
   # swaps is the overflow, not the model.
   #

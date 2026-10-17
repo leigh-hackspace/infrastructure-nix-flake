@@ -9,6 +9,65 @@ Still-open items live in `docs/follow-ups.md`.
 
 ---
 
+## 2026-10-17 — strata parked on aibox, and aibox becomes the network's builder
+
+The ask was "disable strata on aibox and make aibox the new builder". The two are
+one change: the IQ2_XS expert arena is ~33 GiB of RAM, and a builder needs RAM more
+than a second copy of the engine needs to exist. services2 keeps the Coder engine;
+it is now the only live Strata instance in the network.
+
+What moved:
+
+- `machines/aibox/default.nix`: the `./strata.nix` import is commented out and
+  `services.strata.enable = true` is removed (parked, not deleted — the module,
+  `STRATA.md`, the tuning scripts and the `.#strata` package stay), and
+  `infra.buildFarm.serveBuilds = true` is added.
+- `machines/services1/default.nix`: `builderHost` goes from `HOSTS.services2` to
+  `HOSTS.aibox`, and `maxJobs` is set to 6 — aibox is a Ryzen 5 6600H (6c/12t),
+  where the default 8 was services2's core count. `common/build-farm.nix` now
+  defaults to 6 and its header/options name aibox.
+- `machines/services2/default.nix`: `serveBuilds = true` is removed. It still
+  builds locally; it no longer accepts other boxes' work.
+- The comments and the live docs that named services2 as the builder or aibox as a
+  Strata host (`AGENTS.md`, `docs/services.md`, `docs/nix-dev-workflow.md`, the
+  justfile, both `STRATA.md`s, `machines/services2/README.md`) now name the box
+  that is true today. `docs/network-upgrade-runbook.md`'s order/rationale changed
+  with it: the builder is second (aibox), not last, and the witness role the
+  services2-last rule was built on is gone (gatus moved to services1 earlier the
+  same day).
+
+Why aibox: 59 GiB of RAM (services2: 30), 6 cores (services1: 4), and its apps are
+leaf services that services1 proxies, so a build storm degrades frigate/immich/
+whisper rather than the box every public request goes through. services2 was the
+right builder only while its RAM was free; once the RTX 3060 arrived that RAM was
+the engine's, and the 2026-10-15 upgrade measured a full build pushing it to 0 MiB
+free and 6 GiB of swap.
+
+Two consequences stated so the next reader does not discover them:
+
+- With the strata module gone, `llama-server` gets its default `wantedBy` back
+  (`machines/aibox/ai.nix`), because the displacement was strata's. It starts at
+  boot again; stop it before a long build if it has a model resident.
+- Disabling the service does not delete the model data: the GGUFs under
+  `~/Models/Qwen3.8-Flash-Next-GSQ-RCO-GGUF` and the pack/MTP under `~/Strata`.
+  aibox's root measured 82 % full on 2026-10-15, and the builder is the box that
+  grows the store. Deleting those paths is a manual decision (open in
+  `docs/follow-ups.md`), not something a switch does.
+
+Not yet verified: the delegated hop itself after the change. The key, `sshUser`
+and `trusted-users` wiring is box-agnostic and aibox has the hop key, but the last
+proof (both a delegated build and a `--max-jobs 0` build) was against services2 on
+2026-10-12. Run `just build-remote` once after switching aibox, and read the
+builder name in the log rather than assuming.
+
+Deploy order for this change is **aibox → services1 → services2**, not the
+runbook's default: aibox has to be accepting builds before services1's new
+`nix.conf` starts asking it to, and services2's switch is what removes the old
+`serveBuilds` (it can be last, and nothing delegates to it meanwhile). Chain
+`sudo nixos-confirm` with each switch per the golden rule.
+
+---
+
 ## 2026-10-17 — the observability stack moved from services2 to services1
 
 The ask was "move everything off services2 except strata".  What was on services2

@@ -28,6 +28,26 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   `packages.strata-cuda`, `packages.whisper-ws` and the devShell — ~10 minutes on a
   lock bump.)
 
+- **aibox is the builder now; prove the hop and watch its disk** (2026-10-17, with
+  the move off services2). Two things are open, neither of them a switch:
+
+  1. **The delegated build itself.** `common/build-farm.nix`'s hop was last proven
+     against services2 on 2026-10-12 (a delegated build and a `--max-jobs 0` build,
+     no SIGKILL sweep). The key, `sshUser = "leigh-admin"` and the
+     `trusted-users` entry are box-agnostic, and aibox already has
+     `~/.ssh/agent-hop-key`, but run `just build-remote` once from services1 and
+     read the builder name in the log — a silent fallback to local is the failure
+     mode the rule about polling exists for.
+  2. **aibox's root and the parked model data.** aibox measured 82 % full on
+     2026-10-15, while services2 had 211 GB free; the builder is the box that now
+     grows `/nix/store`. Strata's data is deliberately outside the store and is
+     **not** removed by disabling the service: the IQ2_XS GGUFs under
+     `/home/leigh-admin/Models/Qwen3.8-Flash-Next-GSQ-RCO-GGUF` (~68 GB) and the
+     pack/MTP under `/home/leigh-admin/Strata`. Deleting them is a manual decision
+     — do not automate it from the flake — but until then the builder's headroom
+     is smaller than the role assumes. `common/build-farm.nix`'s GC policy is what
+     keeps it from being a surprise.
+
 - **`packages.strata-cuda` emits four upstream deprecation warnings (open, one
   line).** `checking derivation packages.x86_64-linux.strata-cuda` prints
   `stdenv.isLinux` / `isAarch64` / `isDarwin` "is deprecated, use

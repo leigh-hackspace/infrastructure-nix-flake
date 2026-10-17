@@ -16,11 +16,12 @@ system RAM and the ~27 GiB n-gram table read from the NVMe.
   Host-check note below for why they have to be.
 - Logs: `journalctl -u strata -f`, `/var/lib/strata/strata.log`.
 
-The aibox instance (`machines/aibox/strata.nix`, `machines/aibox/STRATA.md`) runs
-the **full 125B model on the Radeon iGPU**. That doc's measurements (decode vs
-prefill, why the expert cache is a compute tier, the UMA reality) are the
-background reading; this file is what is different on a real, discrete 12 GB
-card and a 30 GB box.
+The aibox instance (`machines/aibox/strata.nix`, `machines/aibox/STRATA.md`) ran
+the **full 125B model on the Radeon iGPU** until it was parked on 2026-10-17, when
+that box became the network's build machine; the module and measurements are kept.
+That doc's measurements (decode vs prefill, why the expert cache is a compute
+tier, the UMA reality) are the background reading; this file is what is different
+on a real, discrete 12 GB card and a 30 GB box.
 
 ## Why the Coder pack here
 
@@ -61,8 +62,9 @@ taken from the cache; 131072 is the balance chosen here.
 no swap partition on this NVMe). It is not there for the model: the arena is page-locked where
 it can be (`LimitMEMLOCK = infinity` in `./strata.nix`), so what swaps is the overflow. It is
 there because strata measured **28.3 GiB RSS** against 30 GiB of RAM, which left ~1.5 GiB for
-Prometheus/Grafana/gatus/exporters and for the nix builds this box is the network's build
-machine for (`common/build-farm.nix`, `maxJobs 8`) — without it the box went unresponsive
+Prometheus/Grafana/gatus/exporters and for the nix builds this box was the network's build
+machine for until 2026-10-17 (`common/build-farm.nix`, `maxJobs 8` then) — without it the box
+went unresponsive
 (journald: "Under memory pressure, flushing caches") and a build here was OOM material. If
 `--resident-experts` is ever lowered, or a bigger pack lands here, re-read this table: the
 swap file is headroom, not a licence to size the arena above RAM.

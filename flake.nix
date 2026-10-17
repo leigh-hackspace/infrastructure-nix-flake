@@ -40,7 +40,8 @@
     # (machines/services2/strata-package.nix) builds from it.  Upstream's own
     # flake only provides a devShell, so the engine is still packaged by hand;
     # this input is the source.  aibox's older HIP package still pins its own
-    # fetchFromGitHub, so `nix flake update strata` moves only the CUDA engine.
+    # fetchFromGitHub (its service is parked, the package is kept), so
+    # `nix flake update strata` moves only the CUDA engine.
     # `inputs.nixpkgs.follows` keeps the eval on one nixpkgs.
     strata = {
       url = "github:Niko1221/Strata";
@@ -150,10 +151,12 @@
       # runs its own status dashboard and (since the RTX 3060 arrived) the Strata
       # CUDA engine — and nothing else, because its 30 GB of RAM is strata's: the
       # observability stack that used to live here (gatus, Prometheus, Grafana)
-      # moved to services1 on 2026-10-17.  It is still this network's build
-      # machine, and it is still measured — by services1's Prometheus and by gatus
-      # from here.  See machines/services2/README.md for what runs and what is
-      # left to measure it, and machines/services2/STRATA.md for the engine.
+      # moved to services1 on 2026-10-17.  It was this network's build machine
+      # until 2026-10-17; that is aibox now (common/build-farm.nix), so this box
+      # keeps its RAM for the engine.  It is still measured — by services1's
+      # Prometheus and by gatus from here.  See machines/services2/README.md for
+      # what runs and what is left to measure it, and machines/services2/STRATA.md
+      # for the engine.
       services2 = nixpkgs.lib.nixosSystem {
         inherit system;
         pkgs = import nixpkgs {
@@ -284,10 +287,11 @@
     };
 
     # `nix build .#strata` - the Strata engine (HIP/gfx1030) plus its Python
-    # serve layer and the one-time model-prep tools: the same derivation
-    # machines/aibox/strata.nix installs as a service. That file documents the
-    # hand-run model download/pack/MTP steps this package deliberately keeps
-    # out of the store.
+    # serve layer and the one-time model-prep tools: the derivation that
+    # machines/aibox/strata.nix installed as a service until 2026-10-17, when the
+    # aibox engine was parked to make the box the network's builder.  That file
+    # documents the hand-run model download/pack/MTP steps this package
+    # deliberately keeps out of the store.
     #
     # `nix build .#strata-cuda` - the same engine built for services2's RTX
     # 3060 (CUDA 13.0 / sm_86), from the bleeding-edge `strata` flake input.

@@ -1,21 +1,22 @@
 flakeInputs: {
   networking.hostName = "services2"; # Define your hostname.
 
-  # services2 is the build machine for this network (common/build-farm.nix): 211 GB
-  # of free store and no services worth protecting from a build, while services1 is
-  # the box that runs the services and is at 84% of its root partition.
-  infra.buildFarm.serveBuilds = true;
+  # services2 no longer serves remote builds (2026-10-17): aibox is the network's
+  # builder now (common/build-farm.nix).  The reason is in this box's STRATA.md —
+  # its 30 GiB of RAM is the Coder engine's, and a delegated build competing with
+  # the engine was the box's worst failure mode.  It still builds locally, and
+  # keeps its 211 GB of free store.
 
   imports = [
     ./sops.nix
 
     # What this box runs: its own status dashboard and (since the RTX 3060 arrived)
-    # the Strata engine.  The rest of what it used to run — gatus, Prometheus and
-    # Grafana — moved to services1 on 2026-10-17, because this box's 30 GB of RAM
-    # is strata's: the engine sits at ~28 GiB RSS against those services and the
-    # kernel reaps process after process under that pressure.  See ./README.md for
-    # what still runs here, what is left to measure this box, and ./STRATA.md for
-    # the engine.
+    # the network's only live Strata engine.  The rest of what it used to run —
+    # gatus, Prometheus and Grafana — moved to services1 on 2026-10-17, because
+    # this box's 30 GB of RAM is strata's: the engine sits at ~28 GiB RSS against
+    # those services and the kernel reaps process after process under that
+    # pressure.  See ./README.md for what still runs here and what is left to
+    # measure this box, and ./STRATA.md for the engine.
     ./status.nix
     ./strata.nix
 

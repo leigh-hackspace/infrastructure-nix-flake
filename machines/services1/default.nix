@@ -1,10 +1,12 @@
 flakeInputs: {
   networking.hostName = "services1"; # Define your hostname.
 
-  # services1 delegates builds to services2 (common/build-farm.nix). It is opt-in per
-  # invocation via `just build-remote`, so a deploy still works when the builder is
-  # down.
-  infra.buildFarm.builderHost = (import ../../common/hosts.nix).services2;
+  # services1 delegates builds to aibox (common/build-farm.nix).  Nix prefers the
+  # external builder and falls back to local when it is unreachable, so a deploy
+  # still works when aibox is down; `just build-remote` is the version that
+  # refuses to fall back.  maxJobs is aibox's core count (Ryzen 5 6600H, 6c/12t).
+  infra.buildFarm.builderHost = (import ../../common/hosts.nix).aibox;
+  infra.buildFarm.maxJobs = 6;
 
   imports = [
     ./sops.nix

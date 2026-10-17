@@ -5,6 +5,14 @@ on the Radeon 660M iGPU + system RAM + NVMe. Config: `strata.nix` (service) +
 `strata-package.nix` (engine build). Endpoints: `http://10.3.1.32:8080/v1` and,
 through nginx, `http://aibox.int.leighhack.org/llm/v1`.
 
+> **Parked 2026-10-17.** The service is disabled in `./default.nix` so this box can
+> be the network's build machine (`common/build-farm.nix`): the IQ2_XS expert arena
+> is ~33 GiB of RAM that a build needs. The module, this file and the `.#strata`
+> package remain so it can be brought back; the model data under
+> `/home/leigh-admin/Models` and `/home/leigh-admin/Strata` is outside the store and
+> is **not** removed by the flake. The numbers below are what it measured while it
+> ran, not a description of the deployed box today.
+
 It replaced `llama-server` for a reason: the dense 27B (Dirk-Qwen3.8-27B-UD-Q6_K)
 decodes at **~2 tok/s** here — a 200-token completion timed out at 145 s.
 

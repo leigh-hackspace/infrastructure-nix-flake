@@ -8,9 +8,9 @@ have gates, and a gate that fails is a stop, not a "continue and hope".
 A full network upgrade is the largest blast radius this repo has. It touches the
 one box every public request goes through (services1's nginx and the SSO in front
 of it), the one box that decides whether anything is *reported* as broken
-(services2's gatus), the network's build machine (also services2), the desk box
-that hosts the photo/video/AI apps, and — without being touched — the router, the
-NAS, the Proxmox host and the appliance that is the IdP. Almost every rule in
+(services1's gatus, since 2026-10-17), the network's build machine (aibox, since
+2026-10-17), the desk box that hosts the photo/video/AI apps, and — without being
+touched — the router, the NAS, the Proxmox host and the appliance that is the IdP. Almost every rule in
 `AGENTS.md` is a rule here because this is where it bites.
 
 Read first: `AGENTS.md` (rules 4, 5, 11, 13, 20, 21), `docs/nix-dev-workflow.md`,
@@ -50,8 +50,8 @@ statement about *that day*; re-probe it, do not inherit it.
 | Box | Address | Reached as | What an upgrade means here | What must **not** happen here |
 | --- | --- | --- | --- | --- |
 | services1 | 10.3.1.20 | `leigh-admin` + hop key | full `switch`. The choke point: nginx terminates TLS for the whole network, nginx-sso answers every `X-WEBAUTH-USER` app, postgres serves five DBs, `dns-sync` writes the router's host overrides | a reboot that takes nginx/postgres/SSO down without knowing who is up |
-| services2 | 10.3.1.21 | `leigh-admin` + hop key | full `switch`. Also the network's **builder** and the **monitor** (gatus + Slack alerting) | being switched while a build is delegated to it; being switched before the boxes it watches |
-| aibox | 10.3.1.32 | `leigh-admin` + hop key | full `switch`. Hosts immich, frigate, whisper, strata, the netboot server, a status dashboard | deploying from its **dirty** tree (see Phase 0) |
+| services2 | 10.3.1.21 | `leigh-admin` + hop key | full `switch`. The RTX 3060 / Strata **Coder** engine, its own status dashboard, a 16 GiB swap file | being switched while its 30 GiB is the engine's; being mistaken for the builder or monitor it no longer is |
+| aibox | 10.3.1.32 | `leigh-admin` + hop key | full `switch`. Hosts immich, frigate, whisper, the netboot server, a status dashboard — and, since 2026-10-17, the **builder** | deploying from its **dirty** tree (see Phase 0) |
 | gw (the router) | 10.3.1.1 is the **live** OPNsense box; 10.3.1.254 is the flake's replacement, deployed beside it | old box: `root` + hop key, **the root shell is tcsh**. New box: `leigh-admin` + hop key, like the others | the **new box only**, and only while `machines/gw/coexist.nix` is on (addresses end in `.254`, no DHCP, no RA, no advertised tailnet routes). The OPNsense box stays the router and stays out of this runbook | deploying `.#gw` with co-existence switched off; anything that takes the live router down; a second DHCP server or RA on a VLAN |
 | NAS | 10.3.1.6 | `leigh-admin` + hop key (root is **not** keyed) | nothing declarative. It must stay online: services1 and aibox NFS-mount it, borg runs on it | editing `/etc/sudoers` (middleware regenerates it); blaming a mount failure on the flake |
 | monster1 | 10.3.1.11 | `root` + hop key | nothing declarative. Its VMs' disks live on the NAS | `qm start` on an HA-managed VM; treating `storage 'nas2-nfs' is not online` as a VM fault |
@@ -342,29 +342,37 @@ Build discipline for the long part:
 
 - **Offload it, but expect half of it local anyway.** `nix.distributedBuilds = true`
   and nix 2.34 *prefers* the external builder, so a plain build on services1 does
-  run much of itself on services2 and copies the result back — but the
+  run much of itself on aibox and copies the result back — but the
   fixed-output download derivations (`fetchurl`, every npm `.tgz`, every crate)
-  are `preferLocalBuild` and run on the client: the 2026-10-15 run measured 754
-  local vs 162 remote for services1's toplevel, and 411 local vs 20 remote for
-  aibox's, with the builder sitting at load 0.0 while services1 sat at load 20-37.
+  are `preferLocalBuild` and run on the client: the 2026-10-15 run (when the
+  builder was services2) measured 754 local vs 162 remote for services1's
+  toplevel, and 411 local vs 20 remote for aibox's, with the builder sitting at
+  load 0.0 while services1 sat at load 20-37.
   `just build-remote` (`--max-jobs 0`) removes the *local fallback*; it does not
   force a derivation that nixpkgs marked `preferLocalBuild` onto the builder.
-  **The headroom numbers in `common/build-farm.nix` and `machines/services2/README.md`
-  are stale** (they say services1's root is 84 % full; it measured 52 % before the
-  run and 77 % after — a full three-machine build costs services1 ~25 GB of store).
-  Re-read `df -h` on every box rather than inheriting a comment written months ago.
+  **Re-read the headroom numbers; they are a fact about a day.** On 2026-10-15
+  services1's root measured 52 % before the run and 77 % after (a full
+  three-machine build costs services1 ~25 GB of store), services2 45 %, aibox
+  82 %. Aibox is the builder now, so its store is the one that grows, and strata's
+  parked model data sits outside it. `df -h` on every box rather than inheriting
+  a comment written months ago (including the 211 GB claim in
+  `machines/services2/README.md`).
 - **Judge health by latency, not load.** services1's load average reached 37 during
   the aibox build and every SSO vhost still answered in 8-50 ms (`curl -w
   %{time_total}`). Load on a box whose baseline is frigate's ffmpeg workers is not
   a signal; before you decide the box is unhappy, probe the endpoints and read the
   time.
-- **Watch the builder's memory, not just its load.** services2 runs strata at
-  24-26 GiB RSS against 30 GiB of RAM. A full build pushed it to 0 MiB free and
-  6 GiB of swap, and the peak was `mksquashfs` (4.4 GB RSS, 7 cores) building the
-  **pi-room-sys netboot image**, which is inside aibox's closure. Nothing OOMed,
-  but that is a coin-toss: if the builder starts thrashing, the first thing to
-  lose is strata (26 GiB, unmonitored by gatus) and the second is the monitor
-  itself. `free -g` on services2 belongs in the poll loop next to the log tail.
+- **Watch the builder's memory, not just its load.** Since 2026-10-17 the builder
+  is aibox: 59 GiB and 6 cores, with strata parked, but also frigate, immich,
+  whisper and llama-server on the same box.  `free -g` on aibox belongs in the poll
+  loop next to the log tail; a build storm there degrades the apps rather than the
+  services box, and llama-server's GTT is what to stop if memory gets tight.  The
+  old builder (services2) was the worse case, kept here as the reason not to hand
+  the role back: it ran strata at 24-26 GiB RSS against 30 GiB of RAM, and a full
+  build pushed it to 0 MiB free and 6 GiB of swap, with the peak `mksquashfs`
+  (4.4 GB RSS, 7 cores) building the pi-room-sys netboot image.  Nothing OOMed,
+  but that was a coin-toss; if it had started thrashing, the first thing to lose
+  was strata (26 GiB, unmonitored by gatus) and the second the monitor itself.
 - **Poll, never sleep** (rule 11). Run it detached to a log
   (the `systemd-run` recipe is in `docs/nix-dev-workflow.md`; `setsid nohup … &`
   also survives an aborted tool call), then per tool call: is the process still
@@ -431,12 +439,15 @@ router 10.3.1.1  ── DNS for every *.int name + the DHCP reservation that giv
 - **aibox second.** Its apps are proxied by services1, whose new nginx is
   already up. It is a leaf: nothing else waits on it except the netboot clients,
   which only re-read the export on their next boot.
-- **services2 last**, for two reasons that are the same box. It is the **builder**
-  — switching it stops the daemon that every delegated build uses, so it must not
-  move while anything is still building (Phase 3 finished, so nothing is). And it
-  is the **monitor**: the box that answers "is this thing down" must not be the
-  box being asked, so keeping it alive longest is what lets it *report* the
-  outages the other two cause, to Slack, while you are still working.
+- **services2 last**, for two reasons that are the same box. It hosts the only
+  live **Strata** engine, whose ~28 GiB RSS is most of the box's RAM, so its
+  switch is the one most likely to need memory that is already spoken for; doing
+  it last means a failure there leaves the other boxes landed and working. And it
+  is a leaf: nothing else waits on it now that gatus, Prometheus and Grafana are
+  on services1 — the witness role it used to have is gone, not deferred.
+  (When services2 *was* the builder, the extra reason was that switching it
+  stopped the daemon every delegated build used. That is aibox now, and aibox is
+  second, so Phase 3 must be finished before it moves. It always is.)
 
 **The exception that overrides the order:** if the upgrade changes an *interface*
 — a port, an address in `common/hosts.nix`, an API path, a VLAN — then the box
@@ -672,7 +683,7 @@ run "finished but not upgraded":
 | **A switch confirmed that should not have been** | `SWITCH_EXIT=4` (or 1) in the log and `cur == good` anyway | The `&&` was a `;`. The half-activated generation is now marked good and the timer is disarmed. Read the log, fix the cause, switch again — and never confirm a non-zero exit |
 | **`sudo nixos-rebuild --flake .` dies in one second** | `repository path … is not owned by current user (libgit2 error code = 7)` | Root has no `safe.directory` for the repo on that box (aibox, 2026-10-15). `sudo git config --global --add safe.directory <path>`; Phase 0 checks all three |
 | **aibox's switch exits 4 after restarting everything** | `Failed to restart exports-netboot\x2dsquashfs.mount` | The netboot bind mount's source is a store path that moved. `umount -f -l` + `mount -a`, then switch again (Phase 7). No client reboot needed to re-point the export |
-| **The switch looks hung on aibox** | the unit stays `activating`, `building '…strata…'` / `mksquashfs` in the log | aibox is neither the build client nor the delegated builder, so it compiles what it does not have **during activation** (237+ derivations, ~15 min on 2026-10-15). Pre-seed it instead: `nix copy --to ssh://leigh-admin@10.3.1.32 <toplevel>` |
+| **The switch looks hung on aibox** | the unit stays `activating`, `building '…strata…'` / `mksquashfs` in the log | aibox builds its own toplevel locally (it is the builder for others, not for itself), so it compiles what it does not have **during activation** (237+ derivations, ~15 min on 2026-10-15). Pre-seed it instead: `nix copy --to ssh://leigh-admin@10.3.1.32 <toplevel>` |
 | **Boxes on different commits** | Phase 1's proof fails | Stop. Fix Phase 1 before building. Deploying three trees is three networks (rule 20) |
 | **A dirty tree on a box** | `git status --short` non-empty | Commit or stash **before** any `reset --hard`. A reset on a dirty box deletes in-progress work with no undo |
 | **A stale `origin/main` ref on a box with no GitHub key** | `git status -sb` says `ahead 1` forever | That is a stale ref, not an unpushed commit (`machines/services2/README.md`); push through services1 |
@@ -681,7 +692,7 @@ run "finished but not upgraded":
 | **A build copies 3 GB of `crates/target/` into the store** | you evaluated through a path literal | Never evaluate this repo through a path literal (rule 8). Read values out of the flake |
 | **A delegated build silently fell back to local** | the wrong disk fills; the builder idles | Poll for the build, not the clock; `nix flake`/`nixos-rebuild` log lines name the builder. Flip `nix.distributedBuilds = false` only deliberately |
 | **Disk full mid-build** | `df -h /` climbing; build dies at a copy | Build off-box (`just build-remote`); GC per `common/build-farm.nix` (interactive — `just gc` will not answer for a non-tty) |
-| **The builder is switched while a build is delegated to it** | the build dies with a daemon/ssh error | Order: build everything (Phase 3), then switch services2 last (Phase 4) |
+| **The builder is switched while a build is delegated to it** | the build dies with a daemon/ssh error | Finish every build (Phase 3) before any switch; the builder is aibox (second in the order), so services1 → aibox → services2 still leaves the phase boundary where it belongs |
 | **A storm of transient failures after services1's switch** | dozens of units restarting | Expected: activation restarts the whole stack, and the never-give-up policy retries. Read `Result=` and the *second* attempt; a first-start race with a setup unit is legitimate |
 | **A postgres major bump** | activation fails on the DBs; `psql` says the DBs are on the old version | `postgresql-alt-install` / `postgresql-update-services` **before** the switch; then the `template1` collation refresh. Do not `CREATE DATABASE` and hope |
 | **A kernel bump with out-of-tree modules** | the NVIDIA driver on services2 will not load; `uname -r` ≠ newest `/boot/EFI/nixos` kernel | `switch` then reboot that box, in the same chained invocation, and say what goes down for the boot window |
@@ -763,17 +774,21 @@ README owns the detail:
   is no longer the only box that can evaluate the flake; it is still the box you
   start from, because it is the choke point and the one with the headroom. Also:
   the tailscale client, the secrets habits (`machines/services1/README.md`).
-- **services2** — the builder, the monitor, the RTX 3060 driver, a 16 GiB **swap
-  file** (no swap partition; strata alone measured 28.3 GiB RSS against 30 GiB
-  RAM). `machines/services2/README.md` still says `just check` cannot run here
-  because it evaluates aibox through the local `pi-room-sys` input — **that is
-  stale since `8e0430c`**; re-run `just check` on the box rather than inheriting
-  the sentence. No GitHub key of its own → push through services1.
-- **aibox** — `/etc/hosts` maps `aibox` to `127.0.0.2`, so use the IPs. The
+- **services2** — the RTX 3060 driver, a 16 GiB **swap file** (no swap partition;
+  strata alone measured 28.3 GiB RSS against 30 GiB RAM), and the only live Strata
+  engine. It was the builder and the monitor until 2026-10-17; both roles have
+  moved (builder → aibox, monitor → services1). `machines/services2/README.md`
+  still says `just check` cannot run here because it evaluates aibox through the
+  local `pi-room-sys` input — **that is stale since `8e0430c`**; re-run `just
+  check` on the box rather than inheriting the sentence. No GitHub key of its own
+  → push through services1.
+- **aibox** — `/etc/hosts` maps `aibox` to `127.0.0.2`, so use the IPs.  The
   NVIDIA `nvidia.nix` + `legacy_580` patch on this box is **dead config** (the
   GTX 1060 was removed — `docs/gtx1060-followup.md`); the live GPU box for that
-  driver is services2. The netboot export and the ten clients live here, and that
-  export is what makes a plain switch exit 4 (Phase 7). No tailscale unit at all.
+  driver is services2.  Since 2026-10-17 it is the network's **builder** and strata
+  is parked here (6c/12t, 59 GiB).  The netboot export and the ten clients live
+  here, and that export is what makes a plain switch exit 4 (Phase 7). No
+  tailscale unit at all.
 
 ---
 
@@ -794,9 +809,12 @@ bumps were patches: 6.18.55→6.18.56 on services1/services2, 7.2.9→7.2.10 on
 aibox). **Order used: services1 → services2 → aibox, which deviates from the
 stated default** (services1 → aibox → services2). It was benign here — Phase 3 had
 finished so nothing was delegated to the builder, and the only thing services2
-provides to the other two is the monitoring that aibox's switch would have wanted
+provided to the other two was the monitoring that aibox's switch would have wanted
 as a witness — but it is a deviation, and the reason it is the *wrong* way to deviate
 is in Phase 4: switching the monitor early blinds the run for every box after it.
+(That was the arrangement on 2026-10-15; since 2026-10-17 the monitor and the
+builder are both elsewhere — services1 and aibox — so re-read the order rationale
+above rather than this paragraph before the next run.)
 Post-run endpoint probe identical to the pre-run baseline; prometheus `count(up)`
 12, `count(up==0)` empty.
 

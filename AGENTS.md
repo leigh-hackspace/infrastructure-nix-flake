@@ -87,8 +87,8 @@ X first", X has already cost someone a day.
   that used to be (`whisper-ws`, `pi-room-sys`) are in-tree now, so a clone of
   this repo evaluates every machine and `just check` runs anywhere. Machines:
   `services1` (main services box, 10.3.1.20), `services2` (strata + its own status
-  dashboard + the network's build machine, 10.3.1.21 — `machines/services2/README.md`),
-  `aibox` (10.3.1.32), `gw` (the network's replacement router, deployed at
+  dashboard, 10.3.1.21 — `machines/services2/README.md`), `aibox` (10.3.1.32,
+  the network's build machine since 2026-10-17), `gw` (the network's replacement router, deployed at
   10.3.1.254 *beside* the live router — `machines/gw/README.md`) and `pi-room-sys`
   (a machine that is *built by* aibox rather than deployed —
   `machines/pi-room-sys/README.md`).
@@ -188,7 +188,7 @@ X first", X has already cost someone a day.
   tests, `just clippy` the lints, `just filestore-test` and `just switch-gui-test` the
   headless-browser suites (the latter drives a fake ProCurve console —
   `crates/switch-gui/tests/README.md`), `just build-remote` offloads a build to
-  services2.
+  aibox.
 - **GOLDEN RULE — confirm immediately after every switch/boot.**
   `system.autoRollback.enable = true` is set on **all three** machines. Read off the
   unit script rather than guessed: activating a configuration **restarts the
@@ -290,7 +290,7 @@ invariant, its assertion and its self-healing timer live in **`common/nixbld.nix
 - **Remote building is on and is the default path.** With `nix.distributedBuilds = true`,
   nix 2.34 *prefers* the external builder and only falls back to local when no builder is
   available — `--max-jobs 0` does not enable delegation, it removes the local fallback.
-  So a plain `nix build` / `just switch` on services1 builds on services2 and copies the
+  So a plain `nix build` / `just switch` on services1 builds on aibox and copies the
   result back. Flip `nix.distributedBuilds = false` in `common/build-farm.nix` to go back
   to local-only.
 - `network-status.service` still runs as `User=leigh-admin` — a LAN dashboard should not

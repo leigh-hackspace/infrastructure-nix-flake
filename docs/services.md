@@ -11,8 +11,9 @@ deeper document that owns the long version, if there is one — this file is the
 index, not the final word.
 
 Machines: `services1` (10.3.1.20, the services box and TLS terminator),
-`services2` (10.3.1.21, strata + build machine — the observability stack that used
- to live there moved to services1 on 2026-10-17), `aibox` (10.3.1.32).
+`services2` (10.3.1.21, strata — the observability stack that used to live there
+ moved to services1 on 2026-10-17), `aibox` (10.3.1.32, the network's build machine
+ since 2026-10-17).
 Every address is in `common/hosts.nix`.
 
 ---
@@ -30,7 +31,7 @@ Every address is in `common/hosts.nix`.
 | status-dashboard | `crates/status-dashboard/` | both boxes | `common/status-dashboard.nix` |
 | whisper-ws | `crates/whisper-ws/` | aibox:8083 | `crates/whisper-ws/README.md` |
 | moonraker-exporter | `crates/moonraker-exporter/` | metrics | `docs/printer-servers.md` |
-| strata | `machines/*/strata.nix` | aibox:8080, services2:8080 → `strata.int.leighhack.org` | `machines/aibox/STRATA.md`, `machines/services2/STRATA.md` |
+| strata | `machines/*/strata.nix` | services2:8080 → `strata.int.leighhack.org` (aibox's is parked) | `machines/aibox/STRATA.md`, `machines/services2/STRATA.md` |
 
 ---
 
@@ -264,22 +265,30 @@ and the RADIUS root cause are in `docs/procurve-switches.md`; the browser suite
 ## `machines/*/strata.nix` + `strata-package.nix` — the two Strata engines
 
 Strata (`github.com/Niko1221/Strata`) is not a crate and not llama.cpp: it is its
-own ggml-based engine for Qwen3.8-Flash-Next, run as `strata.service` on two
-boxes. It is not in the monorepo because it is an upstream program packaged per
-machine, and the two builds differ only in backend:
+own ggml-based engine for Qwen3.8-Flash-Next, run as `strata.service` on services2.
+It is not in the monorepo because it is an upstream program packaged per machine,
+and the two builds differ only in backend:
 
 | box | model | backend | source | detail |
 | --- | --- | --- | --- | --- |
-| aibox | full 125B, IQ2_XS | **HIP/gfx1030** (Radeon iGPU) | `.#strata` | `machines/aibox/STRATA.md` |
+| aibox (parked 2026-10-17) | full 125B, IQ2_XS | **HIP/gfx1030** (Radeon iGPU) | `.#strata` | `machines/aibox/STRATA.md` |
 | services2 | **Coder** IQ1_M | **CUDA/sm_86** (RTX 3060) | `.#strata-cuda` | `machines/services2/STRATA.md` |
 
-Both take their upstream source from the flake's **`strata` input, tracked on
-`main`** (`nix flake update strata`); each `strata-package.nix` pins the vendored
-llama.cpp revision from `setup.py`'s `LLAMA_CPP_COMMIT`. Model data (GGUF, pack,
-MTP runtime) is deliberately outside the store and prepared once by hand — the
-units have `ConditionPathExists` on the pack index so they never crash-loop
-before that. **Read the box's `STRATA.md` before changing engine flags**: the
-knobs were measured on different hardware and do not transfer.
+The aibox instance was disabled when that box became the network's build machine
+(2026-10-17, `common/build-farm.nix`): the IQ2_XS expert arena is ~33 GiB, which is
+the memory a build needs. Its module, measurements and `.#strata` package are kept
+so it can be brought back; the model data is outside the store and is not removed
+by the flake.
+
+services2 takes its upstream source from the flake's **`strata` input, tracked on
+`main`** (`nix flake update strata`); aibox's package pins its own
+`fetchFromGitHub` (it was the older HIP build, kept with the parked service). Each
+`strata-package.nix` pins the vendored llama.cpp revision from `setup.py`'s
+`LLAMA_CPP_COMMIT`. Model data (GGUF, pack, MTP runtime) is deliberately outside
+the store and prepared once by hand — the units have `ConditionPathExists` on the
+pack index so they never crash-loop before that. **Read the box's `STRATA.md`
+before changing engine flags**: the knobs were measured on different hardware and
+do not transfer.
 
 services1 terminates TLS for services2's engine as
 `https://strata.int.leighhack.org` (`machines/services1/services/strata-proxy.nix`,

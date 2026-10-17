@@ -351,9 +351,9 @@ check:
 #
 # Slower than `just check` — a nixpkgs bump is hundreds of derivations — so run it
 # before a deploy rather than on every edit, detached, and poll it (rule 11).  The
-# work is delegated to services2, which also runs strata at ~28 GiB RSS against
-# 30 GiB of RAM, so poll swap/load on the builder as well as this log: a build storm
-# there is the outage that takes the monitor down (machines/services2/README.md).
+# work is delegated to aibox (common/build-farm.nix), which has 59 GiB, 6 cores and
+# no strata engine any more, so poll load/swap there as well as this log: a build
+# storm competes with the apps aibox hosts (frigate, immich, whisper).
 check-build:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -363,7 +363,7 @@ check-build:
     done
     echo "all four systems build"
 
-# Offload a build to services2 and refuse to fall back (common/build-farm.nix).
+# Offload a build to aibox and refuse to fall back (common/build-farm.nix).
 # `nix.distributedBuilds` is true, so nix already prefers the external builder for
 # every build and only comes back local when no builder is available — `just switch`
 # and `just check-build` are therefore already remote, and that is deliberate (a

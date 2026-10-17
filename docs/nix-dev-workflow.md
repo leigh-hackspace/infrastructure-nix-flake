@@ -211,22 +211,27 @@ so the boot target follows the switch; that only needs the manual `nix-env
 --profile ... --set` fix when activating a closure by hand with
 `switch-to-configuration switch` (see `docs/nix-build-sigkill-2026-10-11.md`).
 
-## Remote building (services2 is the builder)
+## Remote building (aibox is the builder)
 
 `common/build-farm.nix` sets `nix.distributedBuilds = true`, and nix 2.34 then
 *prefers* the external builder for every build, falling back to local only when no
 builder is available. **`--max-jobs 0` does not enable delegation, it removes the
 local fallback.** So a plain `nix build` / `just switch` on services1 builds on
-services2 and copies the result back; `just build-remote` offloads deliberately.
+aibox and copies the result back; `just build-remote` offloads deliberately. The
+builder used to be services2; it moved to aibox on 2026-10-17, when strata was
+parked there to give the builds its 59 GiB of RAM (the 6-core `maxJobs` in
+`machines/services1/default.nix` is aibox's, not services2's 8).
 Flip `nix.distributedBuilds = false` in `common/build-farm.nix` to go back to
 local-only.
 
 Verified working 2026-10-12 (delegated build and a `--max-jobs 0` build both
 completed on services2 and copied back, with no SIGKILL sweep on either box) — the
 fix that made that true is `common/nixbld.nix`, and the incident behind it is
-`docs/nix-build-sigkill-2026-10-11.md`. Poll a delegated build rather than trusting
-it: **a remote builder that silently falls back to local is one of the failure
-modes only polling catches.**
+`docs/nix-build-sigkill-2026-10-11.md`. The hop itself is box-agnostic (the same
+key, user and `nix.settings.trusted-users` entry on both ends); re-verify it after
+the move with one delegated build rather than inheriting that date. Poll a
+delegated build rather than trusting it: **a remote builder that silently falls
+back to local is one of the failure modes only polling catches.**
 
 ## The `nixbld` rule, in one paragraph
 

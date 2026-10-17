@@ -15,9 +15,10 @@ The observability stack that used to be here moved to services1 on 2026-10-17:
   `services2-status.int.leighhack.org`.  It is the thing that keeps answering
   while strata is thrashing, and it is the box's only self-measurement.
 - `./strata.nix` + `./strata-package.nix` — the Qwen3.8-Flash-Next **Coder**
-  engine on the RTX 3060 (`http://10.3.1.21:8080/v1`), the box's second Strata
-  instance after aibox's.  `./nvidia.nix` is the driver for that card.  The
-  memory sizing and the one-time model prep are in `./STRATA.md`.
+  engine on the RTX 3060 (`http://10.3.1.21:8080/v1`), the network's only live
+  Strata instance since aibox's was parked on 2026-10-17 (aibox is the build
+  machine now — `common/build-farm.nix`).  `./nvidia.nix` is the driver for that
+  card.  The memory sizing and the one-time model prep are in `./STRATA.md`.
 - `common/exporters.nix` — the per-box exporters, scraped by services1's
   Prometheus at fixed IPs (`10.3.1.21:9100`, `:9558`, `:9633`).
 - What is **not** here any more, and where it went: `gatus.nix` →
@@ -51,10 +52,14 @@ What still works from here, and is the half that keeps being worth having:
 - `services2-status.int.leighhack.org`, this box's own dashboard, which is what
   answers "is services2 down" while the engine is thrashing.
 
-It is also the network's build machine (`common/build-farm.nix`): 211 GB of free
-store against services1's busier root, and no services worth protecting from a
-build.  That half of the trade-off is untouched — remote building still offloads
-to here, and `just build-remote` still refuses to fall back.
+It **was** the network's build machine until 2026-10-17 (`common/build-farm.nix`):
+211 GB of free store against services1's busier root, and no services worth
+protecting from a build.  That role moved to aibox when its strata engine was
+parked — this box's 30 GiB of RAM is the Coder engine's, and a delegated build
+competing with it was the box's worst failure mode (the memory-pressure and OOM
+story above).  Aibox now serves builds; this box is a client with no builder of
+its own, and keeps its 211 GB for its own deployments and the engine's packs.
+`just build-remote` offloads to aibox, not here.
 
 The vhosts no longer depend on this box at all: they are on services1, which
 terminates TLS for the whole network, and since the move they proxy to a loopback
@@ -136,8 +141,9 @@ This flake evaluates here with no local checkouts of its own: every input is a
 network-wide source, and the two programs it builds live in the tree
 (`crates/whisper-ws/`, `machines/pi-room-sys/`). `nix flake check` / `just check`
 evaluate all five configurations, so they work from this box too — that is the
-change the 2026-10-15 move bought, and it is what makes services2 usable as the
-network's build machine for *checks* and not only for builds.
+change the 2026-10-15 move bought.  It no longer makes this box the network's
+builder (that is aibox since 2026-10-17), but it does mean a check or a build run
+here is meaningful rather than a partial answer.
 
 There is no `system-good` generation yet, so `auto-rollback` is inert until the
 first `nixos-confirm` (which `just switch` runs for you).
