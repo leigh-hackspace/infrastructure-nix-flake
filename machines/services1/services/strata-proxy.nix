@@ -83,11 +83,12 @@ in {
   # proxy_set_header replaces whatever the client sent in that field, so a LAN
   # client's own Authorization is overwritten rather than duplicated — the engine
   # sees exactly one key, the one nginx holds.
-  services.nginx.virtualHosts."strata.int.leighhack.org" = mkIntVhost (strataProxy // {
-    extraConfig = ''
-      proxy_set_header Authorization "Bearer ${strataApiKey}";
-    '';
-  });
+  services.nginx.virtualHosts."strata.int.leighhack.org" = mkIntVhost (strataProxy
+    // {
+      extraConfig = ''
+        proxy_set_header Authorization "Bearer ${strataApiKey}";
+      '';
+    });
 
   # Public: acl = "" drops the LOCAL_NETWORK allow-map (common/nginx/int-vhost.nix
   # keeps the LAN-restricted default on purpose — a vhost reachable from outside
