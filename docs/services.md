@@ -31,7 +31,7 @@ Every address is in `common/hosts.nix`.
 | status-dashboard | `crates/status-dashboard/` | both boxes | `common/status-dashboard.nix` |
 | whisper-ws | `crates/whisper-ws/` | aibox:8083 | `crates/whisper-ws/README.md` |
 | moonraker-exporter | `crates/moonraker-exporter/` | metrics | `docs/printer-servers.md` |
-| strata | `machines/*/strata.nix` | services2:8080 → `strata.int.leighhack.org` (aibox's is parked) | `machines/aibox/STRATA.md`, `machines/services2/STRATA.md` |
+| strata | `machines/*/strata.nix` | services2:8080 → `strata.int.leighhack.org` (LAN, keyless) and `strata.leighhack.org` (public, API key); aibox's is parked | `machines/aibox/STRATA.md`, `machines/services2/STRATA.md` |
 
 ---
 
@@ -291,12 +291,19 @@ before changing engine flags**: the knobs were measured on different hardware an
 do not transfer.
 
 services1 terminates TLS for services2's engine as
-`https://strata.int.leighhack.org` (`machines/services1/services/strata-proxy.nix`,
-LAN-only behind the `LOCAL_NETWORK` ACL). **The vhost name and the engine's
+`https://strata.int.leighhack.org` (LAN-only behind the `LOCAL_NETWORK` ACL) and,
+since 2026-10-18, as the public `https://strata.leighhack.org`
+(`machines/services1/services/strata-proxy.nix`).  One engine, two gates: the
+public name is open to the world and the engine's `api_key` (sops
+`strata_api_key`) is what makes that safe, while the `.int` name injects that same
+key at nginx so LAN clients — and the engine's own dashboard, which is nothing but
+`/v1/*` calls — stay keyless.  **A LAN vhost name and the engine's
 `allowed_hosts` are one fact in two files**: upstream's server refuses any `Host`
 it does not answer to (DNS-rebinding protection) and nginx forwards the incoming
 header upstream, so a vhost added without the name in
-`machines/services2/strata.nix` answers 403 to every request.
+`machines/services2/strata.nix` answers 403 to every request.  That protection is
+switched off by the API key, which is why the public name is *not* in the list:
+remove the key and the public vhost 403s instead of serving an open engine.
 
 ## `crates/status-dashboard/` and `crates/moonraker-exporter/`
 

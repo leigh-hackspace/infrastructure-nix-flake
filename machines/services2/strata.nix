@@ -48,9 +48,20 @@
 # Anthropic-style clients, /v1/models, /health).  services2's firewall is off,
 # so this is reachable on the LAN directly; services1 also terminates TLS for it
 # as https://strata.int.leighhack.org (machines/services1/services/strata-proxy.nix).
-# Both names are in allowed_hosts below because upstream's server refuses any
-# Host it does not answer to (DNS-rebinding protection) — see the ⚠️ note there
-# for why the vhost and this list have to move together.
+# Since 2026-10-18 the engine also answers publicly at
+# https://strata.leighhack.org: services1's nginx terminates that name on its own
+# public IPs (81.187.195.17 / 2001:8b0:1d14:225::20) and proxies over the LAN to
+# 10.3.1.21:8080, because services2 itself has no public IP.  That is only safe
+# because the engine now has an api_key (apiKey below): /health says "api_key":
+# true and every /v1/* needs it (401 "missing or wrong API key" without one).
+#
+# Only the LAN names are in allowed_hosts below.  Upstream runs that Host check
+# only when it has no key (serve/server.py parse_request: `if svc.api_key or
+# host_allowed ...`), so the key is what lets the public name through, and the
+# public name staying out of the list is the fail-safe: take the key out and the
+# public vhost starts answering 403 instead of serving an unauthenticated engine
+# to the whole world.  See the ⚠️ note in strata-proxy.nix for why a LAN vhost
+# and this list still have to move together.
 # Logs: journalctl -u strata -f and /var/lib/strata/strata.log.
 let
   cfg = config.services.strata;
@@ -120,6 +131,25 @@ let
     "--resident-experts"
   ];
 
+  # The key clients must present on /v1/* (`Authorization: Bearer <key>`, or
+  # `x-api-key`; serve/server.py _authorized).  Upstream's own startup warning for
+  # not having one is "WARNING: no API key - anyone on your network can use this
+  # model", and setting one also switches off the Host check and the browser-Origin
+  # guard, both of which exist to protect a keyless server from strangers.
+  #
+  # Read at build time from sops (config.sopsSecretText, common/sops.nix) and
+  # interpolated into the JSON below, so it lands in the world-readable nix store
+  # like every other build-time secret here (nginx_sso_auth,
+  # status_dashboard_lan_token) — a client has to hold this key to call the
+  # endpoint at all.  Anything that must stay out of the store belongs in
+  # CONFIG.ENV_FILE (/run/secrets/env_file, root-only at runtime) instead; to move
+  # this one there, drop `api_key` from the config and give the unit an
+  # EnvironmentFile: serve/server.py also reads STRATA_API_KEY, and refuses to
+  # start if that variable is present but empty.  The value is written into the
+  # JSON unescaped, so it must carry no quote or backslash; upstream strips
+  # spaces around it and reads commas as several keys.
+  apiKey = builtins.readFile (config.sopsSecretText "strata_api_key");
+
   # The run config serve/server.py reads: the engine binary, its args, the
   # tokenizer. The Host check passes IP addresses on trust, so 10.3.1.21 needs
   # no entry; the DNS name a client might use does.
@@ -141,6 +171,10 @@ let
         "services2.int.leighhack.org"
         "strata.int.leighhack.org"
       ];
+      # What /v1/* needs; see `apiKey` above for why this also turns the Host
+      # check off, and the header above for why the public name is not in the
+      # list next to it.
+      api_key = apiKey;
       backend = "cuda";
       # serve/server.py prepends these to the engine's LD_LIBRARY_PATH. The CUDA
       # toolkit libs are on the binary's RUNPATH, but libcuda.so.1 comes from the

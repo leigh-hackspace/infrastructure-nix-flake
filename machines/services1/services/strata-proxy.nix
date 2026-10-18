@@ -6,11 +6,27 @@
 # ./monitoring.nix and the status dashboards in ./status.nix: the app on the
 # other box, the vhost here, proxied to the fixed address in common/hosts.nix.
 #
-# LAN-only, like every other *.int vhost: this is an unauthenticated inference
-# endpoint (the engine has no api_key — /health says "api_key": false), so it
-# stays inside the network.  There is no public strata.leighhack.org: a public
-# name needs a hand-added record in the DigitalOcean zone (dns-sync only manages
-# the *.int ones) and services2 has no public IP to terminate at anyway.
+# Two vhosts, one upstream, two gates.  `strata.int.leighhack.org` keeps the
+# LOCAL_NETWORK ACL like every other *.int vhost and stays keyless for its
+# clients: nginx presents the engine's api_key on their behalf (see
+# strataApiKey below), which is what keeps the dashboard at / working from a
+# browser.  `strata.leighhack.org` is public (acl = "") and safe only because the
+# engine carries that same api_key (machines/services2/strata.nix) and a public
+# client has to bring its own: the gate is the key, not the network.  Take the
+# key out of the engine and the public name answers 403 for every request —
+# upstream's DNS-rebinding Host check runs only when there is no key, and the
+# public name is deliberately not in the engine's allowed_hosts.  Never make it
+# public by adding it there: that is an unauthenticated inference engine on a
+# public URL, minutes of GPU time per request.
+#
+# The public name works even though services2 has no public IP: services1 is the
+# TLS terminator for the network, so nginx here answers on its own public IPs
+# (81.187.195.17 / 2001:8b0:1d14:225::20, the DO record `nginx`) and proxies over
+# the LAN to 10.3.1.21:8080.  The record is hand-made in the DigitalOcean zone —
+# dns-sync only manages the *.int ones, and prunes only the CNAMEs that point at
+# nginx.int, so it neither adds nor removes this one:
+#
+#   strata.leighhack.org  CNAME -> nginx.leighhack.org  (TTL 60, like the rest)
 #
 # ⚠️ The name here must ALSO appear in services2's allowed_hosts
 # (machines/services2/strata.nix).  Upstream's server has a DNS-rebinding Host
@@ -35,11 +51,47 @@
 }: let
   HOSTS = import ../../../common/hosts.nix;
   mkIntVhost = import ../../../common/nginx/int-vhost.nix {inherit lib;};
-in {
-  services.nginx.virtualHosts."strata.int.leighhack.org" = mkIntVhost {
+  # Same upstream and same limits for both names: a chat completion holds the
+  # connection open for as long as the model thinks, and a prompt of that context
+  # is far over nginx's 1 MiB default body limit (see the note above).
+  strataProxy = {
     proxyPass = "http://${HOSTS.services2}:8080";
     bodySize = "1024M";
     timeouts = "3600s";
     proxyBuffering = false;
   };
+
+  # The engine's api_key — the same sops name services2 feeds the engine in
+  # machines/services2/strata.nix — handed to the engine by nginx instead of by
+  # the client, for the LAN name only.
+  #
+  # Why it has to be nginx: the key gates every /v1/* endpoint
+  # (serve/server.py: _authorized), and the dashboard the engine serves at / is a
+  # page whose every call is a /v1/* call.  With the key set and not injected,
+  # https://strata.int.leighhack.org/ loads and then 401s on everything, and a
+  # browser on the LAN cannot hold a secret anyway — the gate on that name is the
+  # LOCAL_NETWORK ACL.  The public vhost deliberately does not do this: nginx
+  # forwards the client's own Authorization untouched
+  # (recommendedProxySettings never sets it), so a stranger still needs a key.
+  #
+  # Build-time readFile puts the key in the world-readable nix store like every
+  # other build-time secret here (common/sops.nix); it protects nothing against a
+  # local reader, who could equally read the engine's own config on services2.
+  # Rotating it means changing the sops value and re-deploying BOTH machines.
+  strataApiKey = builtins.readFile (config.sopsSecretText "strata_api_key");
+in {
+  # proxy_set_header replaces whatever the client sent in that field, so a LAN
+  # client's own Authorization is overwritten rather than duplicated — the engine
+  # sees exactly one key, the one nginx holds.
+  services.nginx.virtualHosts."strata.int.leighhack.org" = mkIntVhost (strataProxy // {
+    extraConfig = ''
+      proxy_set_header Authorization "Bearer ${strataApiKey}";
+    '';
+  });
+
+  # Public: acl = "" drops the LOCAL_NETWORK allow-map (common/nginx/int-vhost.nix
+  # keeps the LAN-restricted default on purpose — a vhost reachable from outside
+  # has to opt out).
+  services.nginx.virtualHosts."strata.leighhack.org" =
+    mkIntVhost (strataProxy // {acl = "";});
 }

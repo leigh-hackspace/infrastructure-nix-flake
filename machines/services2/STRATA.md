@@ -11,9 +11,19 @@ system RAM and the ~27 GiB n-gram table read from the NVMe.
   `/v1/messages` for Anthropic-style clients, `/v1/models`, `/health`).
   `services2.int.leighhack.org` already resolves to 10.3.1.21, so clients can
   use that name with the port; services1 also terminates TLS for it as
-  `https://strata.int.leighhack.org` (`machines/services1/services/strata-proxy.nix`).
-  Both names are in `allowed_hosts` in `machines/services2/strata.nix` — see the
-  Host-check note below for why they have to be.
+  `https://strata.int.leighhack.org` and — since 2026-10-18 — publicly as
+  `https://strata.leighhack.org` (`machines/services1/services/strata-proxy.nix`).
+  The two LAN names are in `allowed_hosts` in `machines/services2/strata.nix`;
+  the public one deliberately is not — see the Host-check note below.
+- API key: every `/v1/*` call needs `Authorization: Bearer <key>` or `x-api-key`
+  (`_authorized()` in `serve/server.py`).  The value is the `strata_api_key` sops
+  secret, read into the engine's config as `api_key`; `/health` reports
+  `"api_key": true` and needs no key.  The LAN name stays keyless for its clients
+  because services1's nginx presents the key on their behalf, which is what keeps
+  the engine's own dashboard at `/` working from a browser: that page is a set of
+  `/v1/*` calls and 401s on every one of them if nobody holds the key.  Rotating
+  it means `sops edit secrets/secrets.yaml` **and** re-deploying both boxes —
+  services2 for the engine, services1 for the injected header.
 - Logs: `journalctl -u strata -f`, `/var/lib/strata/strata.log`.
 
 The aibox instance (`machines/aibox/strata.nix`, `machines/aibox/STRATA.md`) ran
@@ -136,12 +146,20 @@ do not copy it from `machines/aibox/strata-package.nix`.
 - **No nginx wiring** on this box. aibox serves its instance through its own
   nginx (`aibox.int.leighhack.org/llm`); services2 has no nginx. The vhost lives
   on services1 instead — `machines/services1/services/strata-proxy.nix`, added
-  2026-10-15, and `just dns-sync-sync` gave it its `*.int` record.  **The vhost
-  and this file's `allowed_hosts` move together**: upstream's server 403s any
-  `Host` it does not answer to (DNS-rebinding protection, `host_allowed()` in
-  `serve/server.py`) and nginx forwards the incoming header upstream, so a name
-  that is served but not listed answers every request
-  `Host '…' is not allowed (DNS rebinding protection)`.
+  2026-10-15, and `just dns-sync-sync` gave it its `*.int` record.  The public
+  `strata.leighhack.org` record is hand-made in the DigitalOcean zone (dns-sync
+  manages only `*.int`): a CNAME to `nginx.leighhack.org`, the same trick every
+  other public name here uses, because services2 has no public IP of its own.
+  **A LAN vhost and this file's `allowed_hosts` move together**: upstream's
+  server 403s any `Host` it does not answer to (DNS-rebinding protection,
+  `host_allowed()` in `serve/server.py`) and nginx forwards the incoming header
+  upstream, so a name that is served but not listed answers every request
+  `Host '…' is not allowed (DNS rebinding protection)`.  That check runs **only
+  while the engine has no API key** (`if svc.api_key or host_allowed(...)`), so
+  the key is what lets the public name through without listing it — and taking
+  the key out would make the public vhost 403 rather than expose an
+  unauthenticated engine.  Keep it that way: do not add
+  `strata.leighhack.org` to `allowed_hosts`.
 
 ## Operational notes
 
