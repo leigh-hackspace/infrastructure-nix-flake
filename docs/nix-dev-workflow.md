@@ -41,7 +41,24 @@ The slow way, which looks like the careful way:
 ```bash
 # minutes, and it is the thing that wedges the session
 nix eval --impure --expr 'let f = builtins.getFlake "/home/leigh-admin/Projects/infrastructure-nix-flake"; in f.nixosConfigurations.services1.config.services.nginx.virtualHosts."x".locations."/".proxyPass'
+
+# the same value, seconds (rule 3 below)
+nix eval '.#nixosConfigurations.services1.config.services.nginx.virtualHosts."x".locations."/".proxyPass'
 ```
+
+Why the first one is *minutes* rather than slower: `builtins.getFlake "/abs/path"`
+is a **`path:` flake reference, and those are copied whole** — everything except
+`.git`, with `.gitignore` **not** consulted (measured with a toy repo: a 300 MB
+gitignored directory lands in the store). Here that is `crates/target/`, so the
+eval starts by copying **7.6 GB** into a fresh store path: 4m58s wall against 3.4 s
+of user CPU on the NVMe box, and the next identical call took 4m49s because cargo
+writes into `crates/target/` constantly, so the copied tree hashes differently
+every time and nothing is ever reused. `nix flake metadata . --json | jq -r .path`
+shows what the *normal* commands use instead: the same tree git-filtered, **26 MB**,
+in 0.15 s. The 23 GB of stale fat `-source` paths this leaves behind are deletable
+with `nix store delete`, and note the chicken-and-egg: a client whose own
+argv/environ names the path keeps it alive (`/proc/<pid>/environ` is a GC root), so
+build the path string inside the script rather than passing it in.
 
 `builtins.getFlake` starts a **cold evaluation of the whole flake** — every
 machine, every crate's source filter, every image pin — so it reuses none of the
@@ -64,7 +81,18 @@ The rule, in order of preference:
    is cache-warm and its result is reusable by the deploy.
 3. **One value, once:** `nix eval .#…` (the flake-reference form, not
    `--impure --expr`), under `timeout`, and kill the survivor before any other nix
-   command. Never in a loop, and never to ask "did my setting land".
+   command. Never in a loop, and never to ask "did my setting land". If the
+   expression really has to be `--impure`, `builtins.getFlake` **a store path**
+   (`$(nix flake metadata . --json | jq -r .path)`, already copied, so instant),
+   never the working directory.
+
+The same trick deploys a dirty tree without the copy: `nixos-rebuild switch
+--flake "git+file://$PWD?dirty=1#services1"` archives the **tracked** files as they
+stand in the working tree, so it costs 6 s on services1 against the ~5 min the
+`path:`-ref equivalent takes. `dirty=1` is what includes the uncommitted edits;
+nix refuses the ref without it when the tree is dirty. Use it for a throwaway
+check, `just switch` for anything you want to keep — the deploy itself is the same
+either way.
 
 Observed 2026-10-14 on services1: two `nix eval --impure --expr` calls to read one
 nginx location's `proxyPass` — the first aborted and left a lock-holding survivor,

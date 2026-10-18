@@ -308,7 +308,13 @@ The full command reference, the rendered-unit workflow and the gotchas are
   while holding the big lock. Through `self` the same directory arrives git-filtered, so
   nothing in a deploy hints at this. Read values out of the flake instead
   (`nix flake check --no-build`, `nixos-rebuild dry-run`, then
-  `$SYS/etc/systemd/system/<unit>.service`).
+  `$SYS/etc/systemd/system/<unit>.service`). **`builtins.getFlake "/abs/path"` is the
+  same trap and looks like a flake reference**: it is a `path:` ref, so nix copies the
+  whole working tree (`.gitignore` is not read) — **7.6 GB, ~5 min, re-copied on every
+  call** because cargo writes into `crates/target/` and changes the hash. `nix eval
+  ".#…"` uses the 26 MB git-filtered source and answers in a second; to deploy a dirty
+  tree the same way, `--flake "git+file://$PWD?dirty=1#<machine>"` (6 s on services1).
+  Numbers, and the `nix store delete` gotcha for the stale fat `-source` paths: `docs/nix-dev-workflow.md`.
 - **Never evaluate to find out what a change does.** `nix eval --impure --expr` with
   `builtins.getFlake` starts a **cold** evaluation of every machine and crate, so it
   reuses nothing the last deploy cached and is *slower than `just switch`* for a
