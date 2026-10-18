@@ -35,7 +35,7 @@
     pname = "frigate-monitor-web";
     version = "0.1.0";
     src = frontendSrc;
-    cargoLock = CRANE.lockFile ../../crates/frigate-monitor/frontend/Cargo.lock;
+    cargoLockPath = ../../crates/frigate-monitor/frontend/Cargo.lock;
     wasmName = "frigate_monitor_web";
   };
 

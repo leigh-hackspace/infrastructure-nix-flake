@@ -132,7 +132,7 @@
     pname = "switch-gui-web";
     version = "0.1.0";
     src = frontendSrc;
-    cargoLock = CRANE.lockFile ../../../crates/switch-gui/frontend/Cargo.lock;
+    cargoLockPath = ../../../crates/switch-gui/frontend/Cargo.lock;
     wasmName = "switch_gui_web";
   };
 

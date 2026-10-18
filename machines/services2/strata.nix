@@ -21,9 +21,10 @@
 # Model data is NOT in the store. It is prepared ONCE by hand (the unit has
 # ConditionPathExists on the pack index, so it will not crash-loop before that):
 #
-#   STRATA=$(nix build --impure --expr \
-#     'let f = builtins.getFlake (toString /home/leigh-admin/Projects/infrastructure-nix-flake);
-#        in f.packages.x86_64-linux.strata-cuda' --no-link --print-out-paths)
+#   # from the checkout, and NEVER through `builtins.getFlake "/abs/path"` — a path
+#   # ref copies the whole working tree (build trees and .git included, 6.7 GB+) into
+#   # the store on every call; see docs/nix-dev-workflow.md.
+#   STRATA=$(cd ~/Projects/infrastructure-nix-flake && nix build .#strata-cuda --no-link --print-out-paths)
 #   mkdir -p /home/leigh-admin/Strata/pack/coder-iq1m
 #   cd /home/leigh-admin/Models/Qwen3.8-Flash-Next-GSQ-RCO-Coder   # already downloaded
 #   # 1. the pack (index + dense tensors + tokenizer, ~1.5 GB):

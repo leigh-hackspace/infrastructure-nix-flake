@@ -39,7 +39,7 @@
     pname = "gocardless-dashboard-web";
     version = "0.1.0";
     src = frontendSrc;
-    cargoLock = CRANE.lockFile ../../../crates/gocardless-dashboard/frontend/Cargo.lock;
+    cargoLockPath = ../../../crates/gocardless-dashboard/frontend/Cargo.lock;
     wasmName = "gocardless_dashboard_web";
   };
 

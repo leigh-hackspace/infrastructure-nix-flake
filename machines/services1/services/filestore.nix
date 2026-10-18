@@ -46,7 +46,7 @@
     pname = "filestore-web";
     version = "0.1.0";
     src = ../../../crates/filestore/frontend;
-    cargoLock = CRANE.lockFile ../../../crates/filestore/frontend/Cargo.lock;
+    cargoLockPath = ../../../crates/filestore/frontend/Cargo.lock;
     wasmName = "filestore_web";
     sharedCrates = ["preview"];
   };

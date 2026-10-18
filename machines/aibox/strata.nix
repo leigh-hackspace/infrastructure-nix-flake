@@ -40,9 +40,11 @@
 # Model data is NOT in the store. It is prepared ONCE by hand before this unit
 # will start (the unit has ConditionPathExists on the pack index):
 #
-#   STRATA=$(nix build --impure --expr \
-#     'let f = builtins.getFlake (toString /home/leigh-admin/Projects/infrastructure-nix-flake);
-#        in f.packages.x86_64-linux.strata' --no-link --print-out-paths)
+#   # from the checkout, and NEVER through `builtins.getFlake "/abs/path"`: a path
+#   # ref copies the whole working tree (6.7 GB of cargo/dioxus target dirs + .git,
+#   # not just the 26 MB of source) into the store on every call — see
+#   # docs/nix-dev-workflow.md.
+#   STRATA=$(cd ~/Projects/infrastructure-nix-flake && nix build .#strata --no-link --print-out-paths)
 #   mkdir -p /home/leigh-admin/Models/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/IQ2_XS
 #   cd /home/leigh-admin/Models/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/IQ2_XS
 #   # 1. the two shards (68 GB total; shard 2 is the single PLE table):

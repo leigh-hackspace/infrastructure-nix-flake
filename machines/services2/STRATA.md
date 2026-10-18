@@ -93,9 +93,11 @@ MTP draft runtime are prepared by hand before the unit will start (it has
 Run with the engine's own wrapper:
 
 ```bash
-STRATA=$(nix build --impure --expr \
-  'let f = builtins.getFlake (toString /home/leigh-admin/Projects/infrastructure-nix-flake);
-   in f.packages.x86_64-linux.strata-cuda' --no-link --print-out-paths)
+# From the checkout. Do NOT use `nix build --impure --expr 'let f = builtins.getFlake
+# (toString /home/leigh-admin/Projects/infrastructure-nix-flake); in ...'`: a path ref
+# copies the whole working tree (build trees + .git, 6.7 GB+) into the store on every
+# call, ~5 min each time — see docs/nix-dev-workflow.md.
+STRATA=$(cd ~/Projects/infrastructure-nix-flake && nix build .#strata-cuda --no-link --print-out-paths)
 
 # 0. check the card before preparing anything
 $STRATA/bin/strata-device --list-devices   # expect sm_86 / RTX 3060

@@ -48,17 +48,39 @@ nix eval '.#nixosConfigurations.services1.config.services.nginx.virtualHosts."x"
 
 Why the first one is *minutes* rather than slower: `builtins.getFlake "/abs/path"`
 is a **`path:` flake reference, and those are copied whole** — everything except
-`.git`, with `.gitignore` **not** consulted (measured with a toy repo: a 300 MB
-gitignored directory lands in the store). Here that is `crates/target/`, so the
-eval starts by copying **7.6 GB** into a fresh store path: 4m58s wall against 3.4 s
-of user CPU on the NVMe box, and the next identical call took 4m49s because cargo
-writes into `crates/target/` constantly, so the copied tree hashes differently
-every time and nothing is ever reused. `nix flake metadata . --json | jq -r .path`
-shows what the *normal* commands use instead: the same tree git-filtered, **26 MB**,
-in 0.15 s. The 23 GB of stale fat `-source` paths this leaves behind are deletable
-with `nix store delete`, and note the chicken-and-egg: a client whose own
-argv/environ names the path keeps it alive (`/proc/<pid>/environ` is a GC root), so
-build the path string inside the script rather than passing it in.
+`.git`, with `.gitignore` **not** consulted (measured with a toy repo: a 20 MB
+gitignored directory lands in the store, and *one changed byte inside it* is enough
+to make the next call copy it again under a new name). Here that is the cargo and
+dioxus `target/` trees plus `.git`, so the eval starts by copying **7.7 GB** into a
+fresh store path — 7.2 GB of build trees and 516 MB of `.git` against the **26 MB**
+of tracked source the flake actually reads, i.e. it ships 0.34% useful bytes.
+
+Measured on services1 on 2026-10-18, same expression, four calls:
+
+| call | wall | what it cost |
+| --- | --- | --- |
+| first ever (cold copy) | **108 s** | 7.7 GB written to the store |
+| identical call, tree untouched | **303 s** | re-read and re-hashed all 7.7 GB into a temp dir, then threw it away: the daemon has no record of the temp copy, so **nothing is ever reused, not even with zero edits** |
+| one nginx value out of the same flake | **331 s** | the copy again plus a cold evaluation of every machine |
+| after `touch crates/target/junk` | **370 s** | a *second* 7.7 GB store path |
+
+That last row is why the store fills up: cargo writes into `crates/target/`
+constantly, so each call hashes to a new path and keeps its own copy. Six fat
+`-source` paths from 2026-10-11/12 (2.9 GB each, the pre-`crates/` layout) and
+three from 2026-10-18 (7.7 GB each) were still on this box, ~40 GB, kept alive by
+old `.drv` files that name them — `nix store gc` is what reclaims those; `nix store
+delete` only works on the unreferenced ones, and note the chicken-and-egg: a client
+whose own argv/environ names the path keeps it alive (`/proc/<pid>/environ` is a GC
+root), so build the path string inside the script rather than passing it in.
+
+`nix flake metadata . --json | jq -r .path` shows what the *normal* commands use
+instead: the same tree git-filtered, **26 MB**, in **1 s**. The git filter is what
+makes the ignored build trees invisible, so they cost nothing here — and a dirty
+tree costs the same as a clean one (measured: 1 s and 0 s), because the hash covers
+tracked files only. Full set of sanctioned timings, same machine, same moment:
+metadata 1 s, one value 1 s, `services1` toplevel `drvPath` 17 s, `gw` 7 s,
+`aibox` 56 s (see [Evaluation must not build](#evaluation-must-not-build)), and the
+`?dirty=1` deploy ref 1 s.
 
 `builtins.getFlake` starts a **cold evaluation of the whole flake** — every
 machine, every crate's source filter, every image pin — so it reuses none of the
@@ -93,6 +115,56 @@ stand in the working tree, so it costs 6 s on services1 against the ~5 min the
 nix refuses the ref without it when the tree is dirty. Use it for a throwaway
 check, `just switch` for anything you want to keep — the deploy itself is the same
 either way.
+
+## Evaluation must not build
+
+**Resolved 2026-10-18.** `nix eval` was slow even in its *sanctioned* form, and not
+only because of the copy above: evaluating a machine's configuration **compiled
+things**. `nix flake check --no-build` — i.e. `just check` — died on
+
+```
+error: path 'wnjjz700yi95dbw9002ir5hm0hqmrhay-frigate-monitor-src.drv' is not valid
+```
+
+on a store that had never built that crate, and a cold eval of aibox's config
+printed `building '…-frigate-monitor-src.drv' on 'ssh://leigh-admin@10.3.1.32'`.
+An *evaluation* was paying a remote builder, per crate, and `--no-build` could not
+stop it — the flag governs the command's goal, not what a forced store read does.
+
+The mechanism is crane reading the build inputs **at eval time**:
+`vendorCargoDeps` does `builtins.readFile cargoLock` and `findCargoFiles src`, both
+harmless on a plain path and both a **realisation** when handed a derivation.
+`common/crane.nix` hands it derivations by design — `lockFile` re-emits each
+`Cargo.lock` as a content-keyed `writeText` so a comment in a `.rs` file cannot
+invalidate the dependency cache, and `memberSrc`/`withSharedCrates` are
+`runCommand`s. So every crate's `-src` stub and every `Cargo.lock` got built the
+moment anything asked for a value out of a configuration that installs one.
+
+The fix is in `common/crane.nix` (`vendorDirFor`): compute the vendor tree from the
+*plain* source directory and the lock's contents, and hand `buildPackage` a
+`cargoVendorDir`, which crane's `args.cargoVendorDir or (vendorCargoDeps args)`
+short-circuits. `wasmSpa` therefore takes `cargoLockPath` rather than `cargoLock`.
+
+Verified rather than argued, because "it should not change anything" is what a
+rebuild costs:
+
+- **No rebuilds.** `frigate-monitor`, `switch-gui` and `filestore` keep byte-identical
+  store paths across the change (`54v84yci…`, `08hmnn4j…`, `2mf8baix…`), and so do
+  `services1`, `services2` and `gw`'s toplevel `drvPath`s. Identical drvPath means an
+  identical build recipe, so this is proof, not reassurance.
+- **The realisation is gone.** Delete one `-src` output, then evaluate: with the fix
+  `nix flake check --no-build` passes with zero `building` lines; with the fix
+  stashed it rebuilds that crate's source tree on aibox and copies it back. That is
+  the A/B, and it is repeatable — so `just check` is now a genuine guard: if a future
+  change makes evaluation read a derivation again, `--no-build` is what says so.
+
+Two things it is *not*: aibox's and pi-room-sys's toplevel `drvPath`s do move on
+this change, but they move on **any** tracked edit — one HTML comment in
+`docs/follow-ups.md` produced a third distinct pi-room-sys drvPath — which is a
+separate, pre-existing cache-invalidation problem written up in
+[`follow-ups.md`](follow-ups.md). And `nix flake check --no-build` passing is not
+evidence the eval is clean: once a `-src` output exists, nothing looks different.
+Delete one, or evaluate a tree that has never been built, before believing it.
 
 Observed 2026-10-14 on services1: two `nix eval --impure --expr` calls to read one
 nginx location's `proxyPass` — the first aborted and left a lock-holding survivor,

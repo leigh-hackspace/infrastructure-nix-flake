@@ -304,17 +304,31 @@ The full command reference, the rendered-unit workflow and the gotchas are
 - **Never evaluate this repo through a path literal.** `import
   /home/leigh-admin/Projects/infrastructure-nix-flake/common/crane.nix` resolves the
   `../crates` inside it against the **real working tree**, and `lib.cleanSourceFilter`
-  does **not** read `.gitignore`, so it copies `crates/target/` (3.1 GB) into the store
-  while holding the big lock. Through `self` the same directory arrives git-filtered, so
+  does **not** read `.gitignore`, so it copies the cargo and dioxus `target/` trees
+  (7.2 GB, plus 516 MB of `.git`) into the store while holding the big lock.
+  Through `self` the same directory arrives git-filtered, so
   nothing in a deploy hints at this. Read values out of the flake instead
   (`nix flake check --no-build`, `nixos-rebuild dry-run`, then
   `$SYS/etc/systemd/system/<unit>.service`). **`builtins.getFlake "/abs/path"` is the
   same trap and looks like a flake reference**: it is a `path:` ref, so nix copies the
-  whole working tree (`.gitignore` is not read) — **7.6 GB, ~5 min, re-copied on every
-  call** because cargo writes into `crates/target/` and changes the hash. `nix eval
-  ".#…"` uses the 26 MB git-filtered source and answers in a second; to deploy a dirty
+  whole working tree (`.gitignore` is not read) — **7.7 GB against the 26 MB of
+  tracked source, 2–6 min, re-copied on every call, even when nothing changed at all**
+  (an untouched repeat re-streamed all 7.7 GB in 303 s and threw it away; one byte
+  inside `crates/target/` costs a fresh 7.7 GB store path). `nix eval
+  ".#…"` uses the 26 MB git-filtered source and answers in a second — dirty tree
+  included, the git filter ignores the build trees entirely; to deploy a dirty
   tree the same way, `--flake "git+file://$PWD?dirty=1#<machine>"` (6 s on services1).
-  Numbers, and the `nix store delete` gotcha for the stale fat `-source` paths: `docs/nix-dev-workflow.md`.
+  Numbers, the fat `-source` cleanup and the `nix store delete` gotcha: `docs/nix-dev-workflow.md`.
+- **Evaluation must not build anything.** If `nix flake check --no-build` reports
+  `path '…-src.drv' is not valid`, or an eval prints `building '…'`, something reads a
+  **derivation** at eval time (`builtins.readFile`/`pathExists` on a store path
+  realises it, and `--no-build` does not stop that — it only declines to build the
+  command's own goal). This repo does it on purpose in `common/crane.nix` (a
+  content-keyed `Cargo.lock`, stubbed member sources), so crane must be handed
+  `cargoVendorDir`/`cargoLockContents` and never left to read `src` or the lock
+  itself; `wasmSpa` takes `cargoLockPath` for that reason. Measured cost before the
+  fix: aibox's config evaluated in 56 s because it built on aibox. Mechanism, the
+  A/B that proves it, and why a *passing* `--no-build` is not the proof: `docs/nix-dev-workflow.md`.
 - **Never evaluate to find out what a change does.** `nix eval --impure --expr` with
   `builtins.getFlake` starts a **cold** evaluation of every machine and crate, so it
   reuses nothing the last deploy cached and is *slower than `just switch`* for a

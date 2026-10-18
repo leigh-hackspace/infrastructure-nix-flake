@@ -28,6 +28,36 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   `packages.strata-cuda`, `packages.whisper-ws` and the devShell — ~10 minutes on a
   lock bump.)
 
+- **Any tracked edit anywhere re-hashes pi-room-sys's and aibox's system
+  derivations** (measured 2026-10-18 while proving a `common/crane.nix` change was
+  drv-neutral). `services1`, `services2` and `gw`'s toplevel `drvPath`s are stable
+  across an unrelated edit; `pi-room-sys`'s is not — one HTML comment appended to
+  `docs/follow-ups.md` produced a third distinct drvPath, and the moving parts are
+  `append-initrd-secrets` and `boot.json`. aibox inherits it through
+  `machines/aibox/netboot.nix`'s `netboot.ipxe`, which names the pi-room-sys
+  closure, so a doc edit re-instantiates aibox's `/etc` too. Nothing rebuilds
+  *expensively* (the kernel and the squashfs store keep their paths), but it makes
+  "identical drvPath" unusable as a proof for those two machines and it dirties
+  every deploy's diff. Suspect a path literal that drags a whole-directory store
+  path into the initrd (`./leigh-logo.png`, `./ssh_host_ed25519_key` in
+  `machines/pi-room-sys/configuration.nix` are the candidates; a single-file literal
+  should be content-keyed, so the real culprit is probably how one of them is
+  consumed). Blocked on: reading the generated `append-initrd-secrets` drv, which is
+  not on disk — instantiate it with `nix build --no-link --keep-going` on the
+  pi-room-sys toplevel and inspect, rather than guessing from the module.
+
+- **~17 GB of fat `-source` copies that only `nix store gc` can reclaim**
+  (2026-10-18). Five 2.9 GB copies of the pre-`crates/` working tree, from the
+  `builtins.getFlake "/abs/path"` evals of 2026-10-11/12, are each named by 2–6 old
+  `.drv` files, so `nix store delete` refuses them; the three 7.7 GB copies from
+  2026-10-18 were unreferenced and went away with 22.6 GB freed. Two things to know
+  before repeating it: the unreferenced ones still refused as `still alive` until
+  `--ignore-liveness` was used (no roots, no referrers, no process naming them —
+  unexplained, so check `nix store verify --all` if it recurs), and a client whose
+  environ names a path roots it, so assemble path strings inside the script
+  (`docs/nix-dev-workflow.md`). What is left is a `nix store gc` decision on this
+  box, which is a maintenance call rather than a fix: 113 GB used, 93 GB free.
+
 - **aibox is the builder now; prove the hop and watch its disk** (2026-10-17, with
   the move off services2). Two things are open, neither of them a switch:
 

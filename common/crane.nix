@@ -62,8 +62,39 @@
   # dependency change forces a rebuild.
   lockFile = p: pkgs.writeText "Cargo.lock" (builtins.readFile p);
 
+  # A vendored-dependency tree for a lock file that lives outside its source tree.
+  #
+  # Crane reads the lock file *at evaluation time* (`builtins.readFile cargoLock`)
+  # and walks `src` for `.cargo/config.toml` files (`findCargoFiles src`).  Handed
+  # plain paths both are free.  Handed a *derivation* — which is what `lockFile`
+  # returns, and what `memberSrc`/`withSharedCrates` return — each of those reads
+  # **realises the derivation**, so merely evaluating a machine's configuration
+  # compiles `Cargo.lock` and every crate's `-src` stub instead of evaluating them.
+  # Measured here 2026-10-18: a cold `nix flake check --no-build` died on
+  # `path '…-frigate-monitor-src.drv' is not valid`, and evaluating aibox's config
+  # took 56 s against 17 s for services1's because it built on the remote builder.
+  #
+  # Computing the vendor dir from the *plain* source directory and the lock's
+  # contents short-circuits both reads.  The value is the one crane would have
+  # computed anyway (no crate keeps a `.cargo/config.toml`, so `cargoConfigs` is
+  # empty either way), which is why this is drv-neutral: `frigate-monitor`,
+  # `switch-gui`, `filestore` and the `services1`/`services2`/`gw` toplevels keep
+  # byte-identical store paths across it, so it costs no rebuild. (`aibox` and
+  # `pi-room-sys` move on *any* tracked edit, which is a separate pre-existing
+  # problem: `docs/follow-ups.md`.)
+  vendorDirFor = {
+    src,
+    lockPath,
+  }:
+    craneLib.vendorCargoDeps {
+      inherit src;
+      cargoLock = lockFile lockPath;
+      cargoLockContents = builtins.readFile lockPath;
+    };
+
   # --- the native cargo workspace ---------------------------------------------
   workspaceRoot = ../crates;
+  workspaceLockPath = workspaceRoot + "/Cargo.lock";
 
   # The SPAs, relative to the workspace root.  They are excluded from the native
   # source tree: not workspace members, built for wasm32 with their own lock file,
@@ -94,7 +125,11 @@
       !lib.any (d: rel == d || lib.hasPrefix (d + "/") rel) (spaMembers ++ nonMemberPrograms);
   };
 
-  workspaceLock = lockFile (workspaceRoot + "/Cargo.lock");
+  workspaceLock = lockFile workspaceLockPath;
+  workspaceVendorDir = vendorDirFor {
+    src = workspaceSrc;
+    lockPath = workspaceLockPath;
+  };
 
   # The one dependency derivation every native crate builds against.
   #
@@ -193,6 +228,7 @@
           inherit pname member sharedCrates;
         };
         cargoLock = workspaceLock;
+        cargoVendorDir = workspaceVendorDir;
         cargoBuildCommand = "cargoWithProfile build -p ${pname}";
         doCheck = false;
       });
@@ -263,7 +299,10 @@
     pname,
     version,
     src,
-    cargoLock,
+    # the lock file's path in the tree, NOT a store path: `lockFile` turns it into
+    # the content-keyed derivation crane wants, and `vendorDirFor` needs to read it
+    # at eval time without building anything (see `vendorDirFor`).
+    cargoLockPath,
     # cargo's underscored package name, i.e. the .wasm file cargo emits
     wasmName,
     sharedCrates ? [],
@@ -278,7 +317,14 @@
         };
   in
     craneLib.buildPackage {
-      inherit pname version cargoLock;
+      inherit pname version;
+      cargoLock = lockFile cargoLockPath;
+      # computed from `src`, not from `resolved`: `resolved` is a derivation, and
+      # reading a derivation at eval time builds it
+      cargoVendorDir = vendorDirFor {
+        inherit src;
+        lockPath = cargoLockPath;
+      };
       src = resolved;
       doCheck = false;
       nativeBuildInputs = [wasmBindgenCli pkgs.lld];
@@ -296,6 +342,7 @@ in {
     crate
     lockFile
     spaMembers
+    vendorDirFor
     wasmBindgenCli
     wasmSpa
     workspaceArtifacts
