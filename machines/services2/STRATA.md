@@ -139,6 +139,67 @@ CUDA 13.0 (`cudaPackages_13_0`). Note `STRATA_PREFILL_MMQ=ON` is HIP-only
 (CMake fails the configure if CUDA is also on), so it is **not** passed here —
 do not copy it from `machines/aibox/strata-package.nix`.
 
+### Updating the engine (what a bump actually touches)
+
+`nix flake update strata` **is** the bump: the input tracks upstream `main` and
+nothing anywhere pins a version, so the locked rev is the whole contract and the
+first thing it changes is behaviour nobody reviewed.
+
+**The Python layer is copied by hand, and that is where a bump bites.** The
+install phase of `strata-package.nix` copies `serve/`, the engine's helper
+packages, `tools/`, `data/` and the pinned `gguf-py` into `share/strata`, and
+`strata-server` is a `python -m serve.server` wrapper with only that tree on
+`PYTHONPATH`. Upstream restructures that layer without warning: 0.1.46 renamed
+`apps/cli` to `strata_cli` and moved the process/config helpers into a new
+`strata_control`, which `serve/lifeline.py` imports at **module** scope. A tree
+whose copy list lags that boots as `ModuleNotFoundError: No module named
+'strata_control'` — the service crash-loops every 10 s (never-give-up) and the
+switch exits 4 on the unit's failed first start. So `strata-package.nix` now
+imports `serve.server`, `strata_control.procs` and `strata_cli.client` at
+*install* time with only the installed tree on the path: a copy list that lags
+upstream fails the build in two seconds instead of eating a three-minute model
+load on a box with 30 GiB of RAM.
+
+Two contracts, checked against the new source before deploying, both of which
+have already moved once:
+
+- the engine flags in `strata.nix`'s `engineArgs` — parsed by
+  `src/program/generate.cpp` (`--pack --native --ple-gguf --expert-profile
+  --expert-cache --prefill --spec --spec-min-p --mtp --max-context --kv
+  --resident-experts`);
+- the JSON keys of `configFile` (`exe args cwd tokenizer model_name log
+  allowed_hosts api_key backend lib_dirs env`) — read by `serve/server.py`.
+
+**Build it on aibox, not here.** Any edit to `strata-package.nix` or a new rev
+invalidates the whole engine derivation: ~7 min at `-j6` on aibox, ~1.5 GiB of
+output, and a build on services2 competes with the 27 GiB engine for the memory
+that made this box the network's builder's opposite (see the sizing table).
+
+```bash
+# on aibox, with the bump (and the fixed copy list) in its checkout
+nix build .#strata-cuda --no-link --print-out-paths
+# on services2, as root: `trusted-users = root`, and the path is unsigned because
+# aibox's daemon signs nothing it builds, so --no-check-sigs (only a trusted
+# client may ask the daemon to add an unsigned path)
+sudo nix copy --no-check-sigs \
+  --from 'ssh://leigh-admin@10.3.1.32?ssh-key=/home/leigh-admin/.ssh/agent-hop-key' \
+  /nix/store/<new strata-unstable>
+just switch     # builds the toplevel from the store, activates, confirms
+```
+
+**Do not confirm a failed activation.** This is AGENTS.md's rule, and this box is
+where it bit (2026-10-20): the first start of the new unit failed, so
+`switch-to-configuration` exited 4 *after* `/run/current-system` had flipped, with
+`system-good` still on the old generation and `auto-rollback` armed for five
+minutes later. A `nixos-confirm` at that moment marks the half-activated system
+good and stops the timer — the only undo disappears — and on a shared box that is
+not a hypothetical: while this one sat in that state, a second session confirmed
+it, so `system-good` moved to the generation whose activation had failed and the
+timer stopped (`systemctl show auto-rollback -p ExecStart` timestamps are the
+receipt). Fix forward instead: keep the tree dirty-but-good, re-switch, and confirm
+*that* (which is what happened here; the fixed engine came up 52 s after the new
+unit started).
+
 ## Differences from aibox worth knowing
 
 - **Backend is `cuda`** and the config sets `lib_dirs = [ "/run/opengl-driver/lib" ]`

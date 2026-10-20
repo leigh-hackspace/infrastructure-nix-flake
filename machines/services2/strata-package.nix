@@ -120,8 +120,24 @@ in
       # for K-quant packs; IQ1_M is an i-quant, so it may not exist here.
       if [ -e libstrata_kq.so ]; then install -Dm755 libstrata_kq.so $out/bin/libstrata_kq.so; fi
 
-      cp -r ${finalAttrs.src}/serve ${finalAttrs.src}/tools ${finalAttrs.src}/data $out/share/strata/
+      # The runtime Python layer.  `strata_control` and `strata_cli` are not
+      # optional extras: 0.1.46 split `apps/cli` into `strata_cli` and moved the
+      # engine/config helpers into `strata_control`, which `serve/lifeline.py`
+      # imports at module scope — a tree without them starts and dies in a
+      # crash-loop (2026-10-20, the first boot on 0.1.46.1).  The guard below is
+      # what keeps this list honest from now on.
+      cp -r ${finalAttrs.src}/serve ${finalAttrs.src}/strata_control ${finalAttrs.src}/strata_cli \
+        ${finalAttrs.src}/tools ${finalAttrs.src}/data $out/share/strata/
       cp -r ${llama}/gguf-py $out/share/strata/gguf-py
+
+      # Contract guard, not a smoke test: import the server with only the
+      # installed tree on the path, so a copy list that lags upstream's imports
+      # fails the *build* in two seconds instead of crash-looping the service on
+      # a box whose model load takes three minutes.  Bytecode off so the check
+      # writes nothing into $out.
+      PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=$out/share/strata ${serverPython}/bin/python3 -c '
+        import serve.server, strata_control.procs, strata_cli.client
+      '
 
       # strata-server: what systemd runs (python -m serve.server).
       makeWrapper ${serverPython}/bin/python3 $out/bin/strata-server \

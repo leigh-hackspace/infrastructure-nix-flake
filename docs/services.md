@@ -290,6 +290,16 @@ pack index so they never crash-loop before that. **Read the box's `STRATA.md`
 before changing engine flags**: the knobs were measured on different hardware and
 do not transfer.
 
+Because the engine's Python layer is *copied into the store by hand* in each
+`strata-package.nix`, a `nix flake update strata` can move upstream's module
+layout under it (0.1.46 renamed `apps/cli` → `strata_cli` and added
+`strata_control`, which `serve/lifeline.py` imports at module scope) and the
+service dies at import on boot. `machines/services2/strata-package.nix` therefore
+imports the server's module graph at install time, so a copy list that lags
+upstream fails the build rather than the boot; the update ritual — build on aibox,
+`nix copy --no-check-sigs` as root, switch, never confirm a failed activation — is
+in `machines/services2/STRATA.md`.
+
 services1 terminates TLS for services2's engine as
 `https://strata.int.leighhack.org` (LAN-only behind the `LOCAL_NETWORK` ACL) and,
 since 2026-10-18, as the public `https://strata.leighhack.org`

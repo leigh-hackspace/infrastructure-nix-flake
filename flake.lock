@@ -267,11 +267,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1791935472,
-        "narHash": "sha256-Jfo2uldtyXW8Y/wQxA7WcYwtmzCGAOaXgnlMSo7K9LE=",
+        "lastModified": 1792487932,
+        "narHash": "sha256-e7OIY0dNAxgDoQW99RXiZMgHGHmB5BohQGJ7bM/8QuE=",
         "owner": "Niko1221",
         "repo": "Strata",
-        "rev": "296b59d2f73c8f04a805df29c2fa97655adace78",
+        "rev": "9ae93f7b1fe989d04a8e404d32cddaeeff10505f",
         "type": "github"
       },
       "original": {
