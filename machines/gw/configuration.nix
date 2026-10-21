@@ -34,14 +34,15 @@
   #
   # The router is deployed by building *elsewhere* and pushing: `just switch-gw`
   # from services1 (or aibox) runs `nixos-rebuild switch --flake .#gw
-  # --target-host leigh-admin@10.3.1.1 --elevate=sudo`, which builds locally,
-  # copies the closure over and activates over ssh.  That is not the fallback any
-  # more — since this box hosts a Rust crate (./network-status.nix) and has no
-  # remote builder, a local `nixos-rebuild` would compile Rust on the box that
-  # answers DNS/DHCP for the network, which AGENTS.md forbids.  The checkout, `git`
-  # and `just` here remain useful for reading the tree and for the emergency case
-  # where services1 is the thing that is broken — but that local build now costs a
-  # compile on the router, so use it only when the push path is unavailable.
+  # --target-host leigh-admin@10.3.1.1 --elevate=sudo`, which builds there, copies
+  # the closure over and activates over ssh. That is still the way, and it is no longer
+  # the only safe way: this box now delegates to aibox and runs its daemon with
+  # `nix.maxJobs = 0` (./default.nix), so a local `nixos-rebuild` cannot compile the
+  # crate ./network-status.nix adds here — that crate is built on aibox and copied back.
+  # What a local switch still costs is the **evaluation**, on the box that answers DNS
+  # and DHCP for every VLAN, which is why the checkout, `git` and `just` here stay for
+  # reading the tree and for the case where services1 is the thing that is broken, not
+  # for routine deploys.
   #
   # The push path needs daemon *trust*, not daemon *access*: `allowed-users = *`
   # already admits the client, but with `require-sigs` on (the default) the daemon
@@ -58,7 +59,10 @@
   # client holding the hop key is already root here. Trusted-user rights — adding
   # unsigned paths, setting nix.conf at build time — are a weaker grant than the one
   # it already has. What it must never be confused with is `nixbld`: this is not
-  # build-user membership, and common/nixbld.nix still refuses that.
+  # build-user membership, and common/nixbld.nix still refuses that. Since this box got
+  # a builder, common/build-farm.nix adds the same string for its own reason, so the
+  # rendered list names `leigh-admin` twice — left doubled on purpose: the grant belongs
+  # here, because the push path needs it whether or not the builder half is configured.
   nix.settings.trusted-users = ["leigh-admin"];
 
   # The old box ran OPNsense's pkg-config stack; nothing else here is a package

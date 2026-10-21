@@ -25,13 +25,20 @@ switch:
 
 # --- where builds may run ----------------------------------------------------
 #
-# The router must not compile anything.  gw has no `infra.buildFarm.builderHost`
-# (common/build-farm.nix), so a build there runs locally on 8 GB and 4 cores — and
-# `nix develop` is a build: the devShell depends on CRANE.wasmBindgenCli, which is
-# compiled from source with cargo.  On 2026-10-21 a `just check` on the gateway
-# (`fmt-check` → `nix develop`) put four rustc processes on the box that answers
-# DNS for the whole network.  `check` and `fmt` are eval/format only and stay
-# allowed there; every build-shaped recipe below depends on this guard.
+# The router must not compile anything.  Since 2026-10-21 it also cannot: gw sets
+# `infra.buildFarm.builderHost = HOSTS.aibox` and `nix.maxJobs = 0`, so a build started
+# here is built on aibox or fails — the second half is what removes the silent local
+# fallback (common/build-farm.nix documents that `--max-jobs 0` "does not enable
+# delegation, it removes the local fallback").  Before that, a build here ran locally on
+# 8 GB and 4 cores, and `nix develop` **is** a build: the devShell depends on
+# CRANE.wasmBindgenCli, compiled from source with cargo.  On 2026-10-21 a `just check` on
+# the gateway (`fmt-check` → `nix develop`) put four rustc processes on the box that
+# answers DNS for the whole network.
+#
+# The guard stays anyway, and the reason is not compilation: **evaluation still happens
+# on the box you are standing on**, and a 4-core router is also the network's resolver.
+# `check` and `fmt` are eval/format only and stay allowed there; every build-shaped
+# recipe below depends on this guard.
 #
 # Build on aibox (the network's builder) or services1.  If you genuinely need to
 # build on the router, say so explicitly.
@@ -39,8 +46,9 @@ _build-host-guard:
     #!/usr/bin/env bash
     set -euo pipefail
     if [ "$(hostname)" = "gw" ] && [ -z "${INFRA_ALLOW_BUILD_ON_ROUTER:-}" ]; then
-        echo "refusing: this is gw, the network's router — it must not compile." >&2
-        echo "  Run this from aibox or services1 instead (AGENTS.md, 'Never build on the router')." >&2
+        echo "refusing: this is gw, the network's router — builds delegate to aibox and evaluation costs this box." >&2
+        echo "  Run this from aibox or services1 instead (AGENTS.md, 'Don't build on the router')." >&2
+        echo "  Nothing here compiles locally either way: nix.maxJobs is 0, so there is no fallback to fall back to." >&2
         echo "  Override with INFRA_ALLOW_BUILD_ON_ROUTER=1 only if you really mean it." >&2
         exit 1
     fi

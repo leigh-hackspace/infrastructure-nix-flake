@@ -345,10 +345,19 @@ back to local is one of the failure modes only polling catches.**
 ## Never build on the router
 
 gw is a router, not a builder: 4 cores, 8 GB, and it answers DNS and DHCP for every
-VLAN. `common/build-farm.nix` gives a builder only to services1 (`builderHost =
-HOSTS.aibox`), so on gw `nix config show` has `builders =` **empty** and every build
-runs locally. That is the right shape — a build storm on the router is an outage for
-the whole network — and it means "evaluates" and "builds" have to be kept apart.
+VLAN. Since 2026-10-21 it is also a **client** of the network's builder
+(`infra.buildFarm.builderHost = HOSTS.aibox` in `machines/gw/default.nix`, so
+`common/build-farm.nix` writes `/etc/nix/machines` here and turns on
+`nix.distributedBuilds`) and it runs its own daemon with **`nix.maxJobs = 0`**. That
+second half is what makes the rule mechanical: remote building *prefers* the builder
+and falls back to local in silence, and `max-jobs = 0` removes the fallback — a build
+aibox cannot take fails instead of compiling on the gateway. Check both with `nix
+config show | grep max-jobs` and `cat /etc/nix/machines`. The GC half of that module is
+deliberately off on this box (`infra.buildFarm.gc = false`).
+
+So the accident is gone and the rule is not: **evaluation is still paid on the router**,
+and the deliberate deploy path is still build-there-and-push. Keeping "evaluates" and
+"builds" apart still matters, because `just check` here is eval-only on purpose.
 
 **`nix develop` is a build.** The devShell (`flake.nix`'s `devShells.default`)
 depends on `CRANE.wasmBindgenCli`, the pinned wasm-bindgen CLI, which is compiled
@@ -365,14 +374,14 @@ The fix is in the justfile, and the split is now explicit:
 | `just check` (`nix flake check --no-build`, `nix eval`, `nix fmt -- --check`) | `just test`, `just clippy` (`nix develop` + cargo) |
 | `just fmt` (`nix fmt`, formatter from the flake's pinned nixpkgs) | `just check-build` (builds all four toplevels) |
 | reading rendered files, `nixos-rebuild dry-run` | `just build-frontend`, `just filestore-dev`, `just filestore-test`, `just switch-gui-test` |
-| `just switch` (the emergency local build — see below) | `just build-remote` (and it would fail anyway: gw has no builder), **`just switch-gw`** |
+| `just switch` (evaluation here, build on aibox, closure copied back) | `just build-remote` (it refuses on gw by design: reach for it from services1), **`just switch-gw`** |
 
-`just switch-gw` is now refused on gw too, because since 2026-10-21 gw's own system
-contains a Rust crate (`machines/gw/network-status.nix`) and the recipe no longer
-builds on the router: it builds on the invoking box (services1, delegating to aibox)
-and pushes with `--target-host`. `just switch` on gw still works and is the fallback
-for when the push path is broken, but it now compiles that crate locally — the one
-thing this section exists to avoid — so use it only for that.
+`just switch-gw` is refused on gw too, because the recipe is "build on the invoking
+box and push with `--target-host`" — running it *on* the router would be the mirror
+write plus an evaluation here for no benefit. `just switch` on gw still works: with the
+delegate-and-no-fallback settings above it compiles nothing locally, which is exactly
+the property the emergency path needed. Prefer `just switch-gw` from services1/aibox for
+anything routine, because it keeps the evaluation off the router as well.
 
 `just fmt`/`fmt-check` used to run `nix develop` for alejandra. They now use
 `nix fmt`, which takes the formatter from the flake's `formatter` output — a
@@ -385,9 +394,10 @@ braces, not a substitute for knowing which recipe you are running: it only check
 `hostname = gw`, and `INFRA_ALLOW_BUILD_ON_ROUTER=1` deliberately overrides it. If
 rustc ever appears on the router again, `pgrep -a rustc` then `ps -eo pid,args | grep
 -E 'cargo|wasm-bindgen'` names the derivation; kill the build, and check whether the
-client was `nix develop` (this rule) or a plain `nix build` (which then means the
-builder is not configured or aibox is unreachable — `nix config show | grep
-builders`).
+client was `nix develop` (this rule) or a plain `nix build` — the second means either a
+trusted client passed `--option max-jobs N` (deliberate) or the delegation has been
+un-configured again: `nix config show | grep max-jobs` should say 0 and
+`/etc/nix/machines` should name 10.3.1.32.
 
 
 `build-users-group` is not a permissions group, it is the **pool of UIDs nix runs

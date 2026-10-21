@@ -76,16 +76,21 @@ X first", X has already cost someone a day.
     `$SYS/etc/systemd/system/<unit>.service`). A `nix eval --impure --expr` against
     `builtins.getFlake` cold-evaluates the whole flake, is slower than the switch
     that answers the same question, and its aborted survivor holds the big lock.
-22. **Never build on the router.** gw has **no remote builder** (only services1 sets
-    `infra.buildFarm.builderHost`), so a build there compiles locally on the 4-core
-    box that answers DNS and DHCP for the whole network. `nix develop` **is** a
-    build: the devShell depends on `CRANE.wasmBindgenCli`, which is compiled with
-    cargo. On 2026-10-21 a `just check` on gw (its `fmt-check` ran `nix develop`)
-    put four `rustc` processes on the gateway. `just check` and `just fmt` are now
-    eval/format only (`nix flake check --no-build`, `nix fmt` from the flake's
-    `formatter`) and are safe on gw; `just test|clippy|check-build|build-frontend|
-    filestore-*|switch-gui-test|build-remote` are build-shaped and now refuse on gw
-    via `_build-host-guard` in the justfile, as does `just switch-gw` since gw
+22. **Don't build on the router — and now it can't.** gw had **no remote builder** until
+    2026-10-21, so a build there compiled locally on the 4-core box that answers DNS and
+    DHCP for the whole network; it now sets `infra.buildFarm.builderHost = HOSTS.aibox`
+    **and `nix.maxJobs = 0`**, which removes the silent local fallback — a build aibox
+    can't take fails instead of melting the gateway (`nix config show | grep max-jobs`
+    is `0`, `/etc/nix/machines` names 10.3.1.32, and `infra.buildFarm.gc = false` keeps
+    the garbage collector off this box). `nix develop` **is** a build: the devShell
+    depends on `CRANE.wasmBindgenCli`, which is compiled with cargo. On 2026-10-21 a
+    `just check` on gw (its `fmt-check` ran `nix develop`) put four `rustc` processes on
+    the gateway. `just check` and `just fmt` are eval/format only (`nix flake check
+    --no-build`, `nix fmt` from the flake's `formatter`) and are safe on gw; `just
+    test|clippy|check-build|build-frontend|filestore-*|switch-gui-test|build-remote`
+    remain refused on gw via `_build-host-guard` in the justfile — the guard stays
+    because **evaluation is still paid on the router** even when every derivation is
+    built elsewhere — as does `just switch-gw`, since gw
     gained a Rust crate (`machines/gw/network-status.nix`, hosted on the router
     since 2026-10-21) and its deploy became build-here-push-there. Run them from
     aibox or services1. `just switch` on gw still works as the emergency local
