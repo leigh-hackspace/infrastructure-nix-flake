@@ -9,7 +9,14 @@
 # Runtime secret files, provisioned by sops-nix from secrets/secrets.yaml
 # (see sops.nix). Secrets embedded into configs at build time are read via
 # config.sopsSecretText instead (see common/sops.nix).
-{
+#
+# `rec` for the two tailnet prefixes below: they are read by the nginx ACL, the
+# Postgres `pg_hba` table, headscale's own allocation pool and every rule the
+# router writes about tailnet traffic, and they had already drifted apart in four
+# copies of the same string (see TAILNET_V4).
+rec {
+  TAILNET_V4 = "100.64.0.0/10";
+  TAILNET_V6 = "fd7a:115c:a1e0::/48";
   ENV_FILE = "/run/secrets/env_file";
   HTTP_BASIC_AUTH_FILE = "/run/secrets/http_basic_auth";
   WIREGUARD_KEY_FILE = "/run/secrets/wg_key";
@@ -32,6 +39,16 @@
   OUTLINE_CLIENT_SECRET_FILE = "/run/secrets/outline_client_secret";
   GRAFANA_OIDC_CLIENT_SECRET_FILE = "/run/secrets/grafana_oidc_client_secret";
 
+  # The tailnet's own address blocks, in the one place.  The IPv4 half is **/10**,
+  # not the /16 three of the four copies of this fact used to carry: headscale
+  # allocates from `100.64.0.0/10` (`machines/services1/services/headscale.nix`'s
+  # `ip_prefixes`, which reads these two strings now), and the old router's
+  # `TAILSCALE` alias — which every tailnet rule in its `/conf/config.xml` was
+  # keyed on — was `100.64.0.0/10, fd7a:115c:a1e0::/48`.  A /16 is not a
+  # theoretical mistake: the first node allocated 100.65.x is dropped by the
+  # router's forward chain, denied by every `*.int` vhost's nginx ACL, refused by
+  # `pg_hba`, and — because the policy-routing mark asks "is this destination
+  # ours?" — sent out of the uplink instead of into the tailnet.
   BACKUP_KEY_FILE = "/run/secrets/backup_key";
 
   # The zone the router is authoritative for and every internal vhost lives in:
@@ -50,8 +67,8 @@
   LOCAL_NETWORK = ''
     allow 10.3.0.0/16;              # Hackspace Internal
     allow 192.168.2.0/24;           # CS_VLAN Internal
-    allow 100.64.0.0/16;            # Tailscale Tailnet (IPv4)
-    allow fd7a:115c:a1e0::0/48;     # Tailscale Tailnet (IPv6)
+    allow ${TAILNET_V4};            # Tailscale Tailnet (IPv4)
+    allow ${TAILNET_V6};            # Tailscale Tailnet (IPv6)
     allow 2001:8b0:1d14::0/48;      # Hackspace AAISP range
     allow fd99:dead:beef::0/48;     # Hackspace IPv6 LAN range
 
@@ -74,8 +91,8 @@
     host    sameuser  all     ::1/128                 scram-sha-256
     host    sameuser  all     10.3.0.0/16             scram-sha-256
     host    sameuser  all     10.88.0.0/16            scram-sha-256
-    host    sameuser  all     100.64.0.0/16           scram-sha-256
-    host    sameuser  all     fd7a:115c:a1e0::0/48    scram-sha-256
+    host    sameuser  all     ${TAILNET_V4}           scram-sha-256
+    host    sameuser  all     ${TAILNET_V6}           scram-sha-256
     host    sameuser  all     10.47.0.0/16            scram-sha-256
     host    sameuser  all     192.168.49.0/24         scram-sha-256
     host    sameuser  all     2001:8b0:1d14::0/48     scram-sha-256

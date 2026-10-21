@@ -241,10 +241,20 @@ in {
       # A list, because nixpkgs' dnsmasq module makes `server` a real option (a list
       # of strings) rather than a freeform key, and a string here is a type error at
       # eval.
+      # The four plain addresses are the old box's own upstreams, in the order its
+      # `/conf/config.xml` listed them (`<dnsserver>`: 9.9.9.9, 8.8.8.8, 1.1.1.1,
+      # 8.8.4.4 — four rather than two because this is the only resolver the whole
+      # network has and dnsmasq marks a server failing after two timeouts and keeps
+      # asking the others).  What is *not* inherited is the old box's
+      # `dnsallowoverride`, which let the uplink's DHCP hand back resolvers: this
+      # box's uplink is the mill's handoff, and a resolver chosen by someone
+      # else's DHCP server is a second authority over what the network resolves.
       no-resolv = true;
       server = [
-        "1.1.1.1"
+        "9.9.9.9"
         "8.8.8.8"
+        "1.1.1.1"
+        "8.8.4.4"
         "/ts.leighhack.org/100.100.100.100"
       ];
       rebind-domain-ok = "/ts.leighhack.org/";

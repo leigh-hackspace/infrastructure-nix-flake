@@ -111,7 +111,7 @@
     iifname "vlan*" udp dport 53 accept
     iifname "vlan*" tcp dport 53 accept
     # The tailnet reaches the same names, on the interface the ACL already allows
-    # (common/config.nix names 100.64.0.0/16).  DNS only: a DHCP request arriving
+    # (common/config.nix's TAILNET_V4).  DNS only: a DHCP request arriving
     # on a VPN tunnel is not a lease this box should be honouring, and answering
     # one would be handing out LAN addresses to a client that is not on the LAN.
     iifname "tailscale0" udp dport 53 accept
@@ -135,11 +135,13 @@
 
   # The destinations that are *not* the internet for the purpose of the routing
   # marks below: the old box's `<Local>` alias (10.3.0.0/16 and 192.168.2.0/24),
-  # the tailnet (100.64.0.0/16 — the old alias's `TAILSCALE` was 100.64.0.0/16
-  # too), the tailnet subnet route at Chris's house, and the AAISP hub's own
-  # handoff network.  Traffic to one of these must keep the route it already has
-  # (connected, LAN, tailscale0, or the hub's own link) rather than being forced
-  # into a table whose default is further away.
+  # the tailnet (common/config.nix's `TAILNET_V4`, and the old box's `TAILSCALE`
+  # alias was the same /10 — this list said /16 for a while, which is a node
+  # outside 100.64.0.0/16 being marked for the uplink and dialled out of the
+  # building instead of into the tailnet), the tailnet subnet route at Chris's
+  # house, and the AAISP hub's own handoff network.  Traffic to one of these must
+  # keep the route it already has (connected, LAN, tailscale0, or the hub's own
+  # link) rather than being forced into a table whose default is further away.
   #
   # `DMZ_NET` is in the list because of NAT reflection: a LAN client reaching a
   # public name dials 81.187.195.17, and this chain runs at priority mangle, i.e.
@@ -151,7 +153,7 @@
     "10.3.0.0/16"
     "192.168.2.0/24"
     "192.168.49.0/24"
-    "100.64.0.0/16"
+    CONFIG.TAILNET_V4
     "192.168.20.0/24"
     NICS.DMZ_NET
   ];
@@ -263,6 +265,37 @@
       '')
       portForwards
     );
+
+  # --- inbound NAT's IPv6 counterpart --------------------------------------
+  #
+  # The `dstnat` chain has no v6 twin, because none is needed: an internet client
+  # dialling a public name is *already* addressing the box that answers it, since
+  # every `*.leighhack.org` vhost publishes a AAAA (`2001:8b0:1d14:225::20`) rather
+  # than a NAT'd v4 pair.  What that means is the opposite of convenient — the v6
+  # forward chain's `policy drop` answers nothing at all unless a rule names the
+  # destination by address, so "public IPv6 inbound" is a rule here rather than a
+  # side effect of the NAT, and forgetting it is silent (the site works over IPv4,
+  # from the LAN, and from anyone whose address happens to be in the shared ACL).
+  #
+  # This is the old box's three "Public IPv6 Services" rules, verbatim in scope:
+  # `pass in quick on l2tp0 reply-to (l2tp0 fe80::9e89:1eff:fe3f:0) inet6 proto tcp
+  # from any to <SERVICES1_IPV6> port = {http, https, 8522}` (read out of the
+  # archived `pf.txt`, `~/tmp/opnsense-archive-20261017` on services1).  The port
+  # set is theirs and not the v4 table's: the old box never allowed 3478, 50443 or
+  # 51820's v6 equivalents in, which is why headscale's DERP has an IPv6 *address*
+  # but a STUN socket reachable over v4 only (docs/follow-ups.md).  Adding them here
+  # would be opening a listener, not inheriting one, so they are not added.  The
+  # yunohost appliance has no row because `yunohost.leighhack.org` has no AAAA.
+  #
+  # Matched on the tunnel rather than on "not a VLAN" for the same reason the old
+  # rules named `l2tp0`: the hub's handoff has no public IPv6 to arrive on, and an
+  # interface-less rule would let the mill's segment pose as the internet.  The
+  # reply path needs no rule of its own — services1's answer is `established`, and
+  # VLAN 225's routing mark sends it back out of the tunnel, which is the job the
+  # pf `reply-to` did.
+  publicV6ForwardRules = ''
+    iifname "${NICS.UPLINK_TUNNEL}" ip6 daddr ${TABLES.setOf NICS.PUBLIC_SERVICES1_V6} tcp dport { 80, 443, 8522 } accept
+  '';
 in {
   # The router forwards: that is the whole point of it.  Written as sysctls rather
   # than as networkd's `IPForward=` per interface, because the answer is the same
@@ -437,8 +470,8 @@ in {
             # The tailnet, when this box is its exit node: the old box sent
             # tailscale0's traffic out of the hub (`route-to (em3 ...)` on
             # tailscale0), and the hub only routes the address it gave this box.
-            # 100.64.0.0/16 is the tailnet's own range (common/config.nix's ACL).
-            oifname "${NICS.UPLINK_NIC}" ip saddr 100.64.0.0/16 masquerade
+            # The tailnet's own range is common/config.nix's TAILNET_V4.
+            oifname "${NICS.UPLINK_NIC}" ip saddr ${CONFIG.TAILNET_V4} masquerade
             # NAT reflection, which is the old box's `rdr on vlan0.X` copies of
             # every forward: a LAN client resolving a *public* name gets the public
             # address from the network's resolver (the *.leighhack.org names live
@@ -476,6 +509,7 @@ in {
             ct state established,related accept
             ct state invalid drop
             icmpv6 type { destination-unreachable, packet-too-big, time-exceeded, parameter-problem } accept
+            ${publicV6ForwardRules}
             ip6 saddr ${aclV6} accept
           }
 

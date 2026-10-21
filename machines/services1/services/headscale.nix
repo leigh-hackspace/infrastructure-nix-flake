@@ -39,9 +39,15 @@ in {
         };
       };
 
+      # The tailnet's allocation pool, read from the one copy of the fact
+      # (common/config.nix) — this is the string that decides what address a node
+      # gets, and the router's forward rules, every `*.int` vhost's nginx ACL and
+      # `pg_hba` all trust the same block.  They used to be a /16 and this a /10,
+      # which is a node that joins, works over IPv4-by-DERP and is then refused by
+      # everything on the LAN side.
       ip_prefixes = [
-        "100.64.0.0/10"
-        "fd7a:115c:a1e0::/48"
+        CONFIG.TAILNET_V4
+        CONFIG.TAILNET_V6
       ];
 
       derp = {

@@ -58,6 +58,36 @@
   PUBLIC_SERVICES1 = "81.187.195.17";
   PUBLIC_YUNOHOST = "81.187.195.18";
 
+  # The addresses inbound public **IPv6** arrives on, and therefore the only ones
+  # the internet may reach on the LAN over IPv6 at all.  They have to be written
+  # down because IPv6 has no NAT to infer them from: the v4 forwards in
+  # ./firewall.nix name a public address and a LAN address in the same row, but a
+  # v6 connection is end-to-end, so the packet that arrives from the internet is
+  # already addressed to the box that answers it and the forward chain has to say
+  # so by name (`machines/gw/README.md`, "public IPv6 inbound is a rule, not a
+  # side effect").  Both are services1's own addresses and both are published:
+  #
+  #   2001:8b0:1d14:225::20    the AAAA every `*.leighhack.org` vhost answers with
+  #                            (`nginx.leighhack.org` is the CNAME they all share;
+  #                            read with `dig AAAA id.leighhack.org`), and
+  #                            services1's own address on VLAN 225
+  #                            (`machines/services1/networking.nix`).
+  #   2001:8b0:1d14:225:d::1020 the old box's `SERVICES1_IPV6` alias, which is what
+  #                            its three "Public IPv6 Services" pf rules were
+  #                            keyed on, still live on services1 (marked
+  #                            LEGACY TO BE DELETED in that same file) and still
+  #                            what headscale's DERP server publishes as its IPv6
+  #                            (`machines/services1/services/headscale.nix`).
+  #
+  # The yunohost appliance is *not* here: `yunohost.leighhack.org` has no AAAA, so
+  # it has never been reachable over IPv6, and neither is anything else on the LAN
+  # — the old box allowed exactly these ports on exactly this host and nothing
+  # else (see ./firewall.nix's `publicV6ForwardRules`).
+  PUBLIC_SERVICES1_V6 = [
+    "2001:8b0:1d14:225::20"
+    "2001:8b0:1d14:225:d::1020"
+  ];
+
   # The yunohost appliance's LAN address, from the old box's `YUNOHOST` alias.
   # Not in common/hosts.nix because nothing in the flake proxies to it; it exists
   # here only so ./firewall.nix's forwards name one fact once.
