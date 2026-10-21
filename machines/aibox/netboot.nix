@@ -38,10 +38,20 @@ in {
         choose --timeout 10000 --default network selected || goto cancel
         goto ''${selected}
 
+        # `init=` names the image's own closure through a symlink the image
+        # carries (machines/pi-room-sys/netboot.nix's `pseudoFiles`), not a store
+        # path.  A store path here is a *generation*, and the client does not
+        # necessarily mount the store image of the generation whose menu it
+        # fetched: aibox swaps both on `nixos-rebuild switch`, and a client that
+        # chains loaded just before the switch and mounts the export just after
+        # it used to die in `initrd-find-nixos-closure`
+        # (`/nix/store/<old-init>/init: No such file or directory`) — on
+        # 2026-10-21 that looked exactly like an NFS root failure and was not.
+        # A constant path resolves inside whichever image was mounted.
         :network
         kernel --name kernel  http://${nfsServer}/boot/bzImage
         initrd --name initrd0 http://${nfsServer}/boot/initrd
-        boot kernel initrd=initrd0 init=${build.toplevel}/init ${lib.strings.concatStringsSep " " sys.config.boot.kernelParams}
+        boot kernel initrd=initrd0 init=/nix/store/.netboot-closure/init ${lib.strings.concatStringsSep " " sys.config.boot.kernelParams}
 
         :local
         echo Starting Windows...

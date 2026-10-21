@@ -650,8 +650,11 @@ run "finished but not upgraded":
   Lazy-umounting is safe for running clients (their open handles survive; new
   mounts get the new image), and the clients pick the new image up on their next
   boot. Check `ss -tn sport = :2049` first so you are not doing it under a client
-  that is mid-boot. Declaring the export so it stops moving is open in
-  `docs/follow-ups.md`.
+  that is mid-boot. A client that mounts the *previous* image boots the previous
+  generation rather than panicking (`init=/nix/store/.netboot-closure/init`, see
+  `machines/pi-room-sys/README.md`), but one whose mount fails because the export
+  is left unmounted cannot boot at all. Declaring the export so it stops moving is
+  open in `docs/follow-ups.md`.
 - **monster1**: nothing declarative. If the NAS was offline at any point in the
   run, expect `storage 'nas2-nfs' is not online` on VM starts and check
   `pvesm status` / `mount | grep nas2-nfs` **before** blaming a VM. HA-managed

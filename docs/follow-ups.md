@@ -146,12 +146,12 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   mount is created once and never restarted. Until then: aibox's switch is expected
   to fail once, and the second failure is the stop condition.
 
-- **`just switch-netboot` reboots ten clients to change a file aibox already
-  has** (2026-10-15). The clients NFS-mount `/nix/store` from aibox
-  (`/exports/nix-store`), so a new image's kernel/initrd/store paths are already
-  served; the reboot is only needed to make running clients *re-read* the export.
-  Splitting "re-point the export" (no client impact) from "reboot the clients" is
-  what the runbook currently has to do by hand.
+  It no longer panics clients when it does fail: the menu boots
+  `init=/nix/store/.netboot-closure/init` and each image carries that symlink to
+  its own closure (2026-10-21), so a client that mounts the *previous* image boots
+  the previous generation instead of dying in `initrd-find-nixos-closure`. A
+  refresh that leaves the export *unmounted* still stops clients from booting at
+  all, so the dance stays in the runbook.
 
 ## Machines / access
 

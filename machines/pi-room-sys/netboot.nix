@@ -22,10 +22,24 @@ with lib; let
   };
 
   # Alternative: Create the squashfs image that contains the Nix store.
+  #
+  # `pseudoFiles` adds one entry to the image's root — i.e. to `/nix/store` once
+  # the image is overlaid there — a symlink naming *this generation's* closure.
+  # The iPXE menu boots `init=/nix/store/.netboot-closure/init`
+  # (machines/aibox/netboot.nix) rather than a store path, so the menu no longer
+  # names a generation and a client whose boot straddles an aibox switch boots
+  # whatever image it actually mounted.  See the note above
+  # `fileSystems."/nix/netboot-squashfs"` below for the failure this fixes.
+  #
+  # The name is deliberately not a valid store-path name: nothing registers it, it
+  # only has to resolve, and `nix-store --gc` never looks at it.
   squashfsStore = pkgs.callPackage ./make-squashfs.nix {
     storeContents = [config.system.build.toplevel];
     comp = "zstd -Xcompression-level 10";
     hydraBuildProduct = true;
+    pseudoFiles = [
+      ".netboot-closure s 0777 0 0 ${config.system.build.toplevel}"
+    ];
   };
 in {
   imports = [
@@ -135,6 +149,20 @@ in {
     options = ["mode=0755"];
   };
 
+  # The store image is aibox's `/netboot-squashfs` export of *the current*
+  # `squashfsStore`, so which generation this mount lands on depends on when the
+  # client gets here — the export is swapped by `nixos-rebuild switch` on aibox,
+  # about a second after it replaces `/etc/netboot.ipxe`.  On 2026-10-21 a client
+  # fetched the menu at 18:28:05 and mounted this at 18:29:36, i.e. the menu's
+  # generation and the image's were one apart, and stage 1 died in
+  # `initrd-find-nixos-closure` (`Failed to resolve path /nix/store/<old>/init in
+  # prefix /sysroot: No such file or directory`), which reads at the console like
+  # a failed NFS root.  The mount itself was fine.
+  #
+  # That is why the menu boots `init=/nix/store/.netboot-closure/init` and the
+  # image carries a `.netboot-closure` symlink to its own closure (`pseudoFiles`
+  # above): the mount may land on either generation and both resolve.  Do not
+  # put a store path back in the menu.
   fileSystems."/nix/netboot-squashfs" = mkImageMediaOverride {
     fsType = "nfs4";
     device = "${nfsServer}:/netboot-squashfs";

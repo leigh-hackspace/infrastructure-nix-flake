@@ -15,7 +15,7 @@ flake.nix  piRoomSys = nixosSystem { modules = [ configuration.nix (netboot.nix 
    └── specialArgs.piRoomSys ──────────┐                 # (an attrset cannot pass a sibling)
                                        ▼
 machines/aibox/netboot.nix   sys = specialArgs.piRoomSys; sys.config.system.build.{toplevel,kernel,netbootRamdisk,squashfsStore}
-   ├─ /etc/netboot.ipxe       the iPXE menu: kernel + initrd + ${build.toplevel}/init + kernelParams
+   ├─ /etc/netboot.ipxe       the iPXE menu: kernel + initrd URLs + `init=/nix/store/.netboot-closure/init` + kernelParams
    ├─ nginx  /boot/bzImage, /boot/initrd, /boot/logo.png
    ├─ NFS    /exports/netboot-squashfs  ← ${build.squashfsStore}   (the store, read-only)
    └─ NFS    /exports/nix-store         ← /nix/store (bind; the commented-out alternative mount)
@@ -27,6 +27,20 @@ loop-mount `squashfs.squashfs` out of it, and overlay `/nix/store` on top of a
 tmpfs.  Root is tmpfs; everything persistent is either the store on NFS or
 whatever the user mounts at login (`configuration.nix`'s PAM script mounts the
 NAS filestore into the user's home).
+
+**The menu names no generation, on purpose.** The image is swapped by
+`nixos-rebuild switch` on aibox about a second after `/etc/netboot.ipxe` is
+replaced, and the client mounts it a minute later, so the two are not from the
+same generation reliably.  So `init=` is the constant
+`/nix/store/.netboot-closure/init`, and the image carries a `.netboot-closure`
+symlink to *its own* closure (`netboot.nix`'s `pseudoFiles`); whichever image the
+client mounted resolves.  On 2026-10-21 the menu named a store path instead: a
+client fetched the menu at 18:28:05, mounted the next generation's store at
+18:29:36, and stage 1 died in `initrd-find-nixos-closure` — `Failed to resolve
+path /nix/store/<old-init>/init in prefix /sysroot: No such file or directory` —
+which reads at the console like a failed NFS root (it was not; the mount had
+succeeded).  Do not put a store path back in the menu; the same failure comes
+back the next time aibox is switched while a client boots.
 
 `nfsServer` is an IP literal in `flake.nix` and the hostname is used for the iPXE
 URLs in `machines/aibox/netboot.nix`.  That split is inherited and deliberate: the
