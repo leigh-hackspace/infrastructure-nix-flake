@@ -420,7 +420,12 @@ listed here is in the doc named for it.
 - **Router** is `machines/gw/` — the flake's own NixOS box at **10.3.1.1**, cut over
   from the OPNsense appliance on 2026-10-21 (the appliance is retired). DNS/DHCP come
   from `common/vlans.nix` + `common/dns-records.nix`, nftables from `common/config.nix`,
-  and the AAISP tunnel and tailnet client are in `machines/gw/`. Read
+  and the AAISP tunnel and tailnet client are in `machines/gw/`. **Egress is split by
+  VLAN:** VLAN 225's IPv4 leaves through the AAISP tunnel, every other VLAN's IPv4 goes
+  straight out of the hub with a second NAT, and **all IPv6 on every VLAN leaves through
+  the tunnel** — so a dead tunnel is a network with no IPv6 at all, and VLAN 225 must stay
+  on the tunnel in both directions because its inbound arrives there
+  (`docs/router-and-dns.md`, "Which uplink each VLAN leaves by"). Read
   `machines/gw/README.md` before changing it and `docs/gw-cutover-attempt-2026-10-21.md`
   for what broke at the cutover. **Never edit the generated
   `/etc/dnsmasq.d/network.conf`.** The flake-owned records are

@@ -45,6 +45,59 @@ root is not keyed — use `leigh-admin` and `sudo`. The LAN dashboard
 `network-info.int.leighhack.org` (`crates/network-status/`) was the last thing ssh'ing
 there as `root`; it now runs on gw and reads the kernel's `/proc` files directly.
 
+## Which uplink each VLAN leaves by
+
+**The policy: VLAN 225's IPv4 goes through the AAISP tunnel; every other VLAN's IPv4 goes
+straight out of the AAISP hub with a second NAT; all IPv6, on every VLAN, goes through the
+tunnel.** Read off the live box on 2026-10-21:
+
+| Traffic | Egress | `ip route get 1.1.1.1 …` |
+| --- | --- | --- |
+| IPv4, `vlan225` | `ppp0`, the tunnel (`81.187.223.123`) | `mark 1` → `dev ppp0 table 100 src 81.187.223.123` |
+| IPv4, every other VLAN | `router-uplink`, the hub, double NAT | `mark 2` → `via 192.168.20.1 dev router-uplink table 200` |
+| IPv6, every VLAN | `ppp0` | one main-table `default dev ppp0`, and **no `ip -6 rule`** |
+| tailnet exit-node traffic | `router-uplink` | `oifname "router-uplink" ip saddr 100.64.0.0/10 masquerade` |
+| the router's own traffic | `router-uplink` | main-table `default via 192.168.20.1` |
+
+Why it is split that way: the tunnel's overhead is only worth paying for the VLAN that
+hosts the public services, because those need the public `/29` and the `/48`. The `/29`
+(`81.187.195.17/29`) is routed to the AAISP line and its inbound packets arrive through
+the tunnel, so VLAN 225 has to egress the tunnel for *both* directions — a reply routed
+out of the hub would leave with a different source address than the client dialled and
+the connection would die. Everything else is ordinary internet access, which double NATs
+fine.
+
+Mechanism, in the order a packet meets it (`machines/gw/`): `firewall.nix`'s
+`vlanMarkRules` sets `meta mark 1` for `vlan225` and `2` for all others (in `prerouting`,
+before the route decision, and skipped for destinations inside the network —
+`markLocalV4`); `networking.nix` installs the two `ip rule`s and the two tables, with
+table 100's default written by `uplink.nix`'s `ip-up` script only while the tunnel is up;
+and `routerNat`'s `srcnat` chain masquerades per egress interface, so LAN-to-LAN traffic
+keeps its real source address. IPv6 needs no mark: `ipv6-up` writes the single default
+and there is no v6 policy rule, which is also why **a dead tunnel is a network with no
+IPv6 at all** (the RAs are still advertised, so clients keep their addresses and lose the
+route — `machines/gw/README.md`, the RA-timer section).
+
+IPv6 is offered by RA on the VLANs that own addressing: 225, 226 and 227 each advertise a
+public `/64` (225 and 227 also a ULA). VLAN 222 has no range at all and VLAN 1337 is the
+CS network's block, IPv4-only on purpose — `common/vlans.nix` is the table.
+
+What proves it, rather than the comments:
+
+```bash
+ip rule                                    # fwmark 0x1 → 100, 0x2 → 200
+sudo ip route show table 100               # default dev ppp0
+sudo ip route show table 200               # default via 192.168.20.1 dev router-uplink
+ip -6 route show default                   # default dev ppp0, one route, main table
+sudo nft list chain ip routerNat srcnat    # one masquerade per egress
+sudo nft list chain ip router prerouting   # the per-VLAN marks
+ping -I 10.3.2.1 1.1.1.1                   # a non-225 source, out of the hub
+```
+
+The failure this is often mistaken for is not routing at all: "only VLAN 225 has no
+internet" is the PPP password (`machines/gw/README.md`), because 225 is the one VLAN
+whose path differs.
+
 ## dnsmasq — the LAN resolver
 
 > **The rest of this section describes the retired OPNsense appliance** and is kept as

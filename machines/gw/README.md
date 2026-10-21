@@ -260,7 +260,10 @@ rather than done here.
 ## "Only VLAN 225 has no internet": the tunnel's password, not the firewall
 
 This is the one failure here that looks like a routing or nat bug and is a credential
-bug. The shape, measured on the cut-over box on 2026-10-21:
+bug. The policy it is being confused with — which VLAN leaves by which uplink, and why — is
+`docs/router-and-dns.md`, "Which uplink each VLAN leaves by"; this section is only the
+time the tunnel's *IPv4 path* looked wrong. The shape, measured on the cut-over box on
+2026-10-21:
 
 * **only VLAN 225 is affected, and only for IPv4.** Every other VLAN leaves through the
   hub (`mark 2` → table 200) and works; VLAN 225 is the one `./firewall.nix` marks `1`,
