@@ -195,11 +195,26 @@
   # policy is `drop`, so a row here is the only way to create a `ct status dnat`
   # packet, and a port not in the table does not exist from the internet.
   #
-  # Read from the old box on 2026-10-17 (the same archive as ./README.md's table):
-  # `DMZ_SERVICES1 :80,:443,:8522,:3478,:50443,:51820` and
-  # `DMZ_YUNOHOST :80,:443`.  The 3478→3479 row is the one that is *not* a
-  # same-port forward: 3478 is headscale's STUN socket's public port and 3479 is
-  # where it listens (UniFi claims 3478 — machines/services1/services/headscale.nix).
+  # **The policy this table implements is: 80, 443 and tailscale.**  The retired
+  # box's archive had more (`DMZ_SERVICES1 :80,:443,:8522,:3478,:50443,:51820` and
+  # `DMZ_YUNOHOST :80,:443`), and the cutover copied it faithfully; the 2026-10-21
+  # audit after the box went live removed the rows that are neither web nor
+  # tailscale:
+  #
+  #   * 8522 — GitLab's SSH port.  Not a web service, and nothing was listening
+  #     on services1:8522 by the time of the audit (`ss -lnt`).  Use the tailnet
+  #     for administrative SSH.
+  #   * 50443 — the old box's "matrix/livekit, etc." port.  Nothing listens on
+  #     services1:50443, so it was an open port to a closed door.
+  #   * 51820 — WireGuard to the NAS.  A VPN, not tailscale, so it is out of the
+  #     allowed set; tailscale is the network's remote-access path.
+  #
+  # What remains is the web pair on both public addresses, plus 3478/udp: the
+  # public port of headscale's DERP STUN socket (`stun_listen_addr =
+  # 0.0.0.0:3479` in machines/services1/services/headscale.nix; UniFi claims 3478,
+  # which is why it is remapped).  STUN is UDP — the old table wrote it as TCP,
+  # which opened a TCP port to a UDP service and left tailnet clients' STUN
+  # unassisted.  `protocol` is per-row for that reason.
   portForwards = [
     {
       public = NICS.PUBLIC_SERVICES1;
@@ -215,27 +230,10 @@
     }
     {
       public = NICS.PUBLIC_SERVICES1;
-      port = 8522;
-      to = HOSTS.services1;
-      toPort = 8522;
-    }
-    {
-      public = NICS.PUBLIC_SERVICES1;
-      port = 50443;
-      to = HOSTS.services1;
-      toPort = 50443;
-    }
-    {
-      public = NICS.PUBLIC_SERVICES1;
       port = 3478;
+      protocol = "udp";
       to = HOSTS.services1;
       toPort = 3479;
-    }
-    {
-      public = NICS.PUBLIC_SERVICES1;
-      port = 51820;
-      to = HOSTS.nas;
-      toPort = 51820;
     }
     {
       public = NICS.PUBLIC_YUNOHOST;
@@ -251,15 +249,16 @@
     }
   ];
 
-  # One rule per row, and the port is only written when it changes: `dnat to
+  # One rule per row.  The port is only written when it changes: `dnat to
   # <address>` keeps the matched port, which is dnsmasq's/OPNsense's own `->
-  # <host>` form and not the same thing as `dnat to <address>:0`.
+  # <host>` form and not the same thing as `dnat to <address>:0`.  `protocol`
+  # defaults to tcp so the web rows do not repeat it.
   dnatRules =
     builtins.concatStringsSep "\n"
     (
       map
       (f: ''
-        ip daddr ${f.public} tcp dport ${toString f.port} dnat to ${f.to}${
+        ip daddr ${f.public} ${f.protocol or "tcp"} dport ${toString f.port} dnat to ${f.to}${
           lib.optionalString (f.toPort != f.port) ":${toString f.toPort}"
         }
       '')
@@ -277,15 +276,15 @@
   # side effect of the NAT, and forgetting it is silent (the site works over IPv4,
   # from the LAN, and from anyone whose address happens to be in the shared ACL).
   #
-  # This is the old box's three "Public IPv6 Services" rules, verbatim in scope:
+  # This started as the old box's three "Public IPv6 Services" rules:
   # `pass in quick on l2tp0 reply-to (l2tp0 fe80::9e89:1eff:fe3f:0) inet6 proto tcp
   # from any to <SERVICES1_IPV6> port = {http, https, 8522}` (read out of the
-  # archived `pf.txt`, `~/tmp/opnsense-archive-20261017` on services1).  The port
-  # set is theirs and not the v4 table's: the old box never allowed 3478, 50443 or
-  # 51820's v6 equivalents in, which is why headscale's DERP has an IPv6 *address*
-  # but a STUN socket reachable over v4 only (docs/follow-ups.md).  Adding them here
-  # would be opening a listener, not inheriting one, so they are not added.  The
-  # yunohost appliance has no row because `yunohost.leighhack.org` has no AAAA.
+  # archived `pf.txt`, `~/tmp/opnsense-archive-20261017` on services1).  The
+  # 2026-10-21 audit cut 8522 (GitLab SSH, not web, and nothing listening) to
+  # match the v4 policy: **80 and 443 only**.  3478/50443/51820 were never
+  # allowed in over v6 and stay that way — headscale's DERP has an IPv6 *address*
+  # but a STUN socket reachable over v4 only (docs/follow-ups.md).  The yunohost
+  # appliance has no row because `yunohost.leighhack.org` has no AAAA.
   #
   # Matched on the tunnel rather than on "not a VLAN" for the same reason the old
   # rules named `l2tp0`: the hub's handoff has no public IPv6 to arrive on, and an
@@ -300,7 +299,7 @@
   # whether or not the internet can arrive. Read it after a probe from a v6 address
   # that is not in the ACL — `nft list chain ip6 router6 forward`.
   publicV6ForwardRules = ''
-    iifname "${NICS.UPLINK_TUNNEL}" ip6 daddr ${TABLES.setOf NICS.PUBLIC_SERVICES1_V6} tcp dport { 80, 443, 8522 } counter accept
+    iifname "${NICS.UPLINK_TUNNEL}" ip6 daddr ${TABLES.setOf NICS.PUBLIC_SERVICES1_V6} tcp dport { 80, 443 } counter accept
   '';
 in {
   # The router forwards: that is the whole point of it.  Written as sysctls rather

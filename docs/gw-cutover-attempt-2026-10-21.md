@@ -104,6 +104,12 @@ today would still take public services down even with dnsmasq fixed.
    | 81.187.195.17:51820 (tcp) | → | 10.3.1.6 (nas) | |
    | 81.187.195.18:80, :443 | → | 10.3.1.15 (yunohost) | |
 
+   *Post-cutover audit, 2026-10-21: the flake now forwards only 80/443 and
+   3478/udp (headscale STUN) — 8522, 50443 and 51820 were removed because nothing
+   listened on the first two and the third is a VPN rather than tailscale. The
+   table above is what the old box ran, not the live policy; the live policy is in
+   `machines/gw/firewall.nix` and rendered by `nft list chain ip routerNat dstnat`.*
+
 2. **No NAT reflection**, which is why the box cannot reach its **own** public names —
    including its headscale control server. `tailscaled-autoconnect.service` fails on every
    boot with `dial tcp 81.187.195.17:443: connect: network is unreachable` — that address is

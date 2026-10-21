@@ -342,13 +342,15 @@ rather than this comment:
 sudo nft list chain ip6 router6 forward      # the iifname "ppp0" line, and its counters
 ```
 
-Three things follow from copying the old box exactly, and each is a decision rather
-than an oversight:
+Three things follow from this rule, and each is a decision rather than an
+oversight:
 
-* **Only 80, 443 and 8522.** The v4 table's 3478, 50443 and 51820 were never allowed
-  in over IPv6, so headscale's DERP has a published IPv6 address whose STUN socket is
-  v4-only. Opening them here would be a new listener on the network's public prefix,
-  not a ported one.
+* **80 and 443 only.**  The retired box's rule also let 8522 (GitLab SSH) in over
+  v6; the 2026-10-21 post-cutover audit removed it to match the v4 policy (web plus
+  tailscale only).  The v4 table's 3478, 50443 and 51820 were never allowed in over
+  IPv6, so headscale's DERP has a published IPv6 address whose STUN socket is
+  v4-only.  Opening them here would be a new listener on the network's public
+  prefix, not a ported one.
 * **`iifname "ppp0"`, not "not a VLAN"** — the hub's handoff has no public IPv6, and a
   rule without an input interface would let that segment pose as the internet.
 * **The yunohost appliance has no v6 row** because `yunohost.leighhack.org` has no
@@ -525,7 +527,7 @@ state and generated PPP files were archived under
 | AAISP's dial script | replaced by `xl2tpd` | **not needed**: `xl2tpd` is the daemon pppd's `pppol2tp` plugin expects, and it dials the same L2TP endpoint |
 | The tailnet's `ts.leighhack.org` resolver address | `dns.nix` `server` line | **read**: `100.100.100.100`, exactly as the placeholder guessed |
 | The routes the old box advertised to the tailnet | `uplink.nix` `--advertise-routes` | **open**: the new list is the network's aggregate blocks; headscale still has to approve them for this node, **and the live node advertises nothing at all** — the flags are boot-only and the cutover's join was typed by hand (see "The tailnet's advertised routes only move at boot") |
-| Public IPv6 inbound | `firewall.nix` `publicV6ForwardRules`, `constants.nix` `PUBLIC_SERVICES1_V6` | **read and implemented 2026-10-21**: the old box's three `pass in on l2tp0 inet6 … to <SERVICES1_IPV6>` rules (:80, :443, :8522), which the flake did not have for its first four days — see "Public IPv6 inbound is a rule, not a side effect" |
+| Public IPv6 inbound | `firewall.nix` `publicV6ForwardRules`, `constants.nix` `PUBLIC_SERVICES1_V6` | **read and implemented 2026-10-21**: the old box's three `pass in on l2tp0 inet6 … to <SERVICES1_IPV6>` rules (:80, :443, :8522), which the flake did not have for its first four days. The same day's post-cutover audit cut 8522, so it is **80/443 only** now — see "Public IPv6 inbound is a rule, not a side effect" |
 | The tailnet's own address block | `common/config.nix` `TAILNET_V4`/`TAILNET_V6` | **read**: `<alias name="TAILSCALE">` was `100.64.0.0/10, fd7a:115c:a1e0::/48`, and headscale allocates from that /10 — three copies of the fact here said /16 until 2026-10-21 |
 | The upstream resolvers | `dns.nix` `server` | **read**: `<dnsserver>` was 9.9.9.9, 8.8.8.8, 1.1.1.1, 8.8.4.4. `dnsallowoverride` (letting the uplink's DHCP hand back resolvers) is deliberately **not** inherited |
 | Interface offload knobs | nothing | **read but not ported**: `<Interfaces><settings>` disabled checksum, segmentation and large-receive offloading and the VLAN hardware filter. Those are FreeBSD-driver-era settings; Linux's defaults for `e1000e` want them on, so this is recorded rather than copied — if the tunnel ever misbehaves on TCP, this is a difference from the box that worked |
@@ -700,6 +702,43 @@ the two answers is the fastest way to tell whether the tables and the live box a
 cutover), `ip -d link show vlan225`.
 
 ## Security notes
+
+**What the internet can reach (audited 2026-10-21, after the cutover).** Read the
+live rules rather than this list — `sudo nft list chain ip routerNat dstnat`,
+`ip6 router6 forward`, `ip routerIn input` — but the intended set is:
+
+| From the internet | Port | What |
+| --- | --- | --- |
+| 81.187.195.17 | tcp 80, 443 | services1: nginx, every `*.leighhack.org` vhost |
+| 81.187.195.17 | udp 3478 | headscale DERP STUN → services1:3479 (tailscale) |
+| 81.187.195.18 | tcp 80, 443 | the yunohost appliance |
+| services1's public IPv6 | tcp 80, 443 | the same vhosts, no NAT |
+| gw itself | udp 41641 | tailscale's direct data plane (both families) |
+
+The retired box's 8522 (GitLab SSH), 50443 (matrix/livekit) and 51820 (WireGuard to
+the NAS) forwards were removed on 2026-10-21: not web, not tailscale, and 8522/50443
+had no listener left on services1.  Nothing else on the gateway answers from the
+WAN: DNS and DHCP are `iifname "vlan*"`/`tailscale0`, SSH is source-gated by the
+ACL below, `network-status` is `10.3.1.20` only, and the L2TP daemon's 1701 listener
+is not in any input rule (the tunnel's own replies are `ct established`).
+
+**The ACL is a source exception, and it is wider than the port policy.**
+`common/config.nix`'s `LOCAL_NETWORK` contains five *public* ranges —
+`51.148.168.145/32`, `217.155.231.1/32`, `2a02:8010:6680::/48`,
+`2a0a:ef40:154a::/48`, `2001:4860:7::/48` — alongside the LAN and tailnet, and
+both the input SSH rule and the forward chain trust the whole ACL.  So from those
+addresses port 22 is open and forwarded traffic on *any* port is admitted, which is
+not "80/443 + tailscale".  On top of that, `sshd -T` reports
+`passwordauthentication yes` (NixOS' default), so anyone in the ACL who reaches 22 can
+attempt a password even though the fleet's access is key-based.  Moving those admins
+to the tailnet (their nodes are already there) or splitting `LOCAL_NETWORK` into
+"service clients" and "routable admins", and disabling password/KbdInteractive auth,
+are the next security decisions; neither is changed here because both can lock
+someone out.  `docs/follow-ups.md` carries them as open items.
+
+**ICMP echo is answered on every interface**, v4 and v6, so the router is pingable
+from the internet. That is not a port and is needed for diagnosing a dead uplink
+from a laptop with no DNS; it is noted because it is the one other WAN response.
 
 * **The mode is the security property as much as the networking one:** while
   `./coexist.nix` is on, this box refuses DHCP by interface name, sends no router

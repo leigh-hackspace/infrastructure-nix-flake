@@ -314,18 +314,20 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   every IPv4 test passed, and the only v6 traffic that got through was Chris's
   `2a02:8010:6680::/48` — which passes *because it is in the shared ACL*, not because
   a rule allows the service. `publicV6ForwardRules` is the ported rule; the two
-  addresses are `constants.nix`'s `PUBLIC_SERVICES1_V6`.
+  addresses are `constants.nix`'s `PUBLIC_SERVICES1_V6`.  The post-cutover audit on
+  2026-10-21 narrowed it from the old box's {80, 443, 8522} to **80 and 443**,
+  matching the v4 policy (web plus tailscale only).
 
   What this still owes someone: **a probe from a v6 address that is not in the ACL.**
   A LAN `curl -6` proves nothing (its source matches `2001:8b0:1d14::/48`), and the
   external-v6 hits in services1's nginx access log stop at 08:46 on 2026-10-21, so
   the pre-cutover behaviour is inferred from pf rules rather than observed. Read
   `nft list chain ip6 router6 forward` and its counters after a probe from, say, a
-  phone on a mobile network. Two deliberate non-changes while it is being checked:
-  3478/50443/51820 stay v4-only because the old box never let them in over v6 (so
-  headscale's DERP has a published IPv6 with a v4-only STUN socket — worth a look if
-  DERP ever needs to be reachable over v6), and `yunohost.leighhack.org` has no AAAA
-  so the appliance has no v6 row.
+  phone on a mobile network. One deliberate non-change: 3478 stays v4-only because
+  the old box never let it in over v6 (so headscale's DERP has a published IPv6
+  with a v4-only STUN socket — worth a look if DERP ever needs to be reachable over
+  v6); 50443 and 51820 were removed entirely on 2026-10-21 (see `firewall.nix`), and
+  `yunohost.leighhack.org` has no AAAA so the appliance has no v6 row.
 
 - **The tailnet's advertised routes are not applied, and a hand-typed `tailscale up`
   outranks the flake** (measured 2026-10-21). `machines/gw/uplink.nix` advertises
@@ -569,6 +571,33 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   is carrying the network today / that one has no carrier", which is strong evidence
   and not proof. Re-check at the cutover, when the AAISP handoff cable actually moves:
   `ip -br link` and which port answers.
+
+- **The post-cutover exposure audit, 2026-10-21: the port list is now right, the
+  source list is not.**  The internet-wide forwards are 80/443 on both public
+  addresses plus 3478/udp (headscale's DERP STUN) — 8522, 50443 and 51820 were
+  removed, and the v6 rule is 80/443.  Re-read the live rules with
+  `sudo nft list chain ip routerNat dstnat`, `ip6 router6 forward` and
+  `ip routerIn input`.  Two things still mean "only 80/443 + tailscale" is not the
+  whole truth for *specific sources*:
+  1. `common/config.nix`'s `LOCAL_NETWORK` contains five public ranges
+     (`51.148.168.145/32`, `217.155.231.1/32`, `2a02:8010:6680::/48`,
+     `2a0a:ef40:154a::/48`, `2001:4860:7::/48`) and both the SSH input rule and the
+     forward chain trust the whole ACL, so those addresses get **port 22 and any
+     forwarded destination**.  Moving them to the tailnet (or splitting the ACL into
+     service clients vs routable admins) is the next decision; it was not made in the
+     audit because it cuts off access someone may still intend.
+  2. `sshd -T` on gw reports `passwordauthentication yes` and
+     `kbdinteractiveauthentication yes` (NixOS' `services.openssh` default).  Anyone in
+     the ACL who can reach 22 can try a password.  The fleet's access is key-based
+     (`common/users.nix`), so `services.openssh.settings.PasswordAuthentication = false`
+     (and `KbdInteractiveAuthentication = false`) is the recommendation; it is not
+     applied yet because a password-only account would be locked out.
+  Not ports, but the other WAN responses: ICMP echo is answered on every interface
+  (v4 and v6), and the DHCPv6 client accepts `udp sport 547 dport 546` on `ppp0` from
+  any source.  The DHCP relay is the LNS's link-local in practice, so adding
+  `ip6 saddr fe80::/10` to that rule would close an injection path; it is left as-is
+  because DHCPv6-PD is not currently relied on and a wrong guess would silently
+  remove the prefix if AAISP ever starts delivering it.
 
 
 ## Postgres
