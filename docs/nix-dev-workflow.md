@@ -284,8 +284,9 @@ sudo systemd-run --no-block --unit=deploy-build --collect --service-type=oneshot
        readlink -f /run/current-system /nix/var/nix/profiles/system >> /tmp/deploy.log'
 ```
 
-Three traps in that block, all hit for real on 2026-10-15 (first run of
-`docs/network-upgrade-runbook.md`), and all of them cheap to fix in a script file
+Five traps in that block — the first three hit for real on 2026-10-15 (first run of
+`docs/network-upgrade-runbook.md`), the last two on 2026-10-21 while running a
+`nix build` loop detached the same way. All of them are cheap to fix in a script file
 rather than inline — write `/tmp/nu-switch.sh` and `install -m 755 /dev/stdin`
 it onto the box:
 
@@ -302,6 +303,14 @@ it onto the box:
   safe.directory` must list the repo, or nix refuses it with libgit2's "not owned
   by current user". services1/services2 have it, aibox did not
   (`docs/follow-ups.md` has the item to declare it).
+- **The script's shebang has to be a path that exists**: `#!/bin/bash` is not a thing
+  on NixOS, and the unit dies in a heartbeat with `bad interpreter: No such file or
+  directory` (status 126) before writing a line of log — which looks like the detached
+  pattern not working. Use `#!/run/current-system/sw/bin/bash`, or no shebang at all and
+  invoke it as `bash /tmp/the-script`.
+- **Bash reads `$m_EXIT` as one variable name.** A loop that logs `BUILD_$m_EXIT=$rc`
+  prints `BUILD_=0` for every machine, so the log says "a machine passed" rather than
+  which one. Write `${m}_EXIT` in any marker built from a loop variable.
 
 Poll `/tmp/deploy.log` and the unit state (`systemctl is-active deploy-build`,
 `journalctl -u deploy-build`); do not sleep to the expected finish time. Chaining

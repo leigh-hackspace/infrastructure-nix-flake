@@ -435,15 +435,30 @@ state and generated PPP files were archived under
 Still open for the cutover itself: the old box's **OpenVPN server** and its
 **port-forward/round-robin NAT rules** are not reproduced here (the tunnel and the
 LAN routing are).  If those are still in use, they need a follow-up before the old
-box goes away for good.  `network-status` and `dns-sync` on services1 still speak
-OPNsense's XML and command set, so they will fail against this box.
+box goes away for good.  `network-status` still speaks OPNsense's XML and command set
+as `root@10.3.1.1`, so its router panel fails against this box (`crates/network-status/`,
+`docs/handover-2026-10-21.md`); dns-sync was ported on 2026-10-21 and maintains
+`/var/lib/dnsmasq/names.hosts`.
 
 ## Known-incomplete, by name
 
-* **dns-sync still points at the old box.** It edits OPNsense's XML and runs
-  `configctl dnsmasq restart` as root on `10.3.1.1`. `docs/follow-ups.md` has the
-  list of what has to change before new vhosts get DNS from this box; the records
-  the flake owns come from `common/dns-records.nix` and do not depend on it.
+* **dns-sync writes `/var/lib/dnsmasq/names.hosts`** (ported 2026-10-21, the same day
+  as the cutover). It connects as `leigh-admin` with `sudo -n`, replaces the file
+  atomically and reloads dnsmasq; the contract, and why a record is one line per
+  address, is at the top of `crates/dns-sync/src/main.rs`, with the manual fallback in
+  `docs/router-and-dns.md`. Two properties of this file are worth knowing before
+  touching it: it is **mutable state the flake never rewrites** (tmpfiles creates it
+  empty, and that is the whole of the flake's involvement), and it is **shared with
+  records dns-sync does not own** — the cameras, APs, Pi Room boards, `nginx.int`,
+  `services1`, and `authentik.int` at the appliance. So deleting it does not "let
+  dns-sync rebuild it": dns-sync refuses to run against a file it cannot read, and the
+  network is NXDOMAIN in the meantime. Snapshot before any hand edit; the 2026-10-21
+  snapshot is `/var/lib/dns-sync-backups/` here and on services1.
+* **network-status still points at the old box.** It ssh's to `root@10.3.1.1` and runs
+  `pluginctl`, or reads `/conf/config.xml`, none of which exist here, so
+  `network-info.int.leighhack.org` shows a dead router. It reads dns-sync's pinned
+  `/etc/dns-sync/known_hosts`, so since the repin it fails on authentication rather
+  than on the host key. `crates/network-status/` and `docs/handover-2026-10-21.md`.
 * **Nothing here is the network's router yet** — that *was* `./coexist.nix`, and it was
   flipped on 2026-10-21. `.1` addresses, DHCP, RAs, the AAISP tunnel and the policy
   routing are all live now; the things that had to be proven first (the tunnel, the

@@ -19,12 +19,15 @@ has the findings from the cutover and what is still open.
 
 What still speaks the retired OPNsense box's language:
 
-- **dns-sync** edits `/conf/config.xml` and reads `/var/etc/dnsmasq-hosts`; it cannot
-  write `gw`'s `/var/lib/dnsmasq/names.hosts` yet, and its pinned host key is the old
-  box's. Until it is ported (open in `docs/follow-ups.md`), the `*.int` names are a
-  hand-restored copy of the old box's hosts file, and nothing refreshes them.
-- **network-status** (`crates/network-status/`) ssh's to `10.3.1.1` and runs OPNsense
-  commands; it needs the same port.
+- **network-status** (`crates/network-status/`) ssh's to `10.3.1.1` as `root` and runs
+  OPNsense commands (`pluginctl`, `/conf/config.xml`); it needs the same port dns-sync
+  got on 2026-10-21 — see `docs/handover-2026-10-21.md`. It reads the same pinned
+  `/etc/dns-sync/known_hosts`, which is now `gw`'s, so its router panel fails on
+  authentication where it used to fail on the host key: neither is a fault in `gw`.
+
+(`dns-sync` was on this list until 2026-10-21: it now edits `gw`'s
+`/var/lib/dnsmasq/names.hosts` over `leigh-admin` + `sudo -n`, so new `*.int` vhosts get
+DNS from the flake again. `crates/dns-sync/src/main.rs` owns the contract.)
 
 ```bash
 ssh -i ~/.ssh/agent-hop-key leigh-admin@10.3.1.1   # gw; root is NOT keyed there
@@ -43,11 +46,21 @@ root is not keyed — use `leigh-admin` and `sudo`. The LAN dashboard
 ## dnsmasq — the LAN resolver
 
 > **The rest of this section describes the retired OPNsense appliance** and is kept as
-the reference for what dns-sync and network-status still expect. On `gw` the resolver
-is `services.dnsmasq` from `machines/gw/dns.nix`: the generated conf is
+the reference for what network-status still expects. On `gw` the resolver is
+`services.dnsmasq` from `machines/gw/dns.nix`: the generated conf is
 `/etc/dnsmasq.d/network.conf` (from the tables), the flake-owned records are
 `/etc/dnsmasq-records.hosts`, and the vhost names are `/var/lib/dnsmasq/names.hosts`
-(hand-restored; dns-sync cannot write it yet). `machines/gw/README.md` is the manual.
+— the mutable half, created empty by tmpfiles, never rewritten by the flake, and
+maintained by dns-sync. `machines/gw/README.md` is the manual.
+
+Reading what the live router actually answers on `gw` (there is **no `dig` on `gw` or
+services1**; `getent` goes through the same resolver and proves the whole chain):
+
+```bash
+sudo -n grep <name> /var/lib/dnsmasq/names.hosts     # what is in the file
+getent ahosts <name>.int.leighhack.org               # what dnsmasq answers
+sudo -n journalctl -u dnsmasq -n 20                  # and whether it reloaded
+```
 
 dnsmasq on the router answers `*.int.leighhack.org` for the LAN.
 
@@ -58,22 +71,39 @@ dnsmasq on the router answers `*.int.leighhack.org` for the LAN.
   `ssh root@10.3.1.1 'grep <name> /var/etc/dnsmasq-hosts'`.
 - **Never edit `/usr/local/etc/dnsmasq.conf`** — it is auto-generated.
 
-Manual fallback if `dns-sync` is unavailable: edit the host override in the
-OPNsense web UI (Services → Dnsmasq DNS → Host overrides) or in
-`/conf/config.xml`, then restart dnsmasq and verify against
-`/var/etc/dnsmasq-hosts`.
+Manual fallback if `dns-sync` is unavailable, on `gw`: add the record to
+`/var/lib/dnsmasq/names.hosts` yourself — one line **per address**, as every existing
+`*.int` name has three (`10.3.1.20`, `2001:8b0:1d14:225::20`, `fd99:dead:beef:225d::20`,
+from `common/dns-records.nix`) — keep the file `root:root 0644`, then `sudo systemctl
+reload dnsmasq` (SIGHUP re-reads `addn-hosts`; a restart drops the network's DNS for a
+second). dnsmasq honours `#` only at the **start** of a line, so do not mark managed
+lines with a trailing comment: the `#` becomes a hostname. The file is not a store path,
+which is why it cannot be a `restartTriggers` value and why nothing in the flake will
+repair it.
+
+**Historical (OPNsense):** edit the host override in the web UI (Services → Dnsmasq DNS
+→ Host overrides) or in `/conf/config.xml`, then `configctl dnsmasq restart` and verify
+against `/var/etc/dnsmasq-hosts`.
 
 ### Reading `dns-sync check` output
 
 `just dns-sync-check` compares three sources: the flake's expected `*.int` vhost
-names (`/etc/dns-sync/expected-int-names`), the router, and DigitalOcean. Names
-that are **supposed** to look wrong, so you do not "fix" them:
+names (`/etc/dns-sync/expected-int-names`), the router, and DigitalOcean. On the
+router half the states are `OK` (answers with all three services1 addresses),
+`MISSING`, `PARTIAL` (some address missing — `sync` completes it, and it is a real
+fault, not cosmetics: a name without its AAAA makes dual-stack clients hang), and
+`ELSEWHERE` (it answers, but never at services1, so it is somebody else's record and
+`sync` leaves it alone). Names that are **supposed** to look wrong, so you do not
+"fix" them:
 
 - `aibox.int` → 10.3.1.32 — its own record, not the nginx CNAME.
-- `authentik.int` → 10.3.1.36 — its own override (nginx also serves it as an alias
-  of `id.int`).
+- `authentik.int` → 10.3.1.36 — `ELSEWHERE` on the router, reported every run since
+  before the cutover (its own override; nginx also serves it as an alias of `id.int`).
+  Deliberately not "fixed": the appliance's `:443` is closed, so which answer is right
+  is an open decision — `docs/handover-2026-10-21.md`.
 - `gitlab`, `ldap`, `mqtt`, `nginx`, `tailscale` predate dns-sync: reported "never
-  expected" and left as-is.
+  expected" and left as-is. So does the bare `services1` name, which shares a line
+  with `services1.int`.
 - `filestore.int` is expected by the flake vhost and resolves to 10.3.1.20 in both
   the router and DigitalOcean.
 

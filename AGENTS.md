@@ -415,7 +415,8 @@ listed here is in the doc named for it.
   for what broke at the cutover. **Never edit the generated
   `/etc/dnsmasq.d/network.conf`.** The flake-owned records are
   `common/dns-records.nix`; the vhost names live in `/var/lib/dnsmasq/names.hosts`,
-  still written by dns-sync (**not yet ported to this box** — `docs/follow-ups.md`).
+  written by dns-sync (ported to this box on 2026-10-21; `network-status` is the tool
+  that still speaks OPNsense).
   **dnsmasq's unsolicited RAs stop after a `router-lan` link flap: restart dnsmasq after
   any cabling** or WiFi clients lose their IPv6 default 20 minutes later. SSH as
   `leigh-admin@10.3.1.1` (root is not keyed); DO token is `DO_AUTH_TOKEN` in the shared
@@ -497,8 +498,13 @@ there is declarative. **Root SSH is keyed here** (unlike the flake machines):
   ssh -i ~/.ssh/agent-hop-key leigh-admin@10.3.1.20   # services1
   ssh -i ~/.ssh/agent-hop-key leigh-admin@10.3.1.32   # aibox
   ssh -i ~/.ssh/agent-hop-key root@10.3.1.11          # monster1 (Proxmox; root is keyed)
-  ssh -i ~/.ssh/agent-hop-key root@10.3.1.1           # router (root is keyed)
+  ssh -i ~/.ssh/agent-hop-key leigh-admin@10.3.1.1    # router (root is NOT keyed; sudo)
   ```
+
+  The router's line used to read `root@10.3.1.1` and "root is keyed", and it was wrong
+  in exactly the way that costs a day: `just router-known-hosts` was written from it and
+  could not reconnect after the cutover, because the OPNsense box's root *was* keyed and
+  `gw`'s is not (`prohibit-password`). Verified both directions on 2026-10-21:
 
 - Connect as **`leigh-admin`, never `root`** on the flake machines — root SSH is not keyed
   there (verified both directions). `leigh-admin` has passwordless sudo, so run

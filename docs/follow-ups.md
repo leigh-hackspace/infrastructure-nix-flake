@@ -241,26 +241,26 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   them is mechanical and worth a pass of its own, not a ride-along with a router
   change.
 
-- **dns-sync is OPNsense-shaped and the cutover has to move it** (found
-  2026-10-17, while checking what the shadow router answers; still open after the
-  cutover). It is the half of the old box's DNS that the flake does not generate — the
-  `*.int.leighhack.org` vhost names — and every part of it is specific to the appliance:
-  `DEFAULT_ROUTER = "root@10.3.1.1"` (the new box has root login
-  `prohibit-password`, so it must connect as `leigh-admin` and sudo the restart),
-  edits `/conf/config.xml`'s `<dnsmasq>` host overrides with a python3 script run on
-  the router (the new box has no XML; the names belong in
-  `/var/lib/dnsmasq/names.hosts`, which `machines/gw/dns.nix` already creates empty
-  for exactly this), restarts dnsmasq with `configctl dnsmasq restart` (on NixOS:
-  `systemctl restart dnsmasq`, or SIGHUP, which is enough because dnsmasq re-reads
-  `addn-hosts` on that signal and the file is not in the store so it cannot be a
-  `restartTriggers` value), and pins the router's host keys via
-  `just router-known-hosts` (regenerate against `10.3.1.1`, and keep the old
-  entries until the old box is gone). Until this is done, **new vhosts get no DNS on
-  the new router** and `just dns-sync-sync` fails against it (host key changed, then
-  OPNsense paths) — which is correct today and was the cause of the `*.int` outage at
-  the 2026-10-21 cutover. `names.hosts` was restored by hand from the old box's
-  `/var/etc/dnsmasq-hosts` archive on services1; that restoration is what keeps the
-  names answering until the tool is ported, and nothing refreshes it.
+- **dns-sync is OPNsense-shaped and the cutover has to move it** — **done
+  2026-10-21**, same evening as the cutover, so `just dns-sync-check|sync|prune` work
+  against `gw`: it connects as `leigh-admin` + `sudo -n`, reads and writes
+  `/var/lib/dnsmasq/names.hosts` (the file `machines/gw/dns.nix` creates empty for
+  exactly this), reloads dnsmasq with SIGHUP, and the host-key pin is `gw`'s own. The
+  port, and the two facts worth keeping from it, are at the top of
+  `crates/dns-sync/src/main.rs` and in `docs/router-and-dns.md`; what it was replacing
+  is in `docs/handover-2026-10-21.md`.
+
+  Two things the port had to get right, because the file it writes is load-bearing and
+  mostly *not* dns-sync's: a record is one line **per address** (A + public AAAA + ULA
+  AAAA — the old box wrote three lines per vhost and a `*.int` name without its IPv6 is
+  the RA-shaped outage in `machines/gw/README.md`), and every write is read → edit in
+  memory → prove only the asked-for pairs moved → `mv -f` → reload → re-read. A failed
+  read aborts rather than being treated as "empty", which would write back a file
+  containing only the vhosts and take the cameras, APs, Pi Room boards and
+  `authentik.int` with them.
+
+  **network-status is still OPNsense-shaped** (`crates/network-status/`, `root@`,
+  `pluginctl`, `/conf/config.xml`) and is the next item down this list.
 
 - **Two dnsmasq bugs found by running the shadow box beside the live one**
   (2026-10-17, both fixed). Neither was visible in the config, in the build, or in
