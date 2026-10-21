@@ -23,7 +23,17 @@ boot:
 switch:
     sudo nixos-rebuild switch --flake . && sudo nixos-confirm
 
-# --- the router (gw, 10.3.1.254)
+# --- the router (gw)
+#
+# Its address is a variable because the box has two: `10.3.1.254` while it runs in
+# co-existence with the live router (machines/gw/coexist.nix), and `10.3.1.1` — the
+# network's real router address — once `enable = false`.  Which one it answers on is a
+# property of the *generation running on the box*, so it cannot be inferred from this
+# checkout: pass it, `just GW_HOST=10.3.1.1 switch-gw`, and the recipes stop being a
+# guess.  (While the box is on aibox's bench NIC it is reachable neither way without a
+# source-bound route; machines/gw/README.md says how, and
+# docs/gw-cutover-attempt-2026-10-21.md says why it is there.)
+GW_HOST := "10.3.1.254"
 #
 # Deployed the same way as every other machine — built and switched from its own
 # checkout, because that box has the repo, `git`/`just`, root's `safe.directory`
@@ -58,12 +68,12 @@ sync-gw:
       --exclude='target/' --exclude='node_modules/' --exclude='/result' --exclude='/result-*' \
       --exclude='/.git/config' \
       -i -e "ssh -i ~/.ssh/agent-hop-key -o BatchMode=yes -o ConnectTimeout=5" \
-      ./ leigh-admin@10.3.1.254:/home/leigh-admin/Projects/infrastructure-nix-flake/
+      ./ leigh-admin@{{GW_HOST}}:/home/leigh-admin/Projects/infrastructure-nix-flake/
 
 switch-gw: sync-gw
     #!/usr/bin/env bash
     set -euo pipefail
-    ssh -i ~/.ssh/agent-hop-key -o BatchMode=yes -o ConnectTimeout=5 leigh-admin@10.3.1.254 \
+    ssh -i ~/.ssh/agent-hop-key -o BatchMode=yes -o ConnectTimeout=5 leigh-admin@{{GW_HOST}} \
       'cd ~/Projects/infrastructure-nix-flake && sudo nixos-rebuild switch --flake . && sudo nixos-confirm'
 
 # --- Nix formatting ---

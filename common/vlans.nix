@@ -75,7 +75,25 @@
     net = "10.3.2.0/24";
     dynFrom = "10.3.2.100";
     dynTo = "10.3.2.253";
-    ipv6 = []; # the old box answered IPv4-only on this VLAN
+    # The router's own address in the /64 this VLAN advertises.
+    #
+    # This was empty ("the old box answered IPv4-only on this VLAN") while the
+    # plan was for networkd to take it from AAISP's DHCPv6-PD delegation.  It is
+    # written down now because PD has never been observed to work on this box
+    # (docs/gw-cutover-attempt-2026-10-21.md), and an empty `ipv6` next to a
+    # non-empty `ra` is the worst of the two failure modes: dnsmasq advertises
+    # `2001:8b0:1d14:226::/64` and the router has no address in it, so every
+    # client on this VLAN configures a public address it cannot reach a gateway
+    # in — the comment in machines/gw/networking.nix spells that out, and on a
+    # phone it looks like the internet is down.
+    #
+    # Static is no new assumption: VLAN 225 below has carried a static address
+    # out of the same /48 since the box existed, which only works because AAISP
+    # routes 2001:8b0:1d14::/48 to the line.  It also agrees with what PD would
+    # hand out — systemd's `SubnetId` is hexadecimal, so `226` is 0x226, which
+    # is the old box's `sla-id 550` (decimal) in the archived
+    # `ppp-ipv6.txt` — so this stays correct if PD starts working.
+    ipv6 = ["2001:8b0:1d14:226::1"];
     # The old box advertised this VLAN's prefix with a SLAAC constructor
     # (`dhcp-range=…,constructor:vlan0.226,slaac,64`) rather than an `ra-only`
     # range, i.e. it let clients derive their address from the VLAN id instead
@@ -98,11 +116,17 @@
     dynFrom = "10.3.14.150";
     dynTo = "10.3.14.253";
     # The old box's only IPv6 address on this VLAN was the ULA VIP
-    # `fd99:dead:beef:227d::1` (its <virtualip>, read 2026-10-17); the public
-    # /64 is this router's delegated prefix, so it is not a fixed fact and is
-    # not written here.  The ULA is what `gw` answers on when a client has only
-    # the ULA prefix.
-    ipv6 = ["fd99:dead:beef:227d::1"];
+    # `fd99:dead:beef:227d::1` (its <virtualip>, read 2026-10-17).  The public
+    # /64 used to be left to DHCPv6-PD as "not a fixed fact"; it is written here
+    # for the same reason as VLAN 226's above — the `ra` list below advertises
+    # `2001:8b0:1d14:227::/64`, and advertising a prefix the router has no
+    # address in gives its clients an unreachable gateway.  Both are kept: the
+    # ULA is what a client answers on when it only has the ULA prefix, and the
+    # public /64 is what it reaches the internet with.
+    ipv6 = [
+      "2001:8b0:1d14:227::1"
+      "fd99:dead:beef:227d::1"
+    ];
     ra = [
       {
         from = "2001:8b0:1d14:227::1000";

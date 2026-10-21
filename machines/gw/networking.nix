@@ -293,9 +293,13 @@ in {
                   # first version of this file, which is why the router had no
                   # address in the prefix it was advertising: dnsmasq can hand
                   # out an RA for a prefix the interface does not have, and the
-                  # result is clients that configure an address and cannot reach
-                  # their gateway.  The delegated VLANs' addresses are not here —
-                  # networkd assigns those from the prefix it gets on ppp0.
+                  # The result is clients that configure an address and cannot reach
+                  # their gateway.  The delegated VLANs' addresses *used* to be absent
+                  # on the theory that networkd would assign them from the prefix it
+                  # gets on ppp0; PD has never been seen to work on this box, so
+                  # common/vlans.nix now carries the public /64 of every VLAN that
+                  # advertises one, and the delegation below is the bonus rather than
+                  # the source of truth.
                   ++ map (a: "${a}/64") v.ipv6;
                 # No `DNS=` here, and no default route on the other VLANs.  This
                 # box *is* the network's resolver: its own resolution comes from
@@ -314,15 +318,17 @@ in {
                 # waiting for the day the two boxes stopped coexisting.  The IPv6
                 # addresses below are written, not learned.
                 IPv6AcceptRA = false;
-                # The public /64s on the VLANs the old box tracked from AAISP's
-                # delegation.  common/vlans.nix leaves `ipv6` empty on 226 and
-                # carries only the old box's ULA VIP on 227, because the public
-                # addresses are not fixed facts — they are the prefix networkd
-                # requests on ppp0, with the VLAN's id as the subnet id (the old
-                # box's `track6-prefix-id` was the same number).  VLAN 225 is
-                # static and already in `ipv6`; assigning the delegated prefix
-                # there too would add a second public address to the same router
-                # for no reason.
+                # The public /64s, which used to come only from AAISP's delegation.
+                # common/vlans.nix now carries them statically on 226 and 227 as well,
+                # because the `ra` lists advertise them and a prefix the router has no
+                # address in is a prefix its clients cannot use.  The static value and
+                # the delegated one are the same /64 by construction — the VLAN's id as
+                # `SubnetId` is hexadecimal (`226` = 0x226), which is exactly the old
+                # box's decimal `sla-id 550` in its archived `dhcp6c` config — so both
+                # halves agree if PD ever starts answering.  VLAN 225 is static for the
+                # same reason and asks for no delegation: assigning the delegated prefix
+                # there too would add a second public address to the same router for no
+                # reason.
                 DHCPPrefixDelegation = v.id == 226 || v.id == 227;
               };
               # This box's own default route, while it has no uplink: the live

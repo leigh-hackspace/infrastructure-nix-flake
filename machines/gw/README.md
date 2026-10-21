@@ -12,6 +12,15 @@ four ways a shadow router can become the real one by accident is a way that affe
 every client on the network, not this box. Read that file, then this section, then
 the config.
 
+> **State as of 2026-10-21: the box is cut over in config and off the network.**
+> `./coexist.nix` says `enable = false` (commit `bbc9fb2`), the box was taken off the
+> trunk after the first cutover attempt and now sits on aibox's second NIC holding `.1`
+> on every VLAN with no uplink. `docs/gw-cutover-attempt-2026-10-21.md` is the
+> post-mortem of that attempt and the list of what must be true before the next one.
+> While it is on the bench it is reachable only with a VLAN-225 interface and a
+> source-bound route — the `10.3.1.254` in the recipes below does not resolve `gw` any
+> more.
+
 ```bash
 # from services1, the whole loop: sync this tree, build it there, switch, confirm
 just switch-gw
@@ -186,6 +195,80 @@ over: a VLAN device networkd has not created yet is a *fatal* error for dnsmasq 
 that option (which is why `dns.nix` says not to set it), and a stub cache in front of
 the network's authoritative answer is a second behaviour to reason about on the one box
 whose answer *is* the network's.
+
+## The second way dnsmasq refuses to start: duplicate dhcp-host lines
+
+The co-existence mode this box shipped in **comments out** the DHCP blocks, so for
+four days dnsmasq never parsed the `dhcp-host` lines and the box was healthy. The first
+cutover un-commented them, and dnsmasq exited immediately:
+
+```
+dnsmasq: duplicate dhcp-host IP address 10.3.1.16 at line 30 of /etc/dnsmasq.d/network.conf
+```
+
+dnsmasq refuses **any two `dhcp-host` lines naming the same IPv4 address** — it does not
+matter whether they differ by MAC, by client id or by hostname — and it refuses to
+start rather than serving the one it manages to read. Multiple selectors on *one* line
+are legal, and so is a second line carrying only an IPv6 address for the same host.
+`lib/network-tables.nix`'s `hostLines` used to emit one line per *identifier*, so every
+record with both a MAC and a client id produced two lines for one address, and the
+assertion in `lib/check-network-tables.nix` counted identifiers rather than addresses
+and passed.
+
+That is one line per record with the selectors comma-joined, and the assertion now asks
+that each record's IPv4 appear on exactly one `dhcp-host` line. The whole attempt — the
+uplink that did work, the resolver that did not, the port forwards the flake does not
+have — is written up in `docs/gw-cutover-attempt-2026-10-21.md`; read it before the next
+cutover.
+
+## "Only VLAN 225 has no internet": the tunnel's password, not the firewall
+
+This is the one failure here that looks like a routing or nat bug and is a credential
+bug. The shape, measured on the cut-over box on 2026-10-21:
+
+* **only VLAN 225 is affected, and only for IPv4.** Every other VLAN leaves through the
+  hub (`mark 2` → table 200) and works; VLAN 225 is the one `./firewall.nix` marks `1`,
+  i.e. the one sent into the AAISP tunnel. The router's *own* traffic works too, because
+  its default route is the hub.
+* **everything on the tunnel's side looks right**: `ppp0` holds `81.187.223.123`,
+  `ip route show table 100` is `default dev ppp0`, `ip rule` has `fwmark 0x1 lookup
+  100`, `routerNat` has `oifname "ppp0" … masquerade`, and `tcpdump -ni router-uplink
+  'udp port 1701'` shows LCP echo request/reply in both directions. Nothing in this
+  directory is misconfigured in a way that check can see.
+* **and every packet inside the tunnel comes back rejected** in about 13 ms, from the
+  LNS itself: `From 194.4.172.12 icmp_seq=1 Destination Net Unreachable`. Not a
+  timeout — an ICMP unreachable for *every* destination, including the peer's own
+  address (`ping -I ppp0 81.187.81.187`) and the LNS's (`ping -I ppp0 194.4.172.12`).
+  A peer that cannot route to its own address is not doing a route lookup: it is saying
+  the session has no service attached to it.
+* **the dial log says it**: in `journalctl -u xl2tpd-aaisp`,
+  `pppd: CHAP authentication succeeded: Authentication failure`. pppd prints the message
+  from the CHAP *Success* packet after "succeeded", and AAISP's message is literally
+  that: the link comes up and is given an address, but the session was not authorised,
+  so nothing is routed through it.
+
+The cause: **OPNsense stores the PPP password base64-encoded** in `/conf/config.xml`
+(`<ppps><ppp><password>`), and `aaisp_ppp_password` was copied into
+`secrets/secrets.yaml` verbatim on 2026-10-17 — so pppd dialled with the base64 *text*.
+The tell is the length: 36 bytes in sops, 25 after `base64 -d` (compare hashes, not
+contents — AGENTS.md). Decode it before it goes into sops, and note that `/run/secrets`
+is rendered at activation, so the fix is `just switch` **and then** `systemctl restart
+xl2tpd-aaisp`: it is the unit's `preStart` that copies the password into pppd's
+`pap-secrets`/`chap-secrets`, and it only runs when the unit starts.
+
+Two lessons worth more than the fix:
+
+* **A tunnel that is up is not a tunnel that routes.** Both cutover attempts recorded
+  "the tunnel came up, CHAP succeeded, table 100 got its default" as the uplink proven,
+  and all of that was true while no packet ever crossed it
+  (`docs/gw-cutover-attempt-2026-10-21.md`). The proof is `ping -I ppp0 1.1.1.1` from the
+  router and a `curl` from a VLAN-225 host — traffic *through* the tunnel, not a look at
+  its interface.
+* **The failure mode is shaped like a firewall rule**, which is why it survived a
+  cutover: the VLAN that has no internet is exactly the one the policy routing sends
+  somewhere different. When one VLAN misbehaves and the others do not, the difference is
+  the mark rule, so check what the marked path does (`ip route get 1.1.1.1 mark 1`) before
+  reading the ruleset.
 
 ## Comparing the two routers, which is how to find what is wrong here
 

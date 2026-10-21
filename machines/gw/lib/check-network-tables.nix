@@ -265,24 +265,34 @@ in
     )
     ''a VLAN with a dynamic range and no dhcp-range line: ${builtins.toJSON (map (v: v.id) (builtins.filter (v: v.dynFrom != null && !has "dhcp-range=tag:${TABLES.vlanDevice v}" (TABLES.rangeLines VLANS)) VLANS))}''
   );
-  # Every record produces at least one dhcp-host line, i.e. the generation and
-  # the table agree about how many reservations there are.  The count is the
-  # thing that catches a record whose identifiers are all empty strings, which
-  # the assertion above does not (it only asks that the lists are non-empty).
+  # Every record's IPv4 appears on exactly one dhcp-host line.  This is
+  # dnsmasq's own rule, not a preference: dnsmasq exits with "duplicate
+  # dhcp-host IP address" when two lines name one address, and it does not care
+  # whether the lines differ by MAC, by client id or by hostname (measured
+  # against dnsmasq 2.93 on the router, 2026-10-21 — see ./network-tables.nix's
+  # `hostLines`).  The first version of this renderer emitted one line per
+  # *identifier*, which passed every assertion here and still left the router
+  # unable to start dnsmasq the moment ./coexist.nix stopped commenting those
+  # lines out, so the count of identifiers was never the invariant.
+  #
+  # A second line carrying only an IPv6 address for the same host is legal and
+  # is not counted against this: the duplicate rule is about IPv4 leases.
   assert (
     need
     (
-      builtins.length
-      (builtins.filter
-        (l: has "dhcp-host=" l)
-        (TABLES.lines (TABLES.hostLines RECORDS)))
-      == builtins.length
+      builtins.all
       (
-        builtins.concatLists
-        (map (r: r.macs ++ (map (c: "id:${c}") r.clientIds)) recordValues)
+        r:
+          builtins.length (
+            builtins.filter
+            (l: has "${r.ipv4}," l)
+            (TABLES.lines (TABLES.hostLines RECORDS))
+          )
+          == 1
       )
+      recordValues
     )
-    ''the generated dhcp-host lines and the table's identifiers disagree: ${builtins.toJSON (map (r: "${r.name} ${builtins.length (r.macs ++ r.clientIds)}") recordValues)}''
+    ''a record's IPv4 address does not appear on exactly one dhcp-host line, which dnsmasq refuses to start on: ${builtins.toJSON (map (r: "${r.name} ${toString (builtins.length (builtins.filter (l: has "${r.ipv4}," l) (TABLES.lines (TABLES.hostLines RECORDS))))}") recordValues)}''
   );
   # The netboot variants' VLANs exist, and their tags are the tags the dhcp-boot
   # half names: the two halves of a netboot variant name each other by tag, and

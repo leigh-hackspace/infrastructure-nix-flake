@@ -53,11 +53,28 @@ in rec {
   # boot.  The old box's own value.
   leaseTtl = 86400;
 
-  # One dhcp-host line per identifier a device answers with, so a device with
-  # two MACs (a laptop with two NICs, a Pi-room board with a replaced one) gets
-  # two lines and both carry the same address.  A record with no identifier at
-  # all produces no line, which is why ./check-network-tables.nix refuses those
-  # rather than letting a dead record look like a working reservation.
+  # One dhcp-host line per *record*, carrying every identifier the device
+  # answers with as comma-separated selectors — one line, not one line per
+  # identifier.  A device with two MACs (a laptop with two NICs, a Pi-room board
+  # with a replaced one) or with a MAC and a client id is still one reservation,
+  # and dnsmasq 2.93 refuses to read two `dhcp-host` lines that name the same
+  # address at all:
+  #
+  #   dnsmasq: duplicate dhcp-host IP address 10.3.1.16 at line 30 of
+  #   /etc/dnsmasq.d/network.conf ... FAILED to start up
+  #
+  # That is not a warning.  dnsmasq exits, the whole network loses DNS and DHCP,
+  # and the unit's never-give-up policy turns it into an endless restart loop —
+  # measured on the box on 2026-10-21, after the cutover made these lines live
+  # for the first time (./coexist.nix comments them out).  Multiple selectors on
+  # one line *are* legal (`dhcp-host=<mac>,<mac>,id:<client-id>,<addr>,<name>`),
+  # which is why the shape below is the fix rather than dropping a selector.
+  # Also measured: a second line for the same host carrying only an *IPv6*
+  # address is fine, because the duplicate rule is about IPv4 leases.
+  #
+  # A record with no identifier at all produces no line, which is why
+  # ./check-network-tables.nix refuses those rather than letting a dead record
+  # look like a working reservation.
   #
   # The `set:vlan<id>` field is the lease's tag, and it is *optional*: a record
   # whose `vlan` is null (common/dns-records.nix: a device the old router answered
@@ -77,12 +94,7 @@ in rec {
             if r.vlan == null
             then ""
             else ",${addTag r.vlan}";
-        in
-          builtins.concatStringsSep "\n" (
-            map
-            (i: "dhcp-host=${i}${tag},${builtins.concatStringsSep "," addr},${r.name}")
-            ident
-          )
+        in "dhcp-host=${builtins.concatStringsSep "," ident}${tag},${builtins.concatStringsSep "," addr},${r.name}"
       )
       (builtins.attrValues (named records))
     );
