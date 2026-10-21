@@ -215,8 +215,10 @@ network-status-dist-check:
 dns-sync-check:
     ssh -i ~/.ssh/agent-hop-key -o BatchMode=yes leigh-admin@10.3.1.20 'sudo -n dns-sync check'
 
-# Add missing DNS records (router host override aliases + DO CNAMEs).
-# Additive only — never deletes or rewrites existing records.
+# Add missing DNS records (router /var/lib/dnsmasq/names.hosts lines + DO
+# CNAMEs). Additive only — never deletes or rewrites existing records, which
+# matters because names.hosts also carries cameras, APs, Pi Room boards and the
+# authentik appliance.
 dns-sync-sync:
     ssh -i ~/.ssh/agent-hop-key -o BatchMode=yes leigh-admin@10.3.1.20 'sudo -n dns-sync sync'
 
@@ -227,13 +229,21 @@ dns-sync-sync:
 dns-sync-prune:
     ssh -i ~/.ssh/agent-hop-key -o BatchMode=yes leigh-admin@10.3.1.20 'sudo -n dns-sync prune'
 
-# Print the router's pinned host key line. dns-sync and network-status ssh to
-# it as root with StrictHostKeyChecking=yes against /etc/dns-sync/known_hosts
+# Print the router's host key lines for the pin. dns-sync and network-status ssh
+# to it with StrictHostKeyChecking=yes against the pinned /etc/dns-sync/known_hosts
 # (machines/services1/dns-sync.nix), so after a router reinstall run this and
-# paste the result there — the tools refuse to connect rather than trusting a
-# new key silently.
+# paste the result there: the tools refuse to connect rather than trusting a new
+# key silently.
+#
+# As leigh-admin, not root: the router's root login is prohibit-password, and
+# this recipe used to ssh in as root, which meant it could not regenerate the
+# pin for the box it replaced. Keyscanning over the network (rather than reading
+# /etc/ssh/ssh_host_*.pub on the box) is deliberate: it records the key a client
+# is actually offered, and dns-sync will connect over the same path. Types the
+# router does not offer simply print nothing, so the output is what it presents
+# today — two lines for gw, three for the OPNsense box it replaced.
 router-known-hosts:
-    ssh -i ~/.ssh/agent-hop-key -o BatchMode=yes root@10.3.1.1 'sh -c "ssh-keyscan -t ed25519,ecdsa,rsa 10.3.1.1 2>/dev/null"'
+    ssh -i ~/.ssh/agent-hop-key -o BatchMode=yes leigh-admin@10.3.1.1 'sh -c "ssh-keyscan -t ed25519,ecdsa,rsa 10.3.1.1 2>/dev/null"'
 
 # Rebuild+switch for the netboot setup, then reboot the netbooted clients.
 #
