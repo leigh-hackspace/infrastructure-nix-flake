@@ -306,6 +306,91 @@ Two lessons worth more than the fix:
   the mark rule, so check what the marked path does (`ip route get 1.1.1.1 mark 1`) before
   reading the ruleset.
 
+## Public IPv6 inbound is a rule, not a side effect
+
+`curl -6 https://id.leighhack.org/` from the internet has exactly one thing holding
+it up: one line in `./firewall.nix`. IPv4 inbound is easy to see because it is a
+*translation* — `portForwards` names the public address, the port and the LAN box,
+and `ct status dnat` then admits the packet. IPv6 has no translation, so the packet
+from an internet client is already addressed to services1's own interface address
+and nothing about it looks special; the v6 forward chain's `policy drop` therefore
+refuses the entire public IPv6 internet, quietly and while every IPv4 test passes.
+
+This was the state until 2026-10-21. The rule set that the retired box ran
+(`pf.txt` in `~/tmp/opnsense-archive-20261017` on services1) had three lines the
+flake had not reproduced:
+
+```sh
+pass in quick on l2tp0 reply-to (l2tp0 fe80::9e89:1eff:fe3f:0) inet6 proto tcp from any to <SERVICES1_IPV6> port = http
+pass in quick on l2tp0 reply-to (l2tp0 fe80::9e89:1eff:fe3f:0) inet6 proto tcp from any to <SERVICES1_IPV6> port = https
+pass in quick on l2tp0 reply-to (l2tp0 fe80::9e89:1eff:fe3f:0) inet6 proto tcp from any to <SERVICES1_IPV6> port = 8522
+```
+
+and the network publishes AAAAs for all of it: every `*.leighhack.org` vhost is a
+CNAME to `nginx.leighhack.org`, which answers `2001:8b0:1d14:225::20` — so the
+addresses the world dials are on the far side of this box, and were for four days
+after the cutover.
+
+The flake's version is `publicV6ForwardRules`, one rule, in the same table as the
+forward chain so it cannot be installed apart from it, over the two addresses in
+`constants.nix`'s `PUBLIC_SERVICES1_V6` (the published AAAA, and
+`2001:8b0:1d14:225:d::1020` — the old box's `SERVICES1_IPV6`, still on services1
+and still what headscale's DERP publishes as its IPv6). Read the rendered chain
+rather than this comment:
+
+```bash
+sudo nft list chain ip6 router6 forward      # the iifname "ppp0" line, and its counters
+```
+
+Three things follow from copying the old box exactly, and each is a decision rather
+than an oversight:
+
+* **Only 80, 443 and 8522.** The v4 table's 3478, 50443 and 51820 were never allowed
+  in over IPv6, so headscale's DERP has a published IPv6 address whose STUN socket is
+  v4-only. Opening them here would be a new listener on the network's public prefix,
+  not a ported one.
+* **`iifname "ppp0"`, not "not a VLAN"** — the hub's handoff has no public IPv6, and a
+  rule without an input interface would let that segment pose as the internet.
+* **The yunohost appliance has no v6 row** because `yunohost.leighhack.org` has no
+  AAAA. Anything *new* that publishes one needs its address added to
+  `PUBLIC_SERVICES1_V6`, and a vhost that publishes a AAAA on its own while this list
+  does not know it is a vhost that works over IPv4 only, which is the failure mode
+  this section exists to end.
+
+The one thing this section cannot prove from inside the network: a LAN client
+reaching those addresses matches `ip6 saddr 2001:8b0:1d14::/48` as well, so a LAN
+`curl -6` passing says nothing about the new rule. Test it from a v6 address that is
+not in `common/config.nix`'s ACL, or read the rule's packet counter after an
+external probe.
+
+## The tailnet's advertised routes only move at boot
+
+`./uplink.nix` advertises the network's blocks and offers this box as an exit node,
+and on the live box `sudo tailscale debug prefs | jq .AdvertiseRoutes` says `null`.
+Both are true because those flags are `extraUpFlags`, and they reach the daemon only
+when `tailscaled-autoconnect.service` runs `tailscale up` — **at boot**. A switch
+changes the unit and not the node; and a `tailscale up` typed by hand on the box wins
+from then on, because the daemon's prefs are what it reports and nothing re-asserts
+them. That is what happened at the cutover: the unit timed out (`16:36:22 State =
+NoState` → `16:37:53 Failed with result 'timeout'`, the login it wanted was the one
+that could not resolve `81.187.195.17` until the inbound NAT existed), the join was
+done by hand, and the box has advertised nothing since — it also registered as
+`gw-1`, because the stale node `docs/follow-ups.md` names still owns `gw`.
+
+So the check after a cutover, or after editing that line, is:
+
+```bash
+ssh -i ~/.ssh/agent-hop-key leigh-admin@10.3.1.1 'sudo tailscale debug prefs | jq -c .AdvertiseRoutes'
+```
+
+and it wants a **boot**, not a switch. Before applying it, settle the overlap
+`./uplink.nix` warns about in its own comment: services1 advertises
+`10.3.0.0/16, 2001:8b0:1d14::/48, fd99:dead:beef:225::/64` imperatively (the
+`tailscale set` line at the top of
+`machines/services1/services/headscale.nix`, not the flake), which is unequal to the
+`/48` this box advertises, and two advertisers of unequal prefixes give a route that
+depends on which one headscale accepted first.
+
 ## Comparing the two routers, which is how to find what is wrong here
 
 While both boxes were up there was a check better than reading this directory: ask the
@@ -350,9 +435,9 @@ RULE — `nixos-confirm` on services1 confirms nothing, because it confirms the 
 system).
 
 That is the primary path because the router hosts a Rust crate since 2026-10-21
-(`./network-status.nix`), and the box has no remote builder: a local
-`nixos-rebuild` here would compile Rust on the box that answers DNS/DHCP for every
-VLAN. `just switch-gw` is therefore build-shaped and refuses to run on gw itself.
+(`./network-status.nix`), and a build started here is aibox's work rather than this
+box's — `just switch-gw` is still the form that keeps the evaluation off the router
+too, so it stays build-shaped and refuses to run on gw itself.
 
 The box still keeps the checkout at `~/Projects/infrastructure-nix-flake`, with
 `git`/`just`/`jq` in its own `environment.systemPackages` (not from
@@ -439,8 +524,14 @@ state and generated PPP files were archived under
 | The peer's IPv6 default | `constants.nix` `UPLINK_TUNNEL_PEER6` | **read**: `fe80::9e89:1eff:fe3f:0` from `netstat -rn -f inet6` |
 | AAISP's dial script | replaced by `xl2tpd` | **not needed**: `xl2tpd` is the daemon pppd's `pppol2tp` plugin expects, and it dials the same L2TP endpoint |
 | The tailnet's `ts.leighhack.org` resolver address | `dns.nix` `server` line | **read**: `100.100.100.100`, exactly as the placeholder guessed |
-| The routes the old box advertised to the tailnet | `uplink.nix` `--advertise-routes` | **open**: the new list is the network's aggregate blocks; headscale still has to approve them for this node |
-| The OpenVPN server | `openvpn.nix` | **read but not migrated**: one TUN server `MembersVPN`, UDP 1194, pool `10.3.254.0/24`, push `10.3.0.0/16`, Authentik LDAP auth, certificates in the old XML |
+| The routes the old box advertised to the tailnet | `uplink.nix` `--advertise-routes` | **open**: the new list is the network's aggregate blocks; headscale still has to approve them for this node, **and the live node advertises nothing at all** — the flags are boot-only and the cutover's join was typed by hand (see "The tailnet's advertised routes only move at boot") |
+| Public IPv6 inbound | `firewall.nix` `publicV6ForwardRules`, `constants.nix` `PUBLIC_SERVICES1_V6` | **read and implemented 2026-10-21**: the old box's three `pass in on l2tp0 inet6 … to <SERVICES1_IPV6>` rules (:80, :443, :8522), which the flake did not have for its first four days — see "Public IPv6 inbound is a rule, not a side effect" |
+| The tailnet's own address block | `common/config.nix` `TAILNET_V4`/`TAILNET_V6` | **read**: `<alias name="TAILSCALE">` was `100.64.0.0/10, fd7a:115c:a1e0::/48`, and headscale allocates from that /10 — three copies of the fact here said /16 until 2026-10-21 |
+| The upstream resolvers | `dns.nix` `server` | **read**: `<dnsserver>` was 9.9.9.9, 8.8.8.8, 1.1.1.1, 8.8.4.4. `dnsallowoverride` (letting the uplink's DHCP hand back resolvers) is deliberately **not** inherited |
+| Interface offload knobs | nothing | **read but not ported**: `<Interfaces><settings>` disabled checksum, segmentation and large-receive offloading and the VLAN hardware filter. Those are FreeBSD-driver-era settings; Linux's defaults for `e1000e` want them on, so this is recorded rather than copied — if the tunnel ever misbehaves on TCP, this is a difference from the box that worked |
+| VLAN 50 (`MILL`) | absent from `common/vlans.nix` | **read and deliberately absent**: the old box defined `vlan0.50` on `em0` and put no interface on it (the uplink was untagged `em3`, `192.168.20.0/24`). If the mill's handoff is ever re-tagged, this box needs a netdev for it |
+| Config backup (`sftp` to `nas2`, 60 copies) | nothing | **not ported, and the gap is small**: the config is this tree. The key that job used (a `backups@nas2` id_ed25519) is still authorised on the NAS for a box that no longer exists, and the router's mutable state (`/var/lib/dnsmasq/names.hosts`, `/var/lib/tailscale`) has no backup at all — `names.hosts` is reproducible by dns-sync, `/var/lib/tailscale` is not |
+| The OpenVPN server | `openvpn.nix` | **read but not migrated**: one TUN server `MembersVPN`, UDP 1194, pool `10.3.254.0/24`, push `10.3.0.0/16`, Authentik LDAP auth (`Members`, LDAPS to 10.3.1.36:636 with a `cn=pfsense-gw` bind DN), certificates in the old XML. It was reachable from the internet: `pass in on l2tp0 proto {tcp,udp} from any to any port = openvpn` |
 | How the network's IPv6 prefix arrives | `networking.nix` `10-tunnel` and `50-vlan226/227` | **read**: DHCPv6-PD, `/48` hint, VLAN id as `SubnetId`; networkd now requests it and assigns the per-VLAN /64s |
 | The old box's firewall | `firewall.nix` | **read**: `pfctl -sr`/`-sn`/`-sa`; the per-VLAN `route-to` split is copied as fwmark policy routing |
 
@@ -485,7 +576,13 @@ day and maintains `/var/lib/dnsmasq/names.hosts`.
 * **OpenVPN is off** (`infra.gw.openvpn.enable = false`). An OpenVPN listener with
   guessed certificates on the network's public address is worse than none; the
   firewall rule for its port lives in `openvpn.nix` so it cannot outlive the service.
-  The facts needed to turn it on are in the table above.
+  The facts needed to turn it on are in the table above. **This is a service the
+  network had and no longer has**: the old box let members dial `vpn.leighhack.org`
+  from the internet over TCP *and* UDP 1194 and auth'd them against authentik's
+  `Members` group, and nothing here does. Reviving it needs a decision plus three
+  secrets that were in the old box's XML (the CA and its key, the server cert and its
+  key, and the LDAP bind password), so it is `docs/follow-ups.md`'s problem, not a
+  flag to flip.
 * **The `nftables` unit gets no never-give-up override**, unlike every other unit here,
   because it is `Type=oneshot` and systemd does not restart those. What protects the
   ruleset instead: nixpkgs validates it against a user-mode kernel at *build* time
@@ -551,9 +648,18 @@ to skip and one reboot away from an unbootable machine:
 
 ## Do not build on this box
 
-This is a router: 4 cores, 8 GB, and the DNS/DHCP answer for every VLAN. It has **no
-remote builder** — only services1 sets `infra.buildFarm.builderHost`, so `nix config
-show | grep builders` here is empty and a build runs locally. That is deliberate.
+This is a router: 4 cores, 8 GB, and the DNS/DHCP answer for every VLAN. It now **delegates
+its builds to aibox** (`infra.buildFarm.builderHost` in `./default.nix`, same as
+services1) and runs its own daemon with **`nix.maxJobs = 0`**, so there is nothing to
+fall back to: a build that aibox cannot take fails instead of quietly compiling here.
+Check it with `nix config show | grep -E 'max-jobs|build-withers'` and `cat
+/etc/nix/machines`. The garbage-collection half of `common/build-farm.nix` is switched
+off for this box (`infra.buildFarm.gc = false`) — a router should not be rewriting its
+own store on a timer, and `system-good` is the rollback profile's own GC root.
+
+That makes the *accident* harmless; it does not make building here correct. Evaluation
+still costs this box CPU, and the deliberate path is still build-there-and-push (see
+the next paragraph).
 
 `nix develop` is a build: the devShell pins `CRANE.wasmBindgenCli`, which is compiled
 with cargo. On 2026-10-21 a `just check` on this box ran `just fmt-check` → `nix
@@ -562,11 +668,16 @@ off: `just check` and `just fmt` evaluate/format only (`nix flake check --no-bui
 `nix fmt`), and the build-shaped recipes (`test`, `clippy`, `check-build`,
 `build-frontend`, `filestore-*`, `switch-gui-test`, `build-remote`, **and
 `switch-gw`**) refuse here via `_build-host-guard`. Run those from aibox or services1.
-`just switch` still exists here for the emergency local build, but since the box
-hosts a Rust crate (`./network-status.nix`) it now compiles that crate on the router:
-use it only when the push path is unavailable, and prefer `just switch-gw` from
-services1/aibox. Mechanism and the incident: `docs/nix-dev-workflow.md`, "Never build
-on the router".
+`just switch` still exists here, and after this generation it can no longer compile
+anything without aibox: the box hosts a Rust crate (`./network-status.nix`), that crate
+is built on aibox whether the switch was started here or on services1, and the closure
+is copied back. `just switch-gw` from services1/aibox remains the way — it is the same
+build with the *evaluation* off the router too, and `sync-gw` keeps this checkout as a
+mirror rather than as the source. If aibox is genuinely down and the push path is
+unavailable, the escape hatch is a per-command `--option max-jobs N` on a box where
+that is exactly the risk you have chosen; nobody has tested that it is honoured for a
+trusted client, so do not discover that during an outage. Mechanism and the incident:
+`docs/nix-dev-workflow.md`, "Never build on the router".
 
 
 Do not read the Nix to find out what the router will do; read what the Nix produced.

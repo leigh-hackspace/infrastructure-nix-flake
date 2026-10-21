@@ -297,6 +297,29 @@ in {
       # approved first.  The IPv6 blocks are the public /48 and the ULA /48 from
       # common/config.nix; the ULA /48 contains every VLAN's `fd99:...:225d::/64`
       # and `...:227d::/64`.
+      #
+      # **These flags are applied by a boot, not by a switch, and nothing here
+      # notices when they are not applied.**  `extraUpFlags` reach the daemon
+      # through `tailscaled-autoconnect.service`, which runs `tailscale up` once at
+      # start; a `nixos-rebuild switch` that changes this line changes the unit and
+      # not the running node, and a `tailscale up` typed by hand on the box wins
+      # from then on, because the daemon's own prefs are what it reports and the
+      # flake never re-asserts them.  Measured on 2026-10-21, the evening of the
+      # cutover: the unit timed out and failed (`16:36:22 State = NoState` →
+      # `16:37:53 Failed with result 'timeout'`, the login it wanted was the one
+      # that could not resolve 81.187.195.17 until the inbound NAT existed), the
+      # join was done by hand, and the box has advertised nothing ever since —
+      # `sudo tailscale debug prefs | jq .AdvertiseRoutes` answers `null` beside
+      # this line.  It also registered as `gw-1`, because the stale node in
+      # docs/follow-ups.md still owns `gw`.
+      #
+      # So the check after a cutover or a change here is the prefs, over ssh, not
+      # the unit's `active` state — and before applying it, settle the overlap this
+      # comment warns about: services1 advertises `10.3.0.0/16, 2001:8b0:1d14::/48,
+      # fd99:dead:beef:225::/64` (imperatively — the `tailscale set` line at the top
+      # of machines/services1/services/headscale.nix, not the flake), which is
+      # unequal to the `/48` below, and two advertisers of unequal prefixes is a
+      # route that flips depending on which one headscale accepted first.
       ++ lib.optionals (!COEXIST.enable) [
         "--advertise-routes=10.3.0.0/16,192.168.2.0/24,2001:8b0:1d14::/48,fd99:dead:beef::/48"
       ];

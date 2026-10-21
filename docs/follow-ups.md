@@ -12,6 +12,60 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
 
 ## Nix / build
 
+- **gw now delegates its builds to aibox and has no local fallback (added
+  2026-10-21, not yet deployed).** Until today gw was the one machine that imported
+  neither half of `common/build-farm.nix`: `/etc/nix/machines` did not exist, so every
+  build — including the accidental kind an agent reaches for — compiled on the router.
+  `machines/gw/default.nix` now sets `infra.buildFarm.builderHost = HOSTS.aibox` **and
+  `nix.maxJobs = 0`**, and imports the module with `infra.buildFarm.gc = false` (the
+  router delegates; it does not collect garbage on a timer).
+
+  The `maxJobs = 0` is the half that makes the rule mechanical. `nix.distributedBuilds`
+  only makes nix *prefer* the external builder and falls back to local silently — a
+  builder alone leaves the failure mode in place, just rarer. With zero local jobs there
+  is nothing to fall back to, and substitution is unaffected (copying a path in is not
+  building one), so `just switch-gw`, the closure a switch needs, and every auto-rollback
+  keep working with aibox unreachable. `_build-host-guard` still refuses the build-shaped
+  recipes on gw: **evaluation is still paid on the box that answers DNS for the network**,
+  and a guard is cheaper than an explanation afterwards.
+
+  Three things to do or decide once it is deployed:
+  1. **Prove the delegation, and prove the failure.** From gw, build something
+     cache.nixos.org does not have (`nix build .#whisper-ws`) and watch aibox's
+     `journalctl -u nix-daemon`; then stop aibox and repeat — it must fail, not compile.
+     Nothing about this change is testable from the config alone.
+  2. **The emergency path is now narrower, and its escape hatch is untested.** If aibox
+     *and* services1 are both down, `nixos-rebuild switch` on gw cannot build. The
+     intended override is a trusted-client `--option max-jobs N` (leigh-admin is in
+     `trusted-users`), but nobody has confirmed the daemon honours it for that setting —
+     find out on a good day, not during an outage.
+  3. Revisit whether the guard should now allow `just switch` on gw. The argument for: it
+     cannot compile anything any more. The argument against: an evaluation storm on the
+     resolver, and `INFRA_ALLOW_BUILD_ON_ROUTER=1` is one environment variable away
+     from whatever the next person needs.
+
+- **`just check` is store-warm, not tree-warm: on a box that has never built
+  filestore's SPA source it dies at HEAD** (measured 2026-10-21 on `gw` at
+  `3a8d231`, where the pristine tree fails identically; the same command on
+  services1, same commit, prints `all checks passed!`). The error is the signature
+  this file already documents —
+  `error: path 'fmwkw5y9566w42c8zciwb5a15gb3vzmf-filestore-web-src.drv' is not
+  valid`, raised while forcing `systemd.services.filestore.serviceConfig` — so
+  something reads a *derivation* at eval time and `--no-build` declines to build it
+  rather than failing to. The read is `CRANE.wasmSpa`'s (`machines/services1/services/
+  filestore.nix`, whose `cargoLockPath` is exactly the workaround applied to the
+  `Cargo.lock` half of the same problem). Two consequences worth naming: AGENTS'
+  "a clone of this repo evaluates every machine and `just check` runs anywhere" is
+  true of a *warm* clone only, and the box the docs single out as safe for
+  `just check` — gw, because it evaluates and formats without compiling — is now a
+  box where that command fails for a reason that has nothing to do with the change
+  being checked. Workaround, until the src read goes: run the gate on services1 or
+  aibox, and locally use the three standalone assertion evals
+  (`machines/gw/lib/check-network-tables.nix`, `common/check-printer-states.nix`,
+  `machines/services1/lib/check-config-to-gitlab.nix`) plus `nix eval` of the option
+  you changed. The durable fix is the one the crane header already prescribes — hand
+  the SPA builder the source by path and never let it read a derivation.
+
 - **`nix flake check` is not warning-free: two findings, both reachable now**
   (noticed 2026-10-14 while checking the `gw` machine; re-read on 2026-10-15 during
   the network upgrade). Checking `nixosConfigurations.services2` emits
@@ -224,6 +278,96 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
 
 ## Router (gw)
 
+- **Public IPv6 inbound was never in the flake — fixed 2026-10-21, but unverified
+  from outside.** The old box let the internet dial services1 over IPv6
+  (`pass in quick on l2tp0 reply-to (…) inet6 proto tcp from any to
+  <SERVICES1_IPV6> port = {http, https, 8522}`, read out of the archived `pf.txt`
+  on 2026-10-21) and every `*.leighhack.org` vhost publishes a AAAA — `nginx.leighhack.org`
+  is the CNAME they all share and it answers `2001:8b0:1d14:225::20`. `firewall.nix`
+  had no v6 service rule at all: its forward chain is `policy drop` with one
+  `ip6 saddr <ACL>` accept, so an internet v6 client was dropped for four days while
+  every IPv4 test passed, and the only v6 traffic that got through was Chris's
+  `2a02:8010:6680::/48` — which passes *because it is in the shared ACL*, not because
+  a rule allows the service. `publicV6ForwardRules` is the ported rule; the two
+  addresses are `constants.nix`'s `PUBLIC_SERVICES1_V6`.
+
+  What this still owes someone: **a probe from a v6 address that is not in the ACL.**
+  A LAN `curl -6` proves nothing (its source matches `2001:8b0:1d14::/48`), and the
+  external-v6 hits in services1's nginx access log stop at 08:46 on 2026-10-21, so
+  the pre-cutover behaviour is inferred from pf rules rather than observed. Read
+  `nft list chain ip6 router6 forward` and its counters after a probe from, say, a
+  phone on a mobile network. Two deliberate non-changes while it is being checked:
+  3478/50443/51820 stay v4-only because the old box never let them in over v6 (so
+  headscale's DERP has a published IPv6 with a v4-only STUN socket — worth a look if
+  DERP ever needs to be reachable over v6), and `yunohost.leighhack.org` has no AAAA
+  so the appliance has no v6 row.
+
+- **The tailnet's advertised routes are not applied, and a hand-typed `tailscale up`
+  outranks the flake** (measured 2026-10-21). `machines/gw/uplink.nix` advertises
+  `10.3.0.0/16,192.168.2.0/24,2001:8b0:1d14::/48,fd99:dead:beef::/48` and
+  `--advertise-exit-node`; `sudo tailscale debug prefs | jq .AdvertiseRoutes` on the
+  box answers `null`. `extraUpFlags` reach the daemon only through
+  `tailscaled-autoconnect.service`, which runs **at boot** — and at the cutover boot
+  that unit timed out and failed (`16:36:22 State = NoState` → `16:37:53 Failed`), the
+  join was done by hand, and a manual join is never re-asserted by a later `switch`.
+  It also registered as **`gw-1`** (see the stale-`gw`-node item below, now confirmed
+  rather than suspected). Before applying it: services1 advertises
+  `10.3.0.0/16, 2001:8b0:1d14::/48, fd99:dead:beef:225::/64` *imperatively* (the
+  `tailscale set` comment at the top of `machines/services1/services/headscale.nix`),
+  which is unequal to this box's `/48` — pick one advertiser or make the two lists
+  identical, then reboot and check the prefs, not the unit's state. Whether headscale
+  approves the routes at all is still unknown from this side.
+
+- **`100.64.0.0/16` was the network's idea of the tailnet, and headscale hands out a
+  /10 — fixed 2026-10-21.** `common/config.nix` now carries `TAILNET_V4`/
+  `TAILNET_V6` and the four consumers read them: the nginx `LOCAL_NETWORK` ACL, the
+  Postgres `pg_hba` table, headscale's own `ip_prefixes`, and every tailnet rule in
+  `machines/gw/firewall.nix` (the forward ACL, the policy-routing "is this destination
+  ours?" set, and the exit-node masquerade). The old box's `TAILSCALE` alias was
+  `100.64.0.0/10, fd7a:115c:a1e0::/48`, so this is a correction rather than a
+  widening of trust — but note that it *does* widen, in the same change, the nginx
+  internal-vhost ACL and `pg_hba`: any address in `100.64.0.0/10` is now trusted by
+  them, which is only safe because the tailnet's allocation pool is that block and
+  nothing else can route it here. Two leftovers: the ACL's other IPv6 lines are still
+  spelled with a trailing zero (`allow fd99:dead:beef::0/48`) where the two
+  interpolated lines now render `::/48` — identical to every parser involved, and
+  normalising the rest is a pass over the file rather than part of this change — and
+  **nothing is deployed**: the nginx ACL and the `pg_hba` change land on the next
+  services1 switch, and the router's own rules on the next `just switch-gw`.
+
+- **The retired box's `config.xml` is a live secret file with five credentials nobody
+  has rotated** (found while auditing it 2026-10-21; it is gitignored, and it is a
+  slightly older duplicate of `~/tmp/opnsense-archive-20261017/config.xml` on
+  services1, so the working-tree copy has no reason to exist). What is in it, in
+  words rather than values: the AAISP L2TP password (already copied to
+  `aaisp_ppp_password` in sops), the authentik **LDAP bind password** for
+  `cn=pfsense-gw` (used by the old GUI login and by the VPN's `Members` group auth),
+  a **headscale pre-auth key**, the **ssh private key of the `backups@nas2` account**
+  that its nightly config backup used, an OpenVPN static TLS key, two CA/cert private
+  keys including "Leigh Hackspace CA1", and local password hashes. Several of these
+  reached a session transcript on 2026-10-21 while being audited, which makes
+  rotation the action rather than discussion. Order of cheapness: delete the NAS's
+  `backups` key (that backup job is gone with the box), expire the pre-auth key,
+  rotate the LDAP bind password in authentik (and only then decide about the VPN),
+  and treat CA1 as compromised-if-anyone-ever-used-it. **Do not delete the archive
+  copy on services1 first** — it is the only place the CA and server certificates
+  exist.
+
+- **What the old box had that this box deliberately does not have**, so that nobody
+  re-audits the XML for it: IDS/Suricata, Netflow, monit, Unbound, Kea, CARP/pf-sync,
+  captive portal, WireGuard, IPsec/swanctl and cron were all **disabled** there
+  (nothing to port); its TrafficShaper pipes and its `snatrules` were empty or off;
+  there was **no gateway failover** either (every `route-to` in `pf.txt` is
+  single-target, so `firewall.nix`'s static marks are parity, not a regression); the
+  floating `pass in … ANY` rule described as `EVERYTHING` and the `DELETEME` rule were
+  **not** inherited and nobody has reported anything missing since; and its `bogons`
+  table, `pf_share_forward`, `lb_use_sticky` and NAT-reflection *helper* are pf/FreeBSD
+  concepts with no nftables equivalent needed here. The three real casualties are the
+  **Members OpenVPN server** (see `machines/gw/README.md`'s table), the **nightly
+  config backup to the NAS**, and the **RRD/system-health graphs** — this box is
+  gatus-pinged (`common/monitoring-endpoints.nix`) but exports no metrics of its own,
+  so a ppp0 flap or a 100 Mbit LAN negotiation is visible only as an outage.
+
 - **`CONFIG.LOCAL_DOMAIN` exists; most of the network does not use it yet** (added
   2026-10-17). The router needed the zone name in one place because three uses of it
   have to agree exactly (`domain=`, `local=`, and the suffix on every generated
@@ -325,43 +469,55 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   credentials. Do not "fix" it by adding a services1 vhost: Yunohost terminates its
   own TLS and generates absolute `https://` URLs.
 
-- **`aaisp_ppp_chat_secrets` does not exist** (found while writing
-  `machines/gw/sops.nix`, 2026-10-14). The tunnel's credentials have never been in
-  `secrets/secrets.yaml`: the old box kept them in OPNsense's own config and nobody
-  has read them off it. sops-nix fails *activation*, not evaluation, on a missing
-  key, so a `gw` that declares the secret and lacks it would refuse to come up — which
-  is why `machines/gw/sops.nix` now declares it only when the tunnel is enabled, i.e.
-  only when co-existence is off. So this is no longer a reason the box cannot boot;
-  it is still the reason the box cannot dial. Read them from the old box's
-  `/conf/config.xml` and `echo … | sops edit secrets/secrets.yaml` — never into a
-  transcript (rule 13).
+- **`aaisp_ppp_chat_secrets` does not exist** — **done, under another name.** The
+  tunnel's password is in `secrets/secrets.yaml` as **`aaisp_ppp_password`** and
+  `machines/gw/sops.nix` renders it to the pap/chap secrets files pppd reads, which is
+  what let the tunnel dial at the 2026-10-21 cutover. What the original note got right
+  is kept: sops-nix fails *activation* rather than evaluation on a missing key, so
+  `machines/gw/sops.nix` still declares the secret only when the tunnel is enabled.
+  The read itself came out of the old box's `/conf/config.xml`; see that file's own
+  item above about the credentials that came with it.
 
-- **Nothing obtains the network's IPv6 prefix** (`machines/gw/networking.nix`,
-  2026-10-14). The RA ranges in `common/vlans.nix` and the fixed v6 addresses in
-  `common/dns-records.nix` are correct and dnsmasq advertises them, but no part of
-  the new router's config asks the uplink for the /48, so IPv6 to the outside world
-  will not work on a cutover today. How the old box got its prefix (DHCPv6-PD from
-  AAISP, or a static assignment) is the first thing to read off it. Invisible on the
-  shadow box, which does not advertise at all in this mode.
+- **Nothing obtains the network's IPv6 prefix** (2026-10-14; **half-fixed
+  2026-10-21, still unproven**). The config *does* ask now — `machines/gw/networking.nix`
+  requests `::/48` with the VLAN id as `SubnetId`, `firewall.nix` admits the DHCPv6
+  exchange on the tunnel, and `common/vlans.nix` carries a static address in every
+  advertised /64 so a client is never given a prefix whose gateway does not exist (the
+  worst of the two failure modes, spelled out in that table). What is still true is
+  that **delegation has never been observed from this box**: `ppp0` holds only a
+  link-local address and the /64s in use are the hardcoded ones, which work because
+  AAISP routes `2001:8b0:1d14::/48` to the line rather than because anything was
+  learned. The exposure is the day the /48 changes.
 
 - **The new firewall's rules are shape-correct, not value-verified**
-  (`machines/gw/firewall.nix`, 2026-10-14). nixpkgs validates the ruleset against a
-  user-mode kernel at build time — which caught two real mistakes (ICMPv6's ND types
-  are `nd-neighbor-solicit`, not `neighbour-solicitation`; `packet-too-big` is ICMPv6
-  only) — but "parses" is not "is what the old box did". The old box's
-  `/var/etc/nftables.conf` and `nft list ruleset` have never been read; do that
-  before trusting any rule here, and note the per-VLAN anti-spoof rule emits *two*
-  match forms (`vlan id N` and `iifname "vlanN"`) because which one the kernel
-  actually matches on is a question about the real box. The shadow box loads the
-  ruleset and forwards nothing, so this is still unproven.
+  (`machines/gw/firewall.nix`, 2026-10-14; **the read has now happened, 2026-10-21**).
+  nixpkgs validates the ruleset against a user-mode kernel at build time — which caught
+  two real mistakes (ICMPv6's ND types are `nd-neighbor-solicit`, not
+  `neighbour-solicitation`; `packet-too-big` is ICMPv6 only) — but "parses" is not "is
+  what the old box did". The old box ran **pf**, so `/var/etc/nftables.conf` was empty
+  and reading it would have proved nothing; what to read was `pfctl -sr`/`-sn`, archived
+  as `~/tmp/opnsense-archive-20261017/pf.txt` on services1, and the 2026-10-21 pass over
+  it against the live `nft list ruleset` found exactly one missing behaviour (public
+  IPv6 inbound, above) and confirmed the rest: the eight v4 forwards, the NAT-reflection
+  hairpin, `41641` for the tailnet, the per-VLAN `route-to` split, `192.168.49.0/24 via
+  10.3.1.20`, and that there was no gateway failover to inherit. **Still open in this
+  item**: the per-VLAN anti-spoof rule emits *two* match forms (`vlan id N` and
+  `iifname "vlanN"`) because which one the kernel matches on is a question about the
+  real box — the box is now live and forwarding, so read the counters and delete the
+  half that never matches.
 
-- **A stale headscale node called `gw` may own the name** (noticed 2026-10-17,
-  during the install). `sudo headscale nodes list` on services1 listed a `gw` at
-  100.64.0.11, registered 2025-08-25 and offline since 2026-04-13 — some earlier life
+- **A stale headscale node called `gw` may own the name** (noticed 2026-10-17;
+  **confirmed at the cutover**). `sudo headscale nodes list` on services1 listed a `gw`
+  at 100.64.0.11, registered 2025-08-25 and offline since 2026-04-13 — some earlier life
   of this box, or of the old router's tailnet client. Nothing in the flake references
   that address, but headscale's node names are what ACLs and humans read, so a second
   `gw` is a finding either way: rename or expire the old node at the cutover, and
-  check `tailscale status --json` on the new box says it advertises no routes.
+  check `tailscale status --json` on the new box says it advertises no routes. **It
+  happened as predicted**: the live box registered on 2026-10-21 as `gw-1` (id 56,
+  100.64.0.28) because id 15 still holds `gw`, and the check —
+  `sudo tailscale debug prefs | jq .AdvertiseRoutes` — is the one that found the
+  advertise-routes item above. Expire id 15, rename id 56, and read the prefs rather
+  than `status`'s `AllowedIPs`, which hides an unapproved advertisement.
 
 - **The LAN port is doing 100 Mbit, not gigabit** (measured on the box,
   2026-10-17: `eno1` at 100Mb/s, full duplex). Either the cable, the SFP/PHY setting,
