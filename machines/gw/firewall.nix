@@ -293,8 +293,14 @@
   # reply path needs no rule of its own — services1's answer is `established`, and
   # VLAN 225's routing mark sends it back out of the tunnel, which is the job the
   # pf `reply-to` did.
+  #
+  # `counter` is the one on this file, and it is here because this rule's only failure
+  # mode is silence and it cannot be proven from inside the network: a LAN client
+  # matches `ip6 saddr 2001:8b0:1d14::/48` two rules later, so every local test passes
+  # whether or not the internet can arrive. Read it after a probe from a v6 address
+  # that is not in the ACL — `nft list chain ip6 router6 forward`.
   publicV6ForwardRules = ''
-    iifname "${NICS.UPLINK_TUNNEL}" ip6 daddr ${TABLES.setOf NICS.PUBLIC_SERVICES1_V6} tcp dport { 80, 443, 8522 } accept
+    iifname "${NICS.UPLINK_TUNNEL}" ip6 daddr ${TABLES.setOf NICS.PUBLIC_SERVICES1_V6} tcp dport { 80, 443, 8522 } counter accept
   '';
 in {
   # The router forwards: that is the whole point of it.  Written as sysctls rather
