@@ -23,6 +23,28 @@ boot:
 switch:
     sudo nixos-rebuild switch --flake . && sudo nixos-confirm
 
+# --- where builds may run ----------------------------------------------------
+#
+# The router must not compile anything.  gw has no `infra.buildFarm.builderHost`
+# (common/build-farm.nix), so a build there runs locally on 8 GB and 4 cores — and
+# `nix develop` is a build: the devShell depends on CRANE.wasmBindgenCli, which is
+# compiled from source with cargo.  On 2026-10-21 a `just check` on the gateway
+# (`fmt-check` → `nix develop`) put four rustc processes on the box that answers
+# DNS for the whole network.  `check` and `fmt` are eval/format only and stay
+# allowed there; every build-shaped recipe below depends on this guard.
+#
+# Build on aibox (the network's builder) or services1.  If you genuinely need to
+# build on the router, say so explicitly.
+_build-host-guard:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ "$(hostname)" = "gw" ] && [ -z "${INFRA_ALLOW_BUILD_ON_ROUTER:-}" ]; then
+        echo "refusing: this is gw, the network's router — it must not compile." >&2
+        echo "  Run this from aibox or services1 instead (AGENTS.md, 'Never build on the router')." >&2
+        echo "  Override with INFRA_ALLOW_BUILD_ON_ROUTER=1 only if you really mean it." >&2
+        exit 1
+    fi
+
 # --- the router (gw)
 #
 # Its address is a variable because the box has two: `10.3.1.254` while it runs in
@@ -79,23 +101,19 @@ switch-gw: sync-gw
 # --- Nix formatting ---
 
 # Format every tracked .nix file with alejandra (the repo standard: it is what
-# .zed/settings.json runs on save and what the devshell ships).  The whole tree
-# was reformatted in one sweep, so keep it that way — a stray unformatted file
-# makes the next real diff unreadable (docs/repo-audit-2026-10-07.md §1.3).
+# .zed/settings.json runs on save).  `nix fmt` takes the formatter from the flake's
+# pinned nixpkgs (flake.nix's `formatter`), i.e. from the binary cache — NOT from
+# the devShell, because `nix develop` would build the pinned wasm-bindgen-cli and
+# a formatter must never be the reason a box compiles Rust (see `_build-host-guard`).
+# docs/repo-audit-2026-10-07.md §1.3 is why the whole tree is kept clean.
 fmt:
-    nix develop --command bash -c 'git ls-files "*.nix" | xargs -r alejandra'
+    nix fmt -- $(git ls-files '*.nix')
 
-# The check half of the same rule: lists every file that is not alejandra-clean
-# and exits non-zero.  Wired into `just check`.
+# The check half of the same rule, wired into `just check`.
 fmt-check:
     #!/usr/bin/env bash
     set -euo pipefail
-    nix develop --command bash -c '
-      bad=0
-      for f in $(git ls-files "*.nix"); do
-        alejandra --check "$f" >/dev/null 2>&1 || { echo "not alejandra-clean: $f"; bad=1; }
-      done
-      exit $bad'
+    nix fmt -- --check $(git ls-files '*.nix')
 
 # --- Rust crates (toolchain from `nix develop`: cargo/rustc/rustfmt/clippy +
 # --- the pinned wasm-bindgen-cli)
@@ -113,7 +131,8 @@ shared-rs:
     @bash common/shared-rs-links.sh
 
 # cargo test over every crate in the workspace.
-test:
+# (Needs `nix develop`, which builds the devShell — hence the guard.)
+test: _build-host-guard
     #!/usr/bin/env bash
     set -euo pipefail
     bash common/shared-rs-links.sh
@@ -121,7 +140,7 @@ test:
 
 # cargo clippy over the same set.  Warnings are reported, not fatal: the point
 # is to see them (they used to go entirely unchecked).
-clippy:
+clippy: _build-host-guard
     #!/usr/bin/env bash
     set -euo pipefail
     bash common/shared-rs-links.sh
@@ -141,7 +160,7 @@ clippy:
 #   just build-frontend filestore       # one of them
 # (just 1.51 passes any extra argument straight into the single parameter, so
 # there are no flags here — a bad name just fails the whitelist check.)
-build-frontend crate="all":
+build-frontend crate="all": _build-host-guard
     #!/usr/bin/env bash
     set -euo pipefail
     # The parameter arrives through just's quote() — shell-quoted, and the case
@@ -319,7 +338,7 @@ check:
     #!/usr/bin/env bash
     set -euo pipefail
     echo "=== nix flake check"
-    nix flake check
+    nix flake check --no-build
     echo "=== config-to-gitlab assertions"
     nix eval --impure --raw -f machines/services1/lib/check-config-to-gitlab.nix
     echo "=== printer-state tables (exporter <-> dashboards/alerts)"
@@ -364,7 +383,7 @@ check:
 # work is delegated to aibox (common/build-farm.nix), which has 59 GiB, 6 cores and
 # no strata engine any more, so poll load/swap there as well as this log: a build
 # storm competes with the apps aibox hosts (frigate, immich, whisper).
-check-build:
+check-build: _build-host-guard
     #!/usr/bin/env bash
     set -euo pipefail
     for m in services1 services2 aibox gw; do
@@ -382,7 +401,7 @@ check-build:
 # local fallback, so the build fails loudly instead of quietly compiling on the box
 # you are standing on.  It is the recipe to reach for when the builder is idle and
 # the local disk is climbing.
-build-remote machine="services1":
+build-remote machine="services1": _build-host-guard
     #!/usr/bin/env bash
     set -euo pipefail
     nixos-rebuild build --flake ".#{{machine}}" --max-jobs 0
@@ -390,7 +409,7 @@ build-remote machine="services1":
 # Start an unauthenticated filestore on 127.0.0.1 for poking at the API/UI by
 # hand. --no-auth is only honoured on a loopback bind, so this can never expose
 # the store on a routable interface; the deployed service never uses it.
-filestore-dev:
+filestore-dev: _build-host-guard
     #!/usr/bin/env bash
     set -euo pipefail
     nix develop --command bash -c 'cd crates && cargo build --release --offline -p filestore && exec ./target/release/filestore --root "${FS_TEST_ROOT:-/tmp/filestore-test-root}" --no-auth --port "${FS_TEST_PORT:-18097}"'
@@ -398,7 +417,7 @@ filestore-dev:
 # Builds the SPA + binary, starts filestore with --no-auth on 127.0.0.1 against
 # a scratch fixture, and drives the UI with headless Chromium (Playwright).
 # See crates/filestore/tests/README.md.
-filestore-test:
+filestore-test: _build-host-guard
     #!/usr/bin/env bash
     set -euo pipefail
     nix develop --command bash -c 'exec crates/filestore/tests/run.sh'
@@ -409,7 +428,7 @@ filestore-test:
 # and drives the matrix with headless Chromium.  Nothing can reach a real switch:
 # the only address the service is given is 127.0.0.1.  Needs the local Postgres
 # cluster (see SG_TEST_DB_URL in crates/switch-gui/tests/run.sh).
-switch-gui-test:
+switch-gui-test: _build-host-guard
     #!/usr/bin/env bash
     set -euo pipefail
     nix develop --command bash -c 'exec crates/switch-gui/tests/run.sh'

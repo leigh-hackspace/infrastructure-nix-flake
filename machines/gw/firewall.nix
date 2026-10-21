@@ -58,6 +58,7 @@
   # lists that happen to agree today are the drift this directory keeps removing.
   VLANS = COEXIST.vlans;
   CONFIG = import ../../common/config.nix;
+  HOSTS = import ../../common/hosts.nix;
   NICS = import ./constants.nix;
   TABLES = import ./lib/network-tables.nix;
 
@@ -139,12 +140,20 @@
   # handoff network.  Traffic to one of these must keep the route it already has
   # (connected, LAN, tailscale0, or the hub's own link) rather than being forced
   # into a table whose default is further away.
+  #
+  # `DMZ_NET` is in the list because of NAT reflection: a LAN client reaching a
+  # public name dials 81.187.195.17, and this chain runs at priority mangle, i.e.
+  # **before** the `dstnat` chain translates it back onto the LAN.  Without this
+  # entry the packet is marked for the hub and the policy route sends it out the
+  # uplink instead of back out the VLAN to 10.3.1.20 — the mark has to say "this
+  # destination is ours" before the DNAT has a chance to.
   markLocalV4 = TABLES.setOf [
     "10.3.0.0/16"
     "192.168.2.0/24"
     "192.168.49.0/24"
     "100.64.0.0/16"
     "192.168.20.0/24"
+    NICS.DMZ_NET
   ];
 
   # One VLAN's mark, which is the flake's version of the old box's
@@ -173,6 +182,86 @@
         ''
       )
       VLANS
+    );
+
+  # --- inbound NAT: what the internet may reach ----------------------------
+  #
+  # The old box's `pfctl -sn` archive has 128 `rdr` lines for these, because
+  # OPNsense emitted one line per interface (l2tp0, every VLAN, lo0, ovpns1) for
+  # NAT reflection.  Folded to one row per (public address, port), it is this
+  # table, and nothing else from outside reaches the LAN: the forward chain's
+  # policy is `drop`, so a row here is the only way to create a `ct status dnat`
+  # packet, and a port not in the table does not exist from the internet.
+  #
+  # Read from the old box on 2026-10-17 (the same archive as ./README.md's table):
+  # `DMZ_SERVICES1 :80,:443,:8522,:3478,:50443,:51820` and
+  # `DMZ_YUNOHOST :80,:443`.  The 3478→3479 row is the one that is *not* a
+  # same-port forward: 3478 is headscale's STUN socket's public port and 3479 is
+  # where it listens (UniFi claims 3478 — machines/services1/services/headscale.nix).
+  portForwards = [
+    {
+      public = NICS.PUBLIC_SERVICES1;
+      port = 80;
+      to = HOSTS.services1;
+      toPort = 80;
+    }
+    {
+      public = NICS.PUBLIC_SERVICES1;
+      port = 443;
+      to = HOSTS.services1;
+      toPort = 443;
+    }
+    {
+      public = NICS.PUBLIC_SERVICES1;
+      port = 8522;
+      to = HOSTS.services1;
+      toPort = 8522;
+    }
+    {
+      public = NICS.PUBLIC_SERVICES1;
+      port = 50443;
+      to = HOSTS.services1;
+      toPort = 50443;
+    }
+    {
+      public = NICS.PUBLIC_SERVICES1;
+      port = 3478;
+      to = HOSTS.services1;
+      toPort = 3479;
+    }
+    {
+      public = NICS.PUBLIC_SERVICES1;
+      port = 51820;
+      to = HOSTS.nas;
+      toPort = 51820;
+    }
+    {
+      public = NICS.PUBLIC_YUNOHOST;
+      port = 80;
+      to = NICS.YUNOHOST;
+      toPort = 80;
+    }
+    {
+      public = NICS.PUBLIC_YUNOHOST;
+      port = 443;
+      to = NICS.YUNOHOST;
+      toPort = 443;
+    }
+  ];
+
+  # One rule per row, and the port is only written when it changes: `dnat to
+  # <address>` keeps the matched port, which is dnsmasq's/OPNsense's own `->
+  # <host>` form and not the same thing as `dnat to <address>:0`.
+  dnatRules =
+    builtins.concatStringsSep "\n"
+    (
+      map
+      (f: ''
+        ip daddr ${f.public} tcp dport ${toString f.port} dnat to ${f.to}${
+          lib.optionalString (f.toPort != f.port) ":${toString f.toPort}"
+        }
+      '')
+      portForwards
     );
 in {
   # The router forwards: that is the whole point of it.  Written as sysctls rather
@@ -237,6 +326,15 @@ in {
             # 10.3.1.20 arriving tagged with someone else's VLAN, and "the ACL
             # allows that address" is exactly the lie this rule exists to catch.
             ${vlanAntiSpoof}
+
+            # A packet this box translated on the way in (the `dstnat` chain in
+            # the nat table below) is one the internet asked for, and its source
+            # is never in the ACL.  The old box's `rdr pass` lines admitted those
+            # directly and its non-`pass` ones (80/443, 51820) were matched by a
+            # filter rule keyed on the internal address; one rule says both here.
+            # It sits after the anti-spoof rules on purpose: a translated packet
+            # must still not be able to claim another LAN address.
+            ct status dnat accept
 
             # The network's own allow-list, and the only thing that may leave.
             # This is the boundary; everything above it is routing inside it.
@@ -306,6 +404,16 @@ in {
         family = "ip";
         name = "routerNat";
         content = ''
+          # Inbound: the internet reaching a service.  This is the half that makes
+          # a public vhost exist at all — without it the forward chain's policy
+          # drops every packet from outside, which is what the network looked like
+          # after the cutover (every 81.187.195.17/:80/:443 timed out while the
+          # same vhost answered over IPv6 and on the LAN).
+          chain dstnat {
+            type nat hook prerouting priority dstnat; policy accept;
+            ${dnatRules}
+          }
+
           chain srcnat {
             type nat hook postrouting priority srcnat; policy accept;
             # The trusted VLAN out of the AAISP tunnel (the old box's
@@ -322,6 +430,19 @@ in {
             # tailscale0), and the hub only routes the address it gave this box.
             # 100.64.0.0/16 is the tailnet's own range (common/config.nix's ACL).
             oifname "${NICS.UPLINK_NIC}" ip saddr 100.64.0.0/16 masquerade
+            # NAT reflection, which is the old box's `rdr on vlan0.X` copies of
+            # every forward: a LAN client resolving a *public* name gets the public
+            # address from the network's resolver (the *.leighhack.org names live
+            # in DigitalOcean, not in dnsmasq), so its packet arrives on a VLAN and
+            # is translated back onto the LAN.  Without this the internal host's
+            # reply goes straight to the client from an address the client never
+            # dialled, and the connection hangs — indistinguishable from a dead
+            # service.
+            #
+            # Keyed on the source block *and* `ct status dnat`, so ordinary
+            # LAN-to-LAN traffic keeps its real source address and services1 still
+            # logs the client rather than the router.
+            ip saddr ${TABLES.blockSet VLANS} ct status dnat oifname "vlan*" masquerade
           }
         '';
       };

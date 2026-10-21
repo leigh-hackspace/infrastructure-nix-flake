@@ -218,3 +218,53 @@ ssh leigh-admin@10.3.1.1 'curl -4 -m 5 -sS -o /dev/null -w "router-ipv4 %{http_c
 
 If (4) works and (3) does not, the fault is the forward/mark/NAT path. If only (2) is
 empty, the fault is as above: IPv6 advertising, not the WAN.
+
+## The cutover that was actually made (2026-10-21, evening), and what it broke
+
+`machines/gw/coexist.nix` was left at `enable = false` and the box became the network's
+router at `10.3.1.1`: the tunnel dialled (`81.187.223.123`), DHCP and DNS served, the
+policy routes were installed, and the public services answered **over IPv6** and on the
+LAN. Three things did not, and all three are consequences of the cutover rather than of
+the tunnel:
+
+1. **Every `*.int.leighhack.org` name went NXDOMAIN** (so `filestore.int` was "down"
+   even though `curl --resolve` to `10.3.1.20:443` returned 200). The zone is
+   `local=/int.leighhack.org/`, and the vhost names live in the mutable
+   `/var/lib/dnsmasq/names.hosts`, which a fresh box creates **empty**. dns-sync is
+   still OPNsense-shaped (it edits `/conf/config.xml` and `cat`s
+   `/var/etc/dnsmasq-hosts`), and its pinned host key is the old box's, so it refused
+   with `REMOTE HOST IDENTIFICATION HAS CHANGED`. Restored by copying the old box's
+   `/var/etc/dnsmasq-hosts` (archived under `~/tmp/opnsense-archive-20261017` on
+   services1) over `names.hosts` and `kill -HUP`ping dnsmasq; the durable fix is the
+   dns-sync item in `docs/follow-ups.md`.
+
+2. **No inbound NAT**, which is item 1 of "the other things a cutover needs" above and
+   was still open. Every `81.187.195.17` / `.18` service timed out from the internet
+   **and** from the LAN, because there was no `dnat` chain and no NAT reflection. IPv6
+   was unaffected (no NAT66), which is why the same vhost answered at
+   `2001:8b0:1d14:225::20`. Fixed in `machines/gw/firewall.nix`: a `dstnat` chain
+   reproducing the old box's `rdr` table (`DMZ_SERVICES1` 80/443/8522/3478→3479/50443/
+   51820 and `DMZ_YUNOHOST` 80/443), `ct status dnat accept` in the forward chain, and
+   a hairpin `masquerade` for LAN-sourced translated packets. `DMZ_NET` also had to join
+   `markLocalV4`, because the mark is set at priority `mangle`, i.e. *before* `dstnat`:
+   without it a LAN client's packet to `81.187.195.17` was marked for the hub and sent
+   out the uplink instead of back onto the VLAN.
+
+3. **dnsmasq stopped sending unsolicited RAs** after `router-lan` lost carrier at
+   17:14:30 (the cutover cabling). Solicited RAs still worked, so a probe made everything
+   look fine, but clients lost their IPv6 default when the 1200 s router lifetime ran
+   out — 20 minutes later — and a dual-stack name then hung on IPv6 before falling back
+   to IPv4. That is the "WiFi hangs, wired is fine" report. `systemctl restart dnsmasq`
+   restored the periodic advertisements; the trap and its checks are in
+   `machines/gw/README.md`, "The third way dnsmasq breaks the LAN silently".
+
+One failure that is **not** the router: `yunohost.leighhack.org` presents an **expired**
+Let's Encrypt certificate (`CN=yunohost.leighhack.org`, `notAfter=Oct 21 16:59:23 2026
+GMT`). The DNAT sends it to the right place (`10.3.1.15`, where port 80/443 are open and
+the renewing HTTP-01 challenge can now reach it again); the certificate has to be renewed
+on the Yunohost appliance, which is out-of-band and not keyed by the machine-hop key.
+
+Verified after the fixes, from services1 (a LAN client, so the public addresses exercise
+the hairpin): `filestore.int` 200 over IPv4 and IPv6, `id.leighhack.org` 302 over both,
+`tailscale.leighhack.org` 301, `yunohost.leighhack.org` 302 (`-k`, because of the
+certificate above).

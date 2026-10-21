@@ -76,6 +76,17 @@ X first", X has already cost someone a day.
     `$SYS/etc/systemd/system/<unit>.service`). A `nix eval --impure --expr` against
     `builtins.getFlake` cold-evaluates the whole flake, is slower than the switch
     that answers the same question, and its aborted survivor holds the big lock.
+22. **Never build on the router.** gw has **no remote builder** (only services1 sets
+    `infra.buildFarm.builderHost`), so a build there compiles locally on the 4-core
+    box that answers DNS and DHCP for the whole network. `nix develop` **is** a
+    build: the devShell depends on `CRANE.wasmBindgenCli`, which is compiled with
+    cargo. On 2026-10-21 a `just check` on gw (its `fmt-check` ran `nix develop`)
+    put four `rustc` processes on the gateway. `just check` and `just fmt` are now
+    eval/format only (`nix flake check --no-build`, `nix fmt` from the flake's
+    `formatter`) and are safe on gw; `just test|clippy|check-build|build-frontend|
+    filestore-*|switch-gui-test|build-remote` are build-shaped and now refuse on gw
+    via `_build-host-guard` in the justfile. Run them from aibox or services1. Full
+    mechanism: `docs/nix-dev-workflow.md`, "Never build on the router".
 
 ---
 
@@ -175,12 +186,16 @@ X first", X has already cost someone a day.
 
 - Deploy with the justfile: `just switch` / `just boot` (`sudo nixos-rebuild
   switch --flake .` + `sudo nixos-confirm`, chained).
-- **Check before you deploy:** `just check` (`nix flake check`, the two assertion evals —
+- **Check before you deploy:** `just check` (`nix flake check --no-build`, the two
+  assertion evals —
   `machines/services1/lib/check-config-to-gitlab.nix` and
-  `common/check-printer-states.nix` — and `alejandra --check` over every tracked `.nix`;
-  the gatus endpoint guard is a module assertion in
+  `common/check-printer-states.nix` — and `nix fmt -- --check` over every tracked
+  `.nix`; the gatus endpoint guard is a module assertion in
   `machines/services1/services/monitoring.nix`, so `nix flake check` is what catches that
-  drift) and, when anything is built rather
+  drift). It evaluates and formats only, so it is safe to run **on gw**; the
+  build-shaped recipes are not (`just check-build`, `just test`, `just clippy`,
+  `just build-frontend`, `just filestore-*`, `just switch-gui-test`, `just
+  build-remote`) and now refuse on gw via `_build-host-guard`. Then, when anything is built rather
   than just evaluated, `just check-build` (`nix build` of all three machines'
   system toplevels — compiles everything, activates nothing, writes no boot entry;
   it is **not** `nixos-rebuild dry-build`, which builds nothing). Budget ~75 min for

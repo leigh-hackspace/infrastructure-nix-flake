@@ -46,4 +46,20 @@
   # written down; pppd's ip-up script adds it to the main table when the tunnel
   # comes up and removes it when the tunnel goes down.
   UPLINK_TUNNEL_PEER6 = "fe80::9e89:1eff:fe3f:0";
+
+  # The public IPv4 addresses inbound services answer on.  Read off the old box's
+  # alias table (`/conf/config.xml`'s `<alias>` entries, archived at
+  # ~/tmp/opnsense-archive-20261017 on services1): `DMZ_NET` = 81.187.195.17/29,
+  # `DMZ_SERVICES1` = 81.187.195.17, `DMZ_YUNOHOST` = 81.187.195.18.  The /29 is a
+  # static block routed to the AAISP line by AAISP; it is **not** the tunnel's own
+  # address, which is dynamic (`ppp0` currently holds 81.187.223.123) and is not
+  # an inbound address at all.  Only ./firewall.nix's port forwards read these.
+  DMZ_NET = "81.187.195.17/29";
+  PUBLIC_SERVICES1 = "81.187.195.17";
+  PUBLIC_YUNOHOST = "81.187.195.18";
+
+  # The yunohost appliance's LAN address, from the old box's `YUNOHOST` alias.
+  # Not in common/hosts.nix because nothing in the flake proxies to it; it exists
+  # here only so ./firewall.nix's forwards name one fact once.
+  YUNOHOST = "10.3.1.15";
 }

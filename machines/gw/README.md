@@ -221,6 +221,44 @@ uplink that did work, the resolver that did not, the port forwards the flake doe
 have — is written up in `docs/gw-cutover-attempt-2026-10-21.md`; read it before the next
 cutover.
 
+## The third way dnsmasq breaks the LAN silently: its RA timer stops on a link flap
+
+Measured on the cut-over box, 2026-10-21, after the LAN trunk was re-cabled. It is the
+failure that looks like "WiFi hangs and nothing else does":
+
+* `router-lan` lost carrier at 17:14:30 and the VLANs followed. dnsmasq kept running and
+  kept answering **solicited** RAs, but its **unsolicited** RA timer never restarted — the
+  last periodic advertisement was 17:15:39 and the next one was a response to an `rdisc6`
+  probe an hour later. `journalctl -u dnsmasq | grep 'RTR-ADVERT(vlan225)'` shows the
+  cadence stopping dead; there is no error and no failed unit.
+* The damage is delayed by exactly the router lifetime, so it does not look like the flap:
+  clients keep the RA-learned default for `ra-param`'s 1200 s, then drop it. WiFi clients
+  keep a public IPv6 address in `2001:8b0:1d14:226::/64` with **no default route**, so a
+  dual-stack name (`id.leighhack.org`, `filestore.int.leighhack.org`) is tried over IPv6,
+  hangs, and only then falls back to IPv4. On a phone that reads as "the internet is down".
+* A host that *forwards* (services1, because of podman) does not take the RA default at all
+  once it is forwarding, so it loses the ability to **reply** to the other VLANs. That is
+  why the symptom includes services1 being unreachable over IPv6 from VLANs 226/227 while
+  every wired client was fine — and it is repaired by the same restart, because the RS that
+  the restart's burst provokes is what makes networkd install the default.
+
+**The fix is `systemctl restart dnsmasq` on the router**, after any `router-lan` link
+flap. There is no config change that prevents the timer from stopping; the flake has no
+link-flap hook. Verify both halves rather than the symptom:
+
+```bash
+# the router is advertising again (should grow every ~20–60 s)
+sudo journalctl -u dnsmasq --since '-70s' | grep -c 'RTR-ADVERT(vlan225) 2001'
+# a host has a default and it is being refreshed, not counting down
+ssh leigh-admin@10.3.1.20 'ip -6 route show default'
+```
+
+If the second line's `expires` keeps falling, the router is still not advertising; if it
+resets towards 1200 s, it is. A one-off `rdisc6` makes the route appear and **hides** the
+bug for 20 minutes, so do not treat "it works now" as proof. Longer term this is what a
+dedicated RA daemon (radvd) would be immune to; it is listed in `docs/follow-ups.md`
+rather than done here.
+
 ## "Only VLAN 225 has no internet": the tunnel's password, not the firewall
 
 This is the one failure here that looks like a routing or nat bug and is a credential
@@ -486,7 +524,22 @@ to skip and one reboot away from an unbootable machine:
 9. Then the four imperative facts from the section above, after which
    `just switch-gw` is the way forward.
 
-## Verifying what this directory claims
+## Do not build on this box
+
+This is a router: 4 cores, 8 GB, and the DNS/DHCP answer for every VLAN. It has **no
+remote builder** — only services1 sets `infra.buildFarm.builderHost`, so `nix config
+show | grep builders` here is empty and a build runs locally. That is deliberate.
+
+`nix develop` is a build: the devShell pins `CRANE.wasmBindgenCli`, which is compiled
+with cargo. On 2026-10-21 a `just check` on this box ran `just fmt-check` → `nix
+develop` and put four `rustc` processes on the gateway. The justfile now keeps them
+off: `just check` and `just fmt` evaluate/format only (`nix flake check --no-build`,
+`nix fmt`), and the build-shaped recipes (`test`, `clippy`, `check-build`,
+`build-frontend`, `filestore-*`, `switch-gui-test`, `build-remote`) refuse here via
+`_build-host-guard`. Run those from aibox or services1; `just switch`/`just switch-gw`
+are still correct here because they build only this machine's small system (no Rust).
+Mechanism and the incident: `docs/nix-dev-workflow.md`, "Never build on the router".
+
 
 Do not read the Nix to find out what the router will do; read what the Nix produced.
 

@@ -333,7 +333,46 @@ the move with one delegated build rather than inheriting that date. Poll a
 delegated build rather than trusting it: **a remote builder that silently falls
 back to local is one of the failure modes only polling catches.**
 
-## The `nixbld` rule, in one paragraph
+## Never build on the router
+
+gw is a router, not a builder: 4 cores, 8 GB, and it answers DNS and DHCP for every
+VLAN. `common/build-farm.nix` gives a builder only to services1 (`builderHost =
+HOSTS.aibox`), so on gw `nix config show` has `builders =` **empty** and every build
+runs locally. That is the right shape — a build storm on the router is an outage for
+the whole network — and it means "evaluates" and "builds" have to be kept apart.
+
+**`nix develop` is a build.** The devShell (`flake.nix`'s `devShells.default`)
+depends on `CRANE.wasmBindgenCli`, the pinned wasm-bindgen CLI, which is compiled
+from source with cargo. Entering the shell on a box that has never built an SPA
+compiles Rust there. On **2026-10-21** a `just check` on gw did exactly that:
+`check` ended with `just fmt-check`, `fmt-check` ran `nix develop`, and four `rustc`
+processes appeared on the gateway. Nothing was wrong with the checks — the formatter
+was reaching for a Rust toolchain to run a Haskell binary.
+
+The fix is in the justfile, and the split is now explicit:
+
+| Safe on gw (eval/format only) | Refused on gw by `_build-host-guard` |
+| --- | --- |
+| `just check` (`nix flake check --no-build`, `nix eval`, `nix fmt -- --check`) | `just test`, `just clippy` (`nix develop` + cargo) |
+| `just fmt` (`nix fmt`, formatter from the flake's pinned nixpkgs) | `just check-build` (builds all four toplevels) |
+| `just switch` / `just switch-gw` (builds gw's own small system, no Rust) | `just build-frontend`, `just filestore-dev`, `just filestore-test`, `just switch-gui-test` |
+| reading rendered files, `nixos-rebuild dry-run` | `just build-remote` (and it would fail anyway: gw has no builder) |
+
+`just fmt`/`fmt-check` used to run `nix develop` for alejandra. They now use
+`nix fmt`, which takes the formatter from the flake's `formatter` output — a
+substitutable nixpkgs package, so a *format* check can never be the reason a box
+compiles anything. `just check` also now passes `--no-build` to `nix flake check`
+(plain `flake check` builds the `checks` output, if there is one).
+
+Build on **aibox** (the network's builder) or services1. The guard is a belt and
+braces, not a substitute for knowing which recipe you are running: it only checks
+`hostname = gw`, and `INFRA_ALLOW_BUILD_ON_ROUTER=1` deliberately overrides it. If
+rustc ever appears on the router again, `pgrep -a rustc` then `ps -eo pid,args | grep
+-E 'cargo|wasm-bindgen'` names the derivation; kill the build, and check whether the
+client was `nix develop` (this rule) or a plain `nix build` (which then means the
+builder is not configured or aibox is unreachable — `nix config show | grep
+builders`).
+
 
 `build-users-group` is not a permissions group, it is the **pool of UIDs nix runs
 builds as**: nix takes a member for each build and, before and after that build,

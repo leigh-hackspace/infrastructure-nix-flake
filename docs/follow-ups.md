@@ -242,9 +242,9 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   change.
 
 - **dns-sync is OPNsense-shaped and the cutover has to move it** (found
-  2026-10-17, while checking what the shadow router answers). It is the half of the
-  old box's DNS that the flake does not generate — the `*.int.leighhack.org` vhost
-  names — and every part of it is specific to the appliance:
+  2026-10-17, while checking what the shadow router answers; still open after the
+  cutover). It is the half of the old box's DNS that the flake does not generate — the
+  `*.int.leighhack.org` vhost names — and every part of it is specific to the appliance:
   `DEFAULT_ROUTER = "root@10.3.1.1"` (the new box has root login
   `prohibit-password`, so it must connect as `leigh-admin` and sudo the restart),
   edits `/conf/config.xml`'s `<dnsmasq>` host overrides with a python3 script run on
@@ -254,10 +254,13 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   `systemctl restart dnsmasq`, or SIGHUP, which is enough because dnsmasq re-reads
   `addn-hosts` on that signal and the file is not in the store so it cannot be a
   `restartTriggers` value), and pins the router's host keys via
-  `just router-known-hosts` (regenerate against `10.3.1.254`, and keep the old
+  `just router-known-hosts` (regenerate against `10.3.1.1`, and keep the old
   entries until the old box is gone). Until this is done, **new vhosts get no DNS on
-  the new router** and `just dns-sync-sync` keeps working against the old one — which
-  is correct today and silently useless after the cutover.
+  the new router** and `just dns-sync-sync` fails against it (host key changed, then
+  OPNsense paths) — which is correct today and was the cause of the `*.int` outage at
+  the 2026-10-21 cutover. `names.hosts` was restored by hand from the old box's
+  `/var/etc/dnsmasq-hosts` archive on services1; that restoration is what keeps the
+  names answering until the tool is ported, and nothing refreshes it.
 
 - **Two dnsmasq bugs found by running the shadow box beside the live one**
   (2026-10-17, both fixed). Neither was visible in the config, in the build, or in
@@ -300,12 +303,33 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   cutover, when forwarding starts working or not, know which chains are whose before
   blaming `firewall.nix`.
 
-- **`gw` is deployed at 10.3.1.254 in co-existence mode; the cutover has not
-  happened** (installed 2026-10-17). The box is a Supermicro X9SCL/X9SCM that used to
-  run Windows; `machines/gw/README.md` has the install, the layout and the four things
-  `machines/gw/coexist.nix` switches off so a shadow router cannot become the real one
-  by accident. What is left before `enable = false` is meaningful is the list in that
-  README's "cutover" section, of which the blocking ones are the three below.
+- **`gw` is the network's router as of 2026-10-21** (cut over from co-existence
+  mode, `./coexist.nix`'s `enable = false`). The box is a Supermicro X9SCL/X9SCM that
+  used to run Windows; `machines/gw/README.md` has the install and the layout, and
+  `docs/gw-cutover-attempt-2026-10-21.md` has the post-cutover findings (missing
+  `*.int` records, no inbound NAT, dnsmasq's RA timer stopping after a LAN link flap)
+  and the last four open items below. The `10.3.1.254` co-existence address is history.
+
+- **dnsmasq stops sending *unsolicited* RAs after a LAN link flap** (found
+  2026-10-21, on the cut-over box after the trunk was re-cabled; the trap and its
+  checks are in `machines/gw/README.md`, "The third way dnsmasq breaks the LAN
+  silently"). Solicited RAs keep working, so a probe hides it; clients lose their IPv6
+  default when the 1200 s router lifetime expires, and a host that forwards (services1)
+  never takes the RA default at all and so cannot reply to VLANs 226/227. The fix is a
+  `systemctl restart dnsmasq` after the flap — there is no config change that restarts
+  the timer. **Open**: a link-flap hook (or moving RAs to radvd, which re-advertises on
+  link-up) so this cannot be missed by whoever is not watching at the time.
+
+- **`yunohost.leighhack.org`'s certificate expired 2026-10-21 16:59 UTC** (found the
+  same evening, from the browser warning). The DNAT now sends the name to the right
+  place — `10.3.1.15`, ports 80/443 open, `openssl s_client` reports
+  `CN=yunohost.leighhack.org` issued by Let's Encrypt — but `notAfter` had passed, and
+  the renewing HTTP-01 challenge can only reach the appliance on `:80` now that the
+  cutover's inbound NAT exists. Renewal is a Yunohost-appliance action
+  (`yunohost domain cert renew`, or the admin UI) and **the appliance is out-of-band**
+  (the machine-hop key is not authorized on `10.3.1.15`), so it needs someone with its
+  credentials. Do not "fix" it by adding a services1 vhost: Yunohost terminates its
+  own TLS and generates absolute `https://` URLs.
 
 - **`aaisp_ppp_chat_secrets` does not exist** (found while writing
   `machines/gw/sops.nix`, 2026-10-14). The tunnel's credentials have never been in

@@ -119,6 +119,14 @@
       ];
     };
   in {
+    # `nix fmt` / `nix fmt -- --check` — the formatter is a flake output so it comes
+    # from this flake's pinned nixpkgs and from the binary cache, not from the
+    # devShell.  That matters on the router: the devShell depends on
+    # CRANE.wasmBindgenCli, which is *built* with cargo, so `nix develop` there
+    # compiles Rust (2026-10-21: four rustc processes on gw).  The formatter must
+    # never be the reason a box builds anything.
+    formatter.${system} = (import nixpkgs {inherit system;}).alejandra;
+
     nixosConfigurations = {
       services1 = nixpkgs.lib.nixosSystem {
         inherit system;
@@ -347,7 +355,14 @@
           # *schema* must match the CLI version exactly, so nixpkgs' 0.2.121
           # would refuse to process the output. This is the same pinned CLI
           # derivation the flake uses to build the SPA bundles
-          # (common/crane.nix), so it is already in the store.
+          # (common/crane.nix) — and because it is **built with cargo**, the
+          # first `nix develop` on a box that has never built a SPA compiles
+          # Rust there. That is fine on aibox or services1 and unacceptable on
+          # the router: gw has no remote builder, so `nix develop` on it compiles
+          # on the box that answers DNS for the network (2026-10-21: four rustc
+          # processes on gw, started by `just check` → `fmt-check` → `nix develop`).
+          # See `_build-host-guard` in the justfile and AGENTS.md, "Never build on
+          # the router". `just fmt`/`just check` no longer need this devShell.
           CRANE.wasmBindgenCli
           pkgs.lld
           pkgs.just
