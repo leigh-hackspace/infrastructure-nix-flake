@@ -865,11 +865,11 @@ in {
   };
 
   # ------------------------------------------------------------------
-  # OPNsense router (10.3.1.1) — the Grafana view of the same data as
-  # network-info.int.leighhack.org. The network-status service ssh's to
-  # the router every 5s and serves it at /metrics (job "router"); the
-  # panels mirror the SPA: status pill, bandwidth, firewall states,
-  # load, per-interface cards and potential issues.
+  # Router (gw, 10.3.1.1) — the Grafana view of the same data as
+  # network-info.int.leighhack.org. The network-status service runs on gw and
+  # reads the local /proc every 5s; Prometheus on services1 scrapes it at
+  # /metrics (job "router"); the panels mirror the SPA: status pill, bandwidth,
+  # conntrack entries, load, per-interface cards and potential issues.
   # ------------------------------------------------------------------
   "router" = {
     uid = "router";
@@ -878,7 +878,7 @@ in {
       from = "now-6h";
       to = "now";
     };
-    tags = ["services1" "router" "opnsense"];
+    tags = ["services1" "router" "gw"];
     timezone = "browser";
     schemaVersion = 39;
     version = 1;
@@ -1035,9 +1035,9 @@ in {
         x = 0;
         y = 12;
         w = 8;
-        title = "Firewall state table";
-        legendFormat = "states";
-        targets = ["router_pf_states"];
+        title = "Conntrack entries";
+        legendFormat = "entries";
+        targets = ["router_conntrack_entries"];
       })
       (ts {
         id = 10;

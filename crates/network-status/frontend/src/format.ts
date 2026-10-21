@@ -39,8 +39,8 @@ export function fmtTime(ts: number): string {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
-export function fmtListLoad(load: number[] | null, nprocs: number | null): string {
+export function fmtListLoad(load: number[] | null, ncpu: number | null): string {
   if (!load) return "–";
   const parts = `load ${load.map((l) => l.toFixed(2)).join(" / ")}`;
-  return nprocs ? `${parts} on ${nprocs} CPUs` : parts;
+  return ncpu ? `${parts} on ${ncpu} CPUs` : parts;
 }

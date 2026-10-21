@@ -131,7 +131,7 @@
                 expr = "router_up == 0";
                 for = "2m";
                 labels.severity = "critical";
-                annotations.summary = "Router (10.3.1.1) unreachable from network-status";
+                annotations.summary = "Router (gw, 10.3.1.1) unreachable from network-status";
               }
               {
                 alert = "PrinterMoonrakerDown";
@@ -229,17 +229,16 @@ in {
         scrape_interval = "5m";
         scrape_timeout = "30s";
       }
-      # OPNsense router (10.3.1.1), re-exported by the network-status service's
-      # /metrics endpoint on this box — the same data the
-      # network-info.int.leighhack.org SPA shows.  network-status binds 0.0.0.0
-      # rather than loopback (see machines/services1/network-status.nix); that
-      # used to be required by a scrape from services2 and is now only a habit,
-      # since Prometheus and network-status share this box.
+      # Router (gw, 10.3.1.1), re-exported by the network-status service's
+      # /metrics endpoint on gw — the same data the
+      # network-info.int.leighhack.org SPA shows.  The service runs on the
+      # router itself (machines/gw/network-status.nix) and binds 10.3.1.1:8091;
+      # gw's firewall lets this box reach that port and nothing else does.
       {
         job_name = "router";
         metrics_path = "/metrics";
         scrape_interval = "10s";
-        static_configs = [{targets = ["${HOSTS.services1}:8091"];}];
+        static_configs = [{targets = ["${HOSTS.router}:8091"];}];
       }
       # Klipper/Moonraker on the hackspace 3D-print servers (blue/lime),
       # re-exported by moonraker-exporter (printer-monitoring.nix). Targets

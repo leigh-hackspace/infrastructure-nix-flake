@@ -30,7 +30,7 @@ export function App() {
           />
         </div>
         <div class="card">
-          <h2>Connections (firewall state table)</h2>
+          <h2>Connections (conntrack table)</h2>
           <ConnChart store={store} />
         </div>
         <div class="card">

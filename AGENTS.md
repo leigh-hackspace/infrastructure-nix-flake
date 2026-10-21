@@ -85,7 +85,11 @@ X first", X has already cost someone a day.
     eval/format only (`nix flake check --no-build`, `nix fmt` from the flake's
     `formatter`) and are safe on gw; `just test|clippy|check-build|build-frontend|
     filestore-*|switch-gui-test|build-remote` are build-shaped and now refuse on gw
-    via `_build-host-guard` in the justfile. Run them from aibox or services1. Full
+    via `_build-host-guard` in the justfile, as does `just switch-gw` since gw
+    gained a Rust crate (`machines/gw/network-status.nix`, hosted on the router
+    since 2026-10-21) and its deploy became build-here-push-there. Run them from
+    aibox or services1. `just switch` on gw still works as the emergency local
+    build, but it now compiles that crate, so it is the fallback, not the way. Full
     mechanism: `docs/nix-dev-workflow.md`, "Never build on the router".
 
 ---
@@ -308,8 +312,9 @@ invariant, its assertion and its self-healing timer live in **`common/nixbld.nix
   So a plain `nix build` / `just switch` on services1 builds on aibox and copies the
   result back. Flip `nix.distributedBuilds = false` in `common/build-farm.nix` to go back
   to local-only.
-- `network-status.service` still runs as `User=leigh-admin` — a LAN dashboard should not
-  run as the admin; open item in `docs/follow-ups.md`.
+- `network-status.service` no longer runs as `User=leigh-admin`: it moved to gw on
+  2026-10-21 and is a `DynamicUser` reading local `/proc` (`machines/gw/network-status.nix`).
+  The follow-up that tracked it is closed in `docs/follow-ups.md`.
 
 ## Nix commands
 
@@ -415,8 +420,8 @@ listed here is in the doc named for it.
   for what broke at the cutover. **Never edit the generated
   `/etc/dnsmasq.d/network.conf`.** The flake-owned records are
   `common/dns-records.nix`; the vhost names live in `/var/lib/dnsmasq/names.hosts`,
-  written by dns-sync (ported to this box on 2026-10-21; `network-status` is the tool
-  that still speaks OPNsense).
+  written by dns-sync (ported to this box on 2026-10-21; `network-status` was moved
+  onto it the same day and runs as a DynamicUser reading local `/proc`).
   **dnsmasq's unsolicited RAs stop after a `router-lan` link flap: restart dnsmasq after
   any cabling** or WiFi clients lose their IPv6 default 20 minutes later. SSH as
   `leigh-admin@10.3.1.1` (root is not keyed); DO token is `DO_AUTH_TOKEN` in the shared

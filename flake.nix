@@ -269,9 +269,12 @@
       #     the two are added and removed together — which is the check that keeps
       #     them out.
       #   * No ./common/build-farm.nix and no ./common/containers.nix: a router runs
-      #     dnsmasq, pppd, openvpn, tailscale and nft, and nothing else.  The
-      #     build-user invariant it does get, from common/base.nix's own import of
-      #     common/nixbld.nix.
+      #     dnsmasq, pppd, openvpn, tailscale, nft and its own small dashboard
+      #     (machines/gw/network-status.nix), and nothing else.  The dashboard is
+      #     a Rust crate, so ./common/crane-args.nix is here to give that module
+      #     `CRANE` — but it is built by `just switch-gw` on services1/aibox and
+      #     pushed, never compiled here.  The build-user invariant it does get,
+      #     from common/base.nix's own import of common/nixbld.nix.
       gw = nixpkgs.lib.nixosSystem {
         inherit system;
         pkgs = import nixpkgs {
@@ -288,6 +291,7 @@
 
           ./common/sops.nix
           ./common/users.nix
+          ./common/crane-args.nix
 
           ((import ./machines/gw) flakeInputs)
         ];

@@ -21,7 +21,6 @@ flakeInputs: {
     ../../common/exporters.nix
     ./hardware-configuration.nix
     ./http.nix
-    ./network-status.nix
     ./networking.nix
 
     flakeInputs.sops-nix.nixosModules.sops

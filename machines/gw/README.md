@@ -20,7 +20,7 @@ flipped.
 > no longer answers.
 
 ```bash
-# from services1, the whole loop: sync this tree, build it there, switch, confirm
+# from services1, the whole loop: sync the mirror, build here, push to gw, confirm
 just switch-gw
 
 # what it will do, without touching a box
@@ -340,29 +340,40 @@ exited 0, and the config read correctly. The bug was in the gap between the file
 the process, which is exactly what a second router answering the same question
 exposes.
 
-## How this box is deployed, and the four imperative facts that make it work
+## How this box is deployed, and what the box itself is still for
 
-`just switch-gw` from services1: rsync this tree over, then `sudo nixos-rebuild switch
---flake .` **on the box**, then `sudo nixos-confirm` — in the same remote invocation
-(AGENTS.md's GOLDEN RULE, and `nixos-confirm` run on services1 confirms nothing,
-because it confirms the local system). The box builds its own system: it has the
-checkout at `~/Projects/infrastructure-nix-flake`, `git`/`just`/`jq` in its own
-`environment.systemPackages` (not from `common/tools.nix`, which this machine must not
-import because tools.nix and nas.nix arrive as a pair), and it reaches GitHub for the
-flake inputs over its own route out.
+`just switch-gw` from services1 (or aibox) does the whole loop: rsync this tree to the
+router (the mirror), build gw's system **on the build host**, push it with
+`nixos-rebuild switch --flake .#gw --target-host leigh-admin@10.3.1.1 --elevate=sudo`,
+then `sudo nixos-confirm` over ssh in the same shell invocation (AGENTS.md's GOLDEN
+RULE — `nixos-confirm` on services1 confirms nothing, because it confirms the local
+system).
 
-Four things are needed for that and none of them are in the flake. Three were set on
-this box during the install; the fourth is a habit:
+That is the primary path because the router hosts a Rust crate since 2026-10-21
+(`./network-status.nix`), and the box has no remote builder: a local
+`nixos-rebuild` here would compile Rust on the box that answers DNS/DHCP for every
+VLAN. `just switch-gw` is therefore build-shaped and refuses to run on gw itself.
+
+The box still keeps the checkout at `~/Projects/infrastructure-nix-flake`, with
+`git`/`just`/`jq` in its own `environment.systemPackages` (not from
+`common/tools.nix`, which this machine must not import because tools.nix and nas.nix
+arrive as a pair), and it reaches GitHub for the flake inputs over its own route out.
+That is for reading the tree, for `just check` (eval and format only), and for the
+emergency case where the push path is the broken thing: `sudo nixos-rebuild switch
+--flake .` locally still works, but it now compiles the dashboard crate on the router,
+so it is a fallback rather than the way.
+
+Four things the box needs for that checkout to work at all, and none of them are in
+the flake. Three were set during the install; the fourth is a habit:
 
 1. `sudo git config --global --add safe.directory /home/leigh-admin/Projects/infrastructure-nix-flake`
    — root's config, because `sudo` here sets `HOME=/root`, so the same command run
-   without `sudo` writes a file nix never reads and the build dies with "repository
-   path … is not owned by current user". Every machine in the fleet has it; it is one
-   of the imperative pre-flight checks in `docs/network-upgrade-runbook.md`.
+   without `sudo` writes a file nix never reads and the emergency local build dies with
+   "repository path … is not owned by current user". Every machine in the fleet has it;
+   it is one of the imperative pre-flight checks in `docs/network-upgrade-runbook.md`.
 2. `/var/lib/sops-nix/key.txt` — the network's age key, `root:nixbld 0440`, from
-   services1. `common/sops.nix` reads it at *evaluation* time (the secret derivations
-   are built during eval), so without it the box cannot evaluate its own config, let
-   alone build it.
+   services1. Needed for a local evaluation/build of this box's config; when the deploy
+   is pushed from services1, *that* box's copy is what the evaluation uses.
 3. `~/.ssh/agent-hop-key` (+ `.pub`) for `leigh-admin` — the fleet's shared hop key, so
    the box can `git fetch infra`, a remote named for services1's checkout and the only
    one it can reach without a GitHub key of its own (`origin` still points at GitHub,
@@ -372,20 +383,21 @@ this box during the install; the fourth is a habit:
    edit on the box: edit here, sync there. Discovering a divergence at the cutover is
    the failure this rule exists to prevent.
 
-The fallback, for when the box cannot build its own next generation: build on
-services1 and push it — `nixos-rebuild switch --flake .#gw --target-host
-leigh-admin@10.3.1.1 --elevate=sudo`. Two gotchas there, both hit for real:
+The push path has its own two gotchas, both hit for real:
 
 * **`--elevate=sudo` is not the default.** This nixpkgs ships `nixos-rebuild-ng`, which
   does not elevate remotely where the old shell script did, so without the flag the
   deploy builds, copies, and dies with `Permission denied` creating the profile
   symlink. Running the *client* under `sudo` does not substitute for it — the elevator
   is a separate decision from the client's uid.
-* The copy needs **daemon trust**, which is what `nix.settings.trusted-users` in
-  `configuration.nix` grants; without it the push dies with "lacks a signature by a
-  trusted key". Neither exists on a fresh install, so the first generation has to be
-  laid down by `nixos-install` from the installer, or streamed into the disk's store as
-  root (`nix-store --export … | sudo nix-store --import`) — which is how gen 2 arrived.
+* **`--target-host` uses plain ssh, and the default identity is not authorised here.**
+  It needs `NIX_SSHOPTS="-i ~/.ssh/agent-hop-key -o BatchMode=yes"` (which
+  `just switch-gw` sets); and the copy needs **daemon trust**, which is what
+  `nix.settings.trusted-users` in `configuration.nix` grants. Without the latter the
+  push dies with "lacks a signature by a trusted key". Neither exists on a fresh
+  install, so the first generation has to be laid down by `nixos-install` from the
+  installer, or streamed into the disk's store as root (`nix-store --export … | sudo
+  nix-store --import`) — which is how gen 2 arrived.
 
 Two more things about this box that its files do not mention, both worth knowing before
 you read `/run/secrets` and wonder:
@@ -435,10 +447,10 @@ state and generated PPP files were archived under
 Still open for the cutover itself: the old box's **OpenVPN server** and its
 **port-forward/round-robin NAT rules** are not reproduced here (the tunnel and the
 LAN routing are).  If those are still in use, they need a follow-up before the old
-box goes away for good.  `network-status` still speaks OPNsense's XML and command set
-as `root@10.3.1.1`, so its router panel fails against this box (`crates/network-status/`,
-`docs/handover-2026-10-21.md`); dns-sync was ported on 2026-10-21 and maintains
-`/var/lib/dnsmasq/names.hosts`.
+box goes away for good.  `network-status` was the last OPNsense-shaped tool; it was
+ported **and moved onto this box** on 2026-10-21 (`./network-status.nix`, a
+DynamicUser reading the local `/proc` and `/sys`), and dns-sync was ported the same
+day and maintains `/var/lib/dnsmasq/names.hosts`.
 
 ## Known-incomplete, by name
 
@@ -454,11 +466,6 @@ as `root@10.3.1.1`, so its router panel fails against this box (`crates/network-
   dns-sync rebuild it": dns-sync refuses to run against a file it cannot read, and the
   network is NXDOMAIN in the meantime. Snapshot before any hand edit; the 2026-10-21
   snapshot is `/var/lib/dns-sync-backups/` here and on services1.
-* **network-status still points at the old box.** It ssh's to `root@10.3.1.1` and runs
-  `pluginctl`, or reads `/conf/config.xml`, none of which exist here, so
-  `network-info.int.leighhack.org` shows a dead router. It reads dns-sync's pinned
-  `/etc/dns-sync/known_hosts`, so since the repin it fails on authentication rather
-  than on the host key. `crates/network-status/` and `docs/handover-2026-10-21.md`.
 * **Nothing here is the network's router yet** — that *was* `./coexist.nix`, and it was
   flipped on 2026-10-21. `.1` addresses, DHCP, RAs, the AAISP tunnel and the policy
   routing are all live now; the things that had to be proven first (the tunnel, the
@@ -553,10 +560,13 @@ with cargo. On 2026-10-21 a `just check` on this box ran `just fmt-check` → `n
 develop` and put four `rustc` processes on the gateway. The justfile now keeps them
 off: `just check` and `just fmt` evaluate/format only (`nix flake check --no-build`,
 `nix fmt`), and the build-shaped recipes (`test`, `clippy`, `check-build`,
-`build-frontend`, `filestore-*`, `switch-gui-test`, `build-remote`) refuse here via
-`_build-host-guard`. Run those from aibox or services1; `just switch`/`just switch-gw`
-are still correct here because they build only this machine's small system (no Rust).
-Mechanism and the incident: `docs/nix-dev-workflow.md`, "Never build on the router".
+`build-frontend`, `filestore-*`, `switch-gui-test`, `build-remote`, **and
+`switch-gw`**) refuse here via `_build-host-guard`. Run those from aibox or services1.
+`just switch` still exists here for the emergency local build, but since the box
+hosts a Rust crate (`./network-status.nix`) it now compiles that crate on the router:
+use it only when the push path is unavailable, and prefer `just switch-gw` from
+services1/aibox. Mechanism and the incident: `docs/nix-dev-workflow.md`, "Never build
+on the router".
 
 
 Do not read the Nix to find out what the router will do; read what the Nix produced.

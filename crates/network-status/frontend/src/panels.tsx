@@ -18,7 +18,7 @@ export function Header(s: { store: Store }) {
       const r = snap.router;
       metaEl.textContent =
         `router up ${fmtDur(r.uptime_secs)}` +
-        (r.nprocs != null ? ` · ${r.nprocs} CPUs` : "") +
+        (r.ncpu != null ? ` · ${r.ncpu} CPUs` : "") +
         (r.cpu.user != null ? ` · cpu ${(100 - (r.cpu.idle ?? 0)).toFixed(1)}%` : "") +
         (r.mem.free != null ? ` · ${fmtMem(r.mem.free)} mem free` : "") +
         ` · ${new Date(snap.ts * 1000).toTimeString().slice(0, 8)}`;
@@ -60,7 +60,7 @@ export function Banner(s: { store: Store }) {
       return;
     }
     el.style.display = "block";
-    el.textContent = `Cannot reach the router (10.3.1.1) — ${snap.error || "unknown error"}. Showing last known data; will retry automatically.`;
+    el.textContent = `Cannot reach the router — ${snap.error || "unknown error"}. Showing last known data; will retry automatically.`;
   });
 
   return <div class="banner" ref={node => { el = node; }}></div>;

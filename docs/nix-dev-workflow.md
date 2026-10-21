@@ -364,8 +364,15 @@ The fix is in the justfile, and the split is now explicit:
 | --- | --- |
 | `just check` (`nix flake check --no-build`, `nix eval`, `nix fmt -- --check`) | `just test`, `just clippy` (`nix develop` + cargo) |
 | `just fmt` (`nix fmt`, formatter from the flake's pinned nixpkgs) | `just check-build` (builds all four toplevels) |
-| `just switch` / `just switch-gw` (builds gw's own small system, no Rust) | `just build-frontend`, `just filestore-dev`, `just filestore-test`, `just switch-gui-test` |
-| reading rendered files, `nixos-rebuild dry-run` | `just build-remote` (and it would fail anyway: gw has no builder) |
+| reading rendered files, `nixos-rebuild dry-run` | `just build-frontend`, `just filestore-dev`, `just filestore-test`, `just switch-gui-test` |
+| `just switch` (the emergency local build — see below) | `just build-remote` (and it would fail anyway: gw has no builder), **`just switch-gw`** |
+
+`just switch-gw` is now refused on gw too, because since 2026-10-21 gw's own system
+contains a Rust crate (`machines/gw/network-status.nix`) and the recipe no longer
+builds on the router: it builds on the invoking box (services1, delegating to aibox)
+and pushes with `--target-host`. `just switch` on gw still works and is the fallback
+for when the push path is broken, but it now compiles that crate locally — the one
+thing this section exists to avoid — so use it only for that.
 
 `just fmt`/`fmt-check` used to run `nix develop` for alejandra. They now use
 `nix fmt`, which takes the formatter from the flake's `formatter` output — a

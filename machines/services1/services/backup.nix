@@ -36,7 +36,7 @@ in {
     #
     # Caveat before relying on "access-controlled": the NAS ssh host key is not
     # pinned for this job (BORG_RSH below has no StrictHostKeyChecking/
-    # UserKnownHostsFile, unlike the dns-sync and network-status ssh calls), and
+    # UserKnownHostsFile, unlike the dns-sync ssh calls), and
     # the job runs as root, so the real boundary is the NAS plus root on
     # services1.
     encryption.mode = "none";

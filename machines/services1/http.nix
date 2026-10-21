@@ -117,12 +117,12 @@ in {
         proxyBuffering = false;
       };
 
-      # Router network dashboard (machines/services1/network-status.nix):
-      # realtime per-interface bandwidth, connection counts and issues for
-      # the OPNsense box at 10.3.1.1. LAN-only; the router/DO records are
-      # synced by dns-sync.
+      # Router network dashboard (machines/gw/network-status.nix):
+      # realtime per-interface bandwidth, conntrack entries and issues for
+      # gw (10.3.1.1), where the service now runs.  LAN-only; the router/DO
+      # records are synced by dns-sync.
       "network-info.int.leighhack.org" = mkIntVhost {
-        proxyPass = "http://127.0.0.1:8091";
+        proxyPass = "http://10.3.1.1:8091";
       };
 
       "login.int.leighhack.org" = mkIntVhost {

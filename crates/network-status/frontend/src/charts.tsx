@@ -133,14 +133,14 @@ export function ConnChart(s: { store: Store }) {
     s.store.redraw();
     const snap = s.store.last();
     if (canvas) {
-      drawChart(canvas, [{ data: hist.pf, color: "#a78bfa", fill: true, window: 240 }], {
+      drawChart(canvas, [{ data: hist.conntrack, color: "#a78bfa", fill: true, window: 240 }], {
         fmt: (v) => Math.round(v) + "",
         height: 150,
         ts: hist.ts,
       });
     }
     if (nowEl) nowEl.textContent =
-      `${snap?.router.pf_states != null ? snap!.router.pf_states + " active states" : "–"}` +
+      `${snap?.router.conntrack != null ? snap!.router.conntrack + " conntrack entries" : "–"}` +
       `${snap?.router.own_tcp != null ? "  ·  " + snap!.router.own_tcp + " router sockets" : ""}` +
       `${snap?.router.retrans_rate != null ? "  ·  retrans " + snap!.router.retrans_rate.toFixed(2) + "/s" : ""}`;
   });

@@ -53,19 +53,27 @@ _build-host-guard:
 # `GW_HOST=10.3.1.254` only if you are working on one of those.
 GW_HOST := "10.3.1.1"
 #
-# Deployed the same way as every other machine — built and switched from its own
-# checkout, because that box has the repo, `git`/`just`, root's `safe.directory`
-# for the checkout and the sops key (machines/gw/README.md says how it got them).
-# It is a ssh recipe rather than something you run there because the change you are
-# deploying is in *this* working tree, and the router cannot read it until it is
-# copied over — which is what `sync-gw` is for, and why `switch-gw` depends on it.
+# Deployed by building *here* and pushing to the router.  It used to build on the
+# router itself ("it has the checkout, git, the sops key"), but since 2026-10-21 the
+# router's system contains a Rust crate (machines/gw/network-status.nix), and
+# building Rust on the box that answers DNS/DHCP for the network is exactly what
+# AGENTS.md's "Never build on the router" forbids.  So this recipe is build-shaped
+# and refuses to run on gw, like the rest; run it from services1 (where the tree
+# is edited) or aibox.  Nixos-rebuild builds locally — on services1 that delegates
+# to aibox — then copies the closure to the target and runs activation there.
 #
-# The switch and the confirm are in one remote invocation, chained with &&, on the
-# machine that was switched: AGENTS.md's GOLDEN RULE, and `nixos-confirm` here on
-# services1 would confirm nothing (it confirms the local system).
+# `sync-gw` still runs first: the router keeps a checkout as a mirror for reading
+# and for the emergency fallback, and it must not drift from the tree being
+# deployed.
 #
-# `--flake .` on the router resolves against its hostname, which is `gw`, so it
-# cannot build the wrong machine by forgetting an argument.
+# The switch and the confirm are chained with &&: AGENTS.md's GOLDEN RULE, and
+# `nixos-confirm` has to run on the machine that was switched (in the same shell
+# invocation), so a failed activation is never confirmed.  NIX_SSHOPTS carries the
+# machine-hop key: the default ssh identity is not authorised on gw, and
+# nixos-rebuild-ng uses plain ssh to reach --target-host.
+#
+# `--flake .#gw` names the machine explicitly; it cannot pick the local hostname
+# by accident the way `--flake .` could if this ever ran somewhere else.
 
 # Mirror this checkout onto the router.  The excludes are the build trees: 6.7 GB
 # of crates/target and node_modules that the flake rebuilds itself (and that
@@ -88,11 +96,15 @@ sync-gw:
       -i -e "ssh -i ~/.ssh/agent-hop-key -o BatchMode=yes -o ConnectTimeout=5" \
       ./ leigh-admin@{{GW_HOST}}:/home/leigh-admin/Projects/infrastructure-nix-flake/
 
-switch-gw: sync-gw
+switch-gw: _build-host-guard sync-gw
     #!/usr/bin/env bash
     set -euo pipefail
-    ssh -i ~/.ssh/agent-hop-key -o BatchMode=yes -o ConnectTimeout=5 leigh-admin@{{GW_HOST}} \
-      'cd ~/Projects/infrastructure-nix-flake && sudo nixos-rebuild switch --flake . && sudo nixos-confirm'
+    NIX_SSHOPTS="-i $HOME/.ssh/agent-hop-key -o BatchMode=yes -o ConnectTimeout=5" \
+      nixos-rebuild switch --flake .#gw \
+        --target-host leigh-admin@{{GW_HOST}} \
+        --elevate=sudo \
+      && ssh -i ~/.ssh/agent-hop-key -o BatchMode=yes -o ConnectTimeout=5 \
+           leigh-admin@{{GW_HOST}} 'sudo nixos-confirm'
 
 # --- Nix formatting ---
 

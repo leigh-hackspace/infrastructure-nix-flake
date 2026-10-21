@@ -16,7 +16,8 @@
 # put `leigh-admin` in `nixbld`, `leigh-admin` sorts before `nixbld1` in
 # /etc/group, and every build on services1 and services2 therefore ran as uid 1234
 # and SIGKILLed the admin's whole process set: tmux, the Zed remote server,
-# `user@1234.service`, `network-status.service` (which runs as `User=leigh-admin`),
+# `user@1234.service`, `network-status.service` (then running as `User=leigh-admin`
+# on services1; it is a DynamicUser on gw now),
 # and the ssh session of whoever delegated the build. That is the whole of
 # docs/nix-build-sigkill-2026-10-11.md — including why aibox, where nothing added
 # itself to the group, was never affected (not, as the post-mortem guessed, because

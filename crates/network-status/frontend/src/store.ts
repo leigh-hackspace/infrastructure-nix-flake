@@ -11,7 +11,7 @@ import {
 export interface History {
   ts: number[];
   rates: Record<string, { up: (number | null)[]; down: (number | null)[] }>;
-  pf: (number | null)[];
+  conntrack: (number | null)[];
   load: (number | null)[];
 }
 
@@ -28,9 +28,9 @@ export interface Store {
 }
 
 export function useStore(): Store {
-  const [hist, setHist] = createSignal<History>({ ts: [], rates: {}, pf: [], load: [] });
+  const [hist, setHist] = createSignal<History>({ ts: [], rates: {}, conntrack: [], load: [] });
   const [last, setLast] = createSignal<Snapshot | null>(null);
-  const [config, setConfig] = createSignal<AppConfig>({ wan: "em0", title: "network-info" });
+  const [config, setConfig] = createSignal<AppConfig>({ wan: "ppp0", title: "network-info" });
   const [selectedIface, setSelectedIface] = createSignal<string>("total");
   const [redraw, setRedraw] = createSignal(0);
 
@@ -41,7 +41,7 @@ export function useStore(): Store {
   function pushPoint(p: {
     ts: number;
     ifaces: { name: string; up_bps: number | null; down_bps: number | null }[];
-    pf_states: number | null;
+    conntrack: number | null;
     load: number[] | null;
   }): void {
     if (lastTs !== null && p.ts <= lastTs) return;
@@ -54,18 +54,18 @@ export function useStore(): Store {
         rates[i.name].down.push(i.down_bps == null ? null : i.down_bps);
       }
       const ts = [...h.ts, p.ts];
-      const pf = [...h.pf, p.pf_states == null ? null : p.pf_states];
+      const conntrack = [...h.conntrack, p.conntrack == null ? null : p.conntrack];
       const load = [...h.load, p.load ? p.load[0] : null];
       while (ts.length > MAXPTS) {
         ts.shift();
-        pf.shift();
+        conntrack.shift();
         load.shift();
         for (const k in rates) {
           rates[k].up.shift();
           rates[k].down.shift();
         }
       }
-      return { ts, rates, pf, load };
+      return { ts, rates, conntrack, load };
     });
   }
 
@@ -81,7 +81,7 @@ export function useStore(): Store {
           up_bps: h.ifaces[name].up[i] == null ? null : h.ifaces[name].up[i],
           down_bps: h.ifaces[name].down[i] == null ? null : h.ifaces[name].down[i],
         })),
-        pf_states: h.pf[i] == null ? null : h.pf[i],
+        conntrack: h.conntrack[i] == null ? null : h.conntrack[i],
         load: h.load[i] == null ? null : [h.load[i] as number],
       });
     }
@@ -95,7 +95,7 @@ export function useStore(): Store {
         pushPoint({
           ts: res.ts,
           ifaces: res.ifaces,
-          pf_states: res.router.pf_states,
+          conntrack: res.router.conntrack,
           load: res.router.load ?? null,
         });
         setLast(res);

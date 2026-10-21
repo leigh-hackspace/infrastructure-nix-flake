@@ -385,6 +385,15 @@ in {
             # *not* opened: it was OPNsense's, and there is nothing here for a
             # browser to speak to (./README.md).
             ip saddr ${aclV4} tcp dport 22 accept
+
+            # The network dashboard (./network-status.nix) listens on
+            # 10.3.1.1:8091.  Both of its clients are on services1 — the nginx
+            # that terminates network-info.int.leighhack.org and Prometheus —
+            # so this is one address, not the ACL: the JSON API is
+            # unauthenticated and has no other consumer.  Binding the LAN
+            # address in the unit and this rule are two halves of the same
+            # decision.
+            ip saddr ${HOSTS.services1} tcp dport 8091 accept
           }
         '';
       };

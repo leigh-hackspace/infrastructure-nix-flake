@@ -12,6 +12,7 @@ flakeInputs: {
     ./dns.nix
     ./firewall.nix
     ./networking.nix
+    ./network-status.nix
     ./openvpn.nix
     ./sops.nix
     ./uplink.nix

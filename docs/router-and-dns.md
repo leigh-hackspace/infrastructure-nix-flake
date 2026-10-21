@@ -17,13 +17,15 @@ dnsmasq is generated from `common/vlans.nix` and `common/dns-records.nix`, nftab
 Read `machines/gw/README.md` before changing it; `docs/gw-cutover-attempt-2026-10-21.md`
 has the findings from the cutover and what is still open.
 
-What still speaks the retired OPNsense box's language:
+What still spoke the retired OPNsense box's language:
 
-- **network-status** (`crates/network-status/`) ssh's to `10.3.1.1` as `root` and runs
-  OPNsense commands (`pluginctl`, `/conf/config.xml`); it needs the same port dns-sync
-  got on 2026-10-21 — see `docs/handover-2026-10-21.md`. It reads the same pinned
-  `/etc/dns-sync/known_hosts`, which is now `gw`'s, so its router panel fails on
-  authentication where it used to fail on the host key: neither is a fault in `gw`.
+- **network-status** (`crates/network-status/`) was the last tool doing it — ssh as
+  `root` and OPNsense commands (`netstat`, `pfctl`, `ifconfig`, `top -b`). It was
+  ported on 2026-10-21 alongside dns-sync, and then moved: it now runs **on gw** as
+  a DynamicUser (`machines/gw/network-status.nix`), reads the local `/proc` and
+  `/sys` (no ssh, no sudo, no key), and services1's nginx proxies
+  `network-info.int.leighhack.org` to it at `http://10.3.1.1:8091`. It charts gw's
+  interfaces, conntrack table, CPU, memory, load and TCP retransmits.
 
 (`dns-sync` was on this list until 2026-10-21: it now edits `gw`'s
 `/var/lib/dnsmasq/names.hosts` over `leigh-admin` + `sudo -n`, so new `*.int` vhosts get
@@ -40,13 +42,13 @@ dnsmasq` after cabling; `machines/gw/README.md` has the checks.
 **Historical: the retired OPNsense box's root shell was tcsh** (`2>` redirection fails,
 grep patterns with `<`/`>` need double quotes). That box is gone; `gw` runs NixOS and its
 root is not keyed — use `leigh-admin` and `sudo`. The LAN dashboard
-`network-info.int.leighhack.org` (`crates/network-status/`) still ssh's to it as
-`root@10.3.1.1`, which is one of the things to port.
+`network-info.int.leighhack.org` (`crates/network-status/`) was the last thing ssh'ing
+there as `root`; it now runs on gw and reads the kernel's `/proc` files directly.
 
 ## dnsmasq — the LAN resolver
 
 > **The rest of this section describes the retired OPNsense appliance** and is kept as
-the reference for what network-status still expects. On `gw` the resolver is
+the historical reference for how the old box's dnsmasq was configured. On `gw` the resolver is
 `services.dnsmasq` from `machines/gw/dns.nix`: the generated conf is
 `/etc/dnsmasq.d/network.conf` (from the tables), the flake-owned records are
 `/etc/dnsmasq-records.hosts`, and the vhost names are `/var/lib/dnsmasq/names.hosts`

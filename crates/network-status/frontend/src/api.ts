@@ -21,10 +21,10 @@ export interface Router {
   hostname: string;
   uptime_secs: number | null;
   load: [number, number, number] | null;
-  nprocs: number | null;
+  ncpu: number | null;
   cpu: { user: number | null; system: number | null; idle: number | null };
-  mem: { free: number | null; active: number | null; wired: number | null };
-  pf_states: number | null;
+  mem: { free: number | null; total: number | null };
+  conntrack: number | null;
   own_tcp: number | null;
   retrans_rate: number | null;
 }
@@ -42,7 +42,7 @@ export interface Snapshot {
 export interface HistorySeries {
   ts: number[];
   ifaces: Record<string, { up: (number | null)[]; down: (number | null)[] }>;
-  pf: (number | null)[];
+  conntrack: (number | null)[];
   load: (number | null)[];
 }
 
@@ -61,7 +61,7 @@ export async function loadConfig(): Promise<AppConfig> {
   try {
     return await json<AppConfig>(await fetch("/api/config", { cache: "no-store" }));
   } catch {
-    return { wan: "em0", title: "network-info" };
+    return { wan: "ppp0", title: "network-info" };
   }
 }
 

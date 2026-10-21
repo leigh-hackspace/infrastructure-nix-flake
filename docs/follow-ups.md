@@ -163,14 +163,6 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   key around. Install `~/.ssh/agent-hop-key` deliberately if it should hop out;
   never make it a side effect of a deploy.
 
-- **`network-status.service` runs as `User=leigh-admin`** — it should have its own
-  user. During the 2026-10-11 build-user incident that is what turned the uid-wide
-  kill into a *service* outage (SIGKILLed and restarted seven times) rather than
-  just a dead terminal; the sweep can no longer reach uid 1234, but a LAN-facing
-  dashboard running as the admin is still its own problem. **Blocked on** the hop
-  key the unit needs (`~/.ssh/agent-hop-key` to reach the router): a dedicated user
-  needs that key in sops, or a dedicated router key.
-
 - **`machines/pi-room-sys/ssh_host_ed25519_key` is a private host key in plain
   git** (moved in with the tree on 2026-10-15; it was committed in
   `leigh-hackspace/pi-room-sys` before that, so this is not a new leak — it is a
@@ -259,8 +251,10 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   containing only the vhosts and take the cameras, APs, Pi Room boards and
   `authentik.int` with them.
 
-  **network-status is still OPNsense-shaped** (`crates/network-status/`, `root@`,
-  `pluginctl`, `/conf/config.xml`) and is the next item down this list.
+  **network-status was the next item down this list** and is ported and moved
+  (2026-10-21): it now runs on gw as a `DynamicUser`, reading `/proc`/`/sys`
+  locally instead of OPNsense's commands (`docs/services.md`,
+  `machines/gw/network-status.nix`).
 
 - **Two dnsmasq bugs found by running the shadow box beside the live one**
   (2026-10-17, both fixed). Neither was visible in the config, in the build, or in

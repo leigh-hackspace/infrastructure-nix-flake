@@ -2,8 +2,8 @@
 
 SolidJS + TypeScript single-page app for the `network-status` backend
 (`network-info.int.leighhack.org`). It polls the backend's JSON API every 5
-seconds and renders per-interface bandwidth, firewall-state (pf) connection
-counts, CPU/memory/load, and "potential issues" on hand-rolled canvas charts.
+seconds and renders per-interface bandwidth, nftables conntrack entry counts,
+CPU/memory/load, and "potential issues" on hand-rolled canvas charts.
 
 ## Stack & why it's small
 
@@ -55,6 +55,6 @@ routing).
 
 | Endpoint        | Returns                                             |
 | --------------- | --------------------------------------------------- |
-| `GET /api/config`   | `{"wan":"em0","title":"Network — router"}`        |
+| `GET /api/config`   | `{"wan":"ppp0","title":"Network — router"}`        |
 | `GET /api/snapshot` | latest snapshot JSON (or 503 before first probe)  |
-| `GET /api/history`  | full rolling history JSON (ts, per-if rates, pf, load) |
+| `GET /api/history`  | full rolling history JSON (ts, per-if rates, conntrack, load) |

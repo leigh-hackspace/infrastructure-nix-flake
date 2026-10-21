@@ -194,7 +194,8 @@ in {
       # needs to open the secret file — which is why it can be an unprivileged
       # dynamic user rather than root (the pattern filestore/gocardless avoid by
       # reading CONFIG.ENV_FILE themselves; a LAN-facing web app should not run
-      # as a privileged account, see the network-status follow-up in docs/follow-ups.md).
+      # as a privileged account — the same rule that moved network-status to a
+      # DynamicUser on gw).
       #
       # The database needs no credential either: `/run/postgresql` is world-executable
       # and `local all all trust`, so a DynamicUser connects as the `switch_gui`

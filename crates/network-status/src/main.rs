@@ -1,14 +1,24 @@
-//! network-status — real-time web dashboard for the OPNsense router (10.3.1.1).
+//! network-status — real-time web dashboard for the router `gw` (10.3.1.1).
 //!
-//! Every few seconds it ssh's to the router (root, machine-hop key) and runs a
-//! small `sh -s` script that emits a machine-readable snapshot:
+//! It runs on gw itself (`--local`), where every few seconds it runs a small
+//! `sh -s` script that reads the Linux interfaces the router's statistics
+//! actually live in:
 //!
-//!   * per-interface byte/error counters (`netstat -ibn`, link rows only),
-//!   * load / uptime / process count / CPU / memory (`top -b`),
-//!   * firewall state-table size (`pfctl -s info`),
-//!   * cumulative TCP retransmissions (`netstat -s`),
-//!   * per-interface link status (`ifconfig -a`),
-//!   * the router's own TCP/UDP socket count (`netstat -b`).
+//!   * per-interface byte/error counters (`/proc/net/dev`),
+//!   * load / uptime / CPU (`/proc/loadavg`, `/proc/uptime`, `/proc/stat`),
+//!   * memory (`/proc/meminfo`),
+//!   * the nftables conntrack table size
+//!     (`/proc/sys/net/netfilter/nf_conntrack_count`),
+//!   * cumulative TCP retransmissions (`/proc/net/snmp`),
+//!   * per-interface link status (`/sys/class/net/*/carrier`),
+//!   * the router's own TCP socket count (`/proc/net/tcp`, `/proc/net/tcp6`),
+//!   * the CPU count (`nproc`).
+//!
+//! It used to speak OPNsense (`netstat -ibn`, `pfctl`, `ifconfig`, `top -b` over
+//! a tcsh root shell) and it can still probe another box over ssh (`--router
+//! leigh-admin@host --ssh-key … --known-hosts …`, the mode services1 used until
+//! 2026-10-21). The local mode is the production one: `machines/gw/network-status.nix`
+//! runs it as a DynamicUser on gw, so there is no login, key or host-key pin.
 //!
 //! Byte counters are differenced between samples to give up/down bandwidth
 //! per interface; a rolling in-memory history (default 1 hour) powers the
@@ -48,28 +58,40 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 const SSH_TIMEOUT: Duration = Duration::from_secs(20);
 const MAX_HISTORY: usize = 1440; // ~1 hour at the default 5s interval
 
-/// Collection script, fed to `ssh ... 'sh -s'` on the router (the root shell
-/// is tcsh, so everything POSIX-sh goes through `sh -s` on stdin — no
-/// redirections, no quote hell).
+/// Collection script, fed to `ssh ... 'sh -s'` on the router.  gw is NixOS, so
+/// this is POSIX sh reading `/proc` and `/sys` — no platform commands, no root,
+/// and no sudo: every file here is world-readable.
 const REMOTE_SCRIPT: &str = r#"
 echo ==IFACES==
-netstat -ibn
-echo ==TOP==
-top -b | sed -n '1,4p'
-echo ==PF==
-pfctl -s info | grep 'current entries'
+cat /proc/net/dev
+echo ==STAT==
+head -1 /proc/stat
+echo ==MEM==
+grep -E '^(MemTotal|MemFree|MemAvailable):' /proc/meminfo
+echo ==LOAD==
+cat /proc/loadavg
+echo ==UPTIME==
+cat /proc/uptime
+echo ==CONNTRACK==
+cat /proc/sys/net/netfilter/nf_conntrack_count 2>/dev/null || true
 echo ==RETRANS==
-netstat -s | grep -m1 'retransmitted$'
+awk '/^Tcp:/ {n++; if (n==2) {print $13; exit}}' /proc/net/snmp
 echo ==LINKS==
-ifconfig -a | awk '/^[a-z]/{name=$1} /status:/{print name, $2}'
-echo ==CONNS==
-netstat -b | tail -n +3 | grep -c '^tcp'
+for d in /sys/class/net/*; do
+  n=${d##*/}
+  c=$(cat "$d/carrier" 2>/dev/null || echo 1)
+  echo "$n $c"
+done
+echo ==SOCKETS==
+awk 'FNR>1 {n++} END {print n+0}' /proc/net/tcp /proc/net/tcp6
 echo ==NCPU==
-sysctl -n hw.ncpu
+nproc
 "#;
 
-/// Pseudo/loopback interfaces that are never interesting.
-const IGNORED_IFACES: [&str; 3] = ["lo0", "pflog0", "pfsync0"];
+/// Loopback is never interesting.  ppp0 must not be filtered out: its counters
+/// only exist while the tunnel does, and its disappearance is the WAN-down
+/// signal.
+const IGNORED_IFACES: [&str; 1] = ["lo"];
 
 // ---------------------------------------------------------------------------
 // Data model
@@ -104,14 +126,18 @@ struct Snapshot {
     error: Option<String>,
     uptime_secs: Option<u64>,
     load: Option<[f64; 3]>,
-    nprocs: Option<u32>,
+    /// Number of CPUs (`nproc`), used for the load-per-CPU issue.  The field
+    /// was called `nprocs` when OPNsense's `top` supplied a process count.
+    ncpu: Option<u32>,
     cpu_user: Option<f64>,
     cpu_sys: Option<f64>,
     cpu_idle: Option<f64>,
+    /// Free memory as the kernel's `MemAvailable`; `total` is `MemTotal`.
     mem_free: Option<u64>,
-    mem_active: Option<u64>,
-    mem_wired: Option<u64>,
-    pf_states: Option<u64>,
+    mem_total: Option<u64>,
+    /// Entries in the nftables conntrack table (OPNsense called this the pf
+    /// state table; the number means the same thing).
+    conntrack: Option<u64>,
     own_tcp: Option<u64>,
     retrans_rate: Option<f64>, // retransmissions per second
     retrans_total: Option<u64>, // cumulative, for diffing between samples
@@ -123,7 +149,8 @@ struct HistoryPoint {
     ts: i64,
     /// interface -> (up_bps, down_bps)
     rates: BTreeMap<String, (Option<f64>, Option<f64>)>,
-    pf: Option<u64>,
+    /// conntrack table size (OPNsense's pf state count).
+    conntrack: Option<u64>,
     load1: Option<f64>,
 }
 
@@ -143,36 +170,19 @@ fn now_ts() -> i64 {
         .unwrap_or(0)
 }
 
-/// Run the collection script on the router; returns its stdout.
-fn fetch_router(ssh_key: &str, known_hosts: &str, router: &str) -> Result<String, String> {
-    let mut child = Command::new("ssh")
-        .arg("-i")
-        .arg(ssh_key)
-        .args(["-o", "BatchMode=yes"])
-        .args(["-o", "ConnectTimeout=10"])
-        // Host identity is pinned, not TOFU: these tools ssh to the router as
-        // root, and `accept-new` would silently re-trust a key after a router
-        // reinstall (or an on-path impersonation).  The list is generated from
-        // the router's own sshd host keys by `just router-known-hosts` and
-        // shipped as /etc/network-status/known_hosts; missing file = no ssh
-        // rather than an unverified connection.
-        .args([
-            "-o",
-            "StrictHostKeyChecking=yes",
-            "-o",
-            &format!("UserKnownHostsFile={known_hosts}"),
-        ])
-        .arg(router)
-        .arg("sh -s")
+/// Feed `REMOTE_SCRIPT` to a command's stdin and collect its stdout.  Used for
+/// both probe modes: `ssh ... sh -s` to another box, or `sh -s` on this one.
+fn run_probe(mut command: Command, what: &str, hint: &str) -> Result<String, String> {
+    let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
-        .map_err(|e| format!("failed to spawn ssh: {e}"))?;
+        .map_err(|e| format!("failed to spawn {what}: {e}"))?;
     if let Some(mut stdin) = child.stdin.take() {
         if let Err(e) = stdin.write_all(REMOTE_SCRIPT.as_bytes()) {
             let _ = child.kill();
-            return Err(format!("failed to write probe script to ssh: {e}"));
+            return Err(format!("failed to write probe script to {what}: {e}"));
         }
     }
     // Output is small (~10 KB, well under the pipe buffer), so draining
@@ -188,17 +198,51 @@ fn fetch_router(ssh_key: &str, known_hosts: &str, router: &str) -> Result<String
                 return Ok(out);
             }
             if status.success() {
-                return Err("empty output from router probe".into());
+                return Err(format!("empty output from {what} probe"));
             }
-            return Err("ssh to router failed (check key/ssh access)".into());
+            return Err(format!("{what} failed{hint}"));
         }
         if start.elapsed() > SSH_TIMEOUT {
             let _ = child.kill();
             let _ = child.wait();
-            return Err("router probe timed out".into());
+            return Err(format!("{what} probe timed out"));
         }
         thread::sleep(Duration::from_millis(50));
     }
+}
+
+/// Run the collection script on another box over ssh; returns its stdout.
+fn fetch_router(ssh_key: &str, known_hosts: &str, router: &str) -> Result<String, String> {
+    let mut command = Command::new("ssh");
+    command
+        .arg("-i")
+        .arg(ssh_key)
+        .args(["-o", "BatchMode=yes"])
+        .args(["-o", "ConnectTimeout=10"])
+        // Host identity is pinned, not TOFU: the probe ssh's to the router as
+        // leigh-admin, and `accept-new` would silently re-trust a key after a
+        // router reinstall (or an on-path impersonation).  The list is generated
+        // from the router's own sshd host keys by `just router-known-hosts` and
+        // shipped as /etc/dns-sync/known_hosts; missing file = no ssh rather than
+        // an unverified connection.
+        .args([
+            "-o",
+            "StrictHostKeyChecking=yes",
+            "-o",
+            &format!("UserKnownHostsFile={known_hosts}"),
+        ])
+        .arg(router)
+        .arg("sh -s");
+    run_probe(command, "ssh to router", " (check key/ssh access)")
+}
+
+/// Run the collection script on this machine.  This is the mode gw uses: the
+/// dashboard runs on the router, so the statistics are local and there is no
+/// ssh key, no host-key pin and no service account to keep.
+fn fetch_local() -> Result<String, String> {
+    let mut command = Command::new("sh");
+    command.arg("-s");
+    run_probe(command, "local", "")
 }
 
 // ---------------------------------------------------------------------------
@@ -212,60 +256,21 @@ struct Parsed {
     links: BTreeMap<String, bool>,
     uptime_secs: Option<u64>,
     load: Option<[f64; 3]>,
-    nprocs: Option<u32>,
+    ncpu: Option<u32>,
     cpu_user: Option<f64>,
     cpu_sys: Option<f64>,
     cpu_idle: Option<f64>,
     mem_free: Option<u64>,
-    mem_active: Option<u64>,
-    mem_wired: Option<u64>,
-    pf_states: Option<u64>,
+    mem_total: Option<u64>,
+    conntrack: Option<u64>,
     own_tcp: Option<u64>,
     retrans_total: Option<u64>,
 }
 
-/// Parse a "5+00:39:58" or "00:39:58" uptime string.
-fn parse_uptime(s: &str) -> Option<u64> {
-    let (days, rest) = match s.split_once('+') {
-        Some((d, r)) => (d, r),
-        None => ("0", s),
-    };
-    let days: u64 = days.parse().ok()?;
-    let mut parts = rest.split(':');
-    let h: u64 = parts.next()?.parse().ok()?;
-    let m: u64 = parts.next()?.parse().ok()?;
-    let sec: u64 = parts.next()?.parse().ok()?;
-    Some(days * 86400 + h * 3600 + m * 60 + sec)
-}
-
-/// Parse a "41M" / "56K" / "1.2G" memory value into bytes.
-fn parse_mem(s: &str) -> Option<u64> {
-    let s = s.trim();
-    let (num, mult) = match s.chars().next_back() {
-        Some('K') => (s[..s.len() - 1].trim().parse::<f64>().ok()?, 1024u64),
-        Some('M') => (s[..s.len() - 1].trim().parse::<f64>().ok()?, 1024 * 1024),
-        Some('G') => (s[..s.len() - 1].trim().parse::<f64>().ok()?, 1024u64 * 1024 * 1024),
-        _ => (s.parse::<f64>().ok()?, 1),
-    };
-    Some((num * mult as f64) as u64)
-}
-
-/// Parse "0.5% user" style segments (value word) from a comma-separated line
-/// after stripping its leading "CPU:"/"Mem:" label.
-fn parse_kv_line(line: &str, label: &str) -> Vec<(f64, String)> {
-    let rest = match line.split_once(label) {
-        Some((_, r)) => r,
-        None => return Vec::new(),
-    };
-    rest.split(',')
-        .filter_map(|seg| {
-            let mut it = seg.split_whitespace();
-            let value = it.next()?;
-            let key = it.next()?.to_string();
-            let num = value.trim_end_matches('%').parse::<f64>().ok()?;
-            Some((num, key))
-        })
-        .collect()
+/// Parse a `/proc/meminfo` value (kB) into bytes.
+fn parse_meminfo_kb(s: &str) -> Option<u64> {
+    let kb: u64 = s.split_whitespace().next()?.parse().ok()?;
+    Some(kb * 1024)
 }
 
 fn parse_output(raw: &str) -> Parsed {
@@ -284,75 +289,86 @@ fn parse_output(raw: &str) -> Parsed {
         }
         match section {
             "IFACES" => {
-                // Name Mtu Network Address Ipkts Ierrs Idrop Ibytes Opkts Oerrs Obytes Coll
-                let toks: Vec<&str> = t.split_whitespace().collect();
-                if toks.len() < 12 || !toks[2].starts_with('<') {
-                    continue; // header row or per-address row
-                }
-                let name = toks[0].trim_end_matches('*').to_string();
-                if IGNORED_IFACES.contains(&name.as_str()) {
+                // "name: rx_bytes rx_packets rx_errs rx_drop ... tx_bytes tx_packets tx_errs ..."
+                let Some((name, rest)) = t.split_once(':') else {
+                    continue; // the two header lines
+                };
+                let name = name.trim();
+                if name.is_empty() || IGNORED_IFACES.contains(&name) {
                     continue;
                 }
-                let ib: u64 = toks[7].parse().unwrap_or(0);
-                let ob: u64 = toks[10].parse().unwrap_or(0);
-                let ie: u64 = toks[5].parse().unwrap_or(0);
-                let oe: u64 = toks[9].parse().unwrap_or(0);
-                p.ifaces.entry(name).or_insert((ib, ob, ie, oe));
+                let toks: Vec<u64> = rest
+                    .split_whitespace()
+                    .filter_map(|v| v.parse().ok())
+                    .collect();
+                if toks.len() < 16 {
+                    continue;
+                }
+                // rest index 0 = rx bytes: rx errs 2, tx bytes 8, tx errs 10.
+                p.ifaces
+                    .entry(name.to_string())
+                    .or_insert((toks[0], toks[8], toks[2], toks[10]));
             }
-            "TOP" => {
-                // line 1: ... load averages: L1, L2, L3  up 5+00:39:58  HH:MM:SS
-                if t.contains("load averages:") {
-                    let rest = t.split_once("load averages:").map(|(_, r)| r).unwrap_or("");
-                    let loads: Vec<f64> = rest
-                        .split_whitespace()
-                        .take(3)
-                        .filter_map(|v| v.trim_end_matches(',').parse().ok())
-                        .collect();
-                    if loads.len() == 3 {
-                        p.load = Some([loads[0], loads[1], loads[2]]);
-                    }
-                    if let Some((_, after)) = t.split_once(" up ") {
-                        if let Some(up) = after.split_whitespace().next() {
-                            p.uptime_secs = parse_uptime(up);
-                        }
-                    }
-                // line 2: "70 processes:  1 running, 69 sleeping"
-                } else if t.contains("processes:") {
-                    let n: u32 = t.split_whitespace().next().and_then(|v| v.parse().ok()).unwrap_or(0);
-                    p.nprocs = Some(n);
-                } else if let Some(kvs) = t.strip_prefix("CPU:") {
-                    for (v, k) in parse_kv_line(kvs, "") {
-                        match k.as_str() {
-                            "user" => p.cpu_user = Some(v),
-                            "system" => p.cpu_sys = Some(v),
-                            "idle" => p.cpu_idle = Some(v),
-                            _ => {}
-                        }
-                    }
-                } else if let Some(rest) = t.strip_prefix("Mem:") {
-                    // "Mem: 41M Active, 445M Inact, 2213M Wired, 56K Buf, 5131M Free"
-                    for seg in rest.split(',') {
-                        let mut it = seg.split_whitespace();
-                        let value = it.next();
-                        let key = it.next();
-                        if let (Some(value), Some(key)) = (value, key) {
-                            if let Some(b) = parse_mem(value) {
-                                match key {
-                                    "Active" => p.mem_active = Some(b),
-                                    "Wired" => p.mem_wired = Some(b),
-                                    "Free" => p.mem_free = Some(b),
-                                    _ => {}
-                                }
-                            }
-                        }
+            "STAT" => {
+                // "cpu user nice system idle iowait irq softirq steal ..." —
+                // cumulative since boot, so these percentages are the since-boot
+                // averages `top -b`'s CPU line used to report on OPNsense.
+                let toks: Vec<u64> = t
+                    .split_whitespace()
+                    .skip(1)
+                    .filter_map(|v| v.parse().ok())
+                    .collect();
+                if toks.len() >= 7 {
+                    let (user, nice, system) = (toks[0], toks[1], toks[2]);
+                    let (idle, iowait, irq, softirq) = (toks[3], toks[4], toks[5], toks[6]);
+                    let steal = toks.get(7).copied().unwrap_or(0);
+                    let total_f = (user + nice + system + idle + iowait + irq + softirq + steal) as f64;
+                    if total_f > 0.0 {
+                        p.cpu_user = Some((user + nice) as f64 * 100.0 / total_f);
+                        p.cpu_sys =
+                            Some((system + irq + softirq + steal) as f64 * 100.0 / total_f);
+                        p.cpu_idle = Some((idle + iowait) as f64 * 100.0 / total_f);
                     }
                 }
             }
-            "PF" if t.contains("current entries") => {
-                    if let Some(last) = t.split_whitespace().last() {
-                        p.pf_states = last.parse().ok();
-                    }
+            "MEM" => {
+                // "MemTotal: 8104932 kB" / "MemAvailable: ..."
+                let (key, value) = match t.split_once(':') {
+                    Some((k, v)) => (k.trim(), v),
+                    None => continue,
+                };
+                match key {
+                    "MemTotal" => p.mem_total = parse_meminfo_kb(value),
+                    // `MemAvailable` is the kernel's own estimate of what a new
+                    // workload could claim (it accounts for reclaimable cache);
+                    // `MemFree` is the fallback on a kernel without it.
+                    "MemAvailable" => p.mem_free = parse_meminfo_kb(value),
+                    "MemFree" if p.mem_free.is_none() => p.mem_free = parse_meminfo_kb(value),
+                    _ => {}
                 }
+            }
+            "LOAD" => {
+                // "1.04 0.39 0.22 1/233 33386"
+                let loads: Vec<f64> = t
+                    .split_whitespace()
+                    .take(3)
+                    .filter_map(|v| v.parse().ok())
+                    .collect();
+                if loads.len() == 3 {
+                    p.load = Some([loads[0], loads[1], loads[2]]);
+                }
+            }
+            "UPTIME" => {
+                // "11736.64 41971.75" — seconds since boot, then idle.
+                if let Some(first) = t.split_whitespace().next() {
+                    p.uptime_secs = first.parse::<f64>().ok().map(|v| v as u64);
+                }
+            }
+            "CONNTRACK" => {
+                if let Some(first) = t.split_whitespace().next() {
+                    p.conntrack = first.parse().ok();
+                }
+            }
             "RETRANS" => {
                 if let Some(first) = t.split_whitespace().next() {
                     if p.retrans_total.is_none() {
@@ -361,18 +377,22 @@ fn parse_output(raw: &str) -> Parsed {
                 }
             }
             "LINKS" => {
-                if let Some((name, status)) = t.split_once(':') {
-                    p.links.insert(name.trim().to_string(), status.trim() == "active");
+                // "<iface> <carrier>" from /sys/class/net/*/carrier.  A carrier
+                // file that does not exist (ppp0, tailscale0) means the device
+                // exists and is up, so the script prints 1 for it.
+                let mut it = t.split_whitespace();
+                if let (Some(name), Some(carrier)) = (it.next(), it.next()) {
+                    p.links.insert(name.to_string(), carrier != "0");
                 }
             }
-            "CONNS" => {
+            "SOCKETS" => {
                 if let Ok(n) = t.parse::<u64>() {
                     p.own_tcp = Some(n);
                 }
             }
             "NCPU" => {
                 if let Ok(n) = t.parse::<u32>() {
-                    p.nprocs = Some(n);
+                    p.ncpu = Some(n);
                 }
             }
             _ => {}
@@ -399,13 +419,20 @@ fn rate(cur: u64, prev: u64, dt: f64) -> Option<f64> {
 fn compute_issues(args: &Args, snap: &mut Snapshot) {
     snap.issues.clear();
 
-    // WAN link down is the big one.
-    if let Some(wan) = snap.ifaces.iter().find(|i| i.name == args.wan) {
-        if !wan.active {
-            snap.issues.push(Issue {
+    // WAN link down is the big one.  On gw the WAN is `ppp0`, and pppd deletes
+    // the interface when the tunnel drops — so "no entry" is the down signal,
+    // not just "entry with carrier 0".
+    if snap.ok {
+        match snap.ifaces.iter().find(|i| i.name == args.wan) {
+            Some(wan) if !wan.active => snap.issues.push(Issue {
                 level: "bad".into(),
                 message: format!("WAN interface {} has no link", wan.name),
-            });
+            }),
+            None => snap.issues.push(Issue {
+                level: "bad".into(),
+                message: format!("WAN interface {} is not present", args.wan),
+            }),
+            _ => {}
         }
     }
 
@@ -433,7 +460,7 @@ fn compute_issues(args: &Args, snap: &mut Snapshot) {
     }
 
     // Load above CPU count.
-    if let (Some(load), Some(n)) = (snap.load, snap.nprocs) {
+    if let (Some(load), Some(n)) = (snap.load, snap.ncpu) {
         if load[0] > f64::from(n) {
             snap.issues.push(Issue {
                 level: "warn".into(),
@@ -443,8 +470,7 @@ fn compute_issues(args: &Args, snap: &mut Snapshot) {
     }
 
     // Memory pressure: < 10% free.
-    if let (Some(free), Some(active), Some(wired)) = (snap.mem_free, snap.mem_active, snap.mem_wired) {
-        let total = free + active + wired;
+    if let (Some(free), Some(total)) = (snap.mem_free, snap.mem_total) {
         if total > 0 && free * 10 < total {
             snap.issues.push(Issue {
                 level: "warn".into(),
@@ -489,7 +515,12 @@ fn fmt_bytes(b: u64) -> String {
 
 fn sample_once(args: &Args, prev: &Option<Snapshot>) -> Snapshot {
     let ts = now_ts();
-    match fetch_router(&args.ssh_key, &args.known_hosts, &args.router) {
+    let probe = if args.local {
+        fetch_local()
+    } else {
+        fetch_router(&args.ssh_key, &args.known_hosts, &args.router)
+    };
+    match probe {
         Ok(raw) => {
             let parsed = parse_output(&raw);
             let dt = prev.as_ref().map(|p| (ts - p.ts) as f64).unwrap_or(0.0);
@@ -543,14 +574,13 @@ fn sample_once(args: &Args, prev: &Option<Snapshot>) -> Snapshot {
                 error: None,
                 uptime_secs: parsed.uptime_secs,
                 load: parsed.load,
-                nprocs: parsed.nprocs,
+                ncpu: parsed.ncpu,
                 cpu_user: parsed.cpu_user,
                 cpu_sys: parsed.cpu_sys,
                 cpu_idle: parsed.cpu_idle,
                 mem_free: parsed.mem_free,
-                mem_active: parsed.mem_active,
-                mem_wired: parsed.mem_wired,
-                pf_states: parsed.pf_states,
+                mem_total: parsed.mem_total,
+                conntrack: parsed.conntrack,
                 own_tcp: parsed.own_tcp,
                 retrans_rate,
                 retrans_total: parsed.retrans_total,
@@ -624,21 +654,20 @@ fn snapshot_json(s: &Snapshot, args: &Args) -> String {
         None => "null".into(),
     };
     format!(
-        r#"{{"ts":{},"ok":{},"error":{},"router":{{"hostname":{},"uptime_secs":{},"load":{},"nprocs":{},"cpu":{{"user":{},"system":{},"idle":{}}},"mem":{{"free":{},"active":{},"wired":{}}},"pf_states":{},"own_tcp":{},"retrans_rate":{}}},"ifaces":[{}],"issues":[{}]}}"#,
+        r#"{{"ts":{},"ok":{},"error":{},"router":{{"hostname":{},"uptime_secs":{},"load":{},"ncpu":{},"cpu":{{"user":{},"system":{},"idle":{}}},"mem":{{"free":{},"total":{}}},"conntrack":{},"own_tcp":{},"retrans_rate":{}}},"ifaces":[{}],"issues":[{}]}}"#,
         s.ts,
         s.ok,
         s.error.as_deref().map(quoted).unwrap_or_else(|| "null".into()),
-        quoted(router_host(&args.router)),
+        quoted(&args.hostname),
         jopt_u64(s.uptime_secs),
         load,
-        jopt_u64(s.nprocs.map(|n| n as u64)),
+        jopt_u64(s.ncpu.map(|n| n as u64)),
         jopt_num(s.cpu_user),
         jopt_num(s.cpu_sys),
         jopt_num(s.cpu_idle),
         jopt_u64(s.mem_free),
-        jopt_u64(s.mem_active),
-        jopt_u64(s.mem_wired),
-        jopt_u64(s.pf_states),
+        jopt_u64(s.mem_total),
+        jopt_u64(s.conntrack),
         jopt_u64(s.own_tcp),
         jopt_num(s.retrans_rate),
         ifaces.join(","),
@@ -646,9 +675,18 @@ fn snapshot_json(s: &Snapshot, args: &Args) -> String {
     )
 }
 
-/// `root@10.3.1.1` -> `10.3.1.1`.
+/// `leigh-admin@10.3.1.1` -> `10.3.1.1`.
 fn router_host(router: &str) -> &str {
     router.rsplit('@').next().unwrap_or(router)
+}
+
+/// The hostname reported in local mode (`gw`).
+fn local_hostname() -> String {
+    std::fs::read_to_string("/proc/sys/kernel/hostname")
+        .map(|s| s.trim().to_string())
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "router".into())
 }
 
 /// Latest snapshot in Prometheus text format. Cumulative counters (interface
@@ -666,7 +704,7 @@ fn metrics_text(s: &Snapshot) -> String {
         }
     };
     // `labels` is the full, already-quoted label set, e.g. `mode="user"`
-    // or `interface="em0",direction="down"`.
+    // or `interface="ppp0",direction="down"`.
     let labeled = |out: &mut String, name: &str, labels: &str, value: Option<f64>| {
         if let Some(v) = value {
             if v.is_finite() {
@@ -690,8 +728,8 @@ fn metrics_text(s: &Snapshot) -> String {
     }
     gauge(
         &mut out,
-        "router_nprocs",
-        s.nprocs.map(|n| n as f64),
+        "router_ncpu",
+        s.ncpu.map(|n| n as f64),
     );
     for (mode, v) in [
         ("user", s.cpu_user),
@@ -702,12 +740,11 @@ fn metrics_text(s: &Snapshot) -> String {
     }
     for (state, v) in [
         ("free", s.mem_free.map(|b| b as f64)),
-        ("active", s.mem_active.map(|b| b as f64)),
-        ("wired", s.mem_wired.map(|b| b as f64)),
+        ("total", s.mem_total.map(|b| b as f64)),
     ] {
         labeled(&mut out, "router_mem_bytes", &format!("state=\"{state}\""), v);
     }
-    gauge(&mut out, "router_pf_states", s.pf_states.map(|n| n as f64));
+    gauge(&mut out, "router_conntrack_entries", s.conntrack.map(|n| n as f64));
     gauge(&mut out, "router_tcp_sockets", s.own_tcp.map(|n| n as f64));
     gauge(
         &mut out,
@@ -720,8 +757,8 @@ fn metrics_text(s: &Snapshot) -> String {
         s.retrans_total.map(|n| n as f64),
     );
     for i in &s.ifaces {
-        // Interface names are FreeBSD tokens (alphanumerics, -, ., :, %),
-        // all safe inside a label value as-is.
+        // Linux interface names (alphanumerics, -, _, .) are safe inside a
+        // label value as-is; /proc/net/dev does not include iproute's @parent.
         labeled(&mut out, "router_interface_up", &format!("interface=\"{}\"", i.name), Some(if i.active { 1.0 } else { 0.0 }));
         labeled(
             &mut out,
@@ -776,13 +813,13 @@ fn history_json(history: &[&HistoryPoint]) -> String {
             down.join(",")
         ));
     }
-    let pf: Vec<String> = history.iter().map(|h| jopt_u64(h.pf)).collect();
+    let conntrack: Vec<String> = history.iter().map(|h| jopt_u64(h.conntrack)).collect();
     let load: Vec<String> = history.iter().map(|h| jopt_num(h.load1)).collect();
     format!(
-        r#"{{"ts":[{}],"ifaces":{{{}}},"pf":[{}],"load":[{}]}}"#,
+        r#"{{"ts":[{}],"ifaces":{{{}}},"conntrack":[{}],"load":[{}]}}"#,
         ts.join(","),
         ifaces_json.join(","),
-        pf.join(","),
+        conntrack.join(","),
         load.join(",")
     )
 }
@@ -795,10 +832,17 @@ fn history_json(history: &[&HistoryPoint]) -> String {
 struct Args {
     bind: String,
     port: u16,
+    /// ssh target for the remote probe (`--router`); unused with `--local`.
     router: String,
     ssh_key: String,
     /// Pinned router host keys (`UserKnownHostsFile`). See fetch_router.
     known_hosts: String,
+    /// Read the statistics on this machine instead of over ssh.  This is how gw
+    /// hosts the dashboard.
+    local: bool,
+    /// What the JSON calls the router: the ssh target's host, or this box's
+    /// hostname in local mode.
+    hostname: String,
     interval: Duration,
     wan: String,
     title: String,
@@ -951,16 +995,18 @@ fn main() {
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let mut bind = "127.0.0.1".to_string();
     let mut port: u16 = 8091;
-    let mut router = "root@10.3.1.1".to_string();
+    let mut router = "leigh-admin@10.3.1.1".to_string();
     let mut ssh_key = "/home/leigh-admin/.ssh/agent-hop-key".to_string();
     let mut known_hosts = "/etc/network-status/known_hosts".to_string();
+    let mut local = false;
     let mut interval_secs: u64 = 5;
-    let mut wan = "em0".to_string();
+    let mut wan = "ppp0".to_string();
     let mut title = "network-info".to_string();
     let mut static_dir: Option<String> = None;
     let mut i = 0;
     while i < argv.len() {
         match argv[i].as_str() {
+            "--local" => local = true,
             "--bind" => {
                 if let Some(v) = argv.get(i + 1) {
                     bind = v.clone();
@@ -1020,12 +1066,22 @@ fn main() {
         i += 1;
     }
 
+    // The JSON's `router.hostname`: the box being charted.  In remote mode it
+    // is the ssh target without its user; in local mode it is this machine.
+    let hostname = if local {
+        local_hostname()
+    } else {
+        router_host(&router).to_string()
+    };
+
     let args = Args {
         bind,
         port,
         router,
         ssh_key,
         known_hosts,
+        local,
+        hostname,
         interval: Duration::from_secs(interval_secs),
         wan,
         title,
@@ -1045,10 +1101,14 @@ fn main() {
         }
     };
     eprintln!(
-        "network-status listening on {}:{} (router: {}, wan: {}, interval: {}s, static_dir: {})",
+        "network-status listening on {}:{} (probe: {}, wan: {}, interval: {}s, static_dir: {})",
         args.bind,
         args.port,
-        args.router,
+        if args.local {
+            "local"
+        } else {
+            args.router.as_str()
+        },
         args.wan,
         interval_secs,
         args.static_dir.as_deref().unwrap_or("<embedded>"),
@@ -1071,7 +1131,7 @@ fn main() {
                 h.push_back(HistoryPoint {
                     ts: snap.ts,
                     rates,
-                    pf: snap.pf_states,
+                    conntrack: snap.conntrack,
                     load1: snap.load.map(|l| l[0]),
                 });
                 while h.len() > MAX_HISTORY {
@@ -1101,5 +1161,146 @@ fn main() {
             }
             Err(_) => continue,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A real probe from gw (2026-10-21), including the two `/proc/net/dev`
+    /// header lines and an interface (`lo`) the parser must drop.
+    const SAMPLE: &str = r#"
+==IFACES==
+Inter-|   Receive                                                |  Transmit
+ face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed
+    lo: 1735563   13584    0    0    0     0          0         0  1735563   13584    0    0    0     0       0          0
+router-lan: 108335552750 106929170    0 5128    0     0          0     60252 285073487745 203019379    0    3    0     0       0          0
+vlan225: 78197913655 14990952    0   60    0     0          0     30766 31484006958 23653606    0   20    0     0       0          0
+  ppp0: 41152642209 29457831    0    0    0     0          0         0 927347146 7107417    0    0    0     0       0          0
+==STAT==
+cpu  275198 5 32126 4197173 4648 20764 154326 0 0 0
+==MEM==
+MemTotal:        8104932 kB
+MemAvailable:    6843124 kB
+==LOAD==
+1.04 0.39 0.22 1/233 33386
+==UPTIME==
+11736.64 41971.75
+==CONNTRACK==
+2372
+==RETRANS==
+3098
+==LINKS==
+lo 1
+ppp0 1
+router-lan 1
+vlan225 1
+==SOCKETS==
+32
+==NCPU==
+4
+"#;
+
+    #[test]
+    fn parses_gw_probe() {
+        let p = parse_output(SAMPLE);
+
+        // lo is dropped; rx bytes / tx bytes / rx errs / tx errs are at the
+        // right offsets in /proc/net/dev.
+        assert!(!p.ifaces.contains_key("lo"));
+        assert_eq!(p.ifaces.get("ppp0"), Some(&(41152642209, 927347146, 0, 0)));
+        assert_eq!(p.ifaces.get("vlan225"), Some(&(78197913655, 31484006958, 0, 0)));
+
+        assert_eq!(p.uptime_secs, Some(11736));
+        assert_eq!(p.load, Some([1.04, 0.39, 0.22]));
+        assert_eq!(p.ncpu, Some(4));
+        assert_eq!(p.mem_total, Some(8104932 * 1024));
+        assert_eq!(p.mem_free, Some(6843124 * 1024));
+        assert_eq!(p.conntrack, Some(2372));
+        assert_eq!(p.retrans_total, Some(3098));
+        assert_eq!(p.own_tcp, Some(32));
+        assert_eq!(p.links.get("ppp0"), Some(&true));
+
+        // The three CPU shares come from the same cumulative counters and add
+        // up to 100% (steal is folded into system).
+        let sum = p.cpu_user.unwrap() + p.cpu_sys.unwrap() + p.cpu_idle.unwrap();
+        assert!((sum - 100.0).abs() < 1e-9, "cpu shares sum to {sum}");
+    }
+
+    #[test]
+    fn missing_conntrack_file_is_not_an_error() {
+        // `cat ... 2>/dev/null || true` leaves the section empty when the
+        // nf_conntrack module is not loaded; the rest of the snapshot is fine.
+        let p = parse_output("==CONNTRACK==\n\n==NCPU==\n4\n");
+        assert_eq!(p.conntrack, None);
+        assert_eq!(p.ncpu, Some(4));
+    }
+
+    fn test_args() -> Args {
+        Args {
+            bind: "127.0.0.1".into(),
+            port: 0,
+            router: "leigh-admin@10.3.1.1".into(),
+            ssh_key: String::new(),
+            known_hosts: String::new(),
+            local: true,
+            hostname: "gw".into(),
+            interval: Duration::from_secs(5),
+            wan: "ppp0".into(),
+            title: "network-info".into(),
+            static_dir: None,
+        }
+    }
+
+    fn iface(name: &str, active: bool) -> Iface {
+        Iface {
+            name: name.into(),
+            active,
+            ibytes: 0,
+            obytes: 0,
+            ierrors: 0,
+            oerrors: 0,
+            down_bps: None,
+            up_bps: None,
+            err_delta: 0,
+        }
+    }
+
+    #[test]
+    fn missing_wan_interface_is_reported() {
+        let args = test_args();
+
+        // ppp0 gone: pppd deletes the interface when the tunnel drops.
+        let mut snap = Snapshot {
+            ok: true,
+            ifaces: vec![iface("vlan225", true)],
+            ..Default::default()
+        };
+        compute_issues(&args, &mut snap);
+        assert!(
+            snap.issues.iter().any(|i| i.level == "bad" && i.message.contains("not present")),
+            "missing WAN should be an issue: {:?}",
+            snap.issues.iter().map(|i| &i.message).collect::<Vec<_>>()
+        );
+
+        // ppp0 present but no carrier.
+        let mut snap = Snapshot {
+            ok: true,
+            ifaces: vec![iface("ppp0", false)],
+            ..Default::default()
+        };
+        compute_issues(&args, &mut snap);
+        assert!(snap.issues.iter().any(|i| i.level == "bad" && i.message.contains("no link")));
+
+        // A failed probe already reports "cannot reach router"; it must not
+        // also claim the WAN is missing.
+        let mut snap = Snapshot {
+            ok: false,
+            error: Some("ssh failed".into()),
+            ..Default::default()
+        };
+        compute_issues(&args, &mut snap);
+        assert!(!snap.issues.iter().any(|i| i.message.contains("not present")));
     }
 }

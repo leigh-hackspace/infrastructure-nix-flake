@@ -76,8 +76,9 @@ in {
   # whole network resolves through, with StrictHostKeyChecking=yes (see
   # dns-sync/src/main.rs), so a router reinstall must be an explicit act here
   # rather than something accepted silently.  Regenerate with
-  # `just router-known-hosts` and paste the result.
-  # network-status points at this same file rather than keeping its own list.
+  # `just router-known-hosts` and paste the result.  (network-status used to share
+  # this pin; it now runs on gw and reads /proc locally, so dns-sync is its only
+  # reader.)
   #
   # Two key types: these are the two host keys `gw` has (/etc/ssh/ssh_host_*)
   # as of the 2026-10-21 cutover.  The OPNsense box offered an ECDSA key too and

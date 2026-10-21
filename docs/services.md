@@ -25,7 +25,7 @@ Every address is in `common/hosts.nix`.
 | dns-sync | `crates/dns-sync/` | (no listener) | `docs/router-and-dns.md` |
 | frigate-monitor | `crates/frigate-monitor/` | aibox:8090 | `machines/aibox/frigate-monitor.nix` |
 | gocardless-dashboard | `crates/gocardless-dashboard/` | 127.0.0.1:8095 | `docs/authentik-oidc-notes.md` |
-| network-status | `crates/network-status/` | 0.0.0.0:8091 | `machines/services1/network-status.nix` |
+| network-status | `crates/network-status/` | gw:8091 (10.3.1.1) | `machines/gw/network-status.nix` |
 | filestore | `crates/filestore/` | 127.0.0.1:8096 | `docs/filestore-gotchas-2026-10-05.md` |
 | switch-gui | `crates/switch-gui/` | 127.0.0.1:8097 | `crates/switch-gui/README.md` |
 | status-dashboard | `crates/status-dashboard/` | both boxes | `common/status-dashboard.nix` |
@@ -102,27 +102,44 @@ you touch it, keep both halves: poll, and surface the failure.
 
 ## `crates/network-status/` — the router network dashboard
 
-Served at `network-info.int.leighhack.org`. The Rust binary (`src/`, **zero
-external crates**) ssh's to the router every 5 s, keeps a rolling history and
-serves the JSON API (`/api/snapshot`, `/api/history`, `/api/config`) plus static
-files via `--static-dir`.
+Served at `network-info.int.leighhack.org`, and **hosted on `gw` (10.3.1.1)** since
+2026-10-21. The Rust binary (`src/`, **zero external crates**) runs as a
+`DynamicUser` with `--local`, reads the kernel's own statistics every 5 s, keeps a
+rolling history and serves the JSON API (`/api/snapshot`, `/api/history`,
+`/api/config`), `/metrics` and the static SPA (`--static-dir`).
 
-It listens on **0.0.0.0:8091**, not loopback: Prometheus scrapes its `/metrics`
-(`machines/services1/services/observability.nix`) and the bind used to have to be
-wide because the scraper was on services2.  It is on this box now, so the wide
-bind is a habit rather than a requirement — access control is the vhost ACL, not
-the bind, and the JSON API has always been unauthenticated.
+It ran against the retired OPNsense box until 2026-10-21 and spoke its language:
+`root`, `netstat -ibn`, `pfctl`, `ifconfig -a`, `top -b`, `sysctl`. The probe is now
+local and reads `/proc/net/dev` (interfaces), `/proc/stat` + `/proc/loadavg` +
+`/proc/uptime` (CPU/load), `/proc/meminfo` (memory), `/proc/net/snmp` (TCP
+retransmits), `/proc/net/tcp*` (socket count),
+`/proc/sys/net/netfilter/nf_conntrack_count` (the conntrack table) and
+`/sys/class/net/*/carrier` (link state) — no sudo, no ssh, no key, because all of it
+is world-readable. The WAN interface is **`ppp0`**, the AAISP L2TP tunnel
+(`machines/gw/constants.nix`), not the hub handoff NIC; ppp0 only exists while the
+tunnel does, so its absence is the WAN-down signal. (The binary still has the old
+`--router user@host --ssh-key … --known-hosts …` mode for probing another box; the
+unit does not use it.)
+
+It listens on **10.3.1.1:8091**, not `0.0.0.0`: its only clients are on services1 —
+the nginx that terminates `network-info.int.leighhack.org` (TLS and the LAN ACL stay
+there; the vhost proxies to `http://10.3.1.1:8091`) and Prometheus, which scrapes
+`/metrics` (`machines/services1/services/observability.nix`). `machines/gw/firewall.nix`
+opens the port to `services1` alone. The JSON API is unauthenticated by design; the
+vhost ACL is the access control.
+
+It lives in `machines/gw/network-status.nix`. That does mean the router's system
+contains a Rust crate, so **deploy it by pushing from services1/aibox**
+(`just switch-gw`) rather than building on gw — AGENTS.md, "Never build on the
+router".
 
 The frontend is **SolidJS + TypeScript** (`frontend/`, esbuild +
 `esbuild-plugin-solid`, no router/state/chart libraries) and is the **one SPA
 whose `dist/` is committed** — Nix builds are offline and the npm deps are not
 nixpkgs-cached, so the flake copies `frontend/dist/` into the store rather than
-building it (`machines/services1/network-status.nix`). **After editing the SPA
+building it (`machines/gw/network-status.nix`). **After editing the SPA
 run `npm install && npm run build` in `frontend/` and commit the result** (or
 `just network-status-frontend`). See `crates/network-status/frontend/README.md`.
-
-The unit still runs as `User=leigh-admin`, which is a live follow-up —
-`docs/follow-ups.md`.
 
 ## `crates/filestore/` — file browser over the NAS `filestore` share
 
