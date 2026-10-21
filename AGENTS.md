@@ -420,7 +420,8 @@ listed here is in the doc named for it.
   any cabling** or WiFi clients lose their IPv6 default 20 minutes later. SSH as
   `leigh-admin@10.3.1.1` (root is not keyed); DO token is `DO_AUTH_TOKEN` in the shared
   env-file secret (`CONFIG.ENV_FILE`) — **never print it or copy it off services1.**
-  → `docs/router-and-dns.md`.
+  → `docs/router-and-dns.md`. The state to pick up from, and the ordered list of what
+  is still open after the cutover: `docs/handover-2026-10-21.md`.
 - **3D print servers** `3d-blue` (10.3.14.62) / `3d-lime` (10.3.14.61), Klipper +
   Moonraker, user `hackspace`, polled by `moonraker-exporter` at **fixed IPv4 on purpose**
   (the two Pis were cloned from one SD card, so their DNS names used to advertise each
