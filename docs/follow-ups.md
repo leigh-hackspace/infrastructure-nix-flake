@@ -13,7 +13,8 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
 ## Nix / build
 
 - **gw now delegates its builds to aibox and has no local fallback (added
-  2026-10-21, not yet deployed).** Until today gw was the one machine that imported
+  2026-10-21, deployed to gw the same evening).** Until today gw was the one machine
+  that imported
   neither half of `common/build-farm.nix`: `/etc/nix/machines` did not exist, so every
   build — including the accidental kind an agent reaches for — compiled on the router.
   `machines/gw/default.nix` now sets `infra.buildFarm.builderHost = HOSTS.aibox` **and
@@ -278,6 +279,30 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
 
 ## Router (gw)
 
+- **Deployed 2026-10-21 21:19** — the state to compare anything against. gw is at
+  `zb8s89v5w8ir5nv86i6kb3ghlsa4qh9y` (public IPv6 inbound with its counter, the tailnet
+  /10 in every rule, dnsmasq's four upstreams, the aibox build delegation and
+  `max-jobs = 0`) and services1 at `38zsm0pnmb9bwd7i58wqp2rlrnp0wh59` (the same ACL in
+  nginx and `pg_hba`), both switched *and confirmed in the same shell invocation*, both
+  `is-system-running = running`, `filestore.int` 200 / `id` 302 / `network-info.int` 200
+  afterwards. The new v6 rule read `counter packets 3` minutes after activation and 12 a
+  few minutes later — which proves the rule matches traffic and **not** that the internet
+  can arrive, because LAN clients hit it too; the off-network probe is still owed. Still
+  pending by choice: `--advertise-routes` (a boot, plus the services1 overlap settled),
+  the VPN, the rotations, and services2/aibox picking the ACL up.
+
+- **`just switch-gw`'s `sync-gw` rsyncs the router's `.git` as well, and `--delete`
+  means it.** Seen on the deploy above: 29 deletions, every one of them gw-only git
+  metadata — a local branch and the records of three stale worktrees. The excludes are
+  `target/`, `node_modules/`, `/result*` and `/.git/config`, so the rest of `.git` is
+  reconciled against services1's copy. Two consequences: **a commit or branch made in
+  gw's checkout is not merely unsynced, it is on a collision course**, and the router's
+  repo can be left referencing objects a later sync deleted. Nobody has hit the
+  corruption; the branch it ate was this audit's and the commits were safe on services1,
+  which is the only reason this is a paragraph and not an incident. Treat the mirror as
+  files (`--exclude /.git`, and fetch on the rare occasion the router needs to be a repo)
+  or stop describing it as a checkout.
+
 - **Public IPv6 inbound was never in the flake — fixed 2026-10-21, but unverified
   from outside.** The old box let the internet dial services1 over IPv6
   (`pass in quick on l2tp0 reply-to (…) inet6 proto tcp from any to
@@ -332,13 +357,18 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   spelled with a trailing zero (`allow fd99:dead:beef::0/48`) where the two
   interpolated lines now render `::/48` — identical to every parser involved, and
   normalising the rest is a pass over the file rather than part of this change — and
-  **nothing is deployed**: the nginx ACL and the `pg_hba` change land on the next
-  services1 switch, and the router's own rules on the next `just switch-gw`.
+  **deployed to gw and services1 the same evening**: the /10 is live in the rendered nginx
+  config and in the file `show hba_file` names, and gw's v4 forward set names
+  100.64.0.0/10. services2 and aibox pick the ACL up at their own next switch, and the
+  tailnet prefs still want the boot described above.
 
 - **The retired box's `config.xml` is a live secret file with five credentials nobody
   has rotated** (found while auditing it 2026-10-21; it is gitignored, and it is a
   slightly older duplicate of `~/tmp/opnsense-archive-20261017/config.xml` on
-  services1, so the working-tree copy has no reason to exist). What is in it, in
+  services1, so the working-tree copy had no reason to exist — and it is already gone:
+  cleaning gw's checkout at 20:21 on 2026-10-21 deleted it, along with an agent's
+  untracked scratch file, which is how it was noticed. The archive is now the only copy.
+  What is in it, in
   words rather than values: the AAISP L2TP password (already copied to
   `aaisp_ppp_password` in sops), the authentik **LDAP bind password** for
   `cn=pfsense-gw` (used by the old GUI login and by the VPN's `Members` group auth),
