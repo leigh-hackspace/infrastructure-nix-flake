@@ -47,15 +47,11 @@ _build-host-guard:
 
 # --- the router (gw)
 #
-# Its address is a variable because the box has two: `10.3.1.254` while it runs in
-# co-existence with the live router (machines/gw/coexist.nix), and `10.3.1.1` — the
-# network's real router address — once `enable = false`.  Which one it answers on is a
-# property of the *generation running on the box*, so it cannot be inferred from this
-# checkout: pass it, `just GW_HOST=10.3.1.1 switch-gw`, and the recipes stop being a
-# guess.  (While the box is on aibox's bench NIC it is reachable neither way without a
-# source-bound route; machines/gw/README.md says how, and
-# docs/gw-cutover-attempt-2026-10-21.md says why it is there.)
-GW_HOST := "10.3.1.254"
+# It is the network's router as of 2026-10-21 (`machines/gw/coexist.nix` is
+# `enable = false`), so it answers on `10.3.1.1`. `10.3.1.254` was the co-existence
+# address: it belongs to generations built before the cutover, so pass
+# `GW_HOST=10.3.1.254` only if you are working on one of those.
+GW_HOST := "10.3.1.1"
 #
 # Deployed the same way as every other machine — built and switched from its own
 # checkout, because that box has the repo, `git`/`just`, root's `safe.directory`

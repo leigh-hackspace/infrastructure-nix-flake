@@ -407,15 +407,19 @@ listed here is in the doc named for it.
   (`docs/procurve-switches.md`). `agent` is a **Manager**: `enable` is a second login,
   writes run inside config mode, and **nothing writes NVRAM**, so a reboot undoes any
   change. `crates/switch-gui/` wraps them; its README is the CLI's trap list.
-- **Router** (OPNsense 26.7, FreeBSD, 10.3.1.1) is out-of-band — no flake config
- **for the box that is running**; `machines/gw/` is the flake's rewrite of it, with no
- hardware behind it yet, and its README says which facts this bullet inherits.
-  `ssh root@10.3.1.1` with the machine-hop key. **The root shell is tcsh**: `2>` fails
-  and grep patterns with `<`/`>` need double quotes. Never edit the auto-generated
-  `/usr/local/etc/dnsmasq.conf`; `/conf/config.xml` is the source of truth and
-  `/var/etc/dnsmasq-hosts` is what answers. DO token is `DO_AUTH_TOKEN` in the shared
-  env-file secret (`CONFIG.ENV_FILE` = `/run/secrets/env_file`) — **never print it or
-  copy it off services1.**
+- **Router** is `machines/gw/` — the flake's own NixOS box at **10.3.1.1**, cut over
+  from the OPNsense appliance on 2026-10-21 (the appliance is retired). DNS/DHCP come
+  from `common/vlans.nix` + `common/dns-records.nix`, nftables from `common/config.nix`,
+  and the AAISP tunnel and tailnet client are in `machines/gw/`. Read
+  `machines/gw/README.md` before changing it and `docs/gw-cutover-attempt-2026-10-21.md`
+  for what broke at the cutover. **Never edit the generated
+  `/etc/dnsmasq.d/network.conf`.** The flake-owned records are
+  `common/dns-records.nix`; the vhost names live in `/var/lib/dnsmasq/names.hosts`,
+  still written by dns-sync (**not yet ported to this box** — `docs/follow-ups.md`).
+  **dnsmasq's unsolicited RAs stop after a `router-lan` link flap: restart dnsmasq after
+  any cabling** or WiFi clients lose their IPv6 default 20 minutes later. SSH as
+  `leigh-admin@10.3.1.1` (root is not keyed); DO token is `DO_AUTH_TOKEN` in the shared
+  env-file secret (`CONFIG.ENV_FILE`) — **never print it or copy it off services1.**
   → `docs/router-and-dns.md`.
 - **3D print servers** `3d-blue` (10.3.14.62) / `3d-lime` (10.3.14.61), Klipper +
   Moonraker, user `hackspace`, polled by `moonraker-exporter` at **fixed IPv4 on purpose**

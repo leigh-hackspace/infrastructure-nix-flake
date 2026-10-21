@@ -4,22 +4,20 @@ The flake's replacement for the network's OPNsense box at `10.3.1.1`: DNS and DH
 for every VLAN, the firewall that decides what may leave the building, the AAISP
 tunnel that leaves it through, and the network's tailnet presence.
 
-**The box exists and is deployed: a Supermicro X9SCL/X9SCM at `10.3.1.254`.** It is
-*not* the network's router. The OPNsense box at `10.3.1.1` still is, and this box runs
-beside it in **co-existence mode** — `./coexist.nix`, which is the single most
-important thing to understand before editing anything here, because every one of the
-four ways a shadow router can become the real one by accident is a way that affects
-every client on the network, not this box. Read that file, then this section, then
-the config.
+**The box is the network's router: a Supermicro X9SCL/X9SCM at `10.3.1.1`.** It was
+installed 2026-10-17 in **co-existence mode** beside the OPNsense appliance and **cut
+over on 2026-10-21**, so `./coexist.nix` is `enable = false` and the appliance is
+retired. Co-existence mode still exists in that file (it is both the switch back and the
+mode the first four days ran in) — read it before editing anything here, because the four
+ways a shadow router can become the real one by accident are the four things the cutover
+flipped.
 
-> **State as of 2026-10-21: the box is cut over in config and off the network.**
-> `./coexist.nix` says `enable = false` (commit `bbc9fb2`), the box was taken off the
-> trunk after the first cutover attempt and now sits on aibox's second NIC holding `.1`
-> on every VLAN with no uplink. `docs/gw-cutover-attempt-2026-10-21.md` is the
-> post-mortem of that attempt and the list of what must be true before the next one.
-> While it is on the bench it is reachable only with a VLAN-225 interface and a
-> source-bound route — the `10.3.1.254` in the recipes below does not resolve `gw` any
-> more.
+> **State as of 2026-10-21 evening: deployed and live at `10.3.1.1`.** The tunnel dialled
+> (`81.187.223.123`), DHCP/DNS/RA serve every VLAN, the policy routes and inbound NAT are
+> installed. `docs/gw-cutover-attempt-2026-10-21.md` is the post-mortem of the attempt,
+> the findings from the live cutover, and what is still open. `just switch-gw` defaults to
+> `10.3.1.1`; the `10.3.1.254` seen below appears only in the co-existence narrative and
+> no longer answers.
 
 ```bash
 # from services1, the whole loop: sync this tree, build it there, switch, confirm
@@ -33,7 +31,7 @@ nix build .#nixosConfigurations.gw.config.system.build.etc -o /tmp/gw-etc
 nixos-rebuild dry-build --flake .#gw          # builds the system, activates nothing
 
 # on the box, which is the same thing with the steps visible
-ssh -i ~/.ssh/agent-hop-key leigh-admin@10.3.1.254
+ssh -i ~/.ssh/agent-hop-key leigh-admin@10.3.1.1
 just switch                                   # `--flake .` resolves against hostname=gw
 ```
 
@@ -310,10 +308,13 @@ Two lessons worth more than the fix:
 
 ## Comparing the two routers, which is how to find what is wrong here
 
-While both boxes are up there is a check better than reading this directory: ask the
-same question of each and compare.
+While both boxes were up there was a check better than reading this directory: ask the
+same question of each and compare. That is how the 2026-10-17 bugs were found. **The old
+box is retired now**, so the `.254` half below is history; the same instinct still works
+against the public resolver (`@1.1.1.1`) and against the other LAN hosts.
 
 ```bash
+# historical: gw in co-existence (.254) vs the then-live OPNsense (.1)
 for n in services1 services1.int.leighhack.org aibox.int.leighhack.org 3d-blue.int.leighhack.org; do
   printf "%-36s old=%-14s new=%s\n" "$n" "$(dig +short @10.3.1.1 $n)" "$(dig +short @10.3.1.254 $n)"
 done
@@ -373,7 +374,7 @@ this box during the install; the fourth is a habit:
 
 The fallback, for when the box cannot build its own next generation: build on
 services1 and push it — `nixos-rebuild switch --flake .#gw --target-host
-leigh-admin@10.3.1.254 --elevate=sudo`. Two gotchas there, both hit for real:
+leigh-admin@10.3.1.1 --elevate=sudo`. Two gotchas there, both hit for real:
 
 * **`--elevate=sudo` is not the default.** This nixpkgs ships `nixos-rebuild-ng`, which
   does not elevate remotely where the old shell script did, so without the flag the
@@ -443,12 +444,14 @@ OPNsense's XML and command set, so they will fail against this box.
   `configctl dnsmasq restart` as root on `10.3.1.1`. `docs/follow-ups.md` has the
   list of what has to change before new vhosts get DNS from this box; the records
   the flake owns come from `common/dns-records.nix` and do not depend on it.
-* **Nothing here is the network's router yet** — that is `./coexist.nix`, not a bug.
-  On the next boot with `enable = false` it becomes one: `.1` addresses, DHCP, RAs,
-  the AAISP tunnel and the policy routing all switch on together.  The first boot is
-  therefore the first time the tunnel, the fwmark rules and the delegated IPv6
-  prefixes are exercised for real; `journalctl -u xl2tpd-aaisp`, `ip route show
-  table 100`, `ip -6 route` and `networkctl status ppp0` are the checks.
+* **Nothing here is the network's router yet** — that *was* `./coexist.nix`, and it was
+  flipped on 2026-10-21. `.1` addresses, DHCP, RAs, the AAISP tunnel and the policy
+  routing are all live now; the things that had to be proven first (the tunnel, the
+  fwmark rules, the port forwards, the delegated IPv6 prefixes) are in
+  `docs/gw-cutover-attempt-2026-10-21.md`, together with the three that were not.
+  The checks when something looks wrong: `journalctl -u xl2tpd-aaisp`, `ip route show
+  table 100`, `ip -6 route`, `networkctl status ppp0`, and `systemctl restart dnsmasq`
+  if the LAN link has flapped (the RA-timer trap above).
 * **The LAN port is doing 100 Mbit, not gigabit** (measured at install). Cable, PHY, or
   the switch port it lands on. Irrelevant while it is a shadow; it is the ceiling on
   every byte the network sends once it is not, so read the switch port's own config
@@ -552,9 +555,9 @@ nix build .#nixosConfigurations.gw.config.system.build.toplevel -o /tmp/gw-top  
 ```
 
 On a running box: `nft list ruleset` (read-only), `systemctl status pppd-aaisp-tunnel`,
-`journalctl -u dnsmasq -n 50`, `dig @10.3.1.254 services1.int.leighhack.org` — `.254`
-while co-existence is on, and `@10.3.1.1` is the *other* router, so comparing the two
-answers is the fastest way to tell whether the tables and the live box agree —
+`journalctl -u dnsmasq -n 50`, `dig @10.3.1.1 services1.int.leighhack.org` — and if you
+are on a generation still in co-existence, `@10.3.1.254` is where *it* answers; comparing
+the two answers is the fastest way to tell whether the tables and the live box agree —
 `ip -4 addr` and `ip route show default` (one default route, via the old router),
 `sudo tailscale status --json | jq .Self.AllowedIPs`,
 `tail /var/lib/dnsmasq/dnsmasq.leases` (empty, and it has to stay empty until the

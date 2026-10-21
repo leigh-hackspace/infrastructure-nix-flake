@@ -1,7 +1,8 @@
 # Router (gw), dnsmasq and DigitalOcean DNS
 
-Moved out of `AGENTS.md` on 2026-10-14. `AGENTS.md` keeps the rules: the router is
-out-of-band (no flake config), never edit the auto-generated `dnsmasq.conf`, every
+Moved out of `AGENTS.md` on 2026-10-14. `AGENTS.md` keeps the rules: the router is now
+`machines/gw/` (flake-managed, cut over 2026-10-21), never edit the generated
+`dnsmasq.conf`, every
 `*.int` vhost needs `just dns-sync-sync` after the switch (and `dns-sync-prune`
 after a rename/removal), and never print or copy off the DO token. This file is the
 detail: where the router keeps its state, which names legitimately resolve
@@ -9,34 +10,44 @@ elsewhere, and the manual fallback when `dns-sync` is unavailable.
 
 ## The router
 
-OPNsense 26.7 on FreeBSD, **10.3.1.1**, managed out-of-band — nothing here is
-declarative.
+`machines/gw/` — a flake-managed NixOS box at **10.3.1.1**, cut over from the OPNsense
+appliance on 2026-10-21. Nothing about the running router is out-of-band any more:
+dnsmasq is generated from `common/vlans.nix` and `common/dns-records.nix`, nftables from
+`common/config.nix`, and the AAISP tunnel and tailnet client live in `machines/gw/`.
+Read `machines/gw/README.md` before changing it; `docs/gw-cutover-attempt-2026-10-21.md`
+has the findings from the cutover and what is still open.
 
-**That sentence is about the running box, and it has an expiry date.**
-`machines/gw/` is the flake-managed replacement for everything in this file: dnsmasq
-generated from `common/vlans.nix` and `common/dns-records.nix` instead of from
-`<Interfaces>` XML, nftables from `common/config.nix` instead of the web UI, the
-AAISP tunnel and the tailnet client. It is now **deployed on real hardware**
-(10.3.1.254) but in **co-existence mode** — every address ends in `.254` rather than
-`.1`, its DHCP and router advertisement are emitted commented-out and refused by
-interface name, and it advertises no tailnet routes — so the OPNsense box is still
-the router and everything below is still how the network actually behaves. Read
-`machines/gw/README.md` before changing either side: it says which of these facts the
-new config has inherited, which are still open, and what has to be read off the old
-box before the two can swap places.
+What still speaks the retired OPNsense box's language:
+
+- **dns-sync** edits `/conf/config.xml` and reads `/var/etc/dnsmasq-hosts`; it cannot
+  write `gw`'s `/var/lib/dnsmasq/names.hosts` yet, and its pinned host key is the old
+  box's. Until it is ported (open in `docs/follow-ups.md`), the `*.int` names are a
+  hand-restored copy of the old box's hosts file, and nothing refreshes them.
+- **network-status** (`crates/network-status/`) ssh's to `10.3.1.1` and runs OPNsense
+  commands; it needs the same port.
 
 ```bash
-ssh -i ~/.ssh/agent-hop-key root@10.3.1.1        # root IS keyed on the router
+ssh -i ~/.ssh/agent-hop-key leigh-admin@10.3.1.1   # gw; root is NOT keyed there
 ```
 
-Web UI: `https://firewall.int.leighhack.org` (→ 10.3.1.1:60443).
+**Gotcha: dnsmasq's unsolicited RAs stop after a `router-lan` link flap**, so clients
+lose their IPv6 default when the 1200 s router lifetime expires. `systemctl restart
+dnsmasq` after cabling; `machines/gw/README.md` has the checks.
 
-**Gotcha: the root shell is tcsh.** `2>` redirection fails, and grep patterns
-containing `<` or `>` must be double-quoted. (The LAN dashboard
-`network-info.int.leighhack.org` — `crates/network-status/` — ssh's here every 5 s
-as `root@10.3.1.1` with the machine-hop key.)
+**Historical: the retired OPNsense box's root shell was tcsh** (`2>` redirection fails,
+grep patterns with `<`/`>` need double quotes). That box is gone; `gw` runs NixOS and its
+root is not keyed — use `leigh-admin` and `sudo`. The LAN dashboard
+`network-info.int.leighhack.org` (`crates/network-status/`) still ssh's to it as
+`root@10.3.1.1`, which is one of the things to port.
 
 ## dnsmasq — the LAN resolver
+
+> **The rest of this section describes the retired OPNsense appliance** and is kept as
+the reference for what dns-sync and network-status still expect. On `gw` the resolver
+is `services.dnsmasq` from `machines/gw/dns.nix`: the generated conf is
+`/etc/dnsmasq.d/network.conf` (from the tables), the flake-owned records are
+`/etc/dnsmasq-records.hosts`, and the vhost names are `/var/lib/dnsmasq/names.hosts`
+(hand-restored; dns-sync cannot write it yet). `machines/gw/README.md` is the manual.
 
 dnsmasq on the router answers `*.int.leighhack.org` for the LAN.
 
@@ -67,6 +78,12 @@ that are **supposed** to look wrong, so you do not "fix" them:
   the router and DigitalOcean.
 
 ## DHCP reservations
+
+> On `gw` these are **`common/dns-records.nix`**, rendered into
+> `/etc/dnsmasq.d/network.conf` by `machines/gw/dns.nix` and asserted by
+> `machines/gw/lib/check-network-tables.nix`. The paragraphs below are the retired
+> appliance's UI/XML method, kept for the devices whose records the tables have not
+> absorbed yet.
 
 Live in the same dnsmasq config (the router, not DNS): services1 (10.3.1.20, MACs
 `c8:d3:ff:a5:b2:25` / `c8:d3:ff:a5:be:7c`), services2 (10.3.1.21, MAC
