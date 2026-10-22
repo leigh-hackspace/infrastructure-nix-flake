@@ -1,3 +1,4 @@
+# HELPER — function of {lib}: the one place a vhost's `*.int` names are derived, so the DNS table and the vhosts cannot disagree.
 # The "*.int.leighhack.org" names a box's nginx serves: every vhost name plus
 # every serverAlias ending in that suffix.  Two readers need it to mean the same
 # thing: the gatus endpoint guard compares its internal-app checks against it, and

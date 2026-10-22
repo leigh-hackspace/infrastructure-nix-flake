@@ -1,3 +1,4 @@
+# MODULE — NixOS module; in a machine's module list or a directory's imports, never read as data.
 # nixbld.nix
 #
 # Keep the `nixbld` group a pool of throwaway build UIDs and nothing else.

@@ -1,3 +1,4 @@
+# HELPER — function of {lib} returning the gatus endpoint tables; the data itself lives in the `let` below.
 # The gatus endpoint list — the hand-maintained half of "is this thing up".
 #
 # Kept as plain data (no `config` dependency) so the two readers of it stay

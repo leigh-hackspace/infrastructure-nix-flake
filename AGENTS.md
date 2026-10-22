@@ -127,7 +127,9 @@ X first", X has already cost someone a day.
 - `common/` — shared modules imported by more than one machine: `tools.nix`, `users.nix`,
   `sops.nix`, `nixbld.nix` (the build-user invariant), `crane.nix` (the shared crane
   helpers), `frontend-build-spa.sh` (the one SPA build recipe all four Dioxus
-  frontends call). **Network-wide facts live here, not per machine:** `config.nix`
+  frontends call). **Every file in `common/` starts by naming its kind** — `MODULE`,
+  `DATA`, `HELPER`, `CHECK`, `PACKAGE` — because the directory mixes all five and you
+  cannot otherwise tell a NixOS module from a bare table from a `{lib}: …` functor **Network-wide facts live here, not per machine:** `config.nix`
   (the `LOCAL_NETWORK` ACL, the `pg_hba` table, the SSO domains, and the runtime secret
   paths — it used to be `machines/services1/config.nix`, now deleted, and its being
   per-machine is what stopped a second box serving any vhost), `hosts.nix` (one table of

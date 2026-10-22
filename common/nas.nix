@@ -1,3 +1,4 @@
+# MODULE — NixOS module; in a machine's module list or a directory's imports, never read as data.
 # NAS client: the NFS mounts, their automount units, and the `wait-for-nas`
 # gate that NAS-dependent services order themselves against.
 #

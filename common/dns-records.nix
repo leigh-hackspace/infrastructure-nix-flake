@@ -1,3 +1,4 @@
+# DATA — plain attrset read by `import` from anywhere in the tree; it is not a module and defines no options.
 # Every device the router hands a *fixed* address to, keyed by the name it
 # answers.  This is the DHCP reservation table: the old router generated
 # `dhcp-host=<mac>,set:<tag>,<ipv4>,[<ipv6>],<name>` lines from its `<Interfaces>`

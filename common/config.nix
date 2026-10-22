@@ -1,3 +1,4 @@
+# DATA — the network's shared constants (the LOCAL_NETWORK ACL, pg_hba, SSO domains, runtime secret paths); read by `import`, not a module.
 # Network-wide facts shared by every machine: runtime secret paths, the domains
 # the SSO/apps redirect to, the nginx ACL for the internal vhosts, and the
 # Postgres pg_hba table.

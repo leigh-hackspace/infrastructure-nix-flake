@@ -1,3 +1,4 @@
+# MODULE — NixOS module; in a machine's module list or a directory's imports, never read as data.
 # Injects the shared crane helpers (common/crane.nix) into every module as the
 # `CRANE` argument, built with that machine's own `pkgs`.
 #

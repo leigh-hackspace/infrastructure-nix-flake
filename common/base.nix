@@ -1,3 +1,4 @@
+# MODULE — NixOS module; in a machine's module list or a directory's imports, never read as data.
 # Settings shared by every machine in this flake.
 #
 # Imported from `machines/<name>/configuration.nix`.  Keep the per-machine file

@@ -1,3 +1,4 @@
+# HELPER — function of {lib} returning the internal-vhost builder used by mkVirtualHost; not a module.
 # Helper for the LAN-only "*.int.leighhack.org" virtual hosts — the internal
 # counterpart of sso-vhost.nix (which is for public, SSO-protected apps).
 # Every one of these is the same shape: the wildcard ACME cert, forceSSL, and one

@@ -1,3 +1,4 @@
+# DATA — plain attrset read by `import` from anywhere in the tree; it is not a module and defines no options.
 # printer-states.nix — the printer state enums, read out of the exporter itself.
 #
 # moonraker-exporter emits `moonraker_klippy_state` / `moonraker_print_state` with

@@ -1,3 +1,4 @@
+# DATA — a plain list, read by `import` from anywhere in the tree; it is not a module and defines no options.
 # The VLANs this network's LAN traffic is tagged with, and the address block
 # each one carries.  Network-wide on purpose, like ./hosts.nix: the VLAN id is
 # what a *client* sees — its DHCP lease is handed out on it, the router routes

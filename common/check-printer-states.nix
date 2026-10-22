@@ -1,3 +1,4 @@
+# CHECK — plain-eval assertion file: `nix eval --impure --raw -f` prints ok or throws; run by `just check` and by flake.nix's `checks`.
 # check-printer-states.nix
 #
 # Assertions over ./printer-states.nix — the klippy / print_stats state tables

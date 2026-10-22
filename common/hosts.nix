@@ -1,3 +1,4 @@
+# DATA — plain attrset read by `import` from anywhere in the tree; it is not a module and defines no options.
 # The machines in this network and the address each one answers on.
 #
 # One table so the nginx vhost proxies, the Prometheus scrape targets and the

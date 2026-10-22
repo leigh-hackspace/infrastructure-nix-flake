@@ -1,3 +1,4 @@
+# MODULE — NixOS module; in a machine's module list or a directory's imports, never read as data.
 # Podman and the "never give up" policy for every oci-containers unit.
 #
 # Imported for the three boxes that run containers (services1, services2, aibox) in

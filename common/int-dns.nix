@@ -1,3 +1,4 @@
+# DATA — plain attrset read by `import` from anywhere in the tree; it is not a module and defines no options.
 # Every `*.int.leighhack.org` name the network answers, and with what.
 #
 # This is the DNS half of the front door.  `machines/gw/dns.nix` renders it into

@@ -1,6 +1,13 @@
 **/secrets/*
 
+# `junk/` is scratch and stays untracked — except `machines/services1/junk/`, which is
+# deliberately tracked: kept dead fragments, each explaining itself in its own header.
+# The alternative was what one of them used to be, an `*.ignore` file inside
+# `machines/services1/` that looked exactly like live config and that neither the flake
+# nor `git status` could see (AGENTS.md rule 5).
 junk/
+!machines/services1/junk/
+!machines/services1/junk/*
 initrd*/
 tmp/
 result-fd

@@ -1,0 +1,63 @@
+# DEAD FRAGMENT — kept, read by nothing.
+#
+# Twenty lines of nginx `location /cams/…` blocks that proxy an MJPEG stream and a still frame per camera
+# to rtsp.int.leighhack.org, from the vhost that served the camera wall.  Nothing in this repo
+# reads this file: no `import`, no `include`, and no such `location` in any rendered config
+# (measured 2026-10-22: `grep -rn "streams\|/cams/" machines/services1` finds only this file and no
+# vhost, and `rtsp.int` is in neither `common/int-dns.nix` nor `common/dns-records.nix`).
+
+# It used to sit at `machines/services1/streams.ignore`, which was worse in every way: `*.ignore`
+# is git-ignored, so the flake cannot see it and neither can `git status`, while its contents
+# looked exactly like config that was live — the precise trap AGENTS.md rule 5 exists for.  If
+# the camera wall comes back, this is the shape it had; wire it through a real module.
+
+# The fragment itself, follows:
+
+# Streams
+# location /cams/3d1 {
+#     proxy_pass https://rtsp.int.leighhack.org/api/stream.mjpeg?src=3d_1;
+# }
+# location /cams/3d2 {
+#     proxy_pass https://rtsp.int.leighhack.org/api/stream.mjpeg?src=3d_2;
+# }
+# location /cams/3d3 {
+#     proxy_pass https://rtsp.int.leighhack.org/api/stream.mjpeg?src=3d_3;
+# }
+# location /cams/cnc {
+#     proxy_pass https://rtsp.int.leighhack.org/api/stream.mjpeg?src=cnc;
+# }
+
+# Error image for cameras
+# location = /error.jpg {
+#     root /var/www/html;
+# }
+
+# Statics
+# location /cams/3d1.jpg {
+#     proxy_pass https://rtsp.int.leighhack.org/api/frame.jpeg?src=3d_1;
+#     proxy_connect_timeout 5;
+#     proxy_read_timeout 5;
+#     proxy_send_timeout 5;
+#     error_page 504 /error.jpg;
+# }
+# location /cams/3d2.jpg {
+#     proxy_pass https://rtsp.int.leighhack.org/api/frame.jpeg?src=3d_2;
+#     proxy_connect_timeout 5;
+#     proxy_read_timeout 5;
+#     proxy_send_timeout 5;
+#     error_page 504 /error.jpg;
+# }
+# location /cams/3d3.jpg {
+#     proxy_pass https://rtsp.int.leighhack.org/api/frame.jpeg?src=3d_3;
+#     proxy_connect_timeout 5;
+#     proxy_read_timeout 5;
+#     proxy_send_timeout 5;
+#     error_page 504 /error.jpg;
+# }
+# location /cams/cnc.jpg {
+#     proxy_pass https://rtsp.int.leighhack.org/api/frame.jpeg?src=cnc;
+#     proxy_connect_timeout 5;
+#     proxy_read_timeout 5;
+#     proxy_send_timeout 5;
+#     error_page 504 /error.jpg;
+# }

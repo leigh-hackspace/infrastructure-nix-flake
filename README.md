@@ -12,6 +12,11 @@ crates/        every Rust crate; one cargo workspace (crates/Cargo.toml)
                  (five are not workspace members: the four SPAs' `frontend/`s,
                  which are wasm, and `whisper-ws/`, which is packaged on its own)
 common/        Nix modules shared by every machine (crane helpers, hosts, nginx)
+               (every file in here starts by saying what kind of file it is:
+                `MODULE` a NixOS module · `DATA` a plain table read by `import`
+                · `HELPER` a function modules call (arriving as INFRA/CRANE, or
+                imported) · `CHECK` a plain-eval assertion file · `PACKAGE` a
+                package `callPackage`d by path — `grep -l '^# DATA' common/*.nix`)
 machines/      one directory per machine; services/ one file per service
                (`pi-room-sys/` is the image aibox netboots the Pi Room with, so it
                runs on no box of its own, and `gw/` **is** the network's router —

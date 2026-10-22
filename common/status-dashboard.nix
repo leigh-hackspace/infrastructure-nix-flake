@@ -1,3 +1,4 @@
+# MODULE — NixOS module; in a machine's module list or a directory's imports, never read as data.
 # Status dashboard shared by all machines (Rust source: ../crates/status-dashboard,
 # zero external crates per house style).
 #

@@ -1,3 +1,4 @@
+# MODULE — NixOS module; in a machine's module list or a directory's imports, never read as data.
 # Garbage collection and remote building.
 #
 # Two separate things, both about balance rather than features:

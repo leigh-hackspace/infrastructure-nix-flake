@@ -1,3 +1,4 @@
+# HELPER — function of {pkgs, crane} returning the crane build helpers; handed to modules as CRANE by common/crane-args.nix.
 # Shared crane helpers for the Rust crates in this flake.
 #
 # `pkgs.rustPlatform.buildRustPackage` recompiles the whole dependency tree on

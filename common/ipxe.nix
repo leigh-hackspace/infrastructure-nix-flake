@@ -1,3 +1,11 @@
+# PACKAGE — a package definition, `callPackage`d **by path** from machines/aibox/netboot.nix; it is not a NixOS module and not an overlay.
+#
+# iPXE, built from source, because the netboot image needs `snponly.efi` and the
+# `ipxe` in nixpkgs is not built with the media/UNDI-only targets this box serves, and
+# `embedScript` is the hook that bakes the boot script in.  It used to live in
+# `common/overrides/ipxe.nix`, which misled twice over: `common/overrides/` held exactly
+# one file, and it is not an overlay — nothing here extends nixpkgs' ipxe, this *is*
+# the package, spelled out.
 {
   stdenv,
   lib,

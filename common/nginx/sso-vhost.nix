@@ -1,3 +1,4 @@
+# HELPER — function returning mkSSOVirtualHost, the nginx-sso-fronted vhost builder services1's apps call.
 # Helper function to create SSO-protected virtual hosts
 let
   mkSSOVirtualHost = {

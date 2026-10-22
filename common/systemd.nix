@@ -1,3 +1,4 @@
+# HELPER — function of {lib} returning the shared systemd-unit helpers; handed to every module as INFRA by flake.nix.
 # Shared systemd unit helpers.
 #
 # Handed to every module through the flake's `specialArgs` as `INFRA` (see

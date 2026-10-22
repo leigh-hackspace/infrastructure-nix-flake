@@ -1,3 +1,4 @@
+# MODULE — NixOS module; in a machine's module list or a directory's imports, never read as data.
 # Metrics exporters: the per-box half of the monitoring setup.
 #
 # Every machine runs these; Prometheus and Grafana run on services1 (see

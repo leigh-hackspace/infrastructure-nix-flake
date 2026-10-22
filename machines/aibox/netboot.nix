@@ -15,7 +15,7 @@
 in {
   environment = {
     etc = {
-      "tftp/ipxe.efi".source = "${pkgs.callPackage ../../common/overrides/ipxe.nix {}}/snponly.efi";
+      "tftp/ipxe.efi".source = "${pkgs.callPackage ../../common/ipxe.nix {}}/snponly.efi";
       "tftp/undionly.kpxe".source = "${pkgs.ipxe}/undionly.kpxe";
       "tftp/autoexec.ipxe".source = "${pkgs.writeText "autoexec.ipxe" ""}"; # Blank file to stop error message on boot
 
