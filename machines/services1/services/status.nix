@@ -63,7 +63,8 @@ in {
     # --- services2's dashboard (proxied from 10.3.1.21) -------------------
     # LAN-only.  There is no public vhost for services2: the public
     # *.leighhack.org names need an explicit record in the DigitalOcean zone
-    # (dns-sync only manages the *.int ones), and services2 has no public IP, so
+    # `*.int` names are answered by the router from common/int-dns.nix, but a
+    # public name is a record in the DigitalOcean zone and services2 has no public IP, so
     # a public name would point at this box anyway.  Restart buttons work over the
     # LAN vhost via the token header.
     "services2-status.int.leighhack.org" = mkIntVhost {

@@ -60,7 +60,6 @@ members = [
   "common-rs/service",
   "common-rs/web",
   # programs
-  "dns-sync",
   "filestore",
   "frigate-monitor",
   "gocardless-dashboard",

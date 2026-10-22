@@ -22,7 +22,6 @@ Every address is in `common/hosts.nix`.
 
 | Service | Lives in | Serves | Deeper detail |
 | --- | --- | --- | --- |
-| dns-sync | `crates/dns-sync/` | (no listener) | `docs/router-and-dns.md` |
 | frigate-monitor | `crates/frigate-monitor/` | aibox:8090 | `machines/aibox/frigate-monitor.nix` |
 | gocardless-dashboard | `crates/gocardless-dashboard/` | 127.0.0.1:8095 | `docs/authentik-oidc-notes.md` |
 | network-status | `crates/network-status/` | gw:8091 (10.3.1.1) | `machines/gw/network-status.nix` |
@@ -35,19 +34,17 @@ Every address is in `common/hosts.nix`.
 
 ---
 
-## `crates/dns-sync/` — router + DigitalOcean DNS in step with the vhosts
+## Removed: `crates/dns-sync/` (deleted 2026-10-22)
 
-Rust, **zero external crates**. Reads `services.nginx.virtualHosts` out of the
-flake (the expected-name list is rendered to `/etc/dns-sync/expected-int-names`
-by `machines/services1/dns-sync.nix`) and keeps the router's dnsmasq host
-overrides and the DigitalOcean zone in step with it.
-
-Run it with `just dns-sync-check` / `just dns-sync-sync` / `just dns-sync-prune`
-(prune removes only the records the tool manages). After any vhost
-add/rename/removal, `just dns-sync-sync` then `just dns-sync-check`.
-
-What "correct" means, which names legitimately resolve elsewhere, the router's
-config layout and the manual fallback: **`docs/router-and-dns.md`**.
+It kept the router's dnsmasq host overrides and the DigitalOcean zone in step with
+`services.nginx.virtualHosts`, by ssh'ing from services1 into the router and appending
+lines to a mutable `/var/lib/dnsmasq/names.hosts` whenever someone ran
+`just dns-sync-sync`. The names are `common/int-dns.nix` now, rendered by
+`machines/gw/dns.nix` into a store path that dnsmasq is restarted for, and
+`machines/services1/int-dns.nix` refuses to evaluate services1 while that table and the
+box's vhost list disagree. **`docs/router-and-dns.md`** owns what "correct" means, which
+names answer somewhere other than the front door, and what is left in DigitalOcean with
+nothing maintaining it.
 
 ## `crates/frigate-monitor/` — change detection on the Frigate stream
 
@@ -361,7 +358,7 @@ symlinks:
 
 | Crate | What it owns | Used by |
 | --- | --- | --- |
-| `json` | hand-rolled parser **and** the string/error-object emitters the hand-built API bodies use | dns-sync, moonraker-exporter, status-dashboard, network-status, frigate-monitor, switch-gui |
+| `json` | hand-rolled parser **and** the string/error-object emitters the hand-built API bodies use | moonraker-exporter, status-dashboard, network-status, frigate-monitor, switch-gui |
 | `oidc` | authentik login + `Infra` group gate | filestore, gocardless-dashboard, switch-gui |
 | `web` | HTTP/1.1 plumbing for the `tiny_http` services: request head, query/cookie parsing, responses | the tiny services |
 | `pg` | the pool, the schema runner, the sea-query→sqlx glue, the row readers | gocardless-dashboard, switch-gui |

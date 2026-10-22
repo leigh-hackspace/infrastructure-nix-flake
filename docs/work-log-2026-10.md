@@ -7,6 +7,83 @@ change runs into.
 
 Still-open items live in `docs/follow-ups.md`.
 
+## 2026-10-22 — `*.int` is declared, not synchronised; and gw stopped being a shadow
+
+**What was wrong.** The network's answer for `*.int.leighhack.org` lived in a mutable
+file on the router (`/var/lib/dnsmasq/names.hosts`, 183 lines) that **no deployment could
+produce**. `crates/dns-sync` edited it over ssh from services1, behind
+`just dns-sync-sync`, when a human remembered. Two things followed. First, correctness
+depended on a habit: a vhost deployed without the command was live, TLS-served and
+unresolvable, and the only thing that would notice was the same tool's `check`, run by
+hand. Second, the file had accreted: 46 of its lines were device names duplicating
+`common/dns-records.nix` (restored verbatim from the retired OPNsense box on 2026-10-21),
+3 were switches in no table at all, and the guard rail that kept `authentik.int` answering
+at the appliance rather than at the front door was a case in a Rust `match`, not a fact in
+the config. A rebuild of gw from this flake would have answered a *different* zone —
+which the 2026-10-21 cutover had just demonstrated by going NXDOMAIN for the whole zone.
+
+**What it looks like now.** Three generated store paths, one table per fact:
+`common/vlans.nix` + `common/dns-records.nix` → `network.conf` +
+`dnsmasq-records.hosts`, and the new **`common/int-dns.nix`** → `dnsmasq-int-vhosts.hosts`.
+Every one is in dnsmasq's `restartTriggers`, because dnsmasq reads `addn-hosts` **at
+startup** and nixpkgs only restarts it for `/etc/hosts` — the same trap that bit the
+records file on 2026-10-17, and now the reason a record and its restart cannot be
+separated. `common/int-dns.nix` has four lists, because "the front door answers it" is not
+the only true thing a name can do: `names` (vhosts → services1's three addresses, read
+from `common/dns-records.nix`, never copied), `fromHosts` (switches: named by
+`common/hosts.nix`, not DHCP clients), `legacy` (five names nothing serves today that
+resolved anyway, each kept deliberately with its reason), and `exempt` (`authentik.int`,
+served by nginx, answered by the appliance because RADIUS and LDAP dial it directly).
+
+**The guard is an evaluation, not a command.** `machines/services1/int-dns.nix` derives the
+`*.int` names from `services.nginx.virtualHosts` — via the same
+`common/nginx/int-vhost-names.nix` the gatus guard uses — and refuses to build services1
+unless `names ∪ exempt` equals that set. It earned its place on its first run: it failed
+`just check-build` over `mqtt`/`nginx`/`tailscale`, which I had put in `names` because they
+*resolve* today when nothing *serves* them. `machines/gw/lib/check-network-tables.nix` got
+the mirror-image rules, and they are what stops one name being answered from two tables
+(dnsmasq unions every `addn-hosts` file, so that is a name with two addresses, not a
+conflict anyone sees).
+
+**What 10.3.1.20 has to do with it.** Everything, and it is not special: it is services1,
+whose nginx holds every `*.int` `server_name` in the network and proxies to whichever box
+actually runs the app. A `*.int` name is a pointer to a vhost, every vhost is on services1,
+so the answer to "what is special about 10.3.1.20" is "it is the front door, and it has
+three addresses" — IPv4, public IPv6, ULA — which is why a record is one line per address
+and why the check counts the lines per name (a `*.int` name without its AAAA is a
+dual-stack client hanging before it falls back, per `machines/gw/README.md`).
+
+**Measured, not assumed.** The deploy was made provably answer-neutral before it was
+allowed to touch the router: the set of `(address, name)` pairs the running router serves
+(252, both hosts files, bare aliases included) was diffed against the set the generated
+files render — **zero added, zero lost**. `dig`ed all 89 names plus seven controls
+(lease-only names like `artemius.int`, `gw.int`, one nonexistent name) before and after
+`just switch-gw`: **byte-identical**. The rendered `network.conf` differs from the previous
+generation's by four blank lines. Along the way three claims in the docs turned out to be
+stale and are fixed: **there is a `dig` on gw** (bind is in its systemPackages; there is
+still none on services1), **`gw.int` has always been answered from `/etc/hosts`** —
+dnsmasq reads that file too, which is the fourth source of answers and the reason
+`networking.extraHosts` on the router is a network-wide act while services1's `extraHosts`
+(`unifi.int`) is invisible to everyone else — and the "10 unsynced vhosts" I nearly
+recorded as the audit's finding were grep noise: all 34 vhosts the deployed nginx serves
+did have records.
+
+**Also: co-existence mode is deleted.** `machines/gw/coexist.nix` (which held `.254` on
+every VLAN while the appliance lived), its `hostAddr` substitution, its `commentBlock`
+helper and the `!COEXIST.enable` branches in `dns.nix`/`networking.nix`/`firewall.nix`/
+`uplink.nix`/`sops.nix` are gone; gw is the router, permanently, and nothing in the tree
+can put it back into being a shadow. Its four switched-off behaviours survive as the four
+checks near the top of `machines/gw/README.md`, because "a router that is advertising
+nothing" and "a router that cannot advertise" look identical from `systemctl`.
+
+**Left, on purpose:** `names.hosts` still on disk and still created by tmpfiles — an older
+generation names it in `addn-hosts`, dnsmasq **exits** on a missing hosts file, and
+`system.autoRollback` can install that generation for five minutes; deleting the file and
+the rule together is a later deploy (`docs/follow-ups.md`). The DigitalOcean zone's ~40
+`*.int` CNAMEs are now maintained by nobody (one is fixed: `gatus.int` was created with an
+FQDN name, so it published `gatus.int.leighhack.org.leighhack.org` and resolved nowhere);
+and a `*.int` wildcard record there is a *maybe*, blocked on someone proving ACME renewal
+survives it.
 ---
 
 ## 2026-10-17 — strata parked on aibox, and aibox becomes the network's builder

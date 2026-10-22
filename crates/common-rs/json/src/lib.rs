@@ -1,5 +1,5 @@
 //! Minimal JSON, written from scratch so the zero-external-crate tools
-//! (dns-sync, moonraker-exporter, status-dashboard) keep their house style.
+//! (moonraker-exporter, status-dashboard, switch-gui) keep their house style.
 //!
 //! Parsing: objects, arrays, strings (with escapes), numbers, booleans and null.
 //! Field order is not preserved (we only ever look values up by key).
@@ -328,7 +328,10 @@ pub fn error_object(msg: &str) -> String {
 mod tests {
     use super::*;
 
-    /// The shape the DigitalOcean DNS API returns (dns-sync reads this).
+    /// The shape the DigitalOcean DNS API returns.  Nothing in the tree reads that
+    /// API any more (`*.int` is the router's, from common/int-dns.nix, and public
+    /// names are hand-made), but it stays as the real-world-document case: an API
+    /// page of nested objects is the input most likely to find a parser bug.
     #[test]
     fn parses_a_digitalocean_records_page() {
         let doc = parse(
@@ -480,8 +483,8 @@ mod tests {
 
     #[test]
     fn duplicate_keys_keep_the_last_value() {
-        // BTreeMap insert-overwrite: worth pinning because dns-sync builds the
-        // expected-name set from these documents.
+        // BTreeMap insert-overwrite: worth pinning because a document that names a
+        // key twice is a document some API will one day return.
         let doc = parse(r#"{"name":"first","name":"second"}"#).unwrap();
         assert_eq!(doc.get("name").and_then(|j| j.as_str()), Some("second"));
     }

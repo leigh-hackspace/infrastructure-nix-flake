@@ -142,8 +142,9 @@ Dumps and the extracted outpost tokens are `0600` under
 `AUTHENTIK_SECRET_KEY` and the database passwords are compared by truncated
 sha256 and nothing else.
 
-Then look at it: `https://id-shadow.int.leighhack.org` (after
-`sudo dns-sync sync` has added the record), log in as `cjdell`, and check the
+Then look at it: `https://id-shadow.int.leighhack.org` (after `id-shadow` is in
+`common/int-dns.nix` and gw has been deployed — the record is generated from that table
+now that `crates/dns-sync` is deleted), log in as `cjdell`, and check the
 four providers in `docs/authentik-oidc-notes.md`'s table are all still there.
 
 ## Cutover
@@ -168,10 +169,11 @@ in the order that minimises the time the network has no IdP:
    alone.
 4. **`authentik.int.leighhack.org`.** aibox's sssd connects to
    `ldaps://authentik.int.leighhack.org` (machines/aibox/sso.nix) and that name
-   is a deliberate router override to 10.3.1.36, which `dns-sync check` is told
-   to ignore (docs/router-and-dns.md). It has to move to 10.3.1.20 with the
-   LDAP outpost, or aibox's `ldap_uri` changes. `id.int` and `ldap.int` already
-   point at services1, so HTTP needs no DNS work at all.
+   is answered at the appliance, 10.3.1.36, on purpose: it is `exempt` in
+   `common/int-dns.nix` (which is how "deliberately answered elsewhere, unlike the
+   front door" is written down since `dns-sync` went; docs/router-and-dns.md). It has
+   to move to 10.3.1.20 with the LDAP outpost, or aibox's `ldap_uri` changes. `id.int`
+   and `ldap.int` already point at services1, so HTTP needs no DNS work at all.
 5. **Flip `shadow = false`** and deploy. That moves the vhost from
    `id-shadow.int.leighhack.org` onto `id.int.leighhack.org` +
    `id.leighhack.org` + `authentik.int.leighhack.org` and turns the worker and
@@ -181,8 +183,9 @@ in the order that minimises the time the network has no IdP:
 6. **Take a final dump after the appliance is stopped** and restore it, so the
    copy includes everything that happened while the shadow was being built.
    Steps 5 and 6 in either order; 6 after 5 means one restart of the server.
-7. `just dns-sync prune` for `id-shadow.int.leighhack.org` once it is no longer
-   wanted, and `just dns-sync check` after.
+7. Delete `id-shadow` from `common/int-dns.nix` once the name is no longer wanted, and
+   deploy gw. (There is no `prune` any more: the record is the table, so removing a name
+   is removing a line and switching the router.)
 
 Rollback before the appliance is stopped: set `shadow = true` again and switch.
 Rollback after: point the vhost back at 10.3.1.36, start the appliance, and
@@ -218,7 +221,8 @@ authenticates against.
 - **The vhost works** at `id-shadow.int.leighhack.org` over the wildcard cert
   with the LAN ACL, generating URLs on its own host (the tenant fallback).
   Tested with `curl --interface 10.3.1.20 --resolve id-shadow.int.leighhack.org:443:10.3.1.20`,
-  because **the DNS record does not exist yet** — `sudo dns-sync sync` adds it.
+  because **the DNS record did not exist then** (it is a table entry now;
+  `common/int-dns.nix`).
 - **The backup path works.** `systemctl start authentik-db-dump` wrote a 28 MB
   dump to `/mnt/backups/services1.int.leighhack.org/authentik/` at 0600
   root:backups. The test artifact was deleted; the timer stays off in shadow

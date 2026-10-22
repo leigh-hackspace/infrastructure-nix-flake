@@ -13,8 +13,8 @@
 # `vlan = [...]` on the parent's network file to hang them off it, and the VLAN's
 # own network file carrying its address.  Two things services1 does that this box
 # must not: it must not ask for a default route on the VLANs (it *is* the default
-# route — its own gateway comes from the uplink, ./uplink.nix, except while
-# ./coexist.nix is on, when it comes from the router still in that job), and it
+# route — its own way out is ./uplink.nix's AAISP tunnel, and a networkd `Gateway=`
+# on a downstream interface would be a router routing to itself), and it
 # must not let networkd take an address from the RA prefix it is itself
 # advertising.
 {
@@ -23,22 +23,16 @@
   pkgs,
   ...
 }: let
-  COEXIST = import ./coexist.nix;
+  # The network's VLAN table, read directly: this box owns every VLAN's gateway
+  # address, at the number the table gives it.  (Until 2026-10-22 this was
+  # `./coexist.nix`'s rewritten copy, which held .254 on every VLAN while the
+  # OPNsense appliance was still answering on .1; that box is retired and the mode
+  # with it, so nothing downstream substitutes anything.)
+  VLANS = import ../../common/vlans.nix;
 
-  # The VLANs as this box must read them — ./coexist.nix, which is common/vlans.nix
-  # with this box's own host address substituted while the old router is still
-  # live.  Nothing in this file reads common/vlans.nix directly: a file that read
-  # the raw table would take .1 on one VLAN and .254 on the next.
-  VLANS = COEXIST.vlans;
-
+  HOSTS = import ../../common/hosts.nix;
   NICS = import ./constants.nix;
   TABLES = import ./lib/network-tables.nix;
-
-  # Does this VLAN carry the box's way out?  Only one does, and it is worked out
-  # from the table by ./coexist.nix rather than assumed to be 225.  At cutover
-  # this is false everywhere: the way out is ./uplink.nix's tunnel, and the live
-  # router's address is now this box's own.
-  isTransit = v: COEXIST.enable && v.id == COEXIST.transitVlan.id;
 
   # The two policy-routing marks ./firewall.nix's prerouting chain sets.  They
   # are the flake's version of the old box's `route-to` pf rules, and they are
@@ -87,20 +81,21 @@ in {
   };
 
   # The router's own name resolution: it answers for the network, and it also has
-  # to *reach* it (dns-sync sshes here, and the box's own boot wants to resolve
-  # the names it serves).  Same shape as machines/services1/networking.nix's
-  # extraHosts, one line shorter: the router is the thing the names point at, and
-  # its own address must not come from the dnsmasq that is being started.
+  # to *reach* it (the box's own boot wants to resolve the names it serves, and
+  # services1 sshes here for `just switch-gw`'s confirm).  Same shape as
+  # machines/services1/networking.nix's extraHosts, one line shorter: the router is
+  # the thing the names point at, and its own address must not come from the
+  # dnsmasq that is being started.
   #
-  # The address is this box's own, on the VLAN it reaches the network through:
-  # `gw` is this box's name (./default.nix sets the hostname), and while
-  # ./coexist.nix is on, this box is not at the address common/hosts.nix gives the
-  # name it shares with the live router.  Pointing it at 10.3.1.1 would make
-  # `getent hosts gw` answer with a different machine than `hostname` — which is
-  # exactly the kind of two-facts-about-one-name confusion the rest of this
-  # directory refuses.
+  # The address is `common/hosts.nix`'s `router` — which is this box's own VLAN 225
+  # address, and the assertion in ./lib/check-network-tables.nix that every
+  # `common/hosts.nix` address must be a reservation or a VLAN address is what makes
+  # that sentence true rather than hopeful (checked 2026-10-22 by breaking each side:
+  # a `router` that is no VLAN's `ipv4` fails the evaluation).  One fact, one place:
+  # this line cannot then disagree with `hosts.nix`, with `common/vlans.nix`, or with
+  # `ip addr`.
   networking.extraHosts = ''
-    ${COEXIST.transitVlan.ipv4} gw gw.int.leighhack.org
+    ${HOSTS.router} gw gw.int.leighhack.org
   '';
 
   systemd.network = {
@@ -243,11 +238,10 @@ in {
         # prefix; `PrefixDelegationHint` is the old box's `/48` and is what makes
         # AAISP's server delegate the whole block rather than a single /64.
         #
-        # The unit is present even while ./coexist.nix is on, when ppp0 does not
-        # exist: networkd writes a .network file for a device that is not there
-        # and does nothing with it, which is the least surprising way to have the
-        # cutover be "flip the flag and reboot" rather than "add a file at the
-        # same time as the flag".
+        # The unit is present whether or not ppp0 exists yet: networkd writes a
+        # .network file for a device that is not there and does nothing with it,
+        # which is the least surprising way to have "the tunnel has not dialled"
+        # be a link-state fact rather than a config that appears and disappears.
         "10-tunnel" = {
           matchConfig.Name = NICS.UPLINK_TUNNEL;
           networkConfig = {
@@ -315,7 +309,7 @@ in {
                 # interface is a router that can install a default route via
                 # itself: dnsmasq advertises on these VLANs (./dns.nix), and the
                 # old box's `enable-ra` plus a `UseGateway=true` was a loop
-                # waiting for the day the two boxes stopped coexisting.  The IPv6
+                # waiting for a second router to appear on a VLAN.  The IPv6
                 # addresses below are written, not learned.
                 IPv6AcceptRA = false;
                 # The public /64s, which used to come only from AAISP's delegation.
@@ -331,28 +325,24 @@ in {
                 # reason.
                 DHCPPrefixDelegation = v.id == 226 || v.id == 227;
               };
-              # This box's own default route, while it has no uplink: the live
-              # router, on the one VLAN that can reach it.  A [Route] section rather
-              # than [Network] Gateway=, which systemd deprecated in favour of it.
-              #
-              # Not on every VLAN, and not when co-existence is off: the router's
-              # own route out is the AAISP tunnel ./uplink.nix dials, and a default
-              # route via the old router would survive into the cutover and point the
-              # new router's traffic at the old one — a loop with two DNS servers in
-              # it.  `ip route` on the box is the check that this is the only one.
+              # One static route on the wired VLAN, and no default route anywhere
+              # in networkd: this box's way out is ./uplink.nix (the AAISP tunnel
+              # in table 100, the hub's default in table 200 and in the main table,
+              # all written by pppd's ip-up), and a `Gateway=` on a downstream VLAN
+              # would be a router installing a route to itself.  A [Route] section
+              # rather than [Network] Gateway=, which systemd deprecated.
               #
               # The static route is the old box's `192.168.49.0/24 via 10.3.1.20`
               # (its <staticroutes> section, read 2026-10-17): a tailnet subnet
               # route served by services1, which is on the LAN and must be reached
-              # through it rather than through the tunnel.
-              routes =
-                lib.optionals (isTransit v) [{Gateway = COEXIST.transitGateway;}]
-                ++ lib.optionals (v.id == 225) [
-                  {
-                    Destination = "192.168.49.0/24";
-                    Gateway = "10.3.1.20";
-                  }
-                ];
+              # through it rather than through the tunnel — the tunnel's own
+              # default would otherwise swallow it.
+              routes = lib.optionals (v.id == 225) [
+                {
+                  Destination = "192.168.49.0/24";
+                  Gateway = HOSTS.services1;
+                }
+              ];
               # The delegated prefix's per-VLAN half: networkd takes the /64 it
               # asked for on ppp0, appends `SubnetId` (the old box's track6 prefix
               # id), gives the VLAN an address from it, and routes the /64 here.

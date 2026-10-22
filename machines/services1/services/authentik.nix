@@ -359,8 +359,8 @@ in {
     }
     // lib.optionalAttrs shadow {
       # The shadow instance's own name.  LAN-only (the default ACL), and
-      # `sudo dns-sync sync` adds the router/DO records like any other *.int
-      # vhost here.  authentik's tenant base_url is https://id.int.leighhack.org
+      # `common/int-dns.nix` names it, so the router answers it as soon as the
+      # router is deployed — and this module is parked, so nothing asks yet.  authentik's tenant base_url is https://id.int.leighhack.org
       # and comes across with the database, so absolute URLs authentik
       # generates still name the real host; the UI and the OIDC endpoints work
       # over this name because everything else is relative.

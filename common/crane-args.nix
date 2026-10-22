@@ -3,7 +3,7 @@
 #
 # Modules then just list `CRANE` in their function arguments:
 #
-#   { pkgs, CRANE, ... }: CRANE.cached { pname = "dns-sync"; ... }
+#   { pkgs, CRANE, ... }: CRANE.cached { pname = "filestore"; ... }
 #
 # Importing common/crane.nix by hand in each module (seven times, with three
 # different relative paths) was the alternative; this keeps the call sites

@@ -5,19 +5,24 @@ for every VLAN, the firewall that decides what may leave the building, the AAISP
 tunnel that leaves it through, and the network's tailnet presence.
 
 **The box is the network's router: a Supermicro X9SCL/X9SCM at `10.3.1.1`.** It was
-installed 2026-10-17 in **co-existence mode** beside the OPNsense appliance and **cut
-over on 2026-10-21**, so `./coexist.nix` is `enable = false` and the appliance is
-retired. Co-existence mode still exists in that file (it is both the switch back and the
-mode the first four days ran in) — read it before editing anything here, because the four
-ways a shadow router can become the real one by accident are the four things the cutover
-flipped.
+installed 2026-10-17 in **co-existence mode** beside the OPNsense appliance, **cut over
+on 2026-10-21**, and the appliance is retired. Co-existence mode itself was deleted on
+2026-10-22 (`./coexist.nix`, its `hostAddr` substitution and the `!COEXIST.enable`
+branches in four files): this box owns `.1` on every VLAN, advertises, leases and
+leaves by the AAISP tunnel, and nothing in the tree can put it back into the shadow
+mode. The table below is what that mode switched off, kept as the four checks that
+prove the router is doing its job — they were the acceptance test at the cutover and
+they are the ones to run after any change to `dns.nix`, `networking.nix` or
+`uplink.nix`.
 
-> **State as of 2026-10-21 evening: deployed and live at `10.3.1.1`.** The tunnel dialled
-> (`81.187.223.123`), DHCP/DNS/RA serve every VLAN, the policy routes and inbound NAT are
-> installed. `docs/gw-cutover-attempt-2026-10-21.md` is the post-mortem of the attempt,
-> the findings from the live cutover, and what is still open. `just switch-gw` defaults to
-> `10.3.1.1`; the `10.3.1.254` seen below appears only in the co-existence narrative and
-> no longer answers.
+> **State as of 2026-10-22: deployed and live at `10.3.1.1`, measured.** The tunnel
+dialled (`81.187.223.123`), DHCP/DNS/RA serve every VLAN (`ip -4 addr` shows `.1` on
+225/226/227/1337 and `192.168.20.82` on the uplink; 70 live lines in
+`/etc/dnsmasq.d/network.conf`, three of them `ra-`; the lease file holds 65 leases),
+the policy routes and inbound NAT are installed. `docs/gw-cutover-attempt-2026-10-21.md`
+is the post-mortem of the attempt and the findings from the live cutover.
+`just switch-gw` defaults to `10.3.1.1`; the `10.3.1.254` seen below appears only in the
+co-existence narrative and no longer answers.
 
 ```bash
 # from services1, the whole loop: sync the mirror, build here, push to gw, confirm
@@ -63,34 +68,34 @@ system's. That is the trap in any installer-based deploy here: **`nixos-install
 chroot's view of the store, which on a live image is a tmpfs overlay), and the result
 looks like a finished install until you reboot into a system with no bootloader.
 
-## Co-existence mode, and the four ways to be the router by accident
+## The four things a router must be seen to do
 
-`./coexist.nix` is on. It rewrites exactly one thing in the tables — the host part of
-every VLAN's gateway address, `.1` → `.254` — and switches off four behaviours, each
-of which is a router answering a request that belongs to `10.3.1.1`:
+The mode this box used to run in switched four behaviours off, because each is a router
+answering a request that belonged to `10.3.1.1`. They are now its whole job, and each is
+still checkable in one command on the box — which is the only reason they are written
+down twice, four days and one deletion later:
 
-| It must not… | How that is done | How to prove it on the box |
+| It must | How that is done | How to prove it on the box |
 | --- | --- | --- |
-| take `.1` on any VLAN | `coexist.nix`'s `hostAddr`, applied to the VLAN list every renderer reads | `ip -4 addr show` — every address ends `.254`; `getent hosts gw` answers `10.3.1.254`, not the `hosts.nix` value |
-| hand out leases | `no-dhcp-interface=` for all five VLAN devices, and the generated `dhcp-range`/`dhcp-host`/`dhcp-boot` blocks emitted **commented** | `grep -c '^[^#]' /etc/dnsmasq.d/network.conf` is `0`; `/var/lib/dnsmasq/dnsmasq.leases` is empty |
-| announce a default gateway (RA) | `enable-ra = false`; the `ra-only`/`ra-param` lines are in the conf, commented | `grep -c '^# *ra-' /etc/dnsmasq.d/network.conf` is non-zero, `^[^#]` is zero |
-| advertise tailnet routes | `--advertise-routes`/`--advertise-exit-node` are not passed at all | `sudo tailscale status --json \| jq .Self.AllowedIPs` — two `/128`s and nothing else |
+| own `.1` on every VLAN | `common/vlans.nix`'s `ipv4`, put on the interface by `./networking.nix`; `common/hosts.nix`'s `router` is that address, and `./lib/check-network-tables.nix` refuses a table where it is not one of this box's own | `ip -4 addr show scope global` → `10.3.1.1 10.3.2.1 10.3.14.1 10.3.22.1`; `getent hosts gw` answers `10.3.1.1` |
+| hand out the leases | the generated `dhcp-range`/`dhcp-host`/`dhcp-boot` blocks in `/etc/dnsmasq.d/network.conf`, and `dhcp-authoritative` | `sudo wc -l /var/lib/dnsmasq/dnsmasq.leases` is non-zero and grows; `grep -c '^[^#]' /etc/dnsmasq.d/network.conf` is non-zero |
+| announce the default gateway (RA) | `enable-ra = true` plus the generated `ra-only`/`ra-param` lines | `grep -c '^ra-' /etc/dnsmasq.d/network.conf` is non-zero, and see "the third way dnsmasq breaks the LAN silently" below — an RA timer that stopped is invisible in `systemctl` |
+| advertise the tailnet routes it means to | `--advertise-exit-node` and `--advertise-routes` in ./uplink.nix | `sudo tailscale debug prefs \| jq .AdvertiseRoutes` — **and read "The tailnet's advertised routes only move at boot" below, because as of 2026-10-22 this one answers `null`** |
 
-Commented rather than omitted, deliberately: whoever runs the cutover has to be able
-to read what they are about to enable, and an absent block looks exactly like a bug in
-the generator.
+The lesson the mode taught and the deletion keeps: a shadow router is dangerous through
+*behaviour*, not configuration. Two DHCP servers, two RA advertisers and two
+advertised route sets all produce a network that works until a client picks the other
+one, hours later, on a machine that is not this one. `./lib/check-network-tables.nix`
+and the four commands above are what make that class of fault visible from the box
+that causes it.
 
-The mode is one substitution rather than a branch in four files because `coexist.nix`
-exports the VLAN list and `dns.nix`, `networking.nix`, `firewall.nix` and
-`uplink.nix` all read *that* instead of `common/vlans.nix`. A file that read the raw
-table would take `.1` on one VLAN and `.254` on the next, and `check-network-tables.nix`
-cannot see that from here.
-
-**The cutover is `enable = false` in `./coexist.nix`** — and not before the old box's
-facts have been read (the table below), the AAISP secret exists, and the old router
-has actually been taken out of service. Two DHCP servers and two RA advertisers on one
-VLAN do not fail loudly: clients get two leases for one address and pick a gateway at
-random, hours later, on a machine that is not this one.
+When something does look wrong, in the order that has been useful: `journalctl -u
+xl2tpd-aaisp` (is the tunnel dialled?), `ip route show table 100` and `sudo ip route
+show table 200` (are the two egresses installed?), `ip -6 route show default` (must be
+`dev ppp0`, or there is no IPv6 anywhere), `networkctl status ppp0`, and
+`systemctl restart dnsmasq` if the LAN link has flapped (the RA-timer trap below — a
+dnsmasq that is `active` and has stopped advertising is the failure `systemctl` cannot
+see).
 
 ## The rule this directory is written to
 
@@ -116,20 +121,47 @@ evaluation of this machine succeeds with tables that disagree, and standalone vi
 
 | File | Owns |
 | --- | --- |
-| `default.nix` | the import list, and the machine's name (`gw`, the name `common/hosts.nix` and dns-sync's known-hosts file use) |
-| `coexist.nix` | **the mode this box runs in**: the host part it takes, the router it is a shadow of, the VLAN list everyone else reads. `enable = false` is the cutover |
+| `default.nix` | the import list, and the machine's name (`gw`, the name `common/hosts.nix` and every client's known_hosts entry use) |
 | `configuration.nix` | system-level: packages (including the self-build trio `git`/`just`/`jq`), time, `stateVersion`, the daemon trust the fallback deploy needs. No NAS, deliberately |
 | `hardware-configuration.nix` | the measured root FS, the ESP, and the two `links` rules that pin `router-lan`/`router-uplink` to the two e1000e MACs |
 | `constants.nix` | `LAN_NIC`, `UPLINK_NIC`, `UPLINK_TUNNEL` — the three interface names the rest of the directory keys on |
 | `networking.nix` | the VLAN netdevs, the addresses on them, the uplink NIC's DHCP |
-| `dns.nix` | dnsmasq: the generated conf, the records file, the netboot variants |
+| `dns.nix` | dnsmasq: the generated conf, the two generated hosts files (the device records and the `*.int` front door), the netboot variants |
 | `firewall.nix` | nftables: forward, input, NAT, and the IPv6 pair |
 | `uplink.nix` | pppd's tunnel, the tailnet (headscale) client |
 | `openvpn.nix` | the old box's two OpenVPN servers, **off by default** |
-| `sops.nix` | the secrets this box needs. One of them does not exist yet, which is why the tunnel's is declared only when there is a tunnel |
+| `sops.nix` | the secrets this box needs: the AAISP PPP password and the tailnet's join key |
 | `lib/network-tables.nix` | the renderers: tables → dnsmasq lines, nft set literals, device names |
 | `lib/check-network-tables.nix` | the assertions over those tables (standalone, prints findings) |
 | `lib/assert-network-tables.nix` | the three-line module wrapper that runs them at eval time |
+
+## DNS: three generated files, nothing mutable
+
+`docs/router-and-dns.md` is the network's DNS manual (what answers what, the exceptions,
+DigitalOcean, the failure classes). What belongs here is the shape on this box:
+
+| File | Answers | Written by |
+| --- | --- | --- |
+| `/etc/dnsmasq.d/network.conf` | DHCP ranges, reservations, RA ranges, netboot boot files | `./dns.nix` from `common/vlans.nix` + `common/dns-records.nix` |
+| `/etc/dnsmasq-records.hosts` | every device's name, bare and `<name>.int.leighhack.org` | `./dns.nix` from `common/dns-records.nix` |
+| `/etc/dnsmasq-int-vhosts.hosts` | every `*.int.leighhack.org` vhost, with the front door's three addresses | `./dns.nix` from `common/int-dns.nix` |
+
+All three are store paths, all three are in `systemd.services.dnsmasq.restartTriggers`,
+and dnsmasq reads the two hosts files **at startup** — which is why the trigger list is
+not optional: before it, a switch that moved a device's address wrote the new file,
+exited 0, and went on answering from the old one. The file that used to be here and was
+*edited over ssh* by `crates/dns-sync`, `/var/lib/dnsmasq/names.hosts`, is the reason
+`common/int-dns.nix` exists; see "Known-incomplete" for why it is still on disk.
+
+```bash
+dig +short @10.3.1.1 grafana.int.leighhack.org A AAAA   # bind is in this box's
+getent ahosts grafana.int.leighhack.org                #   systemPackages; there is
+sudo systemctl status dnsmasq --no-pager               #   no need for getent alone
+sudo journalctl -u dnsmasq -n 30
+```
+
+(`docs/router-and-dns.md` used to say there is no `dig` on gw. There is — `bind` is
+installed precisely so the resolver can be asked from the box.)
 
 ## What is proven, and from where
 
@@ -535,7 +567,7 @@ state and generated PPP files were archived under
 | The upstream resolvers | `dns.nix` `server` | **read**: `<dnsserver>` was 9.9.9.9, 8.8.8.8, 1.1.1.1, 8.8.4.4. `dnsallowoverride` (letting the uplink's DHCP hand back resolvers) is deliberately **not** inherited |
 | Interface offload knobs | nothing | **read but not ported**: `<Interfaces><settings>` disabled checksum, segmentation and large-receive offloading and the VLAN hardware filter. Those are FreeBSD-driver-era settings; Linux's defaults for `e1000e` want them on, so this is recorded rather than copied — if the tunnel ever misbehaves on TCP, this is a difference from the box that worked |
 | VLAN 50 (`MILL`) | absent from `common/vlans.nix` | **read and deliberately absent**: the old box defined `vlan0.50` on `em0` and put no interface on it (the uplink was untagged `em3`, `192.168.20.0/24`). If the mill's handoff is ever re-tagged, this box needs a netdev for it |
-| Config backup (`sftp` to `nas2`, 60 copies) | nothing | **not ported, and the gap is small**: the config is this tree. The key that job used (a `backups@nas2` id_ed25519) is still authorised on the NAS for a box that no longer exists, and the router's mutable state (`/var/lib/dnsmasq/names.hosts`, `/var/lib/tailscale`) has no backup at all — `names.hosts` is reproducible by dns-sync, `/var/lib/tailscale` is not |
+| Config backup (`sftp` to `nas2`, 60 copies) | nothing | **not ported, and the gap is now almost nothing**: the config is this tree and, since 2026-10-22, so is its DNS — both `addn-hosts` files are store paths generated from `common/dns-records.nix` and `common/int-dns.nix`, so a rebuilt box answers exactly what this one answers. The only mutable state left is `/var/lib/tailscale` (the node key), which has no backup, and the `backups@nas2` id_ed25519 that job used is still authorised on the NAS for a box that no longer exists |
 | The OpenVPN server | `openvpn.nix` | **read but not migrated**: one TUN server `MembersVPN`, UDP 1194, pool `10.3.254.0/24`, push `10.3.0.0/16`, Authentik LDAP auth (`Members`, LDAPS to 10.3.1.36:636 with a `cn=pfsense-gw` bind DN), certificates in the old XML. It was reachable from the internet: `pass in on l2tp0 proto {tcp,udp} from any to any port = openvpn` |
 | How the network's IPv6 prefix arrives | `networking.nix` `10-tunnel` and `50-vlan226/227` | **read**: DHCPv6-PD, `/48` hint, VLAN id as `SubnetId`; networkd now requests it and assigns the per-VLAN /64s |
 | The old box's firewall | `firewall.nix` | **read**: `pfctl -sr`/`-sn`/`-sa`; the per-VLAN `route-to` split is copied as fwmark policy routing |
@@ -545,31 +577,22 @@ Still open for the cutover itself: the old box's **OpenVPN server** and its
 LAN routing are).  If those are still in use, they need a follow-up before the old
 box goes away for good.  `network-status` was the last OPNsense-shaped tool; it was
 ported **and moved onto this box** on 2026-10-21 (`./network-status.nix`, a
-DynamicUser reading the local `/proc` and `/sys`), and dns-sync was ported the same
-day and maintains `/var/lib/dnsmasq/names.hosts`.
+DynamicUser reading the local `/proc` and `/sys`).  The last tool that still spoke to
+this box from outside it — `crates/dns-sync`, ssh'ing in from services1 to append DNS
+records — was deleted on 2026-10-22; `common/int-dns.nix` is that feature now.
 
 ## Known-incomplete, by name
 
-* **dns-sync writes `/var/lib/dnsmasq/names.hosts`** (ported 2026-10-21, the same day
-  as the cutover). It connects as `leigh-admin` with `sudo -n`, replaces the file
-  atomically and reloads dnsmasq; the contract, and why a record is one line per
-  address, is at the top of `crates/dns-sync/src/main.rs`, with the manual fallback in
-  `docs/router-and-dns.md`. Two properties of this file are worth knowing before
-  touching it: it is **mutable state the flake never rewrites** (tmpfiles creates it
-  empty, and that is the whole of the flake's involvement), and it is **shared with
-  records dns-sync does not own** — the cameras, APs, Pi Room boards, `nginx.int`,
-  `services1`, and `authentik.int` at the appliance. So deleting it does not "let
-  dns-sync rebuild it": dns-sync refuses to run against a file it cannot read, and the
-  network is NXDOMAIN in the meantime. Snapshot before any hand edit; the 2026-10-21
-  snapshot is `/var/lib/dns-sync-backups/` here and on services1.
-* **Nothing here is the network's router yet** — that *was* `./coexist.nix`, and it was
-  flipped on 2026-10-21. `.1` addresses, DHCP, RAs, the AAISP tunnel and the policy
-  routing are all live now; the things that had to be proven first (the tunnel, the
-  fwmark rules, the port forwards, the delegated IPv6 prefixes) are in
-  `docs/gw-cutover-attempt-2026-10-21.md`, together with the three that were not.
-  The checks when something looks wrong: `journalctl -u xl2tpd-aaisp`, `ip route show
-  table 100`, `ip -6 route`, `networkctl status ppp0`, and `systemctl restart dnsmasq`
-  if the LAN link has flapped (the RA-timer trap above).
+* **`/var/lib/dnsmasq/names.hosts` is dead weight, deliberately, for one deploy.** It
+  is no longer in dnsmasq's `addn-hosts` list (`./dns.nix`), so nothing reads it, but
+  tmpfiles still creates it — because a generation built before 2026-10-22 names it
+  and `system.autoRollback` can put that generation back within five minutes of a
+  switch, and dnsmasq **exits** on a missing `addn-hosts` file. Deleting the file in
+  the deploy that made it dead therefore turns a rollback into a router with no DNS.
+  The follow-up (file + tmpfiles rule, together, in a later deploy) is in
+  `docs/follow-ups.md`. Its contents are in git: every line of it is now generated
+  from `common/dns-records.nix` and `common/int-dns.nix`, and the 2026-10-21 snapshot
+  is `/var/lib/dns-sync-backups/` here and on services1.
 * **The LAN port is doing 100 Mbit, not gigabit** (measured at install). Cable, PHY, or
   the switch port it lands on. Irrelevant while it is a shadow; it is the ceiling on
   every byte the network sends once it is not, so read the switch port's own config
@@ -743,13 +766,15 @@ someone out.  `docs/follow-ups.md` carries them as open items.
 from the internet. That is not a port and is needed for diagnosing a dead uplink
 from a laptop with no DNS; it is noted because it is the one other WAN response.
 
-* **The mode is the security property as much as the networking one:** while
-  `./coexist.nix` is on, this box refuses DHCP by interface name, sends no router
-  advertisement, takes no `.1`, and advertises no tailnet routes. Those are not
-  conveniences — a second authoritative DHCP server and a second RA advertiser are an
-  availability attack on the whole network launched by an well-meant deploy, and the
-  assertions in `./lib/check-network-tables.nix` are what stop an edit to `hostAddr`
-  (`.1`, or an address inside a lease range) from evaluating at all.
+* **One router, by construction.** There is no mode that can make this box a second
+  authoritative DHCP server or a second RA advertiser: `common/vlans.nix` gives it `.1`
+  on every VLAN, `./lib/check-network-tables.nix` refuses to evaluate if any VLAN's own
+  address falls inside a dynamic range or is claimed by a reservation, and the
+  assertions run as a module as well as via `just check`. The failure that class is an
+  availability attack on the whole network launched by a well-meant deploy, which is why
+  it is an eval error rather than a paragraph of advice. What is left of it is
+  behavioural, not declarative: two routers cannot be told apart by reading one of them,
+  so the four checks near the top of this file are run on the box.
 * `--dev-user`-style test hooks do not exist here, and nothing in this directory
   listens on the WAN: dnsmasq's `interface=` list is the VLANs only (the old box's
   generated file listed every interface OPNsense knew, WAN included, because it was

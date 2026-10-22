@@ -226,40 +226,22 @@ network-status-dist-check:
     echo "network-status dist/ matches a fresh build"
 
 
-# --- DNS sync (keeps router dnsmasq + DigitalOcean DNS in step with the
-# --- *.int.leighhack.org nginx vhosts; requires the machine-hop key and a
-# --- deployed dns-sync on services1) ---
+# --- the router's ssh host keys
 
-# Report whether every *.int.leighhack.org nginx vhost is present in the
-# router/DO DNS (change nothing; exit 0 when nothing is missing or stale).
-dns-sync-check:
-    ssh -i ~/.ssh/agent-hop-key -o BatchMode=yes leigh-admin@10.3.1.20 'sudo -n dns-sync check'
-
-# Add missing DNS records (router /var/lib/dnsmasq/names.hosts lines + DO
-# CNAMEs). Additive only — never deletes or rewrites existing records, which
-# matters because names.hosts also carries cameras, APs, Pi Room boards and the
-# authentik appliance.
-dns-sync-sync:
-    ssh -i ~/.ssh/agent-hop-key -o BatchMode=yes leigh-admin@10.3.1.20 'sudo -n dns-sync sync'
-
-# Remove stale records left behind by vhost renames/removals: names dns-sync
-# manages that were expected previously but no longer are. Run after
-# dns-sync-sync when a vhost name changed. Never touches records that
-# predate dns-sync.
-dns-sync-prune:
-    ssh -i ~/.ssh/agent-hop-key -o BatchMode=yes leigh-admin@10.3.1.20 'sudo -n dns-sync prune'
-
-# Print the router's host key lines for the pin. dns-sync and network-status ssh
-# to it with StrictHostKeyChecking=yes against the pinned /etc/dns-sync/known_hosts
-# (machines/services1/dns-sync.nix), so after a router reinstall run this and
-# paste the result there: the tools refuse to connect rather than trusting a new
-# key silently.
+# Print the host key lines a client needs to verify 10.3.1.1. Nothing ships them
+# any more: the pin used to be /etc/dns-sync/known_hosts, read by a tool that
+# ssh'd from services1 to edit the network's DNS, and that tool is gone
+# (common/int-dns.nix and `just switch-gw` are how `*.int` gets a record now).
+# `crates/network-status`'s remote probe mode still takes --known-hosts and
+# refuses to connect without it, which is the point: a missing file is no ssh,
+# never an unverified one. Run this after a router reinstall, keep the output in
+# a file, and hand that file to whatever is connecting.
 #
 # As leigh-admin, not root: the router's root login is prohibit-password, and
 # this recipe used to ssh in as root, which meant it could not regenerate the
 # pin for the box it replaced. Keyscanning over the network (rather than reading
 # /etc/ssh/ssh_host_*.pub on the box) is deliberate: it records the key a client
-# is actually offered, and dns-sync will connect over the same path. Types the
+# is actually offered, and the client will connect over the same path. Types the
 # router does not offer simply print nothing, so the output is what it presents
 # today — two lines for gw, three for the OPNsense box it replaced.
 router-known-hosts:

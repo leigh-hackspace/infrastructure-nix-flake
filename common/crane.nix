@@ -12,9 +12,9 @@
 # re-import it themselves:
 #
 #   CRANE.crate {
-#     pname = "dns-sync";
+#     pname = "filestore";
 #     version = "0.1.0";
-#     member = "dns-sync";
+#     member = "filestore";
 #   };
 #
 # ## Everything native is one cargo workspace

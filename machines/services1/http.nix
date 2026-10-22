@@ -79,9 +79,10 @@ in {
     '';
 
     virtualHosts = {
-      # DNS-sync test page (machines/services1/dns-sync.nix): proves the
-      # router's dnsmasq + DigitalOcean records are in sync with this vhost.
-      # Records are synced with `sudo dns-sync sync` on services1.
+      # The DNS canary (`bar.int`).  It serves nothing but this page: if it loads
+      # by name, the router's generated record, dnsmasq, this vhost and the ACME
+      # cert all work, which is the shortest end-to-end test of the front door
+      # there is (common/int-dns.nix is the record, machines/gw/dns.nix serves it).
       "bar.int.leighhack.org" = {
         useACMEHost = "leighhack.org";
         forceSSL = true;
@@ -97,7 +98,7 @@ in {
               <body>
                 <h1>bar.int.leighhack.org</h1>
                 <p>This page is served by services1 nginx and resolves via the
-                   router dnsmasq and DigitalOcean DNS (dns-sync test).</p>
+                   router dnsmasq and DigitalOcean DNS (the DNS canary).</p>
               </body>
             </html>
           ''}/bar";
@@ -107,7 +108,7 @@ in {
 
       # Alexandria audiobook generator on aibox (machines/aibox/alexandria.nix):
       # AI book -> voiced audiobook WebUI (FastAPI on 4200). LAN/tailscale only;
-      # the int record is synced by dns-sync.
+      # the int record lives in common/int-dns.nix.
       "alexandria.int.leighhack.org" = mkIntVhost {
         proxyPass = "http://10.3.1.32:4200";
         websockets = true;
@@ -119,8 +120,8 @@ in {
 
       # Router network dashboard (machines/gw/network-status.nix):
       # realtime per-interface bandwidth, conntrack entries and issues for
-      # gw (10.3.1.1), where the service now runs.  LAN-only; the router/DO
-      # records are synced by dns-sync.
+      # gw (10.3.1.1), where the service now runs.  LAN-only; the record lives in
+      # common/int-dns.nix.
       "network-info.int.leighhack.org" = mkIntVhost {
         proxyPass = "http://10.3.1.1:8091";
       };

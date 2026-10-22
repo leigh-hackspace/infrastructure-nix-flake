@@ -208,6 +208,34 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   refresh that leaves the export *unmounted* still stops clients from booting at
   all, so the dance stays in the runbook.
 
+- **`just check` is machine-dependent: an eval-time secret read makes it pass or fail on
+  store state** (found 2026-10-22; the failure was first reproduced against clean
+  `f136d8a` in a throwaway worktree, then the *same* command passed on the same tree once
+  the path existed, which is the actual bug). The failing form is:
+
+  ```
+  error: path 'zicnr1hgclx6vmnrhh17w30sd2h4f8dz-sops-secret-pg_pass.drv' is not valid
+  ```
+
+  with a trace ending at `services.outline.databaseUrl`:
+  `machines/services1/services/outline.nix` does
+  `builtins.readFile (config.sopsSecretText "pg_pass")`, and reading a **derivation** at
+  eval time realises it. `--no-build` declines, so `nix flake check` dies — on any box
+  that has not already got that path — while a build or a deploy silently *compiles the
+  secret* to satisfy the same read (`building '…-sops-secret-pg_pass.drv' on
+  'ssh://leigh-admin@10.3.1.32'…`, seen live; the output is now in services1's and aibox's
+  stores, which is why the check passes today and will not pass on a fresh box). Two
+  things are wrong. One is the eval-time realisation itself — the class
+  `docs/nix-dev-workflow.md` says evaluation must never be in, and the class
+  `common/crane.nix` deliberately designed around with `cargoLockContents`. The other is
+  that `services.outline.databaseUrl` is a string, so the postgres password ends up in a
+  world-readable store path either way; fixing the first properly means not putting the
+  secret in that option at all (some `EnvironmentFile`-shaped plumbing), or a
+  `databaseUrlFile`-style change upstream), which is a bigger call than a ride-along.
+  Until then: if `just check` dies on `sops-secret-*.drv`, that is this item, not your
+  change — say so, and say what you verified against a clean HEAD.
+
+
 ## Machines / access
 
 - **services2 cannot hop out.** `machines/services2/README.md` used to claim the
@@ -234,6 +262,24 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   (`machines/pi-room-sys/README.md`).
 
 ## DNS / monitoring
+
+- **The router's DNS is three generated files now, so `common/int-dns.nix`'s `legacy`
+  set is a to-do list, not a design** (added 2026-10-22). `nginx.int`, `mqtt.int`,
+  `tailscale.int`, `gitlab.int` and `ldap.int` answer with the front door and are served
+  by no enabled vhost; each carries its reason in the table. `gitlab.int` disappears by
+  itself when the gitlab module is re-enabled (the guard moves it from `legacy` to
+  `names` by refusing the other way). `mqtt.int` and `tailscale.int` want someone to
+  check what dials them and then delete the records. `nginx.int` stays — it is the CNAME
+  target of every public `*.int` record in DigitalOcean. And `ldap.int` belongs with the
+  authentik decision below, not with DNS.
+
+- **`nginx.int`'s AAAA record in DigitalOcean is a ULA** (`fd99:dead:beef:225d::20`,
+  while `nginx.leighhack.org`'s AAAA is the public `2001:8b0:1d14:225::20`). So the
+  public `*.int` CNAMEs hand any client outside the building one private IPv4 and one
+  private IPv6, which is coherent for a LAN zone and useless as a remote entry point —
+  if anything is expected to reach the internal apps off-LAN, it should be through the
+  tailnet (`int.leighhack.org` split-DNS → 10.3.1.1) and this record should point at the
+  public address or go away. Decide before pruning the `*.int` CNAMEs above.
 
 - **Two public status vhosts have no DNS record** (found 2026-10-12 while
   sanity-checking after the `nixbld` fix).
@@ -409,28 +455,55 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   them is mechanical and worth a pass of its own, not a ride-along with a router
   change.
 
-- **dns-sync is OPNsense-shaped and the cutover has to move it** — **done
-  2026-10-21**, same evening as the cutover, so `just dns-sync-check|sync|prune` work
-  against `gw`: it connects as `leigh-admin` + `sudo -n`, reads and writes
-  `/var/lib/dnsmasq/names.hosts` (the file `machines/gw/dns.nix` creates empty for
-  exactly this), reloads dnsmasq with SIGHUP, and the host-key pin is `gw`'s own. The
-  port, and the two facts worth keeping from it, are at the top of
-  `crates/dns-sync/src/main.rs` and in `docs/router-and-dns.md`; what it was replacing
-  is in `docs/handover-2026-10-21.md`.
+- **dns-sync is deleted, and `*.int` is declared instead of synchronised** (2026-10-22).
+  What it did — ssh from services1, read `/var/lib/dnsmasq/names.hosts` on the router,
+  append the missing (address, name) pairs, `systemctl reload dnsmasq`, and separately
+  create a DigitalOcean CNAME — is now a table: `common/int-dns.nix` lists every `*.int`
+  name that answers with services1's three addresses, `machines/gw/dns.nix` renders it to
+  `/etc/dnsmasq-int-vhosts.hosts`, and that store path is a dnsmasq `restartTriggers`
+  entry, so record and restart arrive in one activation. The gate that makes "forgot the
+  DNS" impossible to land is `machines/services1/int-dns.nix`: it derives the `*.int`
+  names from `services.nginx.virtualHosts` and refuses to evaluate services1 unless that
+  set equals the table (it caught three names of its own on its first build, which is the
+  argument for it). The crate, its workspace membership, `machines/services1/dns-sync.nix`
+  (including the pinned router host keys, which nothing reads any more), the
+  `just dns-sync-check|sync|prune` recipes and every doc pointer are gone; the facts worth
+  keeping from the tool are in `docs/router-and-dns.md` ("What `*.int` answers with"). Two
+  things follow from the deletion and are still open:
 
-  Two things the port had to get right, because the file it writes is load-bearing and
-  mostly *not* dns-sync's: a record is one line **per address** (A + public AAAA + ULA
-  AAAA — the old box wrote three lines per vhost and a `*.int` name without its IPv6 is
-  the RA-shaped outage in `machines/gw/README.md`), and every write is read → edit in
-  memory → prove only the asked-for pairs moved → `mv -f` → reload → re-read. A failed
-  read aborts rather than being treated as "empty", which would write back a file
-  containing only the vhosts and take the cameras, APs, Pi Room boards and
-  `authentik.int` with them.
+  1. **Delete `/var/lib/dnsmasq/names.hosts`, and its tmpfiles rule, in a later deploy**
+     (added 2026-10-22). The file is no longer in dnsmasq's `addn-hosts` list, so nothing
+     reads it — but a generation built before this one *does* name it, dnsmasq **exits**
+     on a missing `addn-hosts` file, and `system.autoRollback` can put that generation
+     back for five minutes after a switch. Removing the file in the same deploy as the
+     change that made it dead therefore turns a rollback into a router with no DNS for the
+     network. The two halves must go together, in a deploy after the one that is confirmed
+     good: the rule in `machines/gw/dns.nix` and the file itself
+     (`sudo rm /var/lib/dnsmasq/names.hosts`). Its content is fully reproducible from the
+     tables, and the 2026-10-21 snapshot is still in `/var/lib/dns-sync-backups/`.
+  2. **DigitalOcean's `*.int` half is now maintained by nobody** (added 2026-10-22).
+     ~40 `*.int` CNAMEs → `nginx.int.leighhack.org` remain in the zone; nothing reads
+     them for the LAN (the router answers) or for the tailnet (headscale's split DNS sends
+     `int.leighhack.org` at 10.3.1.1), so they are for public-DoH clients only. Either
+     prune them and add the one record `*.int` CNAME → `nginx.int` — **test that against a
+     real ACME renewal first**, because `*.int.leighhack.org` is in the wildcard cert and
+     its `_acme-challenge` lives in the same zone — or leave them and accept they can
+     drift. While in the zone: DO stores record *labels*, and three records were created
+     with FQDNs and therefore answer nothing. **`gatus.int` is fixed (2026-10-22)** — the
+     CNAME `gatus.int` → `nginx.int` exists (ttl 3600, verified against `@1.1.1.1`) and
+     the doubled record is deleted. Two remain: `AAAA yunohost.leighhack.org` and the
+     `_cs-verify` TXT named `leighhack.org`; both want whoever owns yunohost and the
+     cert-status verification to say which name they meant before anything is deleted.
+     The API gotcha worth remembering: `data` must end in `.` on **create** and comes
+     back without it, so the value you read is not the value you post
+     (`docs/router-and-dns.md`).
 
-  **network-status was the next item down this list** and is ported and moved
-  (2026-10-21): it now runs on gw as a `DynamicUser`, reading `/proc`/`/sys`
-  locally instead of OPNsense's commands (`docs/services.md`,
-  `machines/gw/network-status.nix`).
+  `network-status` was the next tool down the old "ssh into the router" list and is
+  ported and moved (2026-10-21): it runs on gw as a `DynamicUser`, reading
+  `/proc`/`/sys` locally instead of OPNsense's commands (`docs/services.md`,
+  `machines/gw/network-status.nix`). Its `--router` ssh mode is still there for
+  emergencies, its `--known-hosts` default points at a path nothing ships, and
+  `just router-known-hosts` prints the keys to pass it.
 
 - **Two dnsmasq bugs found by running the shadow box beside the live one**
   (2026-10-17, both fixed). Neither was visible in the config, in the build, or in

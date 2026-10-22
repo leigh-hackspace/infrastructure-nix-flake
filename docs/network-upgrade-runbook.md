@@ -49,10 +49,10 @@ statement about *that day*; re-probe it, do not inherit it.
 
 | Box | Address | Reached as | What an upgrade means here | What must **not** happen here |
 | --- | --- | --- | --- | --- |
-| services1 | 10.3.1.20 | `leigh-admin` + hop key | full `switch`. The choke point: nginx terminates TLS for the whole network, nginx-sso answers every `X-WEBAUTH-USER` app, postgres serves five DBs, `dns-sync` writes the router's host overrides | a reboot that takes nginx/postgres/SSO down without knowing who is up |
+| services1 | 10.3.1.20 | `leigh-admin` + hop key | full `switch`. The choke point: nginx terminates TLS for the whole network **and is the front door every `*.int` name answers at**, nginx-sso answers every `X-WEBAUTH-USER` app, postgres serves five DBs | a reboot that takes nginx/postgres/SSO down without knowing who is up |
 | services2 | 10.3.1.21 | `leigh-admin` + hop key | full `switch`. The RTX 3060 / Strata **Coder** engine, its own status dashboard, a 16 GiB swap file | being switched while its 30 GiB is the engine's; being mistaken for the builder or monitor it no longer is |
 | aibox | 10.3.1.32 | `leigh-admin` + hop key | full `switch`. Hosts immich, frigate, whisper, the netboot server, a status dashboard — and, since 2026-10-17, the **builder** | deploying from its **dirty** tree (see Phase 0) |
-| gw (the router) | 10.3.1.1 is the **live** OPNsense box; 10.3.1.254 is the flake's replacement, deployed beside it | old box: `root` + hop key, **the root shell is tcsh**. New box: `leigh-admin` + hop key, like the others | the **new box only**, and only while `machines/gw/coexist.nix` is on (addresses end in `.254`, no DHCP, no RA, no advertised tailnet routes). The OPNsense box stays the router and stays out of this runbook | deploying `.#gw` with co-existence switched off; anything that takes the live router down; a second DHCP server or RA on a VLAN |
+| gw (the router) | 10.3.1.1 is the **flake's own box** (cut over from the OPNsense appliance on 2026-10-21; the appliance is retired) | `leigh-admin` + hop key, root not keyed — like every other machine here | `just switch-gw`, built **off** the router (builds delegate to aibox and `nix.maxJobs = 0`, so nothing compiles here) and confirmed on the box. It answers DNS and hands out leases for the whole network | deploying gw while services1 is mid-switch (the deploy that adds a vhost's record is this one); anything that takes the router down; a build on the box itself (`_build-host-guard`) |
 | NAS | 10.3.1.6 | `leigh-admin` + hop key (root is **not** keyed) | nothing declarative. It must stay online: services1 and aibox NFS-mount it, borg runs on it | editing `/etc/sudoers` (middleware regenerates it); blaming a mount failure on the flake |
 | monster1 | 10.3.1.11 | `root` + hop key | nothing declarative. Its VMs' disks live on the NAS | `qm start` on an HA-managed VM; treating `storage 'nas2-nfs' is not online` as a VM fault |
 | authentik appliance | 10.3.1.36 | **not reachable** — the hop key was refused (`Permission denied (publickey,password)`) | nothing. It is the live IdP every app and every switch login goes through | un-parking `machines/services1/services/authentik.nix` (the shadow is **parked** for a reason) |
@@ -135,8 +135,8 @@ yourself: probe every URL in `common/monitoring-endpoints.nix` once, save the
 output, and diff the post-switch runs against *that* rather than against "all
 green". On 2026-10-15 four of them were already failing before anything moved:
 `https://status.leighhack.org` (the vhost exists on services1's nginx, the
-DigitalOcean record does not — and `just dns-sync-check` cannot see it, because it
-only audits `*.int`), and `http://3d-{1,2,3}.int.leighhack.org` (no such names;
+DigitalOcean record does not — and nothing in the repo can see it, because the
+zone is not in the flake), and `http://3d-{1,2,3}.int.leighhack.org` (no such names;
 the printers are `3d-blue` / `3d-lime` — see `docs/follow-ups.md`).
 
 ```bash
@@ -422,7 +422,6 @@ router 10.3.1.1  ── DNS for every *.int name + the DHCP reservation that giv
   ├── NAS 10.3.1.6 ── NFS exports; services1 and aibox mount it; borg lives here
   │        └── monster1 10.3.1.11 ── VM disks are on the NAS (nas2-nfs)
   ├── services1 10.3.1.20 ── nginx (TLS terminator for the whole network),
-  │                            nginx-sso, postgres, dns-sync → writes the router
   │     └── proxies → services2 (grafana/prometheus/gatus/status)
   │     └── proxies → aibox (immich/frigate/whisper/status)
   ├── services2 10.3.1.21 ── the monitor (gatus → Slack) AND the build farm
@@ -460,8 +459,10 @@ git diff <old-commit>..<new-commit> -- common/hosts.nix common/exporters.nix \
   common/monitoring-endpoints.nix machines/services1/services/monitoring.nix
 ```
 
-If a port moved on services2, services2 goes before services1's nginx change. If
-an address moved, the router's DNS record and `just dns-sync-sync` go first too
+If a port moved on services2, services2 goes before services1's nginx change. If an
+address moved, the table that holds it (`common/dns-records.nix` for a device,
+`common/int-dns.nix` for a `*.int` name) and `just switch-gw` go first too, or every
+client resolves the old address while the box answers the new one
 (`docs/router-and-dns.md`).
 
 **Never two boxes mid-switch at once.** Not "for speed": a rollback reboots a
@@ -563,11 +564,12 @@ Then the things this network specifically needs:
   `ExecStart` or a flag, read it back from a real build —
   `/etc/systemd/system/<unit>.service` — because NixOS normalises quoting and
   `${...}` differently from what you wrote.
-- **New/renamed vhosts need DNS** (rule 14): `just dns-sync-sync` for
-  `*.int.leighhack.org` (it writes the router's host overrides from services1's
-  nginx), `just dns-sync-prune` after a rename/removal, `just dns-sync-check`
-  after. Public `*.leighhack.org` names are hand-added in the DigitalOcean zone.
-  Without the record the vhost is NXDOMAIN, not 404 — a different failure.
+- **New/renamed vhosts need the table** (rule 14): a `*.int` vhost is its `server_name`
+  in `machines/services1/services/…` **and** its label in `common/int-dns.nix`; the
+  second is checked against the first at eval (`machines/services1/int-dns.nix`), and
+  the router gets it from `just switch-gw`. Public `*.leighhack.org` names are
+  hand-added in the DigitalOcean zone, which is outside every gate this repo has.
+  Without a record the vhost is NXDOMAIN, not 404 — a different failure.
 - **Postgres**: if the bump moved a **major** version, the existing DBs are on
   the old one and activation refuses — the fix is
   `postgresql-alt-install` / `postgresql-update-services` before the switch, and
@@ -610,16 +612,22 @@ after aibox, which is the cheapest proof of "no interface moved" the run has.
 These are not part of the three switches, and skipping them is what makes the
 run "finished but not upgraded":
 
-- **DNS**: `just dns-sync-sync` then `just dns-sync-check` (new vhosts), and
-  verify against the router's answer file, not your memory:
-  `ssh -i ~/.ssh/agent-hop-key root@10.3.1.1 'grep <name> /var/etc/dnsmasq-hosts'`.
-  Never edit `/usr/local/etc/dnsmasq.conf`; `/conf/config.xml` is the source of
-  truth. The router is not in the flake's deploy set and must not be.
-  **`just dns-sync-check` only audits `*.int.leighhack.org`** — a public
-  `*.leighhack.org` vhost with no DigitalOcean record passes it and stays
-  NXDOMAIN forever (that is how `status.leighhack.org` was found, with a gatus
-  check red since the day it was written). Public names are outside every gate
-  this repo has.
+- **DNS**: nothing to run. A `*.int` name exists because
+  `common/int-dns.nix` says so and `just switch-gw` deployed it, and you verify against
+  what the router answers rather than against the file:
+
+  ```bash
+  dig +short @10.3.1.1 <name>.int.leighhack.org A AAAA     # there is a dig on gw
+  sudo -n grep <name> /etc/dnsmasq-int-vhosts.hosts        # generated; never edited
+  getent ahosts <name>.int.leighhack.org                   # from any LAN box
+  ```
+
+  If the name is a vhost and the answer is empty, services1 should not have evaluated
+  (the guard compares the two lists) — so look for a deploy of gw that did not happen.
+  **The public `*.leighhack.org` half is still hand-made in DigitalOcean and still
+  outside every gate**: a public vhost with no record passes every check this repo has
+  and stays NXDOMAIN forever (that is how `status.leighhack.org` was found, with a gatus
+  check red since the day it was written).
 - **Netboot**: the image is `machines/pi-room-sys/`, an **in-tree machine** —
   edit it and rebuild, there is no pin to move any more (it used to be a
   `git+file://` input with an `update-netboot-input` recipe to drag `flake.lock`
@@ -699,7 +707,7 @@ run "finished but not upgraded":
 | **A storm of transient failures after services1's switch** | dozens of units restarting | Expected: activation restarts the whole stack, and the never-give-up policy retries. Read `Result=` and the *second* attempt; a first-start race with a setup unit is legitimate |
 | **A postgres major bump** | activation fails on the DBs; `psql` says the DBs are on the old version | `postgresql-alt-install` / `postgresql-update-services` **before** the switch; then the `template1` collation refresh. Do not `CREATE DATABASE` and hope |
 | **A kernel bump with out-of-tree modules** | the NVIDIA driver on services2 will not load; `uname -r` ≠ newest `/boot/EFI/nixos` kernel | `switch` then reboot that box, in the same chained invocation, and say what goes down for the boot window |
-| **A new vhost is NXDOMAIN** | `curl` fails at name resolution, not HTTP | New vhosts need DNS (rule 14): `dns-sync-sync` for `*.int`, hand-added for public names. The wildcard ACME cert needs no work |
+| **A new vhost is NXDOMAIN** | `curl` fails at name resolution, not HTTP | The vhost and `common/int-dns.nix` are one change and gw is the other deploy (rule 14); public names are hand-added in DigitalOcean. The wildcard ACME cert needs no work |
 | **ACME renews and rate-limits** | cert files change mtime; a renewal storm | Do not force renewals. The wildcard covers `*.{,int.}leighhack.org`; only touch certs if the diff demands it |
 | **immich server moved, mobile clients did not** | the app refuses to connect (version mismatch) | `newVersionCheck.enable = false` is set in `machines/aibox/immich.nix`; a *major* bump still needs the clients. Say so before switching aibox |
 | **A strata engine fails to start** | `ConditionPathExists` on the pack index is false | Model data is deliberately outside the store and prepared once by hand (`STRATA.md` per box). A missing pack is not a build failure — the unit is *supposed* not to start |

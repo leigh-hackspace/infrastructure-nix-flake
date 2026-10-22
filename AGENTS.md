@@ -128,9 +128,12 @@ X first", X has already cost someone a day.
   per-machine is what stopped a second box serving any vhost), `hosts.nix` (one table of
   machine addresses, read by the nginx proxies, the Prometheus scrape targets and the
   gatus checks so they cannot disagree), `vlans.nix` (the VLANs, their blocks and
-  their dynamic ranges) and `dns-records.nix` (which device keeps which address) — the
-  two tables the router generates its dnsmasq conf and nft sets from, so a lease is
-  one fact in one place; they are network-wide for the same reason `hosts.nix` is,
+  their dynamic ranges), `dns-records.nix` (which device keeps which address) and
+  `int-dns.nix` (which `*.int.leighhack.org` names answer with the front door's
+  addresses, which answer with their own, and which the front door serves but must not
+  answer) — the tables the router generates its dnsmasq conf and both hosts files and
+  nft sets from, so a lease and a vhost name are each one fact in one place; they are
+  network-wide for the same reason `hosts.nix` is,
   and `machines/gw/lib/check-network-tables.nix` is what refuses to let them drift,
   `nginx/`
   (`sso-vhost.nix`, `int-vhost.nix`, `int-vhost-names.nix`), `exporters.nix`,
@@ -429,9 +432,13 @@ listed here is in the doc named for it.
   `machines/gw/README.md` before changing it and `docs/gw-cutover-attempt-2026-10-21.md`
   for what broke at the cutover. **Never edit the generated
   `/etc/dnsmasq.d/network.conf`.** The flake-owned records are
-  `common/dns-records.nix`; the vhost names live in `/var/lib/dnsmasq/names.hosts`,
-  written by dns-sync (ported to this box on 2026-10-21; `network-status` was moved
-  onto it the same day and runs as a DynamicUser reading local `/proc`).
+  `common/dns-records.nix` (devices) and `common/int-dns.nix` (the `*.int` vhost names,
+  rendered into `/etc/dnsmasq-int-vhosts.hosts`); both are store paths and both are
+  dnsmasq `restartTriggers`, so a record and the restart that loads it land in the same
+  activation. `crates/dns-sync` — which used to ssh from services1 and append lines to a
+  mutable `/var/lib/dnsmasq/names.hosts` — was deleted on 2026-10-22, together with the
+  `just dns-sync-*` recipes (`network-status` had already moved onto the box on
+  2026-10-21 and runs as a DynamicUser reading local `/proc`).
   **dnsmasq's unsolicited RAs stop after a `router-lan` link flap: restart dnsmasq after
   any cabling** or WiFi clients lose their IPv6 default 20 minutes later. SSH as
   `leigh-admin@10.3.1.1` (root is not keyed); DO token is `DO_AUTH_TOKEN` in the shared

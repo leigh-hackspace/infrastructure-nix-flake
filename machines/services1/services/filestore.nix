@@ -14,8 +14,8 @@
 # Login is OIDC against authentik restricted to the `Infra` group (same
 # recipe as gocardless-dashboard); the client id/secret live in the shared
 # env-file sops secret.  LAN-only, fronted by nginx as
-# filestore.int.leighhack.org (the int record is synced by dns-sync from the
-# vhost list — it replaces the old commented-out vhost in http.nix).
+# filestore.int.leighhack.org, answered by the router from common/int-dns.nix
+# (it replaces the old commented-out vhost in http.nix).
 {
   config,
   lib,

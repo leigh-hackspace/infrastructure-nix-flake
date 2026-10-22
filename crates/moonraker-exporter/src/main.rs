@@ -5,7 +5,7 @@
 //! printer's Moonraker HTTP API and re-exports the interesting bits in the
 //! Prometheus text format for the local Prometheus on services1 to scrape.
 //!
-//! Zero external crates (house style, see dns-sync/status-dashboard). All
+//! Zero external crates (house style, see status-dashboard). All
 //! Moonraker traffic is plain HTTP on the LAN, so requests go over
 //! `std::net::TcpStream` directly (no TLS, no curl). JSON is parsed with the
 //! shared hand-rolled parser in `common-rs/json`.

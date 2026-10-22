@@ -66,7 +66,7 @@ in rec {
   # That is not a warning.  dnsmasq exits, the whole network loses DNS and DHCP,
   # and the unit's never-give-up policy turns it into an endless restart loop —
   # measured on the box on 2026-10-21, after the cutover made these lines live
-  # for the first time (./coexist.nix comments them out).  Multiple selectors on
+  # for the first time.  Multiple selectors on
   # one line *are* legal (`dhcp-host=<mac>,<mac>,id:<client-id>,<addr>,<name>`),
   # which is why the shape below is the fix rather than dropping a selector.
   # Also measured: a second line for the same host carrying only an *IPv6*
@@ -114,7 +114,7 @@ in rec {
   #     with nothing at all — measured on the box against the old router on
   #     2026-10-17, which is how this was found: the old box answered the FQDN, this
   #     one answered the short name only, and every vhost, monitoring endpoint and
-  #     `just dns-sync` consumer on the network asks for the FQDN.
+  #     monitoring check on the network asks for the FQDN.
   #   * Only the first address on a line is an address; everything after it is a
   #     name. So a record's IPv4 and its IPv6 cannot share a line — that would
   #     register the v6 address as an alias *name* for the host, which is a silently
@@ -128,6 +128,52 @@ in rec {
         map
         (r: map (addr: "${addr} ${r.name}.${zone} ${r.name}") ([r.ipv4] ++ r.ipv6))
         (builtins.attrValues (named records))
+      )
+    );
+
+  # The front door's `*.int` names as a hosts file (../../common/int-dns.nix).
+  #
+  # One line per (address, name) pair for the same two reasons `recordsHosts`
+  # spells out — the FQDN has to be written out, and a second address on a line is
+  # a second *name* — but grouped the other way round: `recordsHosts` groups a
+  # device's lines by device because that is how a reservation is read, and this
+  # groups a name's lines by name because that is how a missing address family
+  # reads.  `docs/router-and-dns.md` calls the fault PARTIAL — a name with its A
+  # and no AAAA is a dual-stack client that hangs on IPv6 before it falls back —
+  # and three adjacent lines answering one name is the shape that makes it obvious
+  # in a diff, in the file, and in `grep <name>`.
+  #
+  # Each entry is `{name, addresses, alias}`.  `alias` is the extra hosts field a
+  # device's line carries (`<addr> switch2.int.leighhack.org switch2`, so `ping
+  # switch2` works in the workshop) and a vhost's does not — nothing queries
+  # `grafana` unqualified.  Both fields are set by the two branches below rather
+  # than passed in, because "vhost or device" is decided by which list the name is
+  # in.  The zone is passed in, and the addresses come out of the two tables that
+  # own them, so nothing here can say a name resolves at an address the flake does
+  # not already promise at it.
+  intHosts = zone: records: hosts: int:
+    builtins.concatStringsSep "\n"
+    (
+      builtins.concatLists
+      (
+        map
+        (e: map (addr: "${addr}\t${e.name}.${zone}${e.alias}") e.addresses)
+        (
+          (map (name: {
+            inherit name;
+            alias = "";
+            addresses = let
+              door = records.${int.frontDoor};
+            in
+              [door.ipv4] ++ door.ipv6;
+          }) (int.names ++ builtins.attrNames int.legacy))
+          ++ (map (name: {
+              inherit name;
+              alias = "\t${name}";
+              addresses = [hosts.${name}];
+            })
+            int.fromHosts)
+        )
       )
     );
 
@@ -306,55 +352,11 @@ in rec {
   # common/check-printer-states.nix's `tokens` helper filters).
   lines = s: builtins.filter builtins.isString (builtins.split "\n" s);
 
-  # --- the helpers ./../coexist.nix and its consumers need ------------------
-  #
-  # Co-existence is one fact about this box (it owns every VLAN's gateway
-  # address except the number, because the router it is replacing is still
-  # live), and these four helpers are what turn that fact into the table read
-  # differently rather than into a second table.  They are here rather than in
-  # ./../coexist.nix because ./../dns.nix, ./../networking.nix and
-  # ./../firewall.nix all read the rewritten table and ./check-network-tables.nix
-  # has to be able to ask the same questions of it — three renderers and a check
-  # agreeing on one relation is the whole reason this file exists.
+  # --- containment, the one relation three consumers and a check share -------
 
   # Is this address inside that address-notation block?  The same prefix
   # relation as "is this VLAN's block inside the ACL", which is the point: the
   # check and the firewall must not have two ideas about containment.  It is a
   # string test because the notation is what dnsmasq and nftables are handed.
   inBlock = addr: net: has (blockPrefix net) addr;
-
-  # Replace an IPv4 address's host part, leaving its network part alone.  A
-  # dotted quad is the only shape accepted (the assert is on the *split*, so a
-  # block in CIDR notation or an IPv6 address fails here rather than coming out
-  # as a one-and-a-half octet address in a rendered conf).
-  hostAddr = host: addr: let
-    q = quadsOf addr;
-  in
-    assert (builtins.match "[0-9]+" host != null);
-    assert (builtins.length q == 4); "${builtins.elemAt q 0}.${builtins.elemAt q 1}.${builtins.elemAt q 2}.${host}";
-
-  # A VLAN list with each VLAN's own address rewritten and nothing else: the ids,
-  # blocks, dynamic ranges and comments are facts about the network and stay,
-  # `ipv4` is a fact about this box and moves.  Every renderer downstream reads
-  # the result, which is what makes the mode one substitution rather than a
-  # branch in four files.
-  hostAddrs = host: vlans: map (v: v // {ipv4 = hostAddr host v.ipv4;}) vlans;
-
-  # Comment out a generated block instead of deleting it.  ./../dns.nix emits the
-  # DHCP and RA blocks commented while another router is live: a block that is
-  # *absent* is indistinguishable from a bug in the generator, and whoever runs
-  # the cutover has to be able to read what they are about to enable.  dnsmasq's
-  # comment character is '#', and blank lines stay blank so the blocks are still
-  # blocks.
-  commentBlock = text:
-    builtins.concatStringsSep "\n"
-    (map
-      (l:
-        (
-          if l == ""
-          then ""
-          else "# "
-        )
-        + l)
-      (builtins.filter builtins.isString (builtins.split "\n" text)));
 }

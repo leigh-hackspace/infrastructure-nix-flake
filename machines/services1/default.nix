@@ -15,7 +15,7 @@ flakeInputs: {
     ./ai.nix
     ./configuration.nix
     ./containers.nix
-    ./dns-sync.nix
+    ./int-dns.nix
     # Metrics exporters. Prometheus/Grafana run on services2, so this box is one
     # of the things being measured rather than the thing doing the measuring.
     ../../common/exporters.nix

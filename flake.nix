@@ -256,11 +256,12 @@
       # The why of the whole thing is in machines/pi-room-sys/README.md.
       pi-room-sys = piRoomSys;
 
-      # The router.  The box exists (machines/gw/README.md: a Supermicro
-      # X9SCL/X9SCM at 10.3.1.254) and this entry is deployed to it — but in
-      # *co-existence* mode, beside the router it is meant to replace rather than
-      # in its place, which is machines/gw/coexist.nix's whole job.  Two
-      # consequences of how it is built, both deliberate:
+      # The router.  It is *the* router: the Supermicro X9SCL/X9SCM described in
+      # machines/gw/README.md, cut over from the OPNsense appliance on 2026-10-21
+      # and answering on 10.3.1.1 (`common/hosts.nix`'s `router`), with dnsmasq
+      # generated from common/vlans.nix + common/dns-records.nix + common/int-dns.nix
+      # and nftables from common/config.nix.  Two consequences of what it is, both
+      # deliberate:
       #
       #   * No ./common/nas.nix and no ./common/tools.nix: the router is the thing
       #     the network's DNS depends on, so it must not grow a dependency on a NAS

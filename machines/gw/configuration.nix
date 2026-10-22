@@ -2,10 +2,11 @@
 # machines (timezone, i18n, keyboard, sudo, nix-ld, ssh, bootloader,
 # autoRollback, experimental-features) live in common/base.nix.
 #
-# This box exists (./README.md: the Supermicro X9SCL/X9SCM installed at
-# 10.3.1.254) and it is deployed *beside* the live router, not in its place —
-# ./coexist.nix is that, and ./README.md says what is proven on the box, what is
-# still read off the old one, and what has to move at the cutover.
+# This box is the network's router (./README.md: the Supermicro X9SCL/X9SCM at
+# 10.3.1.1, cut over from the OPNsense appliance on 2026-10-21).  It is flake-
+# managed like every other machine here, which is what ./README.md is for: what is
+# proven on the box, what was read off the old one, and what must not move without
+# reading it first.
 {
   config,
   lib,
@@ -17,9 +18,10 @@
   # The router is a single-purpose box: one process group (dnsmasq, pppd,
   # openvpn, nft, network-status) and no operator on a console.  It still gets
   # `leigh-admin` from common/users.nix — the inter-machine ssh key is what
-  # dns-sync uses to reach it, and that is the whole reason the login exists.
-  # network-status used to need it too; it now runs here and reads /proc as a
-  # DynamicUser, with no key.  Nothing here needs a GUI, so common/base.nix's
+  # `just switch-gw` (run from services1, against this box) and every debugging
+  # session reach it with, and that is the whole reason the login exists. Root
+  # is not keyed here: connect as `leigh-admin` and `sudo`. network-status used
+  # to need the key too; it now runs here and reads /proc as a DynamicUser.  Nothing here needs a GUI, so common/base.nix's
   # xserver keyboard settings are inert.
 
   # The router answers for the whole network, so it needs no NAS: it is not a
@@ -89,8 +91,10 @@
   #     the flake it is running (not even the emergency local build).
   #   * `just` — so the checkout's recipes are readable and `just check` (eval and
   #     format only) works here; the build-shaped ones refuse on gw.
-  #   * `jq` — `tailscale status --json` is the only way to prove this box is not
-  #     advertising routes it has no business advertising (./coexist.nix), and
+  #   * `jq` — `tailscale status --json` and `tailscale debug prefs` are the only
+  #     way to prove this box is advertising the routes it means to (see
+  #     ./uplink.nix's `extraUpFlags` comment: the prefs are what the daemon
+  #     reports, and they are not re-asserted by a switch), and
   #     reaching for `nix run` to read it mid-debug takes a store path and the
   #     daemon lock, which is the wrong trade on a box whose job is answering.
   environment.systemPackages = with pkgs; [

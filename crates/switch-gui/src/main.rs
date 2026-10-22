@@ -49,7 +49,7 @@
 //!   its own output would put the switches back behind a wall.
 //!
 //! Configuration comes from the environment (the systemd unit's
-//! `EnvironmentFile`) with `--env-file` as a fallback, matching `dns-sync`.
+//! `EnvironmentFile`) with `--env-file` as a fallback.
 
 mod changes;
 mod commands;

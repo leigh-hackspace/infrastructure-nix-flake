@@ -1,8 +1,9 @@
 flakeInputs: {
-  # The name the network has always called this box: `common/hosts.nix` calls
-  # its address `router`, and the old OPNsense box's hostname was `gw`.  Keep
-  # it — the ssh known-hosts file in /etc/dns-sync/router-known-hosts and the
-  # nginx vhost that used to reach the old box's UI are keyed on it.
+  # The name the network has always called this box: `common/hosts.nix` calls its
+  # address `router`, and the old OPNsense box's hostname was `gw` — so every
+  # client's known_hosts entry, `gw.int.leighhack.org` (this box's own
+  # `networking.extraHosts` line) and the headscale node name are keyed on it.
+  # Changing it is a network-wide act, not a rename.
   networking.hostName = "gw";
 
   # Build on aibox, like services1 does.  This box is the network's router: a

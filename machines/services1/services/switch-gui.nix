@@ -227,9 +227,10 @@ in {
     };
   };
 
-  # LAN-only vhost (the binary only listens on 127.0.0.1).  dns-sync picks the
-  # record up from `services.nginx.virtualHosts`, so `just dns-sync-sync` after
-  # deploying creates switch.int.leighhack.org.
+  # LAN-only vhost (the binary only listens on 127.0.0.1).  Its `*.int` record
+  # comes from common/int-dns.nix, which the drift check in
+  # machines/services1/int-dns.nix keeps equal to this vhost list — deploying
+  # services1 *and* gw is all `switch.int.leighhack.org` needs.
   #
   # The SPA is a single document with client-side routes (`/switch/switch2` is a
   # route, not a file), so the vhost must not add a `location` block that would

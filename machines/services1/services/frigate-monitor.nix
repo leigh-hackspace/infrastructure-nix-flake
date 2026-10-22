@@ -9,8 +9,8 @@
   AIBOX_IP = "10.3.1.32";
 in {
   # frigate-monitor on aibox (machines/aibox/frigate-monitor.nix):
-  # scene-change monitor + web UI for the main_space camera. LAN-only;
-  # the int record is synced by dns-sync.
+  # scene-change monitor + web UI for the main_space camera. LAN-only; its
+  # `*.int` record comes from common/int-dns.nix.
   services.nginx.virtualHosts."frigate-monitor.int.leighhack.org" = mkIntVhost {
     proxyPass = "http://${AIBOX_IP}:8090";
   };

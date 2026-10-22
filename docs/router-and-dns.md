@@ -1,23 +1,34 @@
 # Router (gw), dnsmasq and DigitalOcean DNS
 
-Moved out of `AGENTS.md` on 2026-10-14. `AGENTS.md` keeps the rules: the router is now
+Moved out of `AGENTS.md` on 2026-10-14. `AGENTS.md` keeps the rules: the router is
 `machines/gw/` (flake-managed, cut over 2026-10-21), never edit the generated
-`dnsmasq.conf`, every
-`*.int` vhost needs `just dns-sync-sync` after the switch (and `dns-sync-prune`
-after a rename/removal), and never print or copy off the DO token. This file is the
-detail: where the router keeps its state, which names legitimately resolve
-elsewhere, and the manual fallback when `dns-sync` is unavailable.
+dnsmasq conf or hosts files, a new `*.int` vhost is a name in `common/int-dns.nix`
+plus two deploys, and never print or copy off the DO token. This file is the detail:
+what answers what and why, which names legitimately resolve somewhere other than the
+front door, how a device gets its name, and where the public zone stops being the
+network's business.
+
+**The one-sentence version, because it changed on 2026-10-22:** `*.int.leighhack.org`
+is *declared*, not synchronised. The router's DNS is three files generated from
+`common/vlans.nix`, `common/dns-records.nix` and `common/int-dns.nix`; adding a record
+is editing one of those tables and deploying gw. There is no tool to run, and there
+was: `crates/dns-sync` ssh'd from services1 and appended lines to a mutable
+`/var/lib/dnsmasq/names.hosts`, `just dns-sync-sync` was the step that made a vhost
+resolvable, and forgetting it was silent. What is left of it is a dead file on the
+router (`machines/gw/README.md`) and a few dozen CNAMEs in DigitalOcean that nothing
+maintains.
 
 ## The router
 
 `machines/gw/` — a flake-managed NixOS box at **10.3.1.1**, cut over from the OPNsense
 appliance on 2026-10-21. Nothing about the running router is out-of-band any more:
-dnsmasq is generated from `common/vlans.nix` and `common/dns-records.nix`, nftables from
-`common/config.nix`, and the AAISP tunnel and tailnet client live in `machines/gw/`.
+dnsmasq is generated from `common/vlans.nix`, `common/dns-records.nix` and
+`common/int-dns.nix`, nftables from `common/config.nix`, and the AAISP tunnel and
+tailnet client live in `machines/gw/`.
 Read `machines/gw/README.md` before changing it; `docs/gw-cutover-attempt-2026-10-21.md`
 has the findings from the cutover and what is still open.
 
-What still spoke the retired OPNsense box's language:
+What still spoke the retired OPNsense box's language, and when it stopped:
 
 - **network-status** (`crates/network-status/`) was the last tool doing it — ssh as
   `root` and OPNsense commands (`netstat`, `pfctl`, `ifconfig`, `top -b`). It was
@@ -26,10 +37,12 @@ What still spoke the retired OPNsense box's language:
   `/sys` (no ssh, no sudo, no key), and services1's nginx proxies
   `network-info.int.leighhack.org` to it at `http://10.3.1.1:8091`. It charts gw's
   interfaces, conntrack table, CPU, memory, load and TCP retransmits.
-
-(`dns-sync` was on this list until 2026-10-21: it now edits `gw`'s
-`/var/lib/dnsmasq/names.hosts` over `leigh-admin` + `sudo -n`, so new `*.int` vhosts get
-DNS from the flake again. `crates/dns-sync/src/main.rs` owns the contract.)
+- **dns-sync** edited `gw`'s `/var/lib/dnsmasq/names.hosts` over `leigh-admin` +
+  `sudo -n`, which is how a new `*.int` vhost got DNS. Deleted on 2026-10-22: the same
+  names are `common/int-dns.nix`, rendered into
+  `/etc/dnsmasq-int-vhosts.hosts` by `machines/gw/dns.nix` and pushed into dnsmasq by
+  a `restartTriggers` entry. The crate, the `/etc/dns-sync` files, the pinned router
+  host keys and the `just dns-sync-*` recipes are all gone.
 
 ```bash
 ssh -i ~/.ssh/agent-hop-key leigh-admin@10.3.1.1   # gw; root is NOT keyed there
@@ -100,131 +113,222 @@ whose path differs.
 
 ## dnsmasq — the LAN resolver
 
-> **The rest of this section describes the retired OPNsense appliance** and is kept as
-the historical reference for how the old box's dnsmasq was configured. On `gw` the resolver is
-`services.dnsmasq` from `machines/gw/dns.nix`: the generated conf is
-`/etc/dnsmasq.d/network.conf` (from the tables), the flake-owned records are
-`/etc/dnsmasq-records.hosts`, and the vhost names are `/var/lib/dnsmasq/names.hosts`
-— the mutable half, created empty by tmpfiles, never rewritten by the flake, and
-maintained by dns-sync. `machines/gw/README.md` is the manual.
+The resolver is `services.dnsmasq` from `machines/gw/dns.nix`, and everything it
+answers comes from three generated store paths:
 
-Reading what the live router actually answers on `gw` (there is **no `dig` on `gw` or
-services1**; `getent` goes through the same resolver and proves the whole chain):
+| File | Answers | Table it is generated from |
+| --- | --- | --- |
+| `/etc/dnsmasq.d/network.conf` | DHCP ranges, reservations, RA ranges, the netboot boot-file variants | `common/vlans.nix`, `common/dns-records.nix` |
+| `/etc/dnsmasq-records.hosts` | each device's own name, bare and `<name>.int.leighhack.org` | `common/dns-records.nix` |
+| `/etc/dnsmasq-int-vhosts.hosts` | each `*.int.leighhack.org` vhost name, one line per address of the front door | `common/int-dns.nix` |
+
+`domain = int.leighhack.org` and `local = "/int.leighhack.org/"` make this box the
+authority for the zone, `no-resolv` stops it forwarding its own zone back to itself,
+and both hosts files are `addn-hosts` entries and `restartTriggers` values — so a
+record and the restart that makes dnsmasq notice it arrive in the same activation.
+(`/var/lib/dnsmasq/names.hosts`, the fourth file, is dead: see
+`machines/gw/README.md`.)
+
+### What `*.int` answers with, and why it is that address
+
+**10.3.1.20 is services1, and services1's nginx is the network's front door.** Every
+`*.int.leighhack.org` vhost is a `server_name` in that one nginx (`machines/services1/
+http.nix` and `machines/services1/services/*.nginx`-shaped modules), which terminates
+TLS on the wildcard cert and proxies to the box that actually runs the thing —
+`grafana.int` to Grafana, `filestore.int` to filestore, `alexandria.int` to aibox:4200,
+`network-info.int` to gw:8091. So a `*.int` name is not a pointer to a host, it is a
+pointer to *a vhost*, and the vhost lives on services1: the answer is services1's
+addresses, and `common/int-dns.nix`'s `frontDoor = "services1"` says which record in
+`common/dns-records.nix` those come from. Three of them, one line each — the IPv4
+(`10.3.1.20`), the public IPv6 and the ULA — because a name missing its IPv6 half is a
+dual-stack client that hangs on IPv6 before it falls back, and because dnsmasq's hosts
+syntax cannot put two addresses on one line (the second field onwards *is names*).
+
+That is also why the front door's addresses are never written down again: they are read
+out of the reservation table, the same three strings `common/hosts.nix` and the nginx
+proxies use.
+
+**The names that answer with something else, and why they are exceptions:**
+
+- **A device answers its own name.** Every entry in `common/dns-records.nix` answers
+  `<name>.int.leighhack.org` with its own address (`aibox.int` → 10.3.1.32, `nas2.int`
+  → 10.3.1.6, `cam1.int`, `voron.int`, the PI-ROOM boards…), and a lease's own hostname
+  answers inside the zone too. The front-door table therefore *must not* contain a
+  device name, and `machines/gw/lib/check-network-tables.nix` refuses the pair if one
+  appears in both: dnsmasq unions every `addn-hosts` file, so one name in two files is
+  one name with two answers.
+- **`authentik.int` is served by the appliance**, 10.3.1.36, even though nginx also
+  serves the name (as an alias of `id.int`). `common/int-dns.nix`'s `exempt` list is
+  where that is written down, with the reason: the switches' RADIUS and pi-room-sys's
+  LDAP dial `ldaps://authentik.int.leighhack.org` directly and the appliance's `:443`
+  is not fronted. Which answer *should* win is an open decision
+  (`docs/handover-2026-10-21.md`); what is no longer open is that the table says which
+  one does.
+- **`switch1`/`switch2`/`switch3` answer themselves** (`common/hosts.nix`) without being
+  DHCP clients, so they have no reservation to hang a record on — that is what
+  `fromHosts` in the same table is for.
+- **Five names answer at the front door and are served by no vhost**: `nginx.int`,
+  `mqtt.int`, `tailscale.int`, `gitlab.int`, `ldap.int`. They are `legacy` in the
+  table, each with its reason, and they were kept rather than dropped so that the
+  deploy which made DNS declarative changed no answer. `nginx.int` is the one that
+  cannot go: it is the CNAME target of every public `*.int` record in DigitalOcean.
+  `gitlab.int` is a redirect vhost whose container is disabled; `mqtt.int` and
+  `ldap.int` have never been HTTP-fronted and 404; `tailscale.int` predates the
+  headscale UI's real name (`tailscale.leighhack.org`). The drift guard is what keeps
+  `legacy` from quietly becoming where you park a typo: a name in it is a name
+  *nothing serves*, by definition.
+
+### Adding, moving, removing a name
+
+| You are adding… | You edit | Then |
+| --- | --- | --- |
+| an internal app (a `*.int` vhost) | the vhost in `machines/services1/services/<app>.nix`, **and** its label in `common/int-dns.nix`'s `names` | deploy services1 and gw. The two lists are compared at eval (`machines/services1/int-dns.nix`), so forgetting the second is a failed deploy, not a silent NXDOMAIN |
+| a device with a fixed address | `common/dns-records.nix` (its MAC or client-id, its address, its VLAN) | deploy gw |
+| a device that is not a DHCP client but whose name must resolve | `common/hosts.nix`, then its label in `common/int-dns.nix`'s `fromHosts` | deploy gw |
+| a name the front door serves but does not answer | `common/int-dns.nix`'s `exempt`, with the reason | deploy gw |
+
+Nothing in this list is a command that edits a running box. `nix eval --impure --raw -f
+machines/gw/lib/check-network-tables.nix` (run by `just check`) proves the tables agree
+with each other, and `just switch-gw` is the whole "sync".
+
+### Reading what the router answers
 
 ```bash
-sudo -n grep <name> /var/lib/dnsmasq/names.hosts     # what is in the file
-getent ahosts <name>.int.leighhack.org               # what dnsmasq answers
-sudo -n journalctl -u dnsmasq -n 20                  # and whether it reloaded
+dig +short @10.3.1.1 <name>.int.leighhack.org A AAAA  # there is a dig on gw (bind is
+getent ahosts <name>.int.leighhack.org                # in its systemPackages; the
+sudo -n grep <name> /etc/dnsmasq-int-vhosts.hosts     # older claim that there is not
+sudo -n grep <name> /etc/dnsmasq-records.hosts        # is stale, and getent works too)
+sudo -n journalctl -u dnsmasq -n 30
 ```
 
-dnsmasq on the router answers `*.int.leighhack.org` for the LAN.
+Three states worth recognising in that output, because each has its own cause:
 
-- `/conf/config.xml` is the **source of truth**. Host overrides live under
-  `<opnsense><dnsmasq><hosts>`.
-- `/var/etc/dnsmasq-hosts` is the generated addn-hosts dump that actually answers
-  queries — read it to verify what the network sees:
-  `ssh root@10.3.1.1 'grep <name> /var/etc/dnsmasq-hosts'`.
-- **Never edit `/usr/local/etc/dnsmasq.conf`** — it is auto-generated.
+- **Nothing at all, and the name is a vhost** — the deploy that added the vhost did not
+  deploy gw, or `common/int-dns.nix` disagrees with nginx and services1 refuses to
+  build. `cat /etc/int-dns/served-int-names` on services1 and
+  `dig <name>.int @10.3.1.1` are the two halves of that diff.
+- **An A and no AAAA for a front-door name** — impossible from the generated file
+  (`intHosts` emits one line per address of the record, and the check module counts the
+  lines per name), so look for a hand edit or a stale `names.hosts` that something was
+  pointed back at.
+- **A device name answering with 10.3.1.20** — the name is in *both* tables. dnsmasq
+  returns both answers and some client somewhere picks the wrong one; the check module
+  refuses this combination rather than documenting it.
 
-Manual fallback if `dns-sync` is unavailable, on `gw`: add the record to
-`/var/lib/dnsmasq/names.hosts` yourself — one line **per address**, as every existing
-`*.int` name has three (`10.3.1.20`, `2001:8b0:1d14:225::20`, `fd99:dead:beef:225d::20`,
-from `common/dns-records.nix`) — keep the file `root:root 0644`, then `sudo systemctl
-reload dnsmasq` (SIGHUP re-reads `addn-hosts`; a restart drops the network's DNS for a
-second). dnsmasq honours `#` only at the **start** of a line, so do not mark managed
-lines with a trailing comment: the `#` becomes a hostname. The file is not a store path,
-which is why it cannot be a `restartTriggers` value and why nothing in the flake will
-repair it.
+### The fourth source of answers, and the one that surprises people
 
-**Historical (OPNsense):** edit the host override in the web UI (Services → Dnsmasq DNS
-→ Host overrides) or in `/conf/config.xml`, then `configctl dnsmasq restart` and verify
-against `/var/etc/dnsmasq-hosts`.
+dnsmasq reads **`/etc/hosts`** as well as its `addn-hosts` files, so on gw anything in
+`networking.extraHosts` is published to the whole network. That is where
+`gw.int.leighhack.org` → 10.3.1.1 comes from (`machines/gw/networking.nix` puts it there
+so the router can resolve the names it serves without asking itself) — it is in neither
+hosts file, and `dig @10.3.1.1 gw.int` answers anyway.
 
-### Reading `dns-sync check` output
+The mirror-image trap is on the other boxes: `machines/services1/networking.nix` has
+`extraHosts` lines of its own (`id.int`, `unifi.int`, `tailscale.leighhack.org`), and
+those are **local to services1**. So a gatus check or a systemd unit on services1 can
+resolve a name that no client on the LAN can, and nothing in the flake's DNS tables
+mentions it — `unifi.int` is the example: services1 resolves it at 10.3.1.21 because of
+its own `/etc/hosts`, and the router answers NXDOMAIN for everyone else. Before adding a
+`*.int` name to a `proxyPass`, a `ldap_uri` or a check URL, ask which of the two is
+answering: `dig @10.3.1.1` for the network, `getent` on the box for that box.
 
-`just dns-sync-check` compares three sources: the flake's expected `*.int` vhost
-names (`/etc/dns-sync/expected-int-names`), the router, and DigitalOcean. On the
-router half the states are `OK` (answers with all three services1 addresses),
-`MISSING`, `PARTIAL` (some address missing — `sync` completes it, and it is a real
-fault, not cosmetics: a name without its AAAA makes dual-stack clients hang), and
-`ELSEWHERE` (it answers, but never at services1, so it is somebody else's record and
-`sync` leaves it alone). Names that are **supposed** to look wrong, so you do not
-"fix" them:
+### Historical: the OPNsense box's dnsmasq
 
-- `aibox.int` → 10.3.1.32 — its own record, not the nginx CNAME.
-- `authentik.int` → 10.3.1.36 — `ELSEWHERE` on the router, reported every run since
-  before the cutover (its own override; nginx also serves it as an alias of `id.int`).
-  Deliberately not "fixed": the appliance's `:443` is closed, so which answer is right
-  is an open decision — `docs/handover-2026-10-21.md`.
-- `gitlab`, `ldap`, `mqtt`, `nginx`, `tailscale` predate dns-sync: reported "never
-  expected" and left as-is. So does the bare `services1` name, which shares a line
-  with `services1.int`.
-- `filestore.int` is expected by the flake vhost and resolves to 10.3.1.20 in both
-  the router and DigitalOcean.
+Kept because the tables were read out of it and because "why is the generated file
+shaped like *that*" has this answer. `/conf/config.xml` was the source of truth (host
+overrides under `<opnsense><dnsmasq><hosts>`, reservations as `<hosts>` entries with a
+`set_tag` per VLAN), `/var/etc/dnsmasq-hosts` was the generated addn-hosts dump that
+answered queries, and `/usr/local/etc/dnsmasq.conf` was generated — never edited. The
+`*.int` names in it carried three addresses each (v4, public v6, ULA), which is the
+shape `common/int-dns.nix` reproduces, and the file restored onto gw from it on
+2026-10-21 (`/var/lib/dnsmasq/names.hosts`) is the file this section replaces.
 
 ## DHCP reservations
 
-> On `gw` these are **`common/dns-records.nix`**, rendered into
-> `/etc/dnsmasq.d/network.conf` by `machines/gw/dns.nix` and asserted by
-> `machines/gw/lib/check-network-tables.nix`. The paragraphs below are the retired
-> appliance's UI/XML method, kept for the devices whose records the tables have not
-> absorbed yet.
+**`common/dns-records.nix`.** One entry per device that keeps an address: its `vlan`,
+`ipv4`, `ipv6`, `macs` and `clientIds`, and the key is the name it answers.
+`machines/gw/dns.nix` renders the reservations and the DHCP lines from it,
+`recordsHosts` renders its names into the hosts file, and
+`machines/gw/lib/check-network-tables.nix` refuses a table that would render something
+dnsmasq cannot load — a reservation naming a VLAN that does not exist, two devices on
+one address, a range outside its VLAN's block, a record with no MAC and no client-id
+(which renders as no line at all), a router address inside a dynamic range, a name
+answered from two tables.
 
-Live in the same dnsmasq config (the router, not DNS): services1 (10.3.1.20, MACs
-`c8:d3:ff:a5:b2:25` / `c8:d3:ff:a5:be:7c`), services2 (10.3.1.21, MAC
-`70:85:c2:53:f1:d4`), aibox (10.3.1.32), nas1/nas2 (10.3.1.5 / 10.3.1.6), apps1
-(10.3.1.30), yunohost (10.3.1.15).
+Leases are 24 h and dnsmasq re-reads its config only on restart, so a device already
+holding an address keeps it until it renews (≈12 h) or reconnects. The reservation is
+already correct; the lease table is just behind.
 
-Printers, same place: `voron` 10.3.2.50, `elegoo` 10.3.2.55 and `snapmaker`
-(Snapmaker U1, MAC `28:2d:06:1d:bc:96`) 10.3.2.56 on the WIFI VLAN, `3d-lime`
-10.3.14.61 and `3d-blue` 10.3.14.62 on the wired one — see
-`docs/printer-servers.md`.
+This is why `common/hosts.nix` holds **addresses, not names**: every machine in this
+network is a DHCP reservation, and a table that resolved through the resolver it is
+meant to be independent of would not be one.
 
-This is why `common/hosts.nix` holds **addresses, not names**: every machine in
-this network is a DHCP reservation, and a table that resolved through the resolver
-it is meant to be independent of would not be one.
+### Historical: the retired appliance's method
 
-### Adding one by hand
+A reservation there was a `<hosts>` entry under `<dnsmasq>` in `/conf/config.xml`
+(`host`, `domain int.leighhack.org`, `ip`, `hwaddr`, `set_tag`), and three things had to
+agree or it silently did nothing:
 
-A reservation is a `<hosts>` entry under `<dnsmasq>` in `/conf/config.xml` (`host`,
-`domain int.leighhack.org`, `ip`, `hwaddr`, `set_tag`), and three things have to
-agree or it silently does nothing:
+- **the IP had to be in the subnet of the VLAN the device is actually on, and below that
+  VLAN's dynamic pool** (pools started at `.100` on WIFI and at `.150` on SHARED and
+  WIRED, so every reservation in use is ≤ `.99`). A reservation in the wrong VLAN was
+  inert: the Snapmaker sits on WiFi, so it is a 10.3.2.x address even though the other
+  3D printers are wired.
+- **`set_tag` had to be that VLAN's dhcp tag** (`<dhcp_tags>`), which became the `set:`
+  on the generated `dhcp-host=` line. On `gw` the tag is the interface name, and
+  `machines/gw/lib/network-tables.nix` generates it from the record's `vlan` — one of
+  the ways a per-VLAN fact stopped being typeable wrong.
+- only `hwaddr` was needed: dnsmasq matched a MAC-only entry even when the client sent a
+  client-id (`voron` and `snapmaker` both do, and both matched).
 
-- **The IP must be in the subnet of the VLAN the device is actually on**, and
-  **below that VLAN's dynamic pool** (pools start at `.100` on WIFI/`opt1`/
-  `vlan0.226` = 10.3.2.0/24 and at `.150` on SHARED/`lan` = 10.3.1.0/24 and
-  WIRED/`opt2` = 10.3.14.0/24, so every reservation in use is ≤ `.99`). A
-  reservation in the wrong VLAN is inert: the U1 sits on WiFi, so it is a
-  10.3.2.x address even though the other 3D printers are wired.
-- **`set_tag` must be that VLAN's dhcp tag** (`<dhcp_tags>`: SHARED
-  `0f6ba0e7-…`, WIRED `58a01f56-…`, WIFI `7965a3d1-…`). It becomes the `set:` on
-  the generated `dhcp-host=` line.
-- Only `hwaddr` is needed: dnsmasq matches a MAC-only entry even when the client
-  sends a client-id (`voron` and `snapmaker` both do, and both match).
-
-Then apply it — **`pluginctl dns`**, which is `plugins_configure('dns')`: it runs
-`dnsmasq_configure_do`, regenerating `/var/etc/dnsmasq-hosts` and
-`/usr/local/etc/dnsmasq.conf` and restarting dnsmasq. `pluginctl -s dns` is *not*
-the same command: `-s` is service mode, it exits 0 and changes nothing (check the
-mtime of `/usr/local/etc/dnsmasq.conf` when in doubt). Verify with
-`grep <name> /usr/local/etc/dnsmasq.conf /var/etc/dnsmasq-hosts` and a lookup.
-
-Leases are 24 h, and dnsmasq only re-reads its config on restart, so a device that
-already holds an address keeps it until it renews (≈12 h, NAKed into a rebind) or
-reconnects — the reservation is already correct, the lease table just still shows
-the old address.
-
+Applying it was `pluginctl dns` (`plugins_configure('dns')`), **not** `pluginctl -s dns`
+— the latter is service mode, exits 0 and changes nothing.
 ## DigitalOcean zone `leighhack.org`
+
+The public zone is **not** the network's DNS and nothing in this repo writes it any
+more. It is the answer a client gets when it is not on the LAN, and off the LAN the
+`*.int` answers are private addresses — so treat it as a list of hand-made records for
+public names, plus a pile of `*.int` CNAMEs that are still load-bearing for anything
+resolving over public DoH and are maintained by nobody.
 
 - The DO token is `DO_AUTH_TOKEN` in the shared env-file secret — `CONFIG.ENV_FILE`,
   rendered by sops-nix to `/run/secrets/env_file` (its shape is
   `machines/services1/secrets/.env.sample`); read+write scope. **Never print it or copy it
-  off services1.**
-- `*.int` names are CNAMEs → `nginx.int.leighhack.org`, managed by dns-sync.
-- Public apps CNAME → `nginx.leighhack.org`; the apex points at GitHub Pages;
-  `yunohost` → A 81.187.195.18.
-- **Public names are added by hand** — dns-sync only manages the `*.int` CNAMEs.
-  That is how two live vhosts ended up with no record at all
-  (`docs/follow-ups.md`).
-- The wildcard ACME cert covers `*.leighhack.org` **and** `*.int.leighhack.org`
-  (DNS challenge), so a new vhost needs a DNS record and no cert work.
+  off services1.** Reading the zone without printing the token:
+
+  ```bash
+  ssh -A leigh-admin@10.3.1.20 'sudo -n sh -c ". /run/secrets/env_file; curl -sS -m 20 \
+    -H \"Authorization: Bearer \$DO_AUTH_TOKEN\" \"
+    https://api.digitalocean.com/v2/domains/leighhack.org/records?per_page=200\""'
+  #  -o a file and jq it; never put the token in a command line you will keep, and
+  #  note the payload key is `domain_records`, not `records`.
+  ```
+
+- **Public apps CNAME → `nginx.leighhack.org`; the apex points at GitHub Pages;
+  `yunohost` → A 81.187.195.18.** Public names are added by hand, and that is how two
+  live vhosts once ended up with no record at all (`docs/follow-ups.md`).
+- **A new `*.int` vhost needs no record here.** The LAN gets it from the router
+  (`common/int-dns.nix`) and the tailnet gets it from headscale's split DNS
+  (`machines/services1/services/headscale.nix`: `int.leighhack.org` → 10.3.1.1, with
+  `int.leighhack.org` as a search domain), which is what the zone's ~40 `*.int` CNAMEs
+  → `nginx.int.leighhack.org` were for before a tool was written to maintain them.
+  They are left in place because deleting forty working records to prove a point is not
+  a trade; `docs/follow-ups.md` carries pruning them, and the one-record wildcard
+  alternative, with its caveat.
+- **The wildcard ACME cert covers `*.leighhack.org` and `*.int.leighhack.org`**
+  (`machines/services1/http.nix`, `dnsProvider = "digitalocean"`), so a new vhost needs
+  no cert work. It also means the zone's `_acme-challenge*` names are load-bearing on a
+  60-day timer: anything that puts a record *under* `_acme-challenge` — a `*.int` CNAME
+  wildcard being the tempting one — has to be tested against a real renewal, not
+  reasoned about. That is why the wildcard is a follow-up and not tonight's change.
+- **DigitalOcean stores record names as labels, not FQDNs.** Create a record named
+  `gatus.int.leighhack.org` and you get `gatus.int.leighhack.org.leighhack.org`, which
+  answers nothing. `gatus.int` was exactly that — resolvable on the LAN, missing to the
+  world — and is **fixed (2026-10-22)**: the CNAME `gatus.int` → `nginx.int` exists now
+  (ttl 3600, like its neighbours, verified against `@1.1.1.1`) and the doubled record is
+  deleted. Two such records are still in the zone: `AAAA yunohost.leighhack.org` and the
+  `_cs-verify` TXT named `leighhack.org` (`docs/follow-ups.md`). Also learned the hard
+  way: the API requires a CNAME's `data` to end in `.` on **create** while it stores it
+  without one, so the value you read back is not the value you post.
+- Anything scripted against this zone should read it back and assert no stored name ends
+  in `.leighhack.org` — that is how the three were found.

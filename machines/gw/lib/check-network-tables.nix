@@ -28,7 +28,7 @@ let
   RECORDS = import ../../../common/dns-records.nix;
   HOSTS = import ../../../common/hosts.nix;
   CONFIG = import ../../../common/config.nix;
-  COEXIST = import ../coexist.nix;
+  INT = import ../../../common/int-dns.nix;
   TABLES = import ./network-tables.nix;
 
   need = cond: msg:
@@ -40,6 +40,12 @@ let
   # (every one of them is an address).  Same helper as
   # common/check-printer-states.nix, same reason.
   has = sub: s: builtins.replaceStrings [sub] [""] s != s;
+
+  # Prefix test, same reason as `has` and the same reason it is not
+  # `lib.hasPrefix`: this file is evaluated by `nix eval -f`, which has no nixpkgs
+  # lib in scope, and pulling one in would make a table check depend on an
+  # evaluation of its own.
+  hasPrefix = prefix: s: builtins.substring 0 (builtins.stringLength prefix) s == prefix;
 
   vlanIds = map (v: v.id) VLANS;
   vlanById = builtins.listToAttrs (map (v: {
@@ -68,7 +74,8 @@ let
   # The last octet of a /24 address, as a number.  Only meaningful because every
   # block this is used on is a /24 (the `inside` above refuses anything else), and
   # only used for the one thing a prefix test cannot answer: whether an address is
-  # between two ends of a dynamic range.  ./../coexist.nix is the only caller.
+  # between two ends of a dynamic range — the two assertions this file makes about a VLAN's own
+  # address and its `dynFrom`-`dynTo` pool.
   lastOctet = addr: builtins.fromJSON (builtins.elemAt (TABLES.quadsOf addr) 3);
 
   # A VLAN's block is inside an ACL block when the ACL's prefix is a prefix of
@@ -86,6 +93,21 @@ let
   # that shape.  The names are the attrset's keys, so they are put on the records
   # here the same way ./network-tables.nix's internal `named` does it.
   RECORDS_HOSTS = TABLES.recordsHosts CONFIG.LOCAL_DOMAIN RECORDS;
+  # The front door's file, rendered the same way ./dns.nix renders it, so what is
+  # asserted below is the text dnsmasq will read rather than the table it came from.
+  INT_HOSTS = TABLES.intHosts CONFIG.LOCAL_DOMAIN RECORDS HOSTS INT;
+  # Every name the table answers with the front door's addresses: the vhosts that
+  # need it and the legacy names kept so this file's first deploy changed no
+  # answer.  Both lists get the same treatment from dnsmasq and from the checks
+  # below; only the drift check on services1 tells them apart.
+  INT_DOOR_NAMES = INT.names ++ builtins.attrNames INT.legacy;
+  # The addresses every front-door name must answer with.  Read from the record,
+  # never written here: "the name has its IPv6 half" is only a fact if it is the
+  # same fact common/dns-records.nix states.
+  DOOR_ADDRS = let
+    door = RECORDS.${INT.frontDoor};
+  in
+    [door.ipv4] ++ door.ipv6;
   namedRecords =
     builtins.attrValues
     (builtins.mapAttrs (name: r: r // {inherit name;}) RECORDS);
@@ -272,8 +294,8 @@ in
   # against dnsmasq 2.93 on the router, 2026-10-21 — see ./network-tables.nix's
   # `hostLines`).  The first version of this renderer emitted one line per
   # *identifier*, which passed every assertion here and still left the router
-  # unable to start dnsmasq the moment ./coexist.nix stopped commenting those
-  # lines out, so the count of identifiers was never the invariant.
+  # unable to start dnsmasq the moment those lines went live, so the count of
+  # identifiers was never the invariant.
   #
   # A second line carrying only an IPv6 address for the same host is legal and
   # is not counted against this: the duplicate rule is about IPv4 leases.
@@ -369,7 +391,7 @@ in
   # (measured against the live router on 2026-10-17): dnsmasq's `local=` makes this
   # box authoritative for the zone and does *not* complete a hosts entry, so a
   # file of bare names is a silent empty answer for every vhost, monitoring
-  # endpoint and dns-sync name on the network — the whole reason the network has a
+  # vhost name on the network — the whole reason the network has a
   # router DNS at all. Asserted against the rendered text rather than the table
   # because the shape of the line is the fact: dnsmasq reads only the first address
   # on a line and treats the rest as names, so an IPv4 and its IPv6 sharing one
@@ -414,110 +436,172 @@ in
         toString (builtins.foldl' (n: r: n + 1 + builtins.length r.ipv6) 0 recordValues)
       } addresses''
   );
-  # --- co-existence (./../coexist.nix) ---------------------------------------
+  # --- the router's own addresses against the two tables ----------------------
   #
-  # These four are about the one number that file rewrites: the host part this box
-  # takes on every VLAN while the live router still answers on .1.  They are here
-  # rather than in that file because this is the file that prints a finding rather
-  # than throwing an eval error, and because the thing being checked is a
-  # relationship between the co-exist address and the *two tables* — which is what
-  # this file exists to be asked about.
-  #
-  # They hold in both modes, so nothing here is gated on `COEXIST.enable`: with
-  # co-existence off the address under test is .1, and "the router's own address
-  # is not leasable and not reserved" is worth asserting then too.
-  # The host part is a host part: an octet, not a fifth one.  `hostAddr` in
-  # ./network-tables.nix refuses a non-numeric host; this refuses 255 (a /24's
-  # broadcast address, which no interface may hold) and anything above it.
+  # Three claims about the number this box puts on every VLAN interface
+  # (common/vlans.nix's `ipv4`, always .1 here): it is inside its own block, no
+  # dynamic range will hand it to a client, and no reservation claims it.  Each is
+  # a two-devices-on-one-address fault and each is silent — the collision shows up
+  # as an intermittent ARP problem on some client hours later, never as anything
+  # this box logs.  They are here rather than in common/vlans.nix because the
+  # relation spans two tables and a rendered file, and this is the file that prints
+  # a finding instead of failing an evaluation.  Until 2026-10-22 they were about
+  # ./coexist.nix's rewritten table; that mode is gone (this box *is* the router),
+  # so what is under test is the address the table itself promises.
   assert (
     need
-    (lastOctet (TABLES.hostAddr COEXIST.hostAddr "0.0.0.0") < 255)
-    ''coexist.nix's hostAddr "${COEXIST.hostAddr}" is not a usable host part (1-254)''
+    (builtins.all (v: inside v.ipv4 v) VLANS)
+    ''a VLAN's own address outside its own block: ${builtins.toJSON (map (v: "${v.id} ${v.ipv4} ${v.net}") (builtins.filter (v: !inside v.ipv4 v) VLANS))}''
   );
-  # Every VLAN's own address — the one ./networking.nix puts on the interface and
-  # dnsmasq offers as the DNS server — is inside that VLAN's block.  Trivially true
-  # of common/vlans.nix (asserted above); this is the same claim about the
-  # rewritten table, which is the one that actually gets rendered.
-  assert (
-    need
-    (builtins.all (v: inside v.ipv4 v) COEXIST.vlans)
-    ''a co-exist VLAN address outside its own block: ${builtins.toJSON (map (v: "${v.ipv4} ${v.net}") (builtins.filter (v: !inside v.ipv4 v) COEXIST.vlans))}''
-  );
-  # No VLAN's dynamic range may contain this box's own address.  While the old
-  # router is live it is the one handing out leases, and a lease for the address
-  # the shadow router is sitting on is two devices on one address — the failure is
-  # silent, arrives on the old router's own schedule (a client asking for a name,
-  # hours later), and looks like a broken NIC rather than like this file.
   assert (
     need
     (
       builtins.all
       (
         v:
-          v.dynFrom
-          == null
-          || !(
+          !(
             (lastOctet v.ipv4 >= lastOctet v.dynFrom)
             && (lastOctet v.ipv4 <= lastOctet v.dynTo)
           )
       )
-      COEXIST.vlans
+      (builtins.filter (v: v.dynFrom != null) VLANS)
     )
-    ''a VLAN whose dynamic range contains this box's own address: ${
-        builtins.toJSON (
-          map
-          (v: "${v.ipv4} in ${v.dynFrom}-${v.dynTo}")
-          (
-            builtins.filter
-            (
-              v:
-                v.dynFrom
-                != null
-                && (
-                  (lastOctet v.ipv4 >= lastOctet v.dynFrom)
-                  && (lastOctet v.ipv4 <= lastOctet v.dynTo)
-                )
-            )
-            COEXIST.vlans
+    ''a VLAN whose dynamic range contains its own router address: ${
+        builtins.toJSON (map (v: "${v.id} ${v.ipv4} in ${v.dynFrom}-${v.dynTo}") (builtins.filter (
+            v:
+              v.dynFrom
+              != null
+              && (lastOctet v.ipv4 >= lastOctet v.dynFrom)
+              && (lastOctet v.ipv4 <= lastOctet v.dynTo)
           )
-        )
+          VLANS))
       }''
   );
-  # And no reservation in common/dns-records.nix claims it either — same failure,
-  # arriving through the reservation table instead of through a lease pool.
+  assert (
+    need
+    (builtins.all (v: !builtins.any (r: r.ipv4 == v.ipv4) recordValues) VLANS)
+    ''a device reservation that claims a router's own address: ${
+        builtins.toJSON (map (v: v.ipv4) (builtins.filter (v: builtins.any (r: r.ipv4 == v.ipv4) recordValues) VLANS))
+      }''
+  );
+  # --- the front door's names (../../../common/int-dns.nix) -------------------
+  #
+  # This table used to be a mutable file on the router, edited over ssh by a tool
+  # that ran when someone remembered to.  Two of its failure modes are visible
+  # here and neither was checked before, which is how `authentik.int` came to be
+  # answered from two places at once and how ten deployed vhosts never resolved.
+  #
+  # The rule that makes the file safe is that **one name has one answer**: dnsmasq
+  # reads every `addn-hosts` file it is given and returns the union, so a name that
+  # is also a device record answers with the device *and* the front door, and a
+  # client that prefers the wrong one reaches the wrong service over a valid
+  # certificate.  Every `*.int` name therefore belongs to exactly one of the three
+  # lists in that table.
+  # A name answered twice by one file is a name with two answers; `names` and
+  # `legacy` render the same way, so a label in both is that fault, and so is a
+  # label typed twice inside either list (the diff that causes it is one line).
+  assert (
+    need
+    (builtins.all (n: builtins.length (builtins.filter (x: x == n) INT_DOOR_NAMES) == 1) INT_DOOR_NAMES)
+    ''common/int-dns.nix answers a name twice (in both `names` and `legacy`, or listed twice): ${
+        builtins.toJSON (builtins.filter (n: builtins.length (builtins.filter (x: x == n) INT_DOOR_NAMES) > 1) INT_DOOR_NAMES)
+      }''
+  );
+  assert (
+    need
+    (
+      builtins.all (n: !builtins.hasAttr n RECORDS) INT_DOOR_NAMES
+      && builtins.all (n: !builtins.elem n INT.fromHosts) INT_DOOR_NAMES
+    )
+    ''a name in common/int-dns.nix answered by another table too: ${
+        builtins.toJSON (builtins.filter (n: builtins.hasAttr n RECORDS || builtins.elem n INT.fromHosts) INT_DOOR_NAMES)
+      }''
+  );
+  # A `fromHosts` name gets its address from common/hosts.nix, so it has to be in
+  # that table; and it must not be a reservation too, which is the same
+  # name-answered-twice fault wearing a different hat.
+  assert (
+    need
+    (
+      builtins.all (n: builtins.hasAttr n HOSTS) INT.fromHosts
+      && builtins.all (n: !builtins.hasAttr n RECORDS) INT.fromHosts
+    )
+    ''a common/int-dns.nix `fromHosts` name that is not exactly one non-reservation host: ${
+        builtins.toJSON (builtins.filter (n: !builtins.hasAttr n HOSTS || builtins.hasAttr n RECORDS) INT.fromHosts)
+      }''
+  );
+  # An `exempt` name is a vhost the front door serves that must not resolve to it,
+  # and the only honest reason is that a device answers the name.  So it has to be
+  # a record: an exemption that answers nothing is a name the drift check on
+  # services1 cannot tell from a forgotten one, which is the whole reason the list
+  # exists.
+  assert (
+    need
+    (builtins.all (n: builtins.hasAttr n RECORDS) (builtins.attrNames INT.exempt))
+    ''a common/int-dns.nix `exempt` name that is not a device record in common/dns-records.nix: ${
+        builtins.toJSON (builtins.filter (n: !builtins.hasAttr n RECORDS) (builtins.attrNames INT.exempt))
+      }''
+  );
+  assert (
+    need
+    (builtins.all (n: !builtins.elem n (INT.names ++ INT.fromHosts ++ builtins.attrNames INT.legacy)) (builtins.attrNames INT.exempt))
+    ''a name both exempt and answered by common/int-dns.nix: ${
+        builtins.toJSON (builtins.filter (n: builtins.elem n (INT.names ++ INT.fromHosts ++ builtins.attrNames INT.legacy)) (builtins.attrNames INT.exempt))
+      }''
+  );
+  assert (
+    need
+    (builtins.hasAttr INT.frontDoor RECORDS && (RECORDS.${INT.frontDoor}.ipv4 or null) != null)
+    ''common/int-dns.nix's frontDoor "${INT.frontDoor}" is not a record with an address in common/dns-records.nix''
+  );
+  # **Every front-door name answers with every one of its addresses.** This is the
+  # PARTIAL fault in docs/router-and-dns.md — a name with its A and not its AAAA is
+  # a dual-stack client that hangs on IPv6 before it falls back — asserted against
+  # the rendered file rather than the table, because the file is what dnsmasq reads
+  # and one line per address is what its hosts syntax needs (a second address on a
+  # line is a second *name*).  `intHosts` groups a name's lines together, so this
+  # is a count of the lines ending in the name.
   assert (
     need
     (
       builtins.all
-      (v: !builtins.any (r: r.ipv4 == v.ipv4) recordValues)
-      COEXIST.vlans
+      (n: builtins.length (builtins.filter (l: has "\t${n}.${CONFIG.LOCAL_DOMAIN}" l) (TABLES.lines INT_HOSTS)) == builtins.length DOOR_ADDRS)
+      INT_DOOR_NAMES
     )
-    ''a co-exist VLAN address that a device has reserved: ${
-        builtins.toJSON (map (v: v.ipv4) (builtins.filter (v: builtins.any (r: r.ipv4 == v.ipv4) recordValues) COEXIST.vlans))
+    ''a front-door name not answered with every address of ${INT.frontDoor} (${
+        toString (builtins.length DOOR_ADDRS)
+      } expected): ${
+        builtins.toJSON (builtins.filter
+          (n: builtins.length (builtins.filter (l: has "\t${n}.${CONFIG.LOCAL_DOMAIN}" l) (TABLES.lines INT_HOSTS)) != builtins.length DOOR_ADDRS)
+          INT_DOOR_NAMES)
       }''
   );
-  # The transit gateway — the live router this box routes itself out through while
-  # it has no uplink of its own — is inside exactly one VLAN block and is not one
-  # of this box's own addresses.  "Inside none" is a box with no route and no
-  # error; "inside two" is a default route nobody can say the interface of; "is
-  # this box" is a routing loop, and it is also the sign that co-existence has been
-  # left on with the host part set to .1 — i.e. two routers claiming one address.
-  # Gated on the mode, unlike the three above: with co-existence off there is no
-  # transit gateway at all (the box's route out is ./uplink.nix's tunnel), and the
-  # address this file would be objecting to is the box's own legitimate one.
-  # ./../coexist.nix throws on the same condition with less detail, so the two
-  # agree by construction: this is the version an operator can read.
+  # Every line of the rendered file is `<address><TAB><name>.<zone>`.  An
+  # unterminated name is a file dnsmasq reads and answers nothing for — the bug
+  # this file has caught twice before, on a file that is a store path and so can be
+  # diffed, which is more than can be said for the one this replaced.
   assert (
     need
     (
-      !COEXIST.enable
-      || (
-        builtins.length (builtins.filter (v: inside COEXIST.transitGateway v) VLANS)
-        == 1
-        && !builtins.any (v: v.ipv4 == COEXIST.transitGateway) COEXIST.vlans
-      )
+      builtins.all
+      (l:
+        has ".${CONFIG.LOCAL_DOMAIN}" l
+        && builtins.any (a: hasPrefix "${a}\t" l) (DOOR_ADDRS ++ builtins.attrValues HOSTS))
+      (builtins.filter (l: l != "") (TABLES.lines INT_HOSTS))
     )
-    ''coexist.nix is on, so its transitGateway must be a router still in the job: inside exactly one VLAN block, and not one of this box's own addresses. It is "${COEXIST.transitGateway}" against ${
-        builtins.toJSON (map (v: "${v.id} ${v.net} ${v.ipv4}") COEXIST.vlans)
-      }''
+    ''a generated int-vhost line that is not `<address><TAB><name>.${CONFIG.LOCAL_DOMAIN}`''
+  );
+  # And the line count is the whole table: once per name per address, plus once per
+  # own-address name.  Nothing extra, nothing missing.
+  assert (
+    need
+    (
+      builtins.length (builtins.filter (l: l != "") (TABLES.lines INT_HOSTS))
+      == builtins.length INT_DOOR_NAMES * builtins.length DOOR_ADDRS + builtins.length INT.fromHosts
+    )
+    ''the generated int-vhosts file is not one line per (name, address): ${
+        toString (builtins.length (builtins.filter (l: l != "") (TABLES.lines INT_HOSTS)))
+      } lines for ${toString (builtins.length INT_DOOR_NAMES)} names x ${
+        toString (builtins.length DOOR_ADDRS)
+      } addresses + ${toString (builtins.length INT.fromHosts)} own-address names''
   ); "ok\n"

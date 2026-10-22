@@ -40,16 +40,7 @@
   ...
 }: let
   CONFIG = import ../../common/config.nix;
-  COEXIST = import ./coexist.nix;
   NICS = import ./constants.nix;
-
-  # The tunnel is the route out of a box that *is* the network's router.  While
-  # ./coexist.nix is on, this box is not: its own traffic goes via the live
-  # router (./networking.nix's `routes`), and a second box dialling a second
-  # AAISP session would be a second public IP and a second default route for a
-  # network that has one of each.  So the whole tunnel is off here rather than
-  # "enabled and failing visibly".
-  enableTunnel = !COEXIST.enable;
 
   # The pppd options that are not secrets.  Kept in a file rather than in the
   # unit so `cat /etc/ppp/options.aaisp` answers "what did we ask AAISP for".
@@ -165,7 +156,7 @@ in {
   # The secret files are written by the unit, not by this module: sops-nix puts
   # the password in /run/secrets at activation, and copying it into a world-
   # readable store path is the one thing this file must not do.
-  environment.etc = lib.mkIf enableTunnel {
+  environment.etc = {
     "ppp/options.aaisp".source = pppOptions;
     "ppp/ip-up-aaisp".source = ipUp;
     "ppp/ip-down-aaisp".source = ipDown;
@@ -195,7 +186,7 @@ in {
   # `preStart` is where the password goes from sops into a mode-0600 file.  It is
   # a copy rather than a symlink on purpose: pppd's secrets parser wants a plain
   # file, and the same file is read by both PAP and CHAP.
-  systemd.services.xl2tpd-aaisp = lib.mkIf enableTunnel (INFRA.mkNeverGiveUp {
+  systemd.services.xl2tpd-aaisp = INFRA.mkNeverGiveUp {
     description = "AAISP L2TP client (${NICS.UPLINK_TUNNEL})";
     wantedBy = ["multi-user.target"];
     after = ["systemd-networkd.service"];
@@ -252,7 +243,7 @@ in {
       KillMode = "control-group";
       RestartSec = "10s";
     };
-  });
+  };
 
   # The network's tailnet presence, which the old box ran as `tailscale0` (it is in
   # its generated dnsmasq conf's interface list, and the `ts.leighhack.org` exception
@@ -276,16 +267,13 @@ in {
       [
         "--login-server=https://${CONFIG.HEADSCALE_DOMAIN}"
       ]
-      # What this box tells the tailnet it can carry.  Nothing, while
-      # ./coexist.nix is on: an advertised route is a route headscale can hand to
-      # every other node on the tailnet, and a box that is not the network's router
-      # must not offer to carry traffic for it — it would send 10.3.1.0/24 to a
-      # machine whose own route to 10.3.1.20 goes via the router that route is
-      # supposed to replace.  The join itself is still worth having (it is how this
-      # box is reachable when its own LAN config is what is broken), and
-      # `tailscale status --json` on the box is what proves nothing is being
-      # advertised.
-      ++ lib.optionals (!COEXIST.enable) [
+      # What this box tells the tailnet it can carry: an exit node, because it is
+      # the box with the public address and the tunnel (./uplink.nix above).
+      # An advertised route is a route headscale can hand to every other node on
+      # the tailnet, so this line is the flake's claim that this box really does
+      # carry the LAN — and the comment two paragraphs down is why that claim has
+      # to be checked on the running node rather than in the unit.
+      ++ [
         "--advertise-exit-node"
       ]
       # The network's own blocks, advertised to the tailnet: this is the rule that
@@ -320,7 +308,7 @@ in {
       # of machines/services1/services/headscale.nix, not the flake), which is
       # unequal to the `/48` below, and two advertisers of unequal prefixes is a
       # route that flips depending on which one headscale accepted first.
-      ++ lib.optionals (!COEXIST.enable) [
+      ++ [
         "--advertise-routes=10.3.0.0/16,192.168.2.0/24,2001:8b0:1d14::/48,fd99:dead:beef::/48"
       ];
   };

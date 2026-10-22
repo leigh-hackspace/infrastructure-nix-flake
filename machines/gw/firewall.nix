@@ -51,12 +51,11 @@
   pkgs,
   ...
 }: let
-  COEXIST = import ./coexist.nix;
-  # The VLANs as this box reads them (./coexist.nix).  Only the addresses move in
-  # co-existence mode and this file rules on blocks, not addresses — but it reads
-  # the same list dnsmasq and the VLAN devices are generated from, because two
-  # lists that happen to agree today are the drift this directory keeps removing.
-  VLANS = COEXIST.vlans;
+  # The network's VLAN table — the same list ./networking.nix creates the devices
+  # from and ./dns.nix answers DHCP on, so a VLAN id, block or address means one
+  # thing in nftables and in dnsmasq (two lists that happen to agree today are the
+  # drift this directory keeps removing).
+  VLANS = import ../../common/vlans.nix;
   CONFIG = import ../../common/config.nix;
   HOSTS = import ../../common/hosts.nix;
   NICS = import ./constants.nix;
@@ -394,8 +393,8 @@ in {
             type filter hook input priority 0; policy drop;
 
             # The box talking to itself, and the replies to connections it
-            # started (its own DNS upstream, ntp, the ssh dns-sync runs in from
-            # services1).
+            # started (its own DNS upstream, ntp, and the ssh that `just switch-gw`
+            # and every debugging session from services1 arrive over).
             iifname "lo" accept
             ct state established,related accept
             ct state invalid drop

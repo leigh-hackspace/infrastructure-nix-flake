@@ -22,9 +22,11 @@
 # The public name works even though services2 has no public IP: services1 is the
 # TLS terminator for the network, so nginx here answers on its own public IPs
 # (81.187.195.17 / 2001:8b0:1d14:225::20, the DO record `nginx`) and proxies over
-# the LAN to 10.3.1.21:8080.  The record is hand-made in the DigitalOcean zone —
-# dns-sync only manages the *.int ones, and prunes only the CNAMEs that point at
-# nginx.int, so it neither adds nor removes this one:
+# the LAN to 10.3.1.21:8080.  The record is hand-made in the DigitalOcean zone:
+# nothing in this repo writes public DNS any more (`*.int` is answered by the
+# router from common/int-dns.nix, and the zone carries one `*.int` CNAME to
+# nginx.int so off-LAN clients resolve the same way), so adding this one was a
+# web-UI job and deleting it is too:
 #
 #   strata.leighhack.org  CNAME -> nginx.leighhack.org  (TTL 60, like the rest)
 #
