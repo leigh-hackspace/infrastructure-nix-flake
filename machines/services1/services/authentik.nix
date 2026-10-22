@@ -1,3 +1,9 @@
+# PARKED — 2026-10-15 (0784799) — docs/authentik-container-migration.md owns this one,
+# end to end: what was migrated, what the checklist is, and what blocks the cutover
+# (docs/follow-ups.md). 10.3.1.36 is the live IdP; this is the shadow.
+#
+# Re-verify with: uncomment it in ./default.nix, `just check`, then
+# `sudo authentik-migrate all --force` — the state under /srv/authentik is stale.
 # authentik — the network's identity provider (OIDC, plus the LDAP and RADIUS
 # outposts), as a podman stack on this box.
 #

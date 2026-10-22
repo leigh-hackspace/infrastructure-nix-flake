@@ -8,9 +8,11 @@
 #
 #   nix eval --impure --raw -f machines/services1/lib/check-config-to-gitlab.nix
 #
-# It prints "ok" or throws with the expected/actual token lists.  `just check`
-# runs it.  Plain asserts on evaluated values: no derivation, no network, and it
-# exercises the exact function the service uses.
+# It prints "ok" or throws with the expected/actual token lists.  `just check` and
+# `nix flake check` run it.  Plain asserts on evaluated values: no derivation, no
+# network, and it exercises the exact function the service uses.  When the module is
+# parked it says so too — see `caveat` below, because a green line about a container that
+# is not deployed is not evidence.
 let
   configToGitlab = import ./config-to-gitlab.nix;
 
@@ -58,6 +60,33 @@ let
   # system — the check still covers the real config, and it keeps covering it
   # while the module is off.
   gitlabConfig = import ./gitlab-config-example.nix;
+
+  # Is the module this serializer belongs to actually imported?  `just check` printing a
+  # bare `ok` for a container that is not deployed is worse than no check, because it
+  # gets quoted as evidence (docs/flake-simplification-audit-2026-10-22.md §6).  So the
+  # verdict stays exactly `"ok\n"` — that string is the seam the module assertion and
+  # flake.nix's `checks.config-to-gitlab` compare against — and the *caveat* rides along
+  # on stderr, read out of the same import list the deploy reads so it cannot rot:
+  # a line of that file that is `./gitlab.nix` after stripping whitespace is an import,
+  # and one that begins `#` is not.
+  servicesDefault = builtins.readFile ../services/default.nix;
+  squash = builtins.replaceStrings [" " "\t" "\r"] ["" "" ""];
+
+  gitlabDeployed =
+    builtins.any
+    (l: l == "./gitlab.nix")
+    (builtins.filter builtins.isString (builtins.split "\n" (squash servicesDefault)));
+
+  caveat =
+    if gitlabDeployed
+    then "ok\n"
+    else
+      builtins.trace ''
+        note: services/gitlab.nix is PARKED (not imported), so this checked
+        ./config-to-gitlab.nix against ./gitlab-config-example.nix and the attrset in the
+        parked module — which is *not* evidence that any deployed unit renders this way.
+        It becomes that when the import is uncommented; see the PARKED header of
+        ../services/gitlab.nix.'' "ok\n";
 in
   assert expect "top-level string, bool and number" {
     external_url = "https://gitlab.example.com";
@@ -121,4 +150,4 @@ in
       && has "gitlab_rails['omniauth_providers'] = [{" rendered
       && has "nginx['real_ip_trusted_addresses'] = ['10.88.0.0/24'];" rendered
       && has "gitlab_rails['gitlab_shell_ssh_port'] = 8522;" rendered
-  ); "ok\n"
+  ); caveat

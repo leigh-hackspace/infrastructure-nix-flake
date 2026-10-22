@@ -21,18 +21,11 @@
     ../../common/exporters.nix
     ./netboot.nix
     ./networking.nix
-    # PARKED (see docs/repo-audit-2026-10-07.md §1.4): the GTX 1060 was removed
-    # from this box on 2026-09-02, so ./nvidia.nix is kept for reference only.
+    # PARKED modules say so on their own first line (AGENTS.md rule 23), so this list
+    # only names them: neither is evaluated, and `nix flake check` cannot see either.
     # ./nvidia.nix
     ./sso.nix
     ./status-dashboard.nix
-    # PARKED (2026-10-17): strata was disabled to make this box the network's
-    # builder (common/build-farm.nix) — its ~33 GiB expert arena is memory a build
-    # cannot have.  The module, ./STRATA.md and the `.#strata` package stay so the
-    # engine can be rebuilt and its measurements reproduced; to bring it back,
-    # uncomment this import and add `services.strata.enable = true;` below.  The
-    # model data under ~/Models and ~/Strata is not removed by that edit (see
-    # docs/follow-ups.md).
     # ./strata.nix
     ./whisper.nix
 

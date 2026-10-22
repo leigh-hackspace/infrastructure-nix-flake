@@ -101,6 +101,15 @@ X first", X has already cost someone a day.
     aibox or services1. `just switch` on gw still works as the emergency local
     build, but it now compiles that crate, so it is the fallback, not the way. Full
     mechanism: `docs/nix-dev-workflow.md`, "Never build on the router".
+23. **A parked module marks itself, not its import list.** The first line of a module
+    commented out of an import list is `# PARKED — <date> (<commit>) — <the doc that
+    owns it, or "no doc; the reason is this"> — re-verify with: <command>`, and the
+    import list only names the file. Then
+    `grep -rl '^# PARKED' machines/` *is* the list of what is not running — which it was
+    not: the reason lived in a comment beside the import, invisible to grep, and a
+    parked module is never evaluated, so its rot is silent. The six in tree (affine,
+    samba, gitlab, authentik on services1; nvidia, strata on aibox) each carry their own
+    re-verify command, because "just uncomment it" is not one.
 
 ---
 

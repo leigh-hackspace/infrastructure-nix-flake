@@ -1,3 +1,8 @@
+# PARKED — 2025-11-23 (5f46a77) — no doc owns this; the reason is one line: SMB is served
+# by the NAS (10.3.1.6), not by services1, so a Samba server here would be a second one.
+# Not imported, so `nix flake check` does not evaluate it and it can rot silently.
+#
+# Re-verify with: uncomment it in ./default.nix, then `just check` — and expect to fix it.
 {
   pkgs,
   lib,

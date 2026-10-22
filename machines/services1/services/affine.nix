@@ -1,3 +1,8 @@
+# PARKED — 2025-11-18 (10207fa) — no doc owns this; the reason is one line: the Affine
+# container was never deployed on this box.  Not imported, so `nix flake check` does not
+# evaluate it and it can rot silently.
+#
+# Re-verify with: uncomment it in ./default.nix, then `just check` — and expect to fix it.
 {
   config,
   pkgs,

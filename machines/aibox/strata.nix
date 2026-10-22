@@ -1,3 +1,10 @@
+# PARKED — 2026-10-17 (5bab91f) — machines/aibox/STRATA.md owns this: the engine was
+# disabled to make aibox the network's builder, and its ~33 GiB arena is memory a build
+# cannot have.  The `.#strata` package is still built by the flake, so this module is the
+# only half that is parked.
+#
+# Re-verify with: `nix build .#strata` (the package is not parked), then uncomment it in
+# ./default.nix, add `services.strata.enable = true;` and `just check`.
 {
   config,
   lib,

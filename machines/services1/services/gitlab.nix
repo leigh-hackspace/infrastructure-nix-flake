@@ -1,3 +1,10 @@
+# PARKED — 2026-02-25 (96c4054) — no doc owns this; the GitLab container is not deployed.
+# The one part still exercised is the serializer: ../lib/config-to-gitlab.nix is asserted
+# over the attrset below by ../lib/check-config-to-gitlab.nix, which `just check` and
+# `nix flake check` both run — so this module evaluates *as data* while being parked.
+#
+# Re-verify with: uncomment it in ./default.nix, then `just check` (and re-enable the
+# check's own note about what it covers).
 {...}: let
   configToGitlab = import ../lib/config-to-gitlab.nix;
 in {

@@ -1,3 +1,8 @@
+# PARKED — 2026-10-04 (1e0e64c), the card having left the box on 2026-09-02 —
+# docs/gtx1060-followup.md owns the whole saga.  Kept so the driver config and the
+# mistakes in it survive the hardware.
+#
+# Re-verify with: put a Pascal card in the box, uncomment it in ./default.nix, `just check`.
 # NVIDIA GTX 1060 3GB (Pascal) — DEPRECATED.
 #
 # The card was removed from aibox on 2026-09-02 (see ../../docs/gtx1060-followup.md) and

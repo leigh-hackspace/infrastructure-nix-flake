@@ -36,8 +36,8 @@ row names what was actually done, not what was planned.
 | 4.1 | the nginx-sso secret off `sopsSecretText` | open |
 | 4.2-4, tmpfiles note | "what build-time decryption costs", one decrypt per secret, `yq` quoting, the key-exists assertion | open |
 | 7 | the `docs-lint` binary | open |
-| 5 | `streams.ignore`, `common/overrides/`, the `# MODULE:`/`# DATA:` headers | open |
-| 6 | the `# PARKED` convention, and `check-config-to-gitlab` checking nothing | open |
+| 5 | `streams.ignore`, `common/overrides/`, the `# MODULE:`/`# DATA:` headers | **done 2026-10-22** — every file in `common/` opens `MODULE`/`DATA`/`HELPER`/`CHECK`/`PACKAGE` (README's layout note carries the legend and the grep), `common/overrides/ipxe.nix` is `common/ipxe.nix` with one call site moved, `streams.ignore` is a tracked, labelled dead fragment under `machines/services1/junk/` (the only `junk/` the .gitignore lets through, and the reason written where someone would delete it), and `common/systemd.nix` keeps its name because the header now says it is a HELPER. `machines/<m>/` shadows `common/` is one README line. `hosts.nix`/`config.nix`/`vlans.nix` as options stays unscheduled — the audit's own call |
+| 6 | the `# PARKED` convention, and `check-config-to-gitlab` checking nothing | **done 2026-10-22** — AGENTS.md rule 23 fixes the shape, the six parked modules carry it as their first line (each with its own re-verify command), the two import lists are now names, and `grep -rl '^# PARKED' machines/` prints exactly six files. `check-config-to-gitlab` reads the same import list the deploy reads and says, on stderr and only while the module is off, what its green line is *not* evidence of |
 | 5 | `hosts.nix`/`config.nix`/`vlans.nix` as options | **deliberately not scheduled** (audit's own call) |
 
 ---
