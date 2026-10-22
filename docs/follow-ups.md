@@ -12,6 +12,29 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
 
 ## Nix / build
 
+- **Evaluation still reads a derivation: finish the crane half of "Evaluation must not
+  build"** (found 2026-10-22, on gw, by accident: `just check` began failing with
+  `Cannot build '/nix/store/7ac7180r…-Cargo.lock.drv'` — `local builds are disabled
+  (max-jobs = 0)`). **Blocks:** any `just check` on gw, so the router currently has no
+  flake-level gate; nothing else is blocked, because the four assertion evals and
+  `just fmt-check` do not evaluate a machine. **It is not a regression** — the same call
+  fails at `f923c6e`, the commit this pass branched from, from a clean `git worktree`. It
+  was latent because `…-Cargo.lock` was sitting in gw's store, and it cannot go back: the
+  path is an unsigned local build (`nix copy --from ssh://…aibox` → `lacks a signature by
+  a trusted key`), and there is no cache for it.
+  **What to do:** `lockFile`'s result is handed to crane as `cargoLock` at three sites —
+  `workspaceArtifacts`, the native crate arguments, `wasmSpa`'s `buildPackage` — without
+  the `cargoLockContents` pairing `vendorDirFor` already uses, and reading a `writeText`
+  result builds it. Doing that is measured to clear the `Cargo.lock` error and uncover a
+  **second** read, `path 'xc2p67qsy…-filestore-web-src.drv' is not valid` (the SPA's
+  `withSharedCrates` src); `crateName = pname` at both `buildPackage` sites does not
+  remove it, so identify the reader first. Do it on aibox and prove the three toplevel
+  `drvPath`s (`56m97iwl…`, `hs90mhsc…`, `9ip1w63…`) unchanged — an unverified edit to the
+  shared dependency wiring costs every crate on the fleet a rebuild. Full mechanism, the
+  A/B that proves the read, and the trace that ends at
+  `machines/services1/services/filestore.nix:82`: `docs/nix-dev-workflow.md`, "Reopened
+  2026-10-22".
+
 - **The door entry package cannot be built by the builder, and it is not reproducible**
   (measured 2026-10-22 while proving `inputs.door-entry-management-system`'s new
   `nixpkgs.follows` edge; **both facts are older than that change** — the same

@@ -78,13 +78,16 @@ Two things bite, and both are load-bearing:
   devShells, `packages.strata`, `strata-cuda` and `whisper-ws`, ~10 minutes on a lock
   bump — and a build on `gw` is a compile on the box that answers DNS for the network.
   `just check` passes `--no-build`, runs the four standalone assertion evals and
-  `nix fmt -- --check`, and is therefore safe anywhere; the build-shaped recipes
+  `nix fmt -- --check`, and is built to be safe anywhere — **but as of 2026-10-22 its
+  `nix flake check` step fails on `gw`** on an eval-time derivation read that predates
+  everything around it, so run it on `aibox` until `docs/nix-dev-workflow.md`'s "Reopened
+  2026-10-22" is fixed; the four evals and `just fmt-check` still run on the router, because
+  none of them evaluates a machine. The build-shaped recipes
   (`just check-build`, `just test`, `just clippy`, `just build-frontend`,
   `just filestore-*`, `just switch-gui-test`, `just build-remote`) refuse to run on
   `gw` via `_build-host-guard`. `nix develop` itself now builds nothing — the pinned
   wasm-bindgen-cli that the four Dioxus bundles need lives in `nix develop .#wasm`,
-  which is a cargo build on a cold box — so `just check` is safe on the router for the
-  second time.
+  which is a cargo build on a cold box — so `nix develop` at least is safe on the router.
 - **Confirm in the same shell invocation as the switch.** Every deployable machine
   sets `system.autoRollback.enable = true`: activating arms a five-minute timer that
   reboots into the last *confirmed* generation. `just switch` chains

@@ -118,7 +118,12 @@ either way.
 
 ## Evaluation must not build
 
-**Resolved 2026-10-18.** `nix eval` was slow even in its *sanctioned* form, and not
+**Resolved for the crate `-src` stubs on 2026-10-18 — reopened 2026-10-22 for the lock
+file,** at the bottom of this section. Read the 2026-10-18 story first; the 2026-10-22
+finding is the same mechanism through the other door, and the reason it was missed is the
+warning that ends the old part.
+
+`nix eval` was slow even in its *sanctioned* form, and not
 only because of the copy above: evaluating a machine's configuration **compiled
 things**. `nix flake check --no-build` — i.e. `just check` — died on
 
@@ -171,6 +176,59 @@ nginx location's `proxyPass` — the first aborted and left a lock-holding survi
 the second slower than the `just switch` that finally answered it, after which
 `grep proxy_pass /etc/nginx/nginx.conf` was instant. The rendered config is the
 source of truth; the expression is a guess about it.
+
+### Reopened 2026-10-22: the lock file still gets read, and the router pays for it
+
+`just check` on gw started failing with
+
+```
+error: Cannot build '/nix/store/7ac7180r3lg3rgk31ry47r88s4c8djpx-Cargo.lock.drv'.
+Reason: local builds are disabled (max-jobs = 0)
+```
+
+**It is not a regression.** The same call fails at `f923c6e` — the commit this repo's
+audit-pass branched from — run from a `git worktree`, so nothing in the restructure
+caused it. What changed is the store.
+
+The mechanism is the one above, through the door `vendorDirFor` did not close: `lockFile`
+is still handed to crane as `cargoLock`, **without** the `cargoLockContents` that makes
+the read free, at three sites — `workspaceArtifacts` (`buildDepsOnly`), the native crate
+arguments, and `wasmSpa`'s `buildPackage`. The trace lands on
+`machines/services1/services/filestore.nix:82`, `ExecStart = lib.concatStringsSep " " [
+"${filestore}/bin/filestore" …` — a module that interpolates its own package into a unit
+forces that package's derivation whenever anything evaluates the system, and
+`nix flake check` evaluates the system.
+
+Why it stayed hidden: `…-Cargo.lock` **was in gw's store**, so the read cost nothing and
+`--no-build` had nothing to complain about. It is gone now — most plausibly a `nix store
+gc` of a path no root ever pointed at — and it cannot be restored: `nix copy --from
+ssh://leigh-admin@10.3.1.32` answers `cannot add path … because it lacks a signature by a
+trusted key`. It is an unsigned locally-built path with no cache, and gw does not build,
+by design. So a read that had been silently free for four years turned into a hard
+failure with no commit in between. This is exactly the warning at the top of this
+section, demonstrated rather than believed: **a passing `--no-build` is not evidence the
+eval is clean.**
+
+What was tried, and why it is not in the tree. Adding `cargoLockContents =
+builtins.readFile <lock>` at those three sites — the pairing `vendorDirFor` already uses,
+so the value is the one crane computes — makes the `Cargo.lock` error go away and uncover
+a **second** eval-time read: `error: path
+'xc2p67qsy0500f2z38krv1kkq7lwjfin-filestore-web-src.drv' is not valid`, i.e. the SPA's
+`withSharedCrates` source. `crateName = pname` at both `buildPackage` sites (the value
+crane's discovery returns — `pname` is the manifest's package name at every call site)
+did not remove it, so some other crane scan of `src` is the reader and it has not been
+identified. Both experiments were reverted: the pairing is very likely correct, but it
+cannot be proved drv-neutral from a box that cannot build, and being wrong about the
+shared dependency wiring costs every crate on the fleet a rebuild. Whoever finishes it
+does it on aibox, with the before/after `drvPath` comparison this section has always
+insisted on, and the *second* read is the real work.
+
+**What still works on the router, and what does not.** The four assertion evals
+(`nix eval --impure --raw -f <file>`) and `just fmt` / `just fmt-check` do not evaluate
+the machines, so they run on gw exactly as before. `nix flake check --no-build`, and so
+`just check`, do not. Until this is fixed, run `just check` on aibox — and treat that as
+a workaround for a broken check, not as a licence to skip it: rule 22's reason for
+refusing builds on gw is untouched, and this failure is rule 22 *working*.
 
 ## Inspect the generated output (the reliable way to know what a service runs)
 

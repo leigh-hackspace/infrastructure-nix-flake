@@ -90,15 +90,22 @@ X first", X has already cost someone a day.
     processes on the gateway. The toolchain is split now — `nix develop` substitutes
     everything it carries, `nix develop .#wasm` is the one that compiles the pinned
     wasm-bindgen, and the justfile's SPA recipes ask for it by name — but that is not
-    why the guard stays. `just check` and `just fmt` are eval/format only (`nix flake check
-    --no-build`, `nix fmt` from the flake's `formatter`) and are safe on gw; `just
-    test|clippy|check-build|build-frontend|filestore-*|switch-gui-test|build-remote`
+    why the guard stays. `just fmt` (format only, from the flake's `formatter`) is safe on
+    gw; `just test|clippy|check-build|build-frontend|filestore-*|switch-gui-test|build-remote`
     remain refused on gw via `_build-host-guard` in the justfile — the guard stays
     because **evaluation is still paid on the router** even when every derivation is
-    built elsewhere — as does `just switch-gw`, since gw
-    gained a Rust crate (`machines/gw/network-status.nix`, hosted on the router
-    since 2026-10-21) and its deploy became build-here-push-there. Run them from
-    aibox or services1. `just switch` on gw still works as the emergency local
+    built elsewhere — as does `just switch-gw`, since gw gained a Rust crate
+    (`machines/gw/network-status.nix`, hosted on the router since 2026-10-21) and its
+    deploy became build-here-push-there. Run the refused recipes from aibox or services1.
+    **`just check` is currently broken *on* gw, as of 2026-10-22** — not by a build it
+    takes but by one it *forces*: `nix flake check --no-build` dies on
+    `Cannot build '…-Cargo.lock.drv'`, because `lockFile` is still handed to crane as
+    `cargoLock` without `cargoLockContents` and gw's `max-jobs = 0` refuses the read. Run
+    `just check` on aibox; on gw the four assertion evals (`nix eval --impure --raw -f
+    <file>`) and `just fmt-check` still work, because none of them evaluates a machine.
+    Mechanism, receipts and what was tried: `docs/nix-dev-workflow.md`, "Reopened
+    2026-10-22". A broken check is not permission to skip checking, and this failure is
+    rule 22 working, not misfiring. `just switch` on gw still works as the emergency local
     build, but it now compiles that crate, so it is the fallback, not the way. Full
     mechanism: `docs/nix-dev-workflow.md`, "Never build on the router".
 23. **A parked module marks itself, not its import list.** The first line of a module
@@ -226,7 +233,9 @@ X first", X has already cost someone a day.
   and `nix fmt -- --check` over every tracked
   `.nix`; the gatus endpoint guard is a module assertion in
   `machines/services1/services/monitoring.nix`, so `nix flake check` is what catches that
-  drift). It evaluates and formats only, so it is safe to run **on gw**; the
+  drift). It evaluates and formats only, which is what makes it safe *in principle* on
+  gw — as of 2026-10-22 its `nix flake check --no-build` step fails there on an eval-time
+  read (rule 22), so run `just check` on aibox until that is fixed; the
   build-shaped recipes are not (`just check-build`, `just test`, `just clippy`,
   `just build-frontend`, `just filestore-*`, `just switch-gui-test`, `just
   build-remote`) and now refuse on gw via `_build-host-guard`. Then, when anything is built rather
