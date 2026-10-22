@@ -35,6 +35,16 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   `machines/services1/services/filestore.nix:82`: `docs/nix-dev-workflow.md`, "Reopened
   2026-10-22".
 
+  **Its sibling is the item at the end of this section** — "`just check` is
+  machine-dependent", where the read is `builtins.readFile (config.sopsSecretText …)` and
+  what gets compiled is a *decrypted secret*. Same class, two doors, and they fail in a fixed
+  order: gw dies on `Cargo.lock.drv` before the secret one is reached, and aibox passes
+  only because those `sops-secret-*` outputs are already in its store — so that item's
+  "the documented fallback has one leg" now reads "has one leg, and it is held up by store
+  state". Whoever fixes either should fix the class: no `builtins.readFile` on a
+  derivation in a module, which is the same sentence `common/crane.nix` was written to
+  obey.
+
 - **The door entry package cannot be built by the builder, and it is not reproducible**
   (measured 2026-10-22 while proving `inputs.door-entry-management-system`'s new
   `nixpkgs.follows` edge; **both facts are older than that change** — the same
