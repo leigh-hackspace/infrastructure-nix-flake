@@ -30,10 +30,12 @@ switch:
 # started here is built on aibox or fails — the second half is what removes the silent
 # local fallback (common/build-farm.nix documents that `--max-jobs 0` "does not enable
 # delegation, it removes the local fallback").  Before that, a build here ran locally on
-# 8 GB and 4 cores, and `nix develop` **is** a build: the devShell depends on
-# CRANE.wasmBindgenCli, compiled from source with cargo.  On 2026-10-21 a `just check` on
-# the gateway (`fmt-check` → `nix develop`) put four rustc processes on the box that
-# answers DNS for the whole network.
+# 8 GB and 4 cores, and `nix develop` **was** one: the one devShell of the time depended
+# on CRANE.wasmBindgenCli, compiled from source with cargo, and on 2026-10-21 a
+# `just check` on the gateway (`fmt-check` → `nix develop`) put four rustc processes on
+# the box that answers DNS for the whole network.  The toolchain is split now —
+# `nix develop` builds nothing, `nix develop .#wasm` is the one that compiles the pinned
+# wasm-bindgen — but the recipes below stay guarded either way.
 #
 # The guard stays anyway, and the reason is not compilation: **evaluation still happens
 # on the box you are standing on**, and a 4-core router is also the network's resolver.
@@ -118,9 +120,9 @@ switch-gw: _build-host-guard sync-gw
 
 # Format every tracked .nix file with alejandra (the repo standard: it is what
 # .zed/settings.json runs on save).  `nix fmt` takes the formatter from the flake's
-# pinned nixpkgs (flake.nix's `formatter`), i.e. from the binary cache — NOT from
-# the devShell, because `nix develop` would build the pinned wasm-bindgen-cli and
-# a formatter must never be the reason a box compiles Rust (see `_build-host-guard`).
+# pinned nixpkgs (flake.nix's `formatter`), i.e. from the binary cache — NOT from a
+# devShell, because the wasm shell would build the pinned wasm-bindgen-cli and a
+# formatter must never be the reason a box compiles Rust (see `_build-host-guard`).
 # docs/repo-audit-2026-10-07.md §1.3 is why the whole tree is kept clean.
 fmt:
     nix fmt -- $(git ls-files '*.nix')
@@ -131,8 +133,9 @@ fmt-check:
     set -euo pipefail
     nix fmt -- --check $(git ls-files '*.nix')
 
-# --- Rust crates (toolchain from `nix develop`: cargo/rustc/rustfmt/clippy +
-# --- the pinned wasm-bindgen-cli)
+# --- Rust crates (toolchain from `nix develop`: cargo/rustc/rustfmt/clippy, lld,
+# --- just, git, alejandra, node — nothing that compiles on entry; the SPA recipes
+# --- below ask for `nix develop .#wasm`, which adds the pinned wasm-bindgen-cli)
 #
 # Everything native is one cargo workspace (crates/Cargo.toml), so the whole set
 # is `cargo <cmd> --workspace` from there: one lock file, one target dir, and one
@@ -147,7 +150,7 @@ shared-rs:
     @bash common/shared-rs-links.sh
 
 # cargo test over every crate in the workspace.
-# (Needs `nix develop`, which builds the devShell — hence the guard.)
+# (The default devShell: substituted, not built — the SPAs are not workspace members.)
 test: _build-host-guard
     #!/usr/bin/env bash
     set -euo pipefail
@@ -166,9 +169,9 @@ clippy: _build-host-guard
 
 # --- frontend (the four Dioxus SPAs) ---
 
-# Rebuild a Dioxus SPA into its frontend/dist using the devshell's toolchain
-# (cargo/rustc/lld + the pinned wasm-bindgen-cli).  Same recipe the flake runs
-# (common/frontend-build-spa.sh vs CRANE.wasmSpa), so the local dist/ matches
+# Rebuild a Dioxus SPA into its frontend/dist using the wasm devShell
+# (`nix develop .#wasm`: cargo/rustc/lld + the pinned wasm-bindgen-cli).  Same recipe the
+# flake runs (common/frontend-build-spa.sh vs CRANE.wasmSpa), so the local dist/ matches
 # the one it embeds; those dist/ directories are git-ignored and rebuilt at
 # deploy time, so this is only for local iteration.
 #
@@ -191,7 +194,7 @@ build-frontend crate="all": _build-host-guard
             exit 2
         fi
         echo "=== build-frontend $c"
-        nix develop --command bash -c "exec ./crates/$c/frontend/build.sh"
+        nix develop .#wasm --command bash -c "exec ./crates/$c/frontend/build.sh"
     done
 
 # network-status' SPA is the exception: it is SolidJS + esbuild, not Dioxus, and
@@ -429,7 +432,7 @@ filestore-dev: _build-host-guard
 filestore-test: _build-host-guard
     #!/usr/bin/env bash
     set -euo pipefail
-    nix develop --command bash -c 'exec crates/filestore/tests/run.sh'
+    nix develop .#wasm --command bash -c 'exec crates/filestore/tests/run.sh'
 
 # The switch-gui headless-browser suite: builds the SPA + binary, starts a fake
 # ProCurve console (a real Telnet server with an in-memory model), points the
@@ -440,7 +443,7 @@ filestore-test: _build-host-guard
 switch-gui-test: _build-host-guard
     #!/usr/bin/env bash
     set -euo pipefail
-    nix develop --command bash -c 'exec crates/switch-gui/tests/run.sh'
+    nix develop .#wasm --command bash -c 'exec crates/switch-gui/tests/run.sh'
 
 # Install the shared age key (used to edit secrets) so sops-nix can
 # decrypt at runtime and build time on this machine. Run after a fresh

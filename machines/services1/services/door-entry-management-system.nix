@@ -62,6 +62,13 @@ in {
   };
 
   # # sudo journalctl -u door-entry-bluetooth-web-app -f
+  # #
+  # # Needs its own flake input, which flake.nix deliberately does not carry as a
+  # # commented-out line (a `# url =` inside `inputs` reads like a pin and is dead by
+  # # definition): add
+  # #   door-entry-bluetooth-web-app = { url = "github:leigh-hackspace/door-entry-system?dir=bluetooth-web-app"; inputs.nixpkgs.follows = "nixpkgs"; };
+  # # with the others, and the `pkgs.door-entry-bluetooth-web-app` below resolves through
+  # # the overlay next to its sibling at the top of this file.
   # systemd.services.door-entry-bluetooth-web-app = {
   #   description = "Door Entry Management System Frontend";
   #   requires = [ "network.target" ];

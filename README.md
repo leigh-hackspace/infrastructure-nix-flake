@@ -70,14 +70,16 @@ just switch-gw  # build off the router, push the closure to 10.3.1.1, confirm th
 Two things bite, and both are load-bearing:
 
 - **`just check`, not `nix flake check`.** The bare flake idiom *builds* — the
-  devShell, `packages.strata`, `strata-cuda` and `whisper-ws`, ~10 minutes on a lock
+  devShells, `packages.strata`, `strata-cuda` and `whisper-ws`, ~10 minutes on a lock
   bump — and a build on `gw` is a compile on the box that answers DNS for the network.
   `just check` passes `--no-build`, runs the three standalone assertion evals and
   `nix fmt -- --check`, and is therefore safe anywhere; the build-shaped recipes
   (`just check-build`, `just test`, `just clippy`, `just build-frontend`,
   `just filestore-*`, `just switch-gui-test`, `just build-remote`) refuse to run on
-  `gw` via `_build-host-guard`, and `nix develop` counts as one of them because the
-  devShell depends on a cargo-built `wasm-bindgen-cli`.
+  `gw` via `_build-host-guard`. `nix develop` itself now builds nothing — the pinned
+  wasm-bindgen-cli that the four Dioxus bundles need lives in `nix develop .#wasm`,
+  which is a cargo build on a cold box — so `just check` is safe on the router for the
+  second time.
 - **Confirm in the same shell invocation as the switch.** Every deployable machine
   sets `system.autoRollback.enable = true`: activating arms a five-minute timer that
   reboots into the last *confirmed* generation. `just switch` chains

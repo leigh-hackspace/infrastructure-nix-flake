@@ -68,18 +68,25 @@ out of `workspaceSrc` and nothing else, and `lib.cleanSourceFilter` does not rea
 ## Local Rust workflow
 
 ```bash
-nix develop                    # cargo/rustc/rustfmt/clippy + pinned wasm-bindgen-cli + lld + just + git + alejandra
+nix develop                    # cargo/rustc/rustfmt/clippy + lld + just + git + jq + alejandra + node (all substituted)
+nix develop .#wasm             # ... plus the pinned wasm-bindgen-cli, which is COMPILED (a few minutes, cold)
 just test                      # cargo test --workspace, from crates/
 just clippy                    # cargo clippy --workspace
 just shared-rs                 # recreate the SPAs' git-ignored path-dependency symlinks
 ```
 
-`nix develop` creates the SPA symlinks for you on entry and needs no network.
-The devshell is self-contained: it ships the pinned `wasm-bindgen-cli 0.2.128` as
-a derivation (`CRANE.wasmBindgenCli`, the same one the flake uses — no
-`cargo install`, no network on entry), and the stable toolchain already bundles
-the `wasm32-unknown-unknown` std, so there is **no rustup and no network needed
-for the target**. `lld` is included because the wasm target links with `wasm-ld`
+Both shells create the SPA symlinks for you on entry and need no network.  `default`
+ships no `wasm-bindgen` at all, deliberately: the CLI is pinned to the SPAs' lock
+version, its derivation is built with cargo, and putting it in `default` is what made
+`nix develop` — and once, `just check` — a compile on whatever box you typed it on, the
+router included (`docs/nix-dev-workflow.md`, "Never build on the router").  Anything
+that builds a bundle asks for `.#wasm` by name: `just build-frontend`,
+`just filestore-test`, `just switch-gui-test`.
+
+The pinned `wasm-bindgen-cli 0.2.128` is a derivation (`CRANE.wasmBindgenCli`, the same
+one the flake uses — no `cargo install`, no network on entry), and the stable toolchain
+already bundles the `wasm32-unknown-unknown` std, so there is **no rustup and no network
+needed for the target**. `lld` is included because the wasm target links with `wasm-ld`
 from it (the flake sets `CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_LINKER=wasm-ld` and
 passes `pkgs.lld`).
 
@@ -117,7 +124,7 @@ nix develop
 just build-frontend                    # all four SPAs
 just build-frontend filestore          # just one
 # equivalently, per frontend:
-cd crates/frigate-monitor/frontend && nix develop --command bash build.sh
+cd crates/frigate-monitor/frontend && nix develop .#wasm --command bash build.sh
 ```
 
 All four call the same recipe, `common/frontend-build-spa.sh`.

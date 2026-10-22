@@ -32,7 +32,7 @@ if [ ! -f "$BIN" ]; then
 fi
 
 if ! command -v wasm-bindgen >/dev/null 2>&1; then
-    echo "wasm-bindgen-cli is required; 'nix develop' installs the pinned one" >&2
+    echo "wasm-bindgen-cli is required; 'nix develop .#wasm' installs the pinned one" >&2
     exit 1
 fi
 
@@ -51,7 +51,7 @@ fi
 if [ "$HAVE" != "$WANTED" ]; then
     echo "wasm-bindgen-cli is '$HAVE' but this SPA compiles against '$WANTED'." >&2
     echo "The glue is schema-versioned, so the build would fail anyway." >&2
-    echo "Use the pinned CLI: 'nix develop' installs $WANTED (see flake.nix)." >&2
+    echo "Use the pinned CLI: 'nix develop .#wasm' installs $WANTED (see flake.nix)." >&2
     exit 1
 fi
 

@@ -1,12 +1,19 @@
 {
   inputs = {
+    # Every input here is a network-wide source and every one follows `nixpkgs`; the
+    # one that did not is written up at `door-entry-management-system` below.  There are
+    # deliberately no commented-out alternative URLs in this block — they read as pins
+    # and do nothing.  To try one of these trees from a local clone for a single
+    # command, say so on the command line instead:
+    #
+    #   nix flake check --no-build --override-input nixos-utils path:/home/leigh-admin/Projects/nixos-utils
+    #
     nixpkgs.url = "github:nixos/nixpkgs/nixpkgs-unstable";
     # Rust build helpers (cached dependency derivations); see common/crane.nix.
     crane.url = "github:ipetkov/crane";
 
     nixos-utils = {
       url = "github:cjdell/nixos-utils";
-      # url = "git+file:///home/leigh-admin/Projects/nixos-utils";
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
@@ -20,12 +27,9 @@
       url = "github:leigh-hackspace/door-entry-system?dir=management-system";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    # door-entry-bluetooth-web-app.url = "github:leigh-hackspace/door-entry-system?dir=bluetooth-web-app";
 
     llama-cpp = {
       url = "github:ifm-ai/llama.cpp/model/K2Horizon";
-      # url = "github:leigh-hackspace/llama.cpp/new-webui-build";
-      # url = "git+file:///home/leigh-admin/Projects/llama.cpp";
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
@@ -43,15 +47,15 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
-    # Strata (https://github.com/Niko1221/Strata), the ggml-based engine that
-    # serves Qwen3.8-Flash-Next across GPU VRAM, RAM and the CPU.  Tracked on
-    # `main` on purpose: it is the bleeding-edge tree, and services2's CUDA engine
-    # (machines/services2/strata-package.nix) builds from it.  Upstream's own
-    # flake only provides a devShell, so the engine is still packaged by hand;
-    # this input is the source.  aibox's older HIP package still pins its own
-    # fetchFromGitHub (its service is parked, the package is kept), so
-    # `nix flake update strata` moves only the CUDA engine.
-    # `inputs.nixpkgs.follows` keeps the eval on one nixpkgs.
+    # Strata (https://github.com/Niko1221/Strata), the ggml-based engine that serves
+    # Qwen3.8-Flash-Next across GPU VRAM, RAM and the CPU.  This input is the source
+    # of services2's CUDA engine; upstream's own flake ships only a devShell, so the
+    # engine is packaged by hand (machines/services2/strata-package.nix), it is tracked
+    # on `main` on purpose, and aibox's older HIP package still pins its own
+    # fetchFromGitHub — which is why `nix flake update strata` moves one engine and not
+    # the other.  The engine itself, the pin and what a bump involves:
+    # machines/services2/STRATA.md.  The `follows` line is the rule in the door-entry
+    # note above, and it is the rule for every input here.
     strata = {
       url = "github:Niko1221/Strata";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -222,13 +226,12 @@
       ];
     };
   in {
-    # `nix fmt` / `nix fmt -- --check` — the formatter is a flake output so it comes
-    # from this flake's pinned nixpkgs and from the binary cache, not from the
-    # devShell.  That matters on the router: the devShell depends on
-    # CRANE.wasmBindgenCli, which is *built* with cargo, so `nix develop` there
-    # compiles Rust (2026-10-21: four rustc processes on gw).  The formatter must
-    # never be the reason a box builds anything.
-    formatter.${system} = (import nixpkgs {inherit system;}).alejandra;
+    # `nix fmt` / `nix fmt -- --check` — the formatter is a flake output, and it comes
+    # from this flake's pinned nixpkgs and from the binary cache.  Keeping it a flake
+    # output rather than a devShell package is what lets `just fmt` run anywhere: the
+    # wasm toolchain in `devShells.wasm` is *built* with cargo, and a formatter must
+    # never be the reason a box — especially the router — compiles something.
+    formatter.${system} = pkgs.alejandra;
 
     nixosConfigurations = {
       services1 = mkSystem {
@@ -382,62 +385,86 @@
 
     # `nix develop`
     #
-    # Toolchain for building the frigate-monitor web UI locally, mirroring
-    # what machines/aibox/frigate-monitor.nix does in its frontendDist
-    # derivation: cargo/rustc/rustfmt, `lld` (the wasm32 linker / wasm-ld),
-    # `just` and `git`. The stable toolchain already ships the
-    # wasm32-unknown-unknown std library, so `cargo build --target
-    # wasm32-unknown-unknown` needs no rustup or network — see rustc.nix's
-    # `--target` list. `dist/` is git-ignored and rebuilt by the flake; run
-    # `cd crates/frigate-monitor/frontend && nix develop --command bash build.sh`
-    # to iterate, or just `just build-frontend` (below).
-    devShells.${system}.default = let
-      pkgs = import nixpkgs {inherit system;};
+    /*
+    Two shells, split by the one thing that has to be *compiled* (§2.4).
+
+    `default` builds nothing: every package in it is substituted from the binary
+    cache, including the whole Rust toolchain (the stable `rust-bin` set is prebuilt,
+    and `lld` is nixpkgs').  `wasm` adds `CRANE.wasmBindgenCli`, which is the pinned
+    wasm-bindgen 0.2.128 the four Dioxus bundles need and — because it is a cargo
+    build of a crates.io tree — the only package in this file that compiles.  On a box
+    that has never built a SPA, `nix develop` used to mean "compile Rust": fine on
+    aibox, and on 2026-10-21 it put four `rustc` processes on gw, started by
+    `just check` → `fmt-check` → `nix develop`, on the box that answers DNS for the
+    whole network.
+
+    gw delegating its builds and running `nix.settings.max-jobs = 0` closed that
+    particular accident; the shell stays split because the point was never where the
+    compile happens, it is that "give me a shell" should not be a build at all.  So:
+    `nix develop` for cargo/rustc/clippy/just/alejandra/node, and
+    `nix develop .#wasm` — which the SPA recipes in the justfile ask for by name —
+    when you are building a bundle.  Note this does not make
+    `nix flake check` cheap: it still builds `packages.strata`, `strata-cuda`,
+    `whisper-ws` and any devShell it is given, which is why the gate in this repo is
+    `just check` (`--no-build`) and not the bare flake idiom.
+    */
+    devShells.${system} = let
       rust = pkgs.rust.packages.stable;
       CRANE = import ./common/crane.nix {
         inherit pkgs;
         crane = flakeInputs.crane;
       };
-    in
-      pkgs.mkShell {
-        packages = [
-          rust.rustc
-          rust.cargo
-          rust.rustfmt
-          rust.clippy
-          # NOTE: not pkgs.wasm-bindgen-cli. The SPAs are pinned to
-          # wasm-bindgen 0.2.128 in their Cargo.locks, and the wasm bindgen
-          # *schema* must match the CLI version exactly, so nixpkgs' 0.2.121
-          # would refuse to process the output. This is the same pinned CLI
-          # derivation the flake uses to build the SPA bundles
-          # (common/crane.nix) — and because it is **built with cargo**, the
-          # first `nix develop` on a box that has never built a SPA compiles
-          # Rust there. That is fine on aibox or services1 and unacceptable on
-          # the router: gw has no remote builder, so `nix develop` on it compiles
-          # on the box that answers DNS for the network (2026-10-21: four rustc
-          # processes on gw, started by `just check` → `fmt-check` → `nix develop`).
-          # See `_build-host-guard` in the justfile and AGENTS.md, "Never build on
-          # the router". `just fmt`/`just check` no longer need this devShell.
-          CRANE.wasmBindgenCli
-          pkgs.lld
-          pkgs.just
-          pkgs.git
-          # Nix formatter for the whole tree (`just fmt`); the repo standard is
-          # alejandra — see .zed/settings.json and the justfile.
-          pkgs.alejandra
-          # node is needed by the headless-browser test suite (filestore/tests)
-          pkgs.nodejs
-          # handy for debugging (zip/struct inspection of generated archives, etc.)
-          pkgs.python3
-        ];
-        shellHook = ''
-          # In-repo path dependencies (common-rs/, frontend/dto) are git-ignored
-          # symlinks; cargo needs them, the Nix build does not.  Run the
-          # working-tree copy, not the one copied into the shell's store path.
-          if [ -f ./common/shared-rs-links.sh ]; then
-              bash ./common/shared-rs-links.sh >/dev/null
-          fi
-        '';
+      # In-repo path dependencies (common-rs/, frontend/dto) are git-ignored symlinks;
+      # cargo needs them, the Nix build does not.  Run the working-tree copy, not the
+      # one copied into the shell's store path.
+      linkHook = ''
+        if [ -f ./common/shared-rs-links.sh ]; then
+            bash ./common/shared-rs-links.sh >/dev/null
+        fi
+      '';
+      basePackages = [
+        rust.rustc
+        rust.cargo
+        rust.rustfmt
+        rust.clippy
+        pkgs.lld
+        pkgs.just
+        pkgs.git
+        pkgs.jq
+        # Nix formatter for the whole tree (`just fmt`); the repo standard is
+        # alejandra — see .zed/settings.json and the justfile.  `nix fmt` takes it from
+        # the flake's `formatter` instead, which is why `just fmt` and `just check`
+        # work with no shell at all.
+        pkgs.alejandra
+        # node is needed by the headless-browser test suites and by
+        # `just network-status-frontend` (the one committed dist/, built with esbuild).
+        pkgs.nodejs
+        # handy for debugging (zip/struct inspection of generated archives, etc.)
+        pkgs.python3
+      ];
+    in {
+      default = pkgs.mkShell {
+        packages = basePackages;
+        shellHook = linkHook;
       };
+
+      # The SPA build toolchain: everything in `default` plus the *pinned* wasm
+      # bindgen.  Not `pkgs.wasm-bindgen-cli`: the SPAs are pinned to wasm-bindgen
+      # 0.2.128 in their Cargo.locks and the bindgen *schema* must match the CLI
+      # version exactly, so nixpkgs' 0.2.121 would refuse to process the output.  This
+      # is the same derivation common/crane.nix uses to build the bundles the flake
+      # embeds, which is also why the local `dist/` and the deployed one agree — and
+      # why entering this shell on a cold box compiles for a few minutes.
+      #
+      # The stable toolchain already ships the wasm32-unknown-unknown std library, so
+      # `cargo build --target wasm32-unknown-unknown` needs no rustup and no network;
+      # `lld` above is the wasm-ld.  `dist/` is git-ignored and rebuilt by the flake:
+      # `just build-frontend [crate]`, or
+      # `cd crates/frigate-monitor/frontend && nix develop .#wasm --command bash build.sh`.
+      wasm = pkgs.mkShell {
+        packages = basePackages ++ [CRANE.wasmBindgenCli];
+        shellHook = linkHook;
+      };
+    };
   };
 }

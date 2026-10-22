@@ -370,19 +370,25 @@ So the accident is gone and the rule is not: **evaluation is still paid on the r
 and the deliberate deploy path is still build-there-and-push. Keeping "evaluates" and
 "builds" apart still matters, because `just check` here is eval-only on purpose.
 
-**`nix develop` is a build.** The devShell (`flake.nix`'s `devShells.default`)
-depends on `CRANE.wasmBindgenCli`, the pinned wasm-bindgen CLI, which is compiled
-from source with cargo. Entering the shell on a box that has never built an SPA
-compiles Rust there. On **2026-10-21** a `just check` on gw did exactly that:
-`check` ended with `just fmt-check`, `fmt-check` ran `nix develop`, and four `rustc`
-processes appeared on the gateway. Nothing was wrong with the checks — the formatter
-was reaching for a Rust toolchain to run a Haskell binary.
+**`nix develop` used to be a build.** The one devShell `flake.nix` had depended on
+`CRANE.wasmBindgenCli`, the pinned wasm-bindgen CLI, which is compiled from source with
+cargo, so entering the shell on a box that had never built an SPA compiled Rust there. On
+**2026-10-21** a `just check` on gw did exactly that: `check` ended with `just fmt-check`,
+`fmt-check` ran `nix develop`, and four `rustc` processes appeared on the gateway. Nothing
+was wrong with the checks — the formatter was reaching for a Rust toolchain to run a
+Haskell binary.
 
-The fix is in the justfile, and the split is now explicit:
+Two fixes, in the justfile and in `flake.nix`. The formatter moved to `nix fmt`, and the
+toolchain was split: `devShells.default` is cargo/rustc/clippy/lld/just/git/jq/alejandra/
+node and **builds nothing** (all of it is substituted, including the Rust toolchain), and
+`devShells.wasm` adds the compiled `wasm-bindgen-cli` on top — which is why the SPA
+recipes ask for `nix develop .#wasm` by name rather than inheriting it by accident.
+
+The split is now explicit:
 
 | Safe on gw (eval/format only) | Refused on gw by `_build-host-guard` |
 | --- | --- |
-| `just check` (`nix flake check --no-build`, `nix eval`, `nix fmt -- --check`) | `just test`, `just clippy` (`nix develop` + cargo) |
+| `just check` (`nix flake check --no-build`, `nix eval`, `nix fmt -- --check`) | `just test`, `just clippy` (cargo, over the workspace) |
 | `just fmt` (`nix fmt`, formatter from the flake's pinned nixpkgs) | `just check-build` (builds all four toplevels) |
 | reading rendered files, `nixos-rebuild dry-run` | `just build-frontend`, `just filestore-dev`, `just filestore-test`, `just switch-gui-test` |
 | `just switch` (evaluation here, build on aibox, closure copied back) | `just build-remote` (it refuses on gw by design: reach for it from services1), **`just switch-gw`** |

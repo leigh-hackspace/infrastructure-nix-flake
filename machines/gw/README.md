@@ -689,10 +689,13 @@ That makes the *accident* harmless; it does not make building here correct. Eval
 still costs this box CPU, and the deliberate path is still build-there-and-push (see
 the next paragraph).
 
-`nix develop` is a build: the devShell pins `CRANE.wasmBindgenCli`, which is compiled
-with cargo. On 2026-10-21 a `just check` on this box ran `just fmt-check` → `nix
-develop` and put four `rustc` processes on the gateway. The justfile now keeps them
-off: `just check` and `just fmt` evaluate/format only (`nix flake check --no-build`,
+`nix develop` used to be a build: the one devShell this box had pinned
+`CRANE.wasmBindgenCli`, which is compiled with cargo, so entering it here compiled on the
+gateway. On 2026-10-21 a `just check` on this box ran `just fmt-check` → `nix
+develop` and put four `rustc` processes on the gateway. Two changes keep them off:
+`devShells.default` builds nothing (the wasm toolchain lives in `devShells.wasm`, which
+nothing on this box has a reason to enter), and the justfile keeps the recipes apart —
+`just check` and `just fmt` evaluate/format only (`nix flake check --no-build`,
 `nix fmt`), and the build-shaped recipes (`test`, `clippy`, `check-build`,
 `build-frontend`, `filestore-*`, `switch-gui-test`, `build-remote`, **and
 `switch-gw`**) refuse here via `_build-host-guard`. Run those from aibox or services1.

@@ -84,10 +84,13 @@ X first", X has already cost someone a day.
     **and `nix.settings.max-jobs = 0`**, which removes the silent local fallback — a build aibox
     can't take fails instead of melting the gateway (`nix config show | grep max-jobs`
     is `0`, `/etc/nix/machines` names 10.3.1.32, and `infra.buildFarm.gc = false` keeps
-    the garbage collector off this box). `nix develop` **is** a build: the devShell
-    depends on `CRANE.wasmBindgenCli`, which is compiled with cargo. On 2026-10-21 a
-    `just check` on gw (its `fmt-check` ran `nix develop`) put four `rustc` processes on
-    the gateway. `just check` and `just fmt` are eval/format only (`nix flake check
+    the garbage collector off this box). `nix develop` **was** a build: the one devShell
+    then depended on `CRANE.wasmBindgenCli`, which is compiled with cargo, and on
+    2026-10-21 a `just check` on gw (its `fmt-check` ran `nix develop`) put four `rustc`
+    processes on the gateway. The toolchain is split now — `nix develop` substitutes
+    everything it carries, `nix develop .#wasm` is the one that compiles the pinned
+    wasm-bindgen, and the justfile's SPA recipes ask for it by name — but that is not
+    why the guard stays. `just check` and `just fmt` are eval/format only (`nix flake check
     --no-build`, `nix fmt` from the flake's `formatter`) and are safe on gw; `just
     test|clippy|check-build|build-frontend|filestore-*|switch-gui-test|build-remote`
     remain refused on gw via `_build-host-guard` in the justfile — the guard stays
