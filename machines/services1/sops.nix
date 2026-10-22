@@ -2,10 +2,15 @@
 # secrets/secrets.yaml into /run/secrets. The *_FILE paths in config.nix
 # point there.
 #
-# Secrets that are embedded into generated configs at build time (slack_url,
-# unifi_db_password, mattermost_authentik_secret, nginx_sso_client_secret,
-# nginx_sso_auth, pg_pass, status_dashboard_lan_token) are read via
-# config.sopsSecretText instead and are deliberately not declared here.
+# The build-time half is NOT listed here any more, because a comment listing
+# exceptions is a list that goes stale: it named seven names while ten were going down
+# that path. `config.sopsSecretText` now refuses any name that is not in
+# `infra.buildTimeSecrets` (common/sops.nix), and that attrset — one sentence per name,
+# each one saying why the secret has to be *inside* a generated file — is the list. So:
+# what is declared below is what lands in /run/secrets on this box; what is in
+# `infra.buildTimeSecrets` is what the nix store can see, and the eval enforces both
+# directions of that sentence. See AGENTS.md, "Secrets", for what build-time decryption
+# costs.
 {
   sops.secrets = {
     # acme, door-entry-management-system, gocardless-authentik-sync

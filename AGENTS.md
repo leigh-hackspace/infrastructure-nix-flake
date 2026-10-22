@@ -582,10 +582,31 @@ there is declarative. **Root SSH is keyed here** (unlike the flake machines):
 - Secrets are sops-encrypted in `secrets/secrets.yaml`. sops-nix renders the runtime ones
   to **`/run/secrets/<name>`** (root:secrets, `0440`); `machines/services1/sops.nix`
   declares which ones exist and `common/config.nix` holds the `*_FILE` paths services
-  read (`ENV_FILE = /run/secrets/env_file`, …). Secrets embedded into generated configs at
-  build time go through `config.sopsSecretText` instead. **Reference the paths; never read
+  read (`ENV_FILE = /run/secrets/env_file`, …). **Reference the paths; never read
   a secret's contents into a transcript, and never print a token.** (Older notes here said
   `/var/lib/secrets` — that path is gone.)
+- **`config.sopsSecretText` is the build-time path, and it is gated by name.** What it
+  returns is a **world-readable store path**, present on every box that builds or
+  substitutes, and it decrypts the *whole* `secrets.yaml` to extract one value. A name may
+  therefore go through it only if it is in `infra.buildTimeSecrets` (`common/sops.nix`)
+  with the sentence saying why the secret must be *inside* a generated file — a systemd
+  unit, a rendered config, an initrd — rather than opened from `/run/secrets` at runtime;
+  the eval throws on a name that is not listed, and on a name that is not a bare
+  identifier. Each listed name is a credential in the store forever, by name. The comment
+  this replaced listed "the exceptions" in `machines/services1/sops.nix` and had drifted to
+  seven of ten — a comment listing exceptions is a list nobody updates — which is why the
+  list is an option with an assertion now (audit §4: `docs/flake-simplification-audit-2026-10-22.md`).
+- **What build-time decryption costs, in one place.** The secret boundary is *not*
+  `root:secrets`; it is **any code that runs during a build, on any machine that takes a
+  build**: the age key sits at `0440 root:nixbld`, `/var/lib/sops-nix` is in
+  `extra-sandbox-paths`, services1/services2 build with `sandbox = "relaxed"`, and all
+  three delegate builds to aibox, which holds the same key. Those tmpfiles rules are a
+  **repair, not an install** — a `z` rule does nothing when the path is absent (verified
+  against an `f` rule on gw), so `just install-sops-key` is the mechanism and skipping it
+  fails much later as a sops error inside an unrelated build. And each name is its own
+  `runCommand` decrypting the whole `secrets.yaml` for one key, all of them keyed on the
+  file: change `slack_url` and every unit that embeds any secret is dirtied and
+  restarted. That is the reason the runtime model is the default and this list is short.
 - Prefer `EnvironmentFile` on the unit so a `DynamicUser` service never opens the secret
   file (the pattern `switch-gui.nix` uses) over a service reading `CONFIG.ENV_FILE` itself.
 - OIDC client secrets are write-only in the authentik UI and readable through the ORM:
