@@ -81,7 +81,7 @@ X first", X has already cost someone a day.
 22. **Don't build on the router — and now it can't.** gw had **no remote builder** until
     2026-10-21, so a build there compiled locally on the 4-core box that answers DNS and
     DHCP for the whole network; it now sets `infra.buildFarm.builderHost = HOSTS.aibox`
-    **and `nix.maxJobs = 0`**, which removes the silent local fallback — a build aibox
+    **and `nix.settings.max-jobs = 0`**, which removes the silent local fallback — a build aibox
     can't take fails instead of melting the gateway (`nix config show | grep max-jobs`
     is `0`, `/etc/nix/machines` names 10.3.1.32, and `infra.buildFarm.gc = false` keeps
     the garbage collector off this box). `nix develop` **is** a build: the devShell

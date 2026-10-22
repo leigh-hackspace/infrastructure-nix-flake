@@ -17,7 +17,7 @@ flakeInputs: {
   # `trusted-users` (already set by hand in ./configuration.nix, where the push path's
   # need for it is explained; the two lists simply merge).
   #
-  # **`maxJobs = 0` is the part that makes the rule mechanical.**  Remote building
+  # **`nix.settings.max-jobs = 0` is the part that makes the rule mechanical.**  Remote building
   # prefers the builder and *falls back to local in silence* when no builder can take
   # the job — so a builder alone still leaves the failure mode, just rarer (aibox
   # down, aibox out of disk, one unrepresentable derivation).  With the local daemon
@@ -43,7 +43,11 @@ flakeInputs: {
   # the network's.
   infra.buildFarm.builderHost = (import ../../common/hosts.nix).aibox;
   infra.buildFarm.gc = false;
-  nix.maxJobs = 0;
+  # The renamed form of the option: `nix.maxJobs` still works but is a deprecated
+  # alias, and this line is load-bearing — it is what removes the silent local
+  # fallback — so it must not turn into a hard error the day nixpkgs deletes the
+  # alias.  `nix config show` prints the setting as `max-jobs` either way.
+  nix.settings.max-jobs = 0;
 
   imports = [
     ./configuration.nix

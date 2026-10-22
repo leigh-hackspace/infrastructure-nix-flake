@@ -18,7 +18,7 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   neither half of `common/build-farm.nix`: `/etc/nix/machines` did not exist, so every
   build — including the accidental kind an agent reaches for — compiled on the router.
   `machines/gw/default.nix` now sets `infra.buildFarm.builderHost = HOSTS.aibox` **and
-  `nix.maxJobs = 0`**, and imports the module with `infra.buildFarm.gc = false` (the
+  `nix.settings.max-jobs = 0`**, and imports the module with `infra.buildFarm.gc = false` (the
   router delegates; it does not collect garbage on a timer).
 
   The `maxJobs = 0` is the half that makes the rule mechanical. `nix.distributedBuilds`

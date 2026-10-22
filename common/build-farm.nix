@@ -35,7 +35,7 @@
 #   aibox:      infra.buildFarm.serveBuilds = true;
 #   gw:         infra.buildFarm.builderHost = HOSTS.aibox, and gc = false — the router
 #               delegates its builds but does not collect garbage (machines/gw/
-#               default.nix explains the `nix.maxJobs = 0` that goes with it);
+#               default.nix explains the `nix.settings.max-jobs = 0` that goes with it);
 #   services2:  neither — served builds until 2026-10-17, now a client with no builder.
 {
   config,

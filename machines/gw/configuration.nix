@@ -39,7 +39,7 @@
   # --target-host leigh-admin@10.3.1.1 --elevate=sudo`, which builds there, copies
   # the closure over and activates over ssh. That is still the way, and it is no longer
   # the only safe way: this box now delegates to aibox and runs its daemon with
-  # `nix.maxJobs = 0` (./default.nix), so a local `nixos-rebuild` cannot compile the
+  # `nix.settings.max-jobs = 0` (./default.nix), so a local `nixos-rebuild` cannot compile the
   # crate ./network-status.nix adds here — that crate is built on aibox and copied back.
   # What a local switch still costs is the **evaluation**, on the box that answers DNS
   # and DHCP for every VLAN, which is why the checkout, `git` and `just` here stay for

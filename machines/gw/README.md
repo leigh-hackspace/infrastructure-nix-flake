@@ -678,7 +678,7 @@ to skip and one reboot away from an unbootable machine:
 
 This is a router: 4 cores, 8 GB, and the DNS/DHCP answer for every VLAN. It now **delegates
 its builds to aibox** (`infra.buildFarm.builderHost` in `./default.nix`, same as
-services1) and runs its own daemon with **`nix.maxJobs = 0`**, so there is nothing to
+services1) and runs its own daemon with **`nix.settings.max-jobs = 0`**, so there is nothing to
 fall back to: a build that aibox cannot take fails instead of quietly compiling here.
 Check it with `nix config show | grep -E 'max-jobs|build-withers'` and `cat
 /etc/nix/machines`. The garbage-collection half of `common/build-farm.nix` is switched

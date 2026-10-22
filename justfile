@@ -26,9 +26,9 @@ switch:
 # --- where builds may run ----------------------------------------------------
 #
 # The router must not compile anything.  Since 2026-10-21 it also cannot: gw sets
-# `infra.buildFarm.builderHost = HOSTS.aibox` and `nix.maxJobs = 0`, so a build started
-# here is built on aibox or fails — the second half is what removes the silent local
-# fallback (common/build-farm.nix documents that `--max-jobs 0` "does not enable
+# `infra.buildFarm.builderHost = HOSTS.aibox` and `nix.settings.max-jobs = 0`, so a build
+# started here is built on aibox or fails — the second half is what removes the silent
+# local fallback (common/build-farm.nix documents that `--max-jobs 0` "does not enable
 # delegation, it removes the local fallback").  Before that, a build here ran locally on
 # 8 GB and 4 cores, and `nix develop` **is** a build: the devShell depends on
 # CRANE.wasmBindgenCli, compiled from source with cargo.  On 2026-10-21 a `just check` on
@@ -48,7 +48,7 @@ _build-host-guard:
     if [ "$(hostname)" = "gw" ] && [ -z "${INFRA_ALLOW_BUILD_ON_ROUTER:-}" ]; then
         echo "refusing: this is gw, the network's router — builds delegate to aibox and evaluation costs this box." >&2
         echo "  Run this from aibox or services1 instead (AGENTS.md, 'Don't build on the router')." >&2
-        echo "  Nothing here compiles locally either way: nix.maxJobs is 0, so there is no fallback to fall back to." >&2
+        echo "  Nothing here compiles locally either way: nix.settings.max-jobs is 0, so there is no fallback to fall back to." >&2
         echo "  Override with INFRA_ALLOW_BUILD_ON_ROUTER=1 only if you really mean it." >&2
         exit 1
     fi

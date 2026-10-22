@@ -348,12 +348,23 @@ gw is a router, not a builder: 4 cores, 8 GB, and it answers DNS and DHCP for ev
 VLAN. Since 2026-10-21 it is also a **client** of the network's builder
 (`infra.buildFarm.builderHost = HOSTS.aibox` in `machines/gw/default.nix`, so
 `common/build-farm.nix` writes `/etc/nix/machines` here and turns on
-`nix.distributedBuilds`) and it runs its own daemon with **`nix.maxJobs = 0`**. That
+`nix.distributedBuilds`) and it runs its own daemon with **`nix.settings.max-jobs =
+0`** (not the deprecated `nix.maxJobs` alias — the setting is load-bearing, so it must
+not become a hard error the day nixpkgs deletes the alias). That
 second half is what makes the rule mechanical: remote building *prefers* the builder
 and falls back to local in silence, and `max-jobs = 0` removes the fallback — a build
 aibox cannot take fails instead of compiling on the gateway. Check both with `nix
 config show | grep max-jobs` and `cat /etc/nix/machines`. The GC half of that module is
 deliberately off on this box (`infra.buildFarm.gc = false`).
+
+One thing to know when a renamed option complains: the warning names the file NixOS
+thinks defined it — `The option \`nix.maxJobs\` … defined in
+\`/nix/store/…-source/flake.nix\`` — and **`flake.nix` is where the module list lives,
+not where the option is set.** The real definition is whichever machine module the
+evaluation was for (`machines/gw/default.nix`, in this case). `/nix/store/…-source/`
+**is** this repo, at the commit you ran, so the tail of the path is the file to edit and
+the head of it means nothing; chasing `flake.nix` costs a read of 400 lines that do not
+mention the option.
 
 So the accident is gone and the rule is not: **evaluation is still paid on the router**,
 and the deliberate deploy path is still build-there-and-push. Keeping "evaluates" and
