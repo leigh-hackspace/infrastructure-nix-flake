@@ -64,14 +64,20 @@ let
 
   # A successful builtins.match with no captured group, or a failed one, is []/null;
   # every extraction below goes through here.
-  firstMatch = l: if l == null || l == [ ] then null else builtins.head l;
+  firstMatch = l:
+    if l == null || l == []
+    then null
+    else builtins.head l;
 
   # ... and the pair they are always used as: extract, then drop what did not match.
   matched = ls: builtins.filter (x: x != null) (map firstMatch ls);
 
   has = sub: s: builtins.replaceStrings [sub] [""] s != s;
 
-  uniq = builtins.foldl' (acc: x: if builtins.elem x acc then acc else acc ++ [x]) [ ];
+  uniq = builtins.foldl' (acc: x:
+    if builtins.elem x acc
+    then acc
+    else acc ++ [x]) [];
 
   # A line may name a thing that is gone when it says so in the line. This is what makes
   # the lint a hard check rather than a nag: history stays writable, and the exception
@@ -142,30 +148,31 @@ let
   # read the identifier after it. `just <name>` and `just --summary` have no plain name
   # and fall out as null; `just test|clippy|…` yields its first entry; `just filestore-*`
   # yields `filestore-`, which is a real family, and `just dns-sync-*` did not.
-  recipeFindings =
-    let
-      # The identifier right after "`just ", if the line offers one.
-      tokensIn =
-        line:
-        matched (
-          map
-            (builtins.match "([A-Za-z][A-Za-z0-9_.-]*)([^A-Za-z0-9_.-].*)?")
-            (builtins.tail (builtins.filter builtins.isString (builtins.split "`just " line)))
+  recipeFindings = let
+    # The identifier right after "`just ", if the line offers one.
+    tokensIn = line:
+      matched (
+        map
+        (builtins.match "([A-Za-z][A-Za-z0-9_.-]*)([^A-Za-z0-9_.-].*)?")
+        (builtins.tail (builtins.filter builtins.isString (builtins.split "`just " line)))
+      );
+    known = t: builtins.elem t definedNames || builtins.any (r: hasPrefix t r) definedNames;
+    walk = f: ls: n:
+      if ls == [] || ls == null
+      then []
+      else let
+        l = builtins.head ls;
+        rest = builtins.tail ls;
+        bad = builtins.filter (t: !known t) (tokensIn l);
+        mine = map (t: "${f}:${toString n}: no recipe `just ${t}` in the justfile") (
+          if historical l
+          then []
+          else bad
         );
-      known = t: builtins.elem t definedNames || builtins.any (r: hasPrefix t r) definedNames;
-      walk = f: ls: n:
-        if ls == [ ] || ls == null then
-          [ ]
-        else
-          let
-            l = builtins.head ls;
-            rest = builtins.tail ls;
-            bad = builtins.filter (t: !known t) (tokensIn l);
-            mine = map (t: "${f}:${toString n}: no recipe `just ${t}` in the justfile") (if historical l then [ ] else bad);
-          in
-            mine ++ walk f rest (n + 1);
-    in
-      builtins.concatLists (map (f: walk f (linesOf (read f)) 1) instructionFiles);
+      in
+        mine ++ walk f rest (n + 1);
+  in
+    builtins.concatLists (map (f: walk f (linesOf (read f)) 1) instructionFiles);
 
   # --- check 2: repo paths with a file extension --------------------------------
   #
@@ -174,75 +181,81 @@ let
   # `machines/gw/lib/check-network-tables.nix:19` loses its line number, and a `*` marks
   # a glob and is skipped. `builtins.pathExists` over `root + "/…"` is pure evaluation:
   # no store copy, no network, nothing built.
-  pathFindings =
-    let
-      dirs = [
-        "common/"
-        "machines/"
-        "crates/"
-        "docs/"
-        "secrets/"
-      ];
-      extensions = [
-        ".nix"
-        ".md"
-        ".yaml"
-        ".sample"
-        ".sh"
-        ".toml"
-        ".rs"
-        ".json"
-        ".conf"
-        ".service"
-        ".ignore"
-        ".txt"
-      ];
-      # A run of path characters at the start of whatever followed the directory, with
-      # trailing punctuation off the end: prose writes `common/hosts.nix.` and a greedy
-      # class would go looking for a file named "hosts.nix.".
-      pathToken = s:
-        let
-          raw = builtins.match "([A-Za-z0-9._/-]+)(.*)" s;
-          trim = builtins.match "(.*[A-Za-z0-9_-])(.*)" (if raw == null || raw == [ ] then "" else builtins.head raw);
-        in
-          if raw == null || raw == [ ] then
-            null
-          else if trim == null || trim == [ ] then
-            builtins.head raw
-          else
-            builtins.head trim;
-      candidatesIn = line: builtins.concatLists (
+  pathFindings = let
+    dirs = [
+      "common/"
+      "machines/"
+      "crates/"
+      "docs/"
+      "secrets/"
+    ];
+    extensions = [
+      ".nix"
+      ".md"
+      ".yaml"
+      ".sample"
+      ".sh"
+      ".toml"
+      ".rs"
+      ".json"
+      ".conf"
+      ".service"
+      ".ignore"
+      ".txt"
+    ];
+    # A run of path characters at the start of whatever followed the directory, with
+    # trailing punctuation off the end: prose writes `common/hosts.nix.` and a greedy
+    # class would go looking for a file named "hosts.nix.".
+    pathToken = s: let
+      raw = builtins.match "([A-Za-z0-9._/-]+)(.*)" s;
+      trim = builtins.match "(.*[A-Za-z0-9_-])(.*)" (
+        if raw == null || raw == []
+        then ""
+        else builtins.head raw
+      );
+    in
+      if raw == null || raw == []
+      then null
+      else if trim == null || trim == []
+      then builtins.head raw
+      else builtins.head trim;
+    candidatesIn = line:
+      builtins.concatLists (
         map
         (d: map (t: d + t) (builtins.filter (x: x != null) (map pathToken (builtins.tail (builtins.filter builtins.isString (builtins.split d line))))))
         dirs
       );
-      plausible = ps: builtins.filter (p: builtins.any (e: has e p) extensions) (uniq ps);
-      # One path mentioned inside another is not a second reference:
-      # `machines/services1/secrets/.env.sample` also contains "secrets/", and splitting
-      # on each directory would invent `secrets/.env.sample`. Anything that is the tail
-      # of a candidate that *does* exist is therefore that longer path seen from a
-      # different angle, and is dropped.
-      hasSuffix = suf: s:
-        let ls = builtins.stringLength s; lf = builtins.stringLength suf;
-        in ls >= lf && builtins.substring (ls - lf) lf s == suf;
-      resolve = ps:
-        let
-          good = builtins.filter (p: builtins.pathExists (root + "/${p}")) ps;
-        in
-          builtins.filter (p: !builtins.any (q: q != p && hasSuffix "/${p}" q) good) ps;
-      walk = f: ls: n:
-        if ls == [ ] || ls == null then
-          [ ]
-        else
-          let
-            l = builtins.head ls;
-            rest = builtins.tail ls;
-            bad = builtins.filter (p: !has "*" p && !builtins.pathExists (root + "/${p}")) (resolve (plausible (candidatesIn l)));
-            mine = map (p: "${f}:${toString n}: no such file, referenced as ${p}") (if historical l then [ ] else bad);
-          in
-            mine ++ walk f rest (n + 1);
+    plausible = ps: builtins.filter (p: builtins.any (e: has e p) extensions) (uniq ps);
+    # One path mentioned inside another is not a second reference:
+    # `machines/services1/secrets/.env.sample` also contains "secrets/", and splitting
+    # on each directory would invent `secrets/.env.sample`. Anything that is the tail
+    # of a candidate that *does* exist is therefore that longer path seen from a
+    # different angle, and is dropped.
+    hasSuffix = suf: s: let
+      ls = builtins.stringLength s;
+      lf = builtins.stringLength suf;
     in
-      builtins.concatLists (map (f: walk f (linesOf (read f)) 1) instructionFiles);
+      ls >= lf && builtins.substring (ls - lf) lf s == suf;
+    resolve = ps: let
+      good = builtins.filter (p: builtins.pathExists (root + "/${p}")) ps;
+    in
+      builtins.filter (p: !builtins.any (q: q != p && hasSuffix "/${p}" q) good) ps;
+    walk = f: ls: n:
+      if ls == [] || ls == null
+      then []
+      else let
+        l = builtins.head ls;
+        rest = builtins.tail ls;
+        bad = builtins.filter (p: !has "*" p && !builtins.pathExists (root + "/${p}")) (resolve (plausible (candidatesIn l)));
+        mine = map (p: "${f}:${toString n}: no such file, referenced as ${p}") (
+          if historical l
+          then []
+          else bad
+        );
+      in
+        mine ++ walk f rest (n + 1);
+  in
+    builtins.concatLists (map (f: walk f (linesOf (read f)) 1) instructionFiles);
 
   # --- check 3: every doc is read by something ----------------------------------
   #
@@ -257,7 +270,7 @@ let
 
   haystackFor = self:
     builtins.concatStringsSep "\n" (
-      [ instructionText ]
+      [instructionText]
       ++ map (d: builtins.readFile (root + "/docs/${d}")) (builtins.filter (d: d != self) docFiles)
       ++ map builtins.readFile machineReadmes
     );
@@ -270,28 +283,26 @@ let
     "co-exist"
     "coexist"
   ];
-  shadowFindings =
-    let
-      walk = ls: n:
-        if ls == [ ] || ls == null then
-          [ ]
-        else
-          let
-            l = builtins.head ls;
-            rest = builtins.tail ls;
-            mine =
-              if builtins.any (w: has w l) shadowWords && !historical l
-              then [ "AGENTS.md:${toString n}: calls the router a shadow: ${l}" ]
-              else [ ];
-          in
-            mine ++ walk rest (n + 1);
-    in
-      walk (linesOf (read "AGENTS.md")) 1;
+  shadowFindings = let
+    walk = ls: n:
+      if ls == [] || ls == null
+      then []
+      else let
+        l = builtins.head ls;
+        rest = builtins.tail ls;
+        mine =
+          if builtins.any (w: has w l) shadowWords && !historical l
+          then ["AGENTS.md:${toString n}: calls the router a shadow: ${l}"]
+          else [];
+      in
+        mine ++ walk rest (n + 1);
+  in
+    walk (linesOf (read "AGENTS.md")) 1;
 
   findings = recipeFindings ++ pathFindings ++ orphanFindings ++ shadowFindings;
 in
-  if findings == [ ] then
-    "ok\n"
+  if findings == []
+  then "ok\n"
   else
     throw ''
       check-doc-pointers: ${toString (builtins.length findings)} finding(s):

@@ -57,10 +57,10 @@ _build-host-guard:
 
 # --- the router (gw)
 #
-# It is the network's router as of 2026-10-21 (`machines/gw/coexist.nix` is
-# `enable = false`), so it answers on `10.3.1.1`. `10.3.1.254` was the co-existence
-# address: it belongs to generations built before the cutover, so pass
-# `GW_HOST=10.3.1.254` only if you are working on one of those.
+# It is the network's router as of 2026-10-21, so it answers on `10.3.1.1` —
+# `machines/gw/coexist.nix` and the whole co-existence mode were deleted on 2026-10-22.
+# `10.3.1.254` was the co-existence address: it belongs to generations built before the
+# cutover, so pass `GW_HOST=10.3.1.254` only if you are working on one of those.
 GW_HOST := "10.3.1.1"
 #
 # Deployed by building *here* and pushing to the router.  It used to build on the
@@ -254,9 +254,9 @@ router-known-hosts:
 # Rebuild+switch for the netboot setup, then reboot the netbooted clients.
 #
 # The image is `machines/pi-room-sys` — an in-tree machine, so edit it and
-# rebuild: there is no pin to move any more (it used to be a `git+file://` input
-# with a `just update-netboot-input` to drag flake.lock along, and the pin going
-# stale in silence is exactly why that is gone).  Boot flow and what aibox
+# rebuild: the `git+file://` input it used to boot from is gone, and so is its
+# `just update-netboot-input`, deleted because a pin going stale in silence is exactly
+# what that recipe existed to avoid and nobody ran it.  Boot flow and what aibox
 # exports: machines/pi-room-sys/README.md.
 switch-netboot:
     #!/usr/bin/env bash
@@ -363,6 +363,13 @@ check:
     # flake check` above; this is the version that prints which record is wrong.
     echo "=== router network tables (vlans <-> dns-records <-> ACL)"
     nix eval --impure --raw -f machines/gw/lib/check-network-tables.nix
+    # The instructions themselves: every `just <name>` in AGENTS.md/README.md/justfile is
+    # a recipe, every repo path they name exists, every docs/*.md is linked from
+    # somewhere, and AGENTS.md does not call the router a shadow. Eval-only, like the
+    # three above, so it is safe on gw — which is the reason it is a Nix evaluator and
+    # not the compiled linter the audit proposed (see its header).
+    echo "=== doc pointers (recipes, paths, docs, the router's own status)"
+    nix eval --impure --raw -f common/check-doc-pointers.nix
     # The gatus endpoint guard is a module assertion in
     # machines/services1/services/monitoring.nix, so the `nix flake check` above
     # already runs it: every https *.int endpoint in common/monitoring-endpoints.nix

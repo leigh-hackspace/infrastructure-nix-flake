@@ -217,10 +217,12 @@ X first", X has already cost someone a day.
 
 - Deploy with the justfile: `just switch` / `just boot` (`sudo nixos-rebuild
   switch --flake .` + `sudo nixos-confirm`, chained).
-- **Check before you deploy:** `just check` (`nix flake check --no-build`, three
+- **Check before you deploy:** `just check` (`nix flake check --no-build`, four
   assertion evals —
   `machines/services1/lib/check-config-to-gitlab.nix`,
-  `common/check-printer-states.nix` and `machines/gw/lib/check-network-tables.nix` —
+  `common/check-printer-states.nix`, `machines/gw/lib/check-network-tables.nix` and
+  `common/check-doc-pointers.nix` (the recipe names, repo paths and doc links these
+  instructions promise) —
   and `nix fmt -- --check` over every tracked
   `.nix`; the gatus endpoint guard is a module assertion in
   `machines/services1/services/monitoring.nix`, so `nix flake check` is what catches that

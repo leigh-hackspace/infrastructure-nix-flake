@@ -339,7 +339,7 @@
     };
 
     /*
-    The three hand-written assertion files, as flake checks (§2.6).
+    The four hand-written assertion files, as flake checks (§2.6).
 
     They are plain functions rather than modules — `nix eval --impure --raw -f
     <file>` runs them, which is what `just check` does because that form *prints*
@@ -351,12 +351,12 @@
     below relies on that: forcing the value at *evaluation* is the test, so the check
     runs under `nix flake check --no-build` (no derivation is built and none needs
     to be — the derivation is one line of text, and on the router that difference is
-    the whole rule about not compiling here).  The three entry points are then:
+    the whole rule about not compiling here).  The four entry points are then:
     `nix flake check` (this), `just check` (the same calls, with the message), and —
     for the network tables only — the module assertion in
     `machines/gw/lib/assert-network-tables.nix`, which is what stops a router being
     *built* from tables that disagree.  `"ok\n"` is the seam between them: if a
-    checker ever returns the failures as a list instead of throwing, all three
+    checker ever returns the failures as a list instead of throwing, all of the
     comparisons change together.
     */
     checks.${system} = let
@@ -381,6 +381,13 @@
       # about something the network does not run — see `just check`'s own note and
       # docs/flake-simplification-audit-2026-10-22.md §6.
       config-to-gitlab = asCheck "config-to-gitlab" (import ./machines/services1/lib/check-config-to-gitlab.nix);
+
+      # The instructions themselves: every `just <name>`, repo path and docs link in
+      # AGENTS.md/README.md/justfile resolves to something that exists, and AGENTS.md
+      # never describes the router as a shadow.  The one check here that can go red with
+      # no code touched at all — which is exactly how `just dns-sync-sync` survived in
+      # rule 14 for months after the recipe was deleted.
+      doc-pointers = asCheck "doc-pointers" (import ./common/check-doc-pointers.nix);
     };
 
     # `nix develop`

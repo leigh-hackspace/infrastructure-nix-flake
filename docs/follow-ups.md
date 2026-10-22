@@ -82,7 +82,7 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   `just check` — gw, because it evaluates and formats without compiling — is now a
   box where that command fails for a reason that has nothing to do with the change
   being checked. Workaround, until the src read goes: run the gate on services1 or
-  aibox, and locally use the three standalone assertion evals
+  aibox, and locally use the four standalone assertion evals
   (`machines/gw/lib/check-network-tables.nix`, `common/check-printer-states.nix`,
   `machines/services1/lib/check-config-to-gitlab.nix`) plus `nix eval` of the option
   you changed. The durable fix is the one the crane header already prescribes — hand

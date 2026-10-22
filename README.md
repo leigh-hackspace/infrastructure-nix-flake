@@ -77,7 +77,7 @@ Two things bite, and both are load-bearing:
 - **`just check`, not `nix flake check`.** The bare flake idiom *builds* — the
   devShells, `packages.strata`, `strata-cuda` and `whisper-ws`, ~10 minutes on a lock
   bump — and a build on `gw` is a compile on the box that answers DNS for the network.
-  `just check` passes `--no-build`, runs the three standalone assertion evals and
+  `just check` passes `--no-build`, runs the four standalone assertion evals and
   `nix fmt -- --check`, and is therefore safe anywhere; the build-shaped recipes
   (`just check-build`, `just test`, `just clippy`, `just build-frontend`,
   `just filestore-*`, `just switch-gui-test`, `just build-remote`) refuse to run on
