@@ -12,6 +12,27 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
 
 ## Nix / build
 
+- **The door entry package cannot be built by the builder, and it is not reproducible**
+  (measured 2026-10-22 while proving `inputs.door-entry-management-system`'s new
+  `nixpkgs.follows` edge; **both facts are older than that change** — the same
+  attributes are on the pre-change drv in services1's store and the post-change one on
+  aibox, because they come from the package, not from nixpkgs).
+  `door-entry-management-system` sets **`__noChroot`**, so aibox's daemon — whose
+  `sandbox` is `true` — refuses the derivation outright:
+  `error: derivation '…-door-entry-management-system-1.1.9.drv' has '__noChroot' set,
+  but that's not allowed when 'sandbox' is 'true'`. services1 and services2 run
+  `nix.settings.sandbox = "relaxed"` (`machines/<m>/configuration.nix`) and so build it
+  locally, which is why it has always worked and why `just check-build` **on aibox**
+  stops on it: that failure is this item, not your change. Reproduce it with
+  `nix build --no-link ".#nixosConfigurations.services1.pkgs.door-entry-management-system"`
+  (it needs no system build) and prove it builds with `--option sandbox relaxed` — that
+  succeeded in 37 s at the current lock. Second fact: `--rebuild` on the already-valid
+  drv prints `may not be deterministic: output … differs`, so this package's output path
+  moves every time it is built and "identical drvPath / identical output" is not a proof
+  that includes it. Two options, neither taken here: find the non-determinism upstream
+  and fix it, or stop `just check-build` from promising more on aibox than aibox can
+  build (and say so in the recipe's own comment).
+
 - **gw now delegates its builds to aibox and has no local fallback (added
   2026-10-21, deployed to gw the same evening).** Until today gw was the one machine
   that imported
