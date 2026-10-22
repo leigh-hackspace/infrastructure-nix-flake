@@ -28,7 +28,7 @@ row names what was actually done, not what was planned.
 | 7 | `AGENTS.md`'s router text and its `dns-sync` rules | **done 2026-10-22** — rule 14 and the Deploying bullet now name `common/int-dns.nix`, and every "replacement router / 10.3.1.254 / co-exist" claim in `AGENTS.md` is gone (the layout section says the box *is* the router at 10.3.1.1, and that its checkout is a `--delete` mirror rather than a place to edit) |
 | 7 | the other six wrong pointers in the drift table | **done 2026-10-22** — `justfile`'s network-status note, `machines/gw/networking.nix`, `printer-monitoring.nix`, `machines/services2/configuration.nix`, `common/dns-records.nix`, and `secrets/.env.sample`'s real path |
 | 6 | the stale counts ("all three machines") | **done 2026-10-22** — `AGENTS.md` says four deployable machines and five configurations, `common/nas.nix`/`common/containers.nix` name the three that import them, `machines/gw/configuration.nix` and the `just check` comment stop saying "both"/"all three" |
-| 3 | `nix.maxJobs` → `nix.settings.max-jobs` | open |
+| 3 | `nix.maxJobs` → `nix.settings.max-jobs` | **done 2026-10-22** — the option, the three places that quoted it as load-bearing, and the docs; verified by evaluating `nixosConfigurations.gw.config.warnings` (now `[]`) and `nix config show`'s `max-jobs` is unaffected. `docs/nix-dev-workflow.md` gained the misattribution note the same row asked for |
 | 2.3 | `door-entry-management-system` follows `nixpkgs` | open |
 | 1.1, 3 | the fact table and `just check` in `README.md` | open |
 | 2.1, 2.2, 2.6 | `mkSystem`, `flakeInputs` in `specialArgs`, `checks.` | open |

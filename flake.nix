@@ -10,7 +10,16 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
-    door-entry-management-system.url = "github:leigh-hackspace/door-entry-system?dir=management-system";
+    # The door entry system's management server (deployed on services1: its
+    # backend + frontend units).  It is an input like every other source here, which
+    # means it follows this flake's nixpkgs: without the follows line it drags in its
+    # *own* nixpkgs node — one measured 435 MB fetched at *evaluation* time, fourteen
+    # months behind the network's, unmovable by `just update-pkgs`.  With it the whole
+    # flake evaluates on one stdenv and one lock.
+    door-entry-management-system = {
+      url = "github:leigh-hackspace/door-entry-system?dir=management-system";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
     # door-entry-bluetooth-web-app.url = "github:leigh-hackspace/door-entry-system?dir=bluetooth-web-app";
 
     llama-cpp = {
