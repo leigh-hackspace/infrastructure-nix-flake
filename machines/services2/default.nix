@@ -1,4 +1,11 @@
-flakeInputs: {
+{
+  # `flakeInputs` arrives through specialArgs — flake.nix's `extraArgs` — for the one
+  # line that needs it (`flakeInputs.sops-nix.nixosModules.sops` below: a dashed
+  # attribute name cannot be a function-argument pattern, which is why this file used
+  # to be `flakeInputs: {…}` applied at flake.nix's call site).
+  flakeInputs,
+  ...
+}: {
   networking.hostName = "services2"; # Define your hostname.
 
   # services2 no longer serves remote builds (2026-10-17): aibox is the network's

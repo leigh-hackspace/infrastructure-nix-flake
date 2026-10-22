@@ -1,4 +1,11 @@
-flakeInputs: {
+{
+  # `flakeInputs` arrives through specialArgs — flake.nix's `extraArgs` — for the one
+  # line that needs it (`flakeInputs.sops-nix.nixosModules.sops` near the bottom: a
+  # dashed attribute name cannot be a function-argument pattern, which is why this file
+  # used to be `flakeInputs: {…}` applied at flake.nix's call site).
+  flakeInputs,
+  ...
+}: {
   # The name the network has always called this box: `common/hosts.nix` calls its
   # address `router`, and the old OPNsense box's hostname was `gw` — so every
   # client's known_hosts entry, `gw.int.leighhack.org` (this box's own

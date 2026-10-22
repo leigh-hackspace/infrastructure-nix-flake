@@ -122,6 +122,17 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   not on disk — instantiate it with `nix build --no-link --keep-going` on the
   pi-room-sys toplevel and inspect, rather than guessing from the module.
 
+  Re-measured 2026-10-22 while proving the `flake.nix` restructure (five copies →
+  `mkSystem`) was drv-neutral, which is exactly the case this item blocks: on a tree
+  whose only changes were `flake.nix` and the four `machines/<m>/default.nix`, the
+  `services1`/`services2`/`gw` toplevel `drvPath`s came out byte-identical and the
+  other two did not. **What aibox's `/etc` actually gains from the churn, in full:**
+  one line of `fstab` — the squashfs store path of the `/exports/netboot-squashfs`
+  bind mount (`diff -r` of `config.system.build.etc` before and after finds nothing
+  else). So the workaround for a proof like that is stated rather than guessed: compare
+  the three stable machines by `drvPath` and aibox by its rendered `/etc`, and expect
+  that one line. The squashfs itself keeps its contents; only its path moves.
+
 - **~17 GB of fat `-source` copies that only `nix store gc` can reclaim**
   (2026-10-18). Five 2.9 GB copies of the pre-`crates/` working tree, from the
   `builtins.getFlake "/abs/path"` evals of 2026-10-11/12, are each named by 2–6 old

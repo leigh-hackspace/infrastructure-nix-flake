@@ -67,15 +67,30 @@
   } @ flakeInputs: let
     system = "x86_64-linux";
 
-    # Make "nix-shell" use the flake version.  A plain module, not part of
-    # extraArgs: specialArgs is what modules read as arguments, so the module
-    # list refers to it by name here rather than repeating it per machine.
-    nix-shell-registry = {nix.registry.nixpkgs.flake = nixpkgs;};
+    # Make `nix registry query nixpkgs` answer with this flake's nixpkgs rather than
+    # with whatever channel the box happens to have.  (It is named after the module it
+    # feeds, not after `nix-shell`, which nobody here runs.) A plain module, and not
+    # part of extraArgs: specialArgs is what modules read as arguments, so mkSystem
+    # refers to it by name here rather than repeating it per machine.
+    useFlakeNixpkgsAsRegistry = {nix.registry.nixpkgs.flake = nixpkgs;};
 
-    # Helper sets handed to every module through specialArgs (modules read them
-    # as `INFRA`), so shared helpers are not re-imported in each file.
+    # Helper sets handed to every module through specialArgs (modules read them as
+    # `INFRA`), so shared helpers are not re-imported in each file — plus
+    # `flakeInputs` itself, which is what lets `machines/<name>/default.nix` be an
+    # ordinary module.
+    #
+    # It used to be curried: each machine directory was `flakeInputs: {…}`, applied at
+    # its call site below with `((import ./machines/services1) flakeInputs)`.  The only
+    # thing the four call sites needed it for was
+    # `flakeInputs.sops-nix.nixosModules.sops` in their `imports` — the dashed
+    # attribute name is not a legal function-argument pattern, so it could not come in
+    # as an ordinary module argument — and the signature was not even consistent:
+    # `machines/aibox/default.nix` was `flakeInputs: {config, pkgs, ...}: {…}`, a module
+    # that was a function returning a module, which is what a newcomer copying that
+    # file would have reproduced.  As a value in specialArgs it arrives by name.
     extraArgs = {
       INFRA = import ./common/systemd.nix {lib = nixpkgs.lib;};
+      flakeInputs = flakeInputs;
     };
 
     # The package set things that are not a machine's own `pkgs` are built with:
@@ -93,6 +108,96 @@
     # what puts it in `pkgs.whisper-ws` for whisper-ws.service's ExecStart.
     whisperWsPkg = pkgs.callPackage ./crates/whisper-ws/package.nix {};
 
+    /*
+    The five machines, as one function and five short calls (§2.1 of
+    docs/flake-simplification-audit-2026-10-22.md).
+
+    Before this there were five copies of `nixpkgs.lib.nixosSystem`, nine
+    `import nixpkgs`, six `config.allowUnfree = true` and three verbatim copies of
+    the shared module list.  The cost was not length, it was that the one fact worth
+    reading in that whole section — **what the router deliberately does not get** —
+    was a 30-line comment next to a list you had to diff by eye against another list
+    to confirm.  It is now the `modules` of that machine's call, and the shared half
+    has a name.
+
+    `commonModules` is what every box that hosts services gets; `routerModules` is
+    the router's, spelled out rather than filtered out of the other, because its
+    differences are the interesting part and a filter would hide them:
+
+      * no `./common/nas.nix` and no `./common/tools.nix`: the router is the thing
+        the network's DNS depends on, so it must not grow a dependency on a NAS that
+        is still importing after a power cut.  tools.nix's wait-for-network unit
+        reads `config.infra.nas.host`, which only exists with nas.nix, so the two are
+        added and removed together — which is the check that keeps them out.
+      * no `./common/containers.nix` and no `nixos-utils`' containers module: a
+        router runs dnsmasq, pppd, openvpn, tailscale, nft and its own small
+        dashboard (machines/gw/network-status.nix), and nothing else.
+      * `./common/build-farm.nix` **is** imported, with `gc = false`: gw delegates
+        its builds to aibox (machines/gw/default.nix) so that an accidental
+        `nix build`/`nix develop` cannot compile on the gateway, and the garbage
+        collection half stays off because a router that starts walking and rewriting
+        its own store on a timer is a second opinion about the rollback profile
+        nobody asked for.
+      * `./common/crane-args.nix` is here because that dashboard is a Rust crate; the
+        crate is built on aibox either way — by `just switch-gw`, or by a delegated
+        local build.
+
+    Module *order* is merge order, so these lists are behaviour and not formatting:
+    each machine's list is in the order the five copies used to spell it out, and the
+    check that they still are is that every machine's `system.build.toplevel` drvPath
+    is byte-identical across the change (docs/nix-dev-workflow.md, "proving a change
+    is drv-neutral").
+    */
+    commonModules = [
+      ./common/sops.nix
+      ./common/containers.nix
+      ./common/crane-args.nix
+      ./common/build-farm.nix
+      ./common/nas.nix
+      ./common/tools.nix
+      ./common/users.nix
+    ];
+
+    routerModules = [
+      ./common/sops.nix
+      ./common/users.nix
+      ./common/crane-args.nix
+      ./common/build-farm.nix
+    ];
+
+    mkSystem = {
+      modules,
+      # e.g. `{cudaSupport = true;}` for the box with the RTX 3060 — which used to be
+      # the whole reason services2 was a duplicate block.
+      pkgsConfig ? {},
+      # A system's own argument to its modules, for the one case a module cannot read
+      # any other way: aibox needs the netboot image's config, and an attrset cannot
+      # refer to its own sibling in `nixosConfigurations`.
+      extraArgs' ? {},
+      # The netboot image wants neither.  Its root is a tmpfs over a squashfs mounted
+      # off aibox and there is no profile to mark good, so `nixos-utils`' rollback
+      # module would be a timer that reboots a client into a generation that does not
+      # exist — and nothing runs `nix registry` on a PXE boot either.
+      registry ? true,
+      rollback ? true,
+    }:
+      nixpkgs.lib.nixosSystem {
+        inherit system;
+        pkgs = import nixpkgs {
+          inherit system;
+          config =
+            {
+              allowUnfree = true;
+            }
+            // pkgsConfig;
+        };
+        specialArgs = flakeInputs // extraArgs // extraArgs';
+        modules =
+          nixpkgs.lib.optionals registry [useFlakeNixpkgsAsRegistry]
+          ++ nixpkgs.lib.optionals rollback [nixos-utils.nixosModules.rollback]
+          ++ modules;
+      };
+
     # The Pi Room computers' image: a machine, but one nobody switches.  It is a
     # nixosConfiguration like any other in here, and it is *built by* aibox rather
     # than deployed — machines/aibox/netboot.nix serves its kernel, initrd,
@@ -101,24 +206,13 @@
     # `nixosConfigurations` directly: aibox's config needs it, and an attrset
     # cannot refer to its own sibling.
     #
-    # Deliberately absent: `nixos-utils.nixosModules.rollback`.  The root is a
-    # tmpfs over a squashfs mounted off aibox and there is no profile to mark
-    # good, so auto-rollback would be a timer that reboots a client into a
-    # generation that does not exist.
-    #
     # `nfsServer` is the address the *image* mounts its store from and it is an IP
     # for the reason written next to it in the file that came with this tree ("DNS
     # is too slow"); the iPXE menu that boots the image uses aibox's hostname, and
     # that string lives in machines/aibox/netboot.nix.
-    piRoomSys = nixpkgs.lib.nixosSystem {
-      inherit system;
-      pkgs = import nixpkgs {
-        inherit system;
-        config = {
-          allowUnfree = true;
-        };
-      };
-      specialArgs = flakeInputs // extraArgs;
+    piRoomSys = mkSystem {
+      registry = false;
+      rollback = false;
       modules = [
         ./machines/pi-room-sys/configuration.nix
         ((import ./machines/pi-room-sys/netboot.nix) {nfsServer = "10.3.1.32";})
@@ -137,31 +231,8 @@
     formatter.${system} = (import nixpkgs {inherit system;}).alejandra;
 
     nixosConfigurations = {
-      services1 = nixpkgs.lib.nixosSystem {
-        inherit system;
-        pkgs = import nixpkgs {
-          inherit system;
-          config = {
-            allowUnfree = true;
-          };
-        };
-        specialArgs = flakeInputs // extraArgs;
-        modules = [
-          nix-shell-registry
-
-          nixos-utils.nixosModules.rollback
-          nixos-utils.nixosModules.containers
-
-          ./common/sops.nix
-          ./common/containers.nix
-          ./common/crane-args.nix
-          ./common/build-farm.nix
-          ./common/nas.nix
-          ./common/tools.nix
-          ./common/users.nix
-
-          ((import ./machines/services1) flakeInputs)
-        ];
+      services1 = mkSystem {
+        modules = [nixos-utils.nixosModules.containers] ++ commonModules ++ [./machines/services1];
       };
 
       # The second services box: a clone of services1 on AMD/Radeon hardware.  It
@@ -174,143 +245,62 @@
       # Prometheus and by gatus from here.  See machines/services2/README.md for
       # what runs and what is left to measure it, and machines/services2/STRATA.md
       # for the engine.
-      services2 = nixpkgs.lib.nixosSystem {
-        inherit system;
-        pkgs = import nixpkgs {
-          inherit system;
-          config = {
-            allowUnfree = true;
-            # The RTX 3060 runs Strata's CUDA engine; this makes the splayed
-            # cudaPackages_13_0 the toolkit the box builds against (and pulls
-            # the CUDA stdenv in without a per-package override everywhere).
-            cudaSupport = true;
-          };
-        };
-        specialArgs = flakeInputs // extraArgs;
-        modules = [
-          nix-shell-registry
-
-          nixos-utils.nixosModules.rollback
-
-          ./common/sops.nix
-          ./common/containers.nix
-          ./common/crane-args.nix
-          ./common/build-farm.nix
-          ./common/nas.nix
-          ./common/tools.nix
-          ./common/users.nix
-
-          ((import ./machines/services2) flakeInputs)
-        ];
+      #
+      # `pkgsConfig` is the only reason this machine used to be a duplicate block:
+      # the RTX 3060 runs Strata's CUDA engine, and `cudaSupport` makes the splayed
+      # cudaPackages_13_0 the toolkit the box builds against (and pulls the CUDA
+      # stdenv in without a per-package override everywhere).  It gets no
+      # `nixos-utils.nixosModules.containers` — nothing here runs a container the
+      # other boxes do not.
+      services2 = mkSystem {
+        pkgsConfig = {cudaSupport = true;};
+        modules = commonModules ++ [./machines/services2];
       };
 
-      aibox = nixpkgs.lib.nixosSystem {
-        inherit system;
-        pkgs = import nixpkgs {
-          inherit system;
-          config = {
-            allowUnfree = true;
-          };
-        };
+      aibox = mkSystem {
         # `piRoomSys` because this box serves that image: machines/aibox/netboot.nix
         # reads its build tree (kernel, initrd, kernel params, squashfs store) and
         # its boot logo.  It is passed in rather than imported because it is a
         # nixosSystem, not a module.
-        specialArgs =
-          flakeInputs
-          // extraArgs
-          // {
-            piRoomSys = piRoomSys;
-          };
-        modules = [
-          nix-shell-registry
-
-          nixos-utils.nixosModules.rollback
-          nixos-utils.nixosModules.containers
-
-          ./common/sops.nix
-          ./common/containers.nix
-          ./common/crane-args.nix
-          ./common/build-farm.nix
-          ./common/nas.nix
-          ./common/tools.nix
-          ./common/users.nix
-
-          (
+        extraArgs' = {inherit piRoomSys;};
+        modules =
+          [nixos-utils.nixosModules.containers]
+          ++ commonModules
+          ++ [
+            # whisper-ws and the llama.cpp builds enter this box's package set here;
+            # `packages.whisper-ws` below is the same derivation, so it can also be
+            # built on its own without the whole system.
             {
-              config,
-              pkgs,
-              options,
-              ...
-            }: {
               nixpkgs.overlays = [
                 (final: prev: {
-                  # llama-cpp-leigh-rocm = llama-cpp.packages.${pkgs.stdenv.hostPlatform.system}.rocm;
-                  llama-cpp-leigh-vulkan = llama-cpp.packages.${pkgs.stdenv.hostPlatform.system}.vulkan;
-                  # llama-cpp-cpu = llama-cpp.packages.${pkgs.stdenv.hostPlatform.system}.default;
+                  # llama-cpp-leigh-rocm = llama-cpp.packages.${system}.rocm;
+                  llama-cpp-leigh-vulkan = llama-cpp.packages.${system}.vulkan;
+                  # llama-cpp-cpu = llama-cpp.packages.${system}.default;
                   whisper-ws = whisperWsPkg;
                 })
               ];
             }
-          )
-
-          ((import ./machines/aibox) flakeInputs)
-        ];
+            ./machines/aibox
+          ];
       };
 
       # The Pi Room netboot image.  Here so it is evaluated and built by this
       # flake like every other machine — `nixos-rebuild --flake .#pi-room-sys`
       # would not do anything to a host, because there is no host: aibox boots
       # these machines over iPXE and they mount their store off aibox at runtime.
-      # The why of the whole thing is in machines/pi-room-sys/README.md.
+      # The why of the whole thing is in machines/pi-room-sys/README.md, the
+      # `registry`/`rollback` flags of which are in mkSystem above.
       pi-room-sys = piRoomSys;
 
-      # The router.  It is *the* router: the Supermicro X9SCL/X9SCM described in
-      # machines/gw/README.md, cut over from the OPNsense appliance on 2026-10-21
-      # and answering on 10.3.1.1 (`common/hosts.nix`'s `router`), with dnsmasq
-      # generated from common/vlans.nix + common/dns-records.nix + common/int-dns.nix
-      # and nftables from common/config.nix.  Two consequences of what it is, both
-      # deliberate:
-      #
-      #   * No ./common/nas.nix and no ./common/tools.nix: the router is the thing
-      #     the network's DNS depends on, so it must not grow a dependency on a NAS
-      #     that is still importing after a power cut.  tools.nix's wait-for-network
-      #     unit reads `config.infra.nas.host`, which only exists with nas.nix, so
-      #     the two are added and removed together — which is the check that keeps
-      #     them out.
-      #   * ./common/build-farm.nix **is** imported, with `gc = false`: gw delegates
-      #     its builds to aibox (./machines/gw/default.nix) so that an accidental
-      #     `nix build`/`nix develop` cannot compile on the gateway, and the garbage
-      #     collection half of that module stays off because a router that starts
-      #     walking and rewriting its own store on a timer is a second opinion about
-      #     the rollback profile nobody asked for.  ./common/containers.nix is still
-      #     out: a router runs dnsmasq, pppd, openvpn, tailscale, nft and its own
-      #     small dashboard (machines/gw/network-status.nix), and nothing else.  The
-      #     dashboard is a Rust crate, so ./common/crane-args.nix is here to give that
-      #     module `CRANE`, and the crate is built on aibox either way — by
-      #     `just switch-gw`, or by a delegated local build.  The build-user invariant
-      #     it does get, from common/base.nix's own import of common/nixbld.nix.
-      gw = nixpkgs.lib.nixosSystem {
-        inherit system;
-        pkgs = import nixpkgs {
-          inherit system;
-          config = {
-            allowUnfree = true;
-          };
-        };
-        specialArgs = flakeInputs // extraArgs;
-        modules = [
-          nix-shell-registry
-
-          nixos-utils.nixosModules.rollback
-
-          ./common/sops.nix
-          ./common/users.nix
-          ./common/crane-args.nix
-          ./common/build-farm.nix
-
-          ((import ./machines/gw) flakeInputs)
-        ];
+      # The router: the Supermicro X9SCL/X9SCM at 10.3.1.1 (`common/hosts.nix`'s
+      # `router`), cut over from the OPNsense appliance on 2026-10-21 and described
+      # in machines/gw/README.md, with dnsmasq generated from common/vlans.nix +
+      # common/dns-records.nix + common/int-dns.nix and nftables from
+      # common/config.nix.  What it does not get, and the two reasons, are in the
+      # `routerModules` comment above: no NAS dependency on the box DNS waits for,
+      # and no container engine on the box that runs dnsmasq.
+      gw = mkSystem {
+        modules = routerModules ++ [./machines/gw];
       };
     };
 
@@ -343,6 +333,51 @@
         stdenv = pkgsCuda.cudaPackages_13_0.backendStdenv;
         cudaPackages = pkgsCuda.cudaPackages_13_0;
       };
+    };
+
+    /*
+    The three hand-written assertion files, as flake checks (§2.6).
+
+    They are plain functions rather than modules — `nix eval --impure --raw -f
+    <file>` runs them, which is what `just check` does because that form *prints*
+    which record is wrong — and until now nothing but that recipe ran them, so CI or
+    a stranger typing `nix flake check` got a green light on a tree whose network
+    tables disagreed.
+
+    Each one returns the string `"ok\n"` or throws with the finding, and the check
+    below relies on that: forcing the value at *evaluation* is the test, so the check
+    runs under `nix flake check --no-build` (no derivation is built and none needs
+    to be — the derivation is one line of text, and on the router that difference is
+    the whole rule about not compiling here).  The three entry points are then:
+    `nix flake check` (this), `just check` (the same calls, with the message), and —
+    for the network tables only — the module assertion in
+    `machines/gw/lib/assert-network-tables.nix`, which is what stops a router being
+    *built* from tables that disagree.  `"ok\n"` is the seam between them: if a
+    checker ever returns the failures as a list instead of throwing, all three
+    comparisons change together.
+    */
+    checks.${system} = let
+      # Force the checker and wrap its verdict in something `nix flake check` accepts.
+      asCheck = name: report:
+        assert (report == "ok\n");
+          pkgs.runCommand "check-${name}" {__evalCheck = true;} ''
+            printf '%s\n' '${name}: assertions hold' > $out
+          '';
+    in {
+      # common/vlans.nix <-> common/dns-records.nix <-> the ACL in common/config.nix:
+      # a VLAN id that is not in the first table or one address claimed twice is a
+      # client that gets the wrong address rather than a build failure.
+      network-tables = asCheck "network-tables" (import ./machines/gw/lib/check-network-tables.nix);
+
+      # The klippy/print state tables read out of crates/moonraker-exporter still match
+      # the Grafana value mappings and the Prometheus alert numbers generated from them.
+      printer-states = asCheck "printer-states" (import ./common/check-printer-states.nix);
+
+      # The Nix -> GITLAB_OMNIBUS_CONFIG serializer.  It covers a **parked** module
+      # (gitlab.nix is not imported), so this is the one check in here that is green
+      # about something the network does not run — see `just check`'s own note and
+      # docs/flake-simplification-audit-2026-10-22.md §6.
+      config-to-gitlab = asCheck "config-to-gitlab" (import ./machines/services1/lib/check-config-to-gitlab.nix);
     };
 
     # `nix develop`

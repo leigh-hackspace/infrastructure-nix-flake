@@ -1,6 +1,12 @@
-flakeInputs: {
+{
   config,
   pkgs,
+  # `flakeInputs` arrives through specialArgs — flake.nix's `extraArgs` — for the one
+  # line that needs it (`flakeInputs.sops-nix.nixosModules.sops` below).  This file was
+  # also the inconsistent signature of the four: `flakeInputs: {config, pkgs, ...}: {…}`,
+  # a module that was a function returning a module, so anyone copying it got the
+  # currying too.
+  flakeInputs,
   ...
 }: {
   networking.hostName = "aibox"; # Define your hostname.
