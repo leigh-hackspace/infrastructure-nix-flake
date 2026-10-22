@@ -197,7 +197,8 @@ build-frontend crate="all": _build-host-guard
 # network-status' SPA is the exception: it is SolidJS + esbuild, not Dioxus, and
 # its npm deps are not nixpkgs-cached, so the flake cannot rebuild it offline and
 # crates/network-status/frontend/dist is COMMITTED (see the note in
-# machines/services1/network-status.nix).  Build it with npm, then commit the
+# machines/gw/network-status.nix, where the service has run since 2026-10-21).  Build
+# it with npm, then commit the
 # result; `just network-status-dist-check` catches a bundle that has drifted from
 # src/.
 network-status-frontend:
@@ -336,7 +337,7 @@ update-pkgs:
 
 # --- filestore headless-browser test suite ---
 
-# Nix-level checks: the flake evaluates, both machines' option assertions hold,
+# Nix-level checks: the flake evaluates, the machines' option assertions hold,
 # the hand-rolled config serializers and the generated printer-state tables match
 # their expectations, and every tracked .nix file is alejandra-clean.  Fast
 # (evaluation only, no compilation).  The rest of the test surface: `just test`

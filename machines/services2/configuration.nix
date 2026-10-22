@@ -3,13 +3,13 @@
 # autoRollback, experimental-features) live in common/base.nix; keep this file
 # to what is specific to this box.
 #
-# services2 is a clone of services1 (same role, different hardware) that is
-# being brought up with **no services enabled yet**.  The module list in
-# flake.nix is therefore services1's minus containers/crane, and
-# machines/services2/networking.nix has the LAN/VLAN wiring but none of the
-# NAT/WireGuard/extraHosts that only matters once it hosts apps.  Add the
-# missing pieces (and the per-service modules) alongside the first real
-# service, not before — see ./README.md.
+# services2 is a clone of services1 on AMD/Radeon hardware.  Its module list in
+# flake.nix is services1's (containers and crane-args included); what it *runs* is
+# narrower: its own status dashboard and, since the RTX 3060 arrived, the Strata CUDA
+# engine — and nothing else, because its 30 GB of RAM is strata's.  The observability
+# stack that used to live here went to services1 on 2026-10-17.  See ./README.md for
+# what runs, ./STRATA.md for the engine, and add a per-service module alongside the
+# first real service that needs one, not before.
 {
   config,
   pkgs,

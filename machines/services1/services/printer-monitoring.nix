@@ -5,10 +5,10 @@
 # endpoint, so the `moonraker-exporter` tool (Rust source:
 # ../../../crates/moonraker-exporter, zero external crates) polls each printer's
 # Moonraker API on :7125 and re-exports the metrics for Prometheus to scrape
-# (scrape job "moonraker", configured in machines/services2/monitoring.nix).
+# (scrape job "moonraker", configured in machines/services1/services/observability.nix).
 #
-# It binds 0.0.0.0 because Prometheus now runs on services2, and a scrape from
-# another box cannot reach a loopback bind.  Same reasoning as the exporters in
+# It binds 0.0.0.0 because Prometheus runs on services1 (moved off services2 on
+# 2026-10-17) and a scrape from another box cannot reach a loopback bind.  Same reasoning as the exporters in
 # common/exporters.nix.
 #
 # Targets are fixed IPs on purpose so the exporter never depends on DNS.

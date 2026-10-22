@@ -1,8 +1,9 @@
 # NAS client: the NFS mounts, their automount units, and the `wait-for-nas`
 # gate that NAS-dependent services order themselves against.
 #
-# Imported for both machines in flake.nix.  A machine declares its shares in
-# `machines/<name>/hardware-configuration.nix`:
+# Imported for the three boxes that mount the NAS (services1, services2, aibox) in
+# flake.nix — never for gw, which is the thing the NAS's DNS depends on.  A machine
+# declares its shares in `machines/<name>/hardware-configuration.nix`:
 #
 #   infra.nas.exports = [
 #     { where = "/mnt/cameras"; share = "/mnt/sas-10k/cameras"; }

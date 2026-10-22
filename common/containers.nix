@@ -1,8 +1,9 @@
 # Podman and the "never give up" policy for every oci-containers unit.
 #
-# Imported for both machines in flake.nix.  The per-machine copies of this file
-# were byte-identical apart from services1's container-update timer, which now
-# lives in machines/services1/containers.nix.
+# Imported for the three boxes that run containers (services1, services2, aibox) in
+# flake.nix — deliberately not for gw, which runs dnsmasq instead.  The per-machine
+# copies of this file were byte-identical apart from services1's container-update
+# timer, which now lives in machines/services1/containers.nix.
 {
   config,
   lib,

@@ -17,7 +17,7 @@ X first", X has already cost someone a day.
 | change any service's behaviour, flags, API, ports, or deploy | `docs/services.md` (the crate's README too where one exists) |
 | touch how Rust is built: `common/crane.nix`, a `Cargo.toml`, `build.rs`, a Dioxus SPA | `docs/building-rust-code.md` |
 | run non-trivial nix, debug a wedged/hanging nix, build detached, remote-build | `docs/nix-dev-workflow.md` |
-| touch DNS, dnsmasq, the router, the DigitalOcean zone, a new vhost's name | `docs/router-and-dns.md` (+ `machines/gw/README.md` — the flake's replacement router is *deployed* at 10.3.1.254 in co-existence mode: it says what is proven on that box, what is still a guess, and what must not move until the cutover) |
+| touch DNS, dnsmasq, the router, the DigitalOcean zone, a new vhost's name | `docs/router-and-dns.md` (+ `machines/gw/README.md` — this box **is** the network's router, live at 10.3.1.1 since the 2026-10-21 cutover: it says what is proven on that box, what is still a guess, and what must not move) |
 | touch the ProCurve switches (device side, RADIUS, logins) | `docs/procurve-switches.md` + `crates/switch-gui/README.md` |
 | touch NAS mounts, the NAS itself, or backups/borg | `docs/nas-and-borg.md` |
 | touch the UniFi controller, its backups, or UniFi OS Server | `docs/unifi-os-server.md` — the appliance is a *downgrade* of the running controller, and `.unf` backups are encrypted with a key that is not on disk |
@@ -28,6 +28,7 @@ X first", X has already cost someone a day.
 | create or debug an OIDC app / authentik anything | `docs/authentik-oidc-notes.md` — **every part of it has bitten once** |
 | touch the authentik container stack on services1, or the migration/cutover off 10.3.1.36 | `docs/authentik-container-migration.md` — the flake half is a **parked shadow**, the appliance is the live IdP |
 | run a **full network upgrade** — one flake pass landed on every box the hop key reaches | `docs/network-upgrade-runbook.md` (the order, the gates, and what must *not* move) |
+| are new to this flake, or are about to **restructure** `flake.nix`/`common/` rather than add a service | `docs/flake-simplification-audit-2026-10-22.md` — where each fact lives, what `just check` actually does on each box, the two secret models, and the five structural changes worth making |
 | ask "why is it shaped like this?" | `docs/work-log-2026-10.md` and the dated post-mortems in `docs/` |
 
 ## The rules, in one place
@@ -58,8 +59,9 @@ X first", X has already cost someone a day.
     `wait-for-nas.service`** and keeps restarting forever.
 13. **Never print a secret, a token, or a config dump you cannot keep.** Reference
     secret *paths*; do not read contents into a transcript.
-14. **New vhosts need DNS** — `just dns-sync-sync` for `*.int`, hand-added for
-    public names.
+14. **New vhosts need DNS** — a `*.int` name is a row in `common/int-dns.nix` (no
+    command to run: the router renders that table and services1 refuses to evaluate
+    unless it matches its own vhosts); public names are hand-added in DigitalOcean.
 15. **Read the linked doc before creating an OIDC provider**, and keep new clients on
     the existing PKCE contract.
 16. **Nothing writes switch NVRAM unless asked.** A reboot is the only undo.
@@ -108,8 +110,8 @@ X first", X has already cost someone a day.
   this repo evaluates every machine and `just check` runs anywhere. Machines:
   `services1` (main services box, 10.3.1.20), `services2` (strata + its own status
   dashboard, 10.3.1.21 — `machines/services2/README.md`), `aibox` (10.3.1.32,
-  the network's build machine since 2026-10-17), `gw` (the network's replacement router, deployed at
-  10.3.1.254 *beside* the live router — `machines/gw/README.md`) and `pi-room-sys`
+  the network's build machine since 2026-10-17), `gw` (the network's **router**, live at
+  10.3.1.1 — `machines/gw/README.md`) and `pi-room-sys`
   (a machine that is *built by* aibox rather than deployed —
   `machines/pi-room-sys/README.md`).
 - `docs/` — reference docs (`services.md`, `building-rust-code.md`,
@@ -119,7 +121,7 @@ X first", X has already cost someone a day.
   (gtx1060 saga, sso-redesign, filestore gotchas, the repo audit). They live here
   rather than next to the modules so the flake source stays config only; module
   comments point into them when they need the backstory.
-- `common/` — shared modules imported by both machines: `tools.nix`, `users.nix`,
+- `common/` — shared modules imported by more than one machine: `tools.nix`, `users.nix`,
   `sops.nix`, `nixbld.nix` (the build-user invariant), `crane.nix` (the shared crane
   helpers), `frontend-build-spa.sh` (the one SPA build recipe all four Dioxus
   frontends call). **Network-wide facts live here, not per machine:** `config.nix`
@@ -158,21 +160,24 @@ X first", X has already cost someone a day.
   "never give up" restart policy for all `podman-*` services), `services/` (one file per
   service), `lib/` (nginx SSO helpers + the config-to-gitlab assertions), `sops.nix`
   (which runtime secrets exist as files under `/run/secrets` — **reference the paths, do
-  not read the contents**), `secrets/.env.sample` (the shape of the shared env-file
-  secret). `machines/services1/README.md` keeps what is not in the flake (tailscale
+  not read the contents**), `machines/services1/secrets/.env.sample` (the shape of the
+  shared env-file secret — `secrets/` at the top level holds only `secrets.yaml`).
+  `machines/services1/README.md` keeps what is not in the flake (tailscale
   client, secrets habits).
-- `machines/gw/` — the network's **replacement router**, generated from
-  `common/vlans.nix` + `common/dns-records.nix` (dnsmasq, nftables, the AAISP tunnel,
-  the tailnet client). It is **deployed** (a Supermicro X9SCL/X9SCM at 10.3.1.254)
-  but in **co-existence mode** (`machines/gw/coexist.nix`): every address ends in
-  `.254` instead of `.1`, DHCP and router advertisement are emitted commented-out and
-  refused by name, and it advertises no tailnet routes, because the OPNsense box at
-  10.3.1.1 is still the network's router. `machines/gw/README.md` is mandatory before
-  any change here — it separates what was read off the old box from what is a
-  placeholder, says which four things make a shadow router into the real one by
-  accident, and lists the cutover. `machines/gw/lib/check-network-tables.nix` runs
-  from `just check` and as a module assertion, and it is what refuses a co-exist
-  address that a lease could still claim.
+- `machines/gw/` — the network's **router**, a Supermicro X9SCL/X9SCM live at
+  **10.3.1.1**: cut over from the OPNsense appliance on 2026-10-21, which is retired.
+  **There is no shadow box and no second router** — `machines/gw/coexist.nix` and every
+  branch of co-existence mode were deleted on 2026-10-22, so a DHCP or RA change made
+  here is made to the box that hands out every address in the building. DNS/DHCP are
+  generated from `common/vlans.nix` + `common/dns-records.nix` + `common/int-dns.nix`,
+  nftables from `common/config.nix`, and the AAISP tunnel and tailnet client are in
+  `machines/gw/`. `machines/gw/README.md` is mandatory before any change here — it
+  separates what was read off the old box from what is still a guess, names the four
+  checks that prove the router is doing its job, and lists what is open. Its checkout is
+  a **mirror** for reading and the emergency fallback (`just sync-gw` rsyncs over it with
+  `--delete`), not a second place to edit. `machines/gw/lib/check-network-tables.nix`
+  runs from `just check` and as a module assertion, and it is what refuses a VLAN or
+  address the two tables disagree about.
 - `machines/pi-room-sys/` — the image the Pi Room computers **netboot**: a real
   `nixosConfiguration`, but one that runs on no box. aibox builds it and serves
   its kernel, initrd and squashfs store over iPXE + NFS
@@ -198,17 +203,18 @@ X first", X has already cost someone a day.
 
 - Deploy with the justfile: `just switch` / `just boot` (`sudo nixos-rebuild
   switch --flake .` + `sudo nixos-confirm`, chained).
-- **Check before you deploy:** `just check` (`nix flake check --no-build`, the two
+- **Check before you deploy:** `just check` (`nix flake check --no-build`, three
   assertion evals —
-  `machines/services1/lib/check-config-to-gitlab.nix` and
-  `common/check-printer-states.nix` — and `nix fmt -- --check` over every tracked
+  `machines/services1/lib/check-config-to-gitlab.nix`,
+  `common/check-printer-states.nix` and `machines/gw/lib/check-network-tables.nix` —
+  and `nix fmt -- --check` over every tracked
   `.nix`; the gatus endpoint guard is a module assertion in
   `machines/services1/services/monitoring.nix`, so `nix flake check` is what catches that
   drift). It evaluates and formats only, so it is safe to run **on gw**; the
   build-shaped recipes are not (`just check-build`, `just test`, `just clippy`,
   `just build-frontend`, `just filestore-*`, `just switch-gui-test`, `just
   build-remote`) and now refuse on gw via `_build-host-guard`. Then, when anything is built rather
-  than just evaluated, `just check-build` (`nix build` of all three machines'
+  than just evaluated, `just check-build` (`nix build` of all four deployable machines'
   system toplevels — compiles everything, activates nothing, writes no boot entry;
   it is **not** `nixos-rebuild dry-build`, which builds nothing). Budget ~75 min for
   a nixpkgs bump. `just test` runs the cargo
@@ -217,7 +223,9 @@ X first", X has already cost someone a day.
   `crates/switch-gui/tests/README.md`), `just build-remote` offloads a build to
   aibox.
 - **GOLDEN RULE — confirm immediately after every switch/boot.**
-  `system.autoRollback.enable = true` is set on **all three** machines. Read off the
+  `system.autoRollback.enable = true` is set on **all four** deployable machines (the
+  fifth configuration, `pi-room-sys`, is a netboot image with no profile to mark good).
+  Read off the
   unit script rather than guessed: activating a configuration **restarts the
   auto-rollback timer**, which fires **once, five minutes later**, compares
   `/run/current-system` with `/nix/var/nix/profiles/system-good` and, if they differ,
@@ -242,10 +250,13 @@ X first", X has already cost someone a day.
   3. Over ssh, chain it all in one command — and `cd` first, because `--flake .`
      resolves against the cwd:
      `ssh ... 'cd ~/Projects/infrastructure-nix-flake && sudo nixos-rebuild switch --flake .#<machine> && sudo nixos-confirm'`
-- **New vhosts need DNS records** before they resolve: `*.int.leighhack.org` →
-  10.3.1.20 via `just dns-sync-sync` (plus `just dns-sync-prune` after a rename or
-  removal, then `just dns-sync-check`); public `*.leighhack.org` names are **added by
-  hand** in DigitalOcean. The wildcard ACME cert covers both, so no cert work.
+- **New vhosts need DNS records** before they resolve: a `*.int.leighhack.org` name is a
+  row in `common/int-dns.nix` — the router renders that table into dnsmasq's `addn-hosts`
+  in the same activation, and `machines/services1/int-dns.nix` refuses to evaluate
+  services1 unless the table equals the `*.int` vhosts it serves. **There is no
+  `just dns-sync-*` any more** (`crates/dns-sync` was deleted on 2026-10-22, along with
+  the recipes); public `*.leighhack.org` names are still **added by hand** in
+  DigitalOcean. The wildcard ACME cert covers both, so no cert work.
   `docs/router-and-dns.md`.
 - **Long jobs are polled, never slept through** — see below.
 - Formatting: the whole tree is alejandra-clean and `just fmt` keeps it that way

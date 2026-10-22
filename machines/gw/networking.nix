@@ -53,7 +53,7 @@
   TABLE_AAISP = 100;
   TABLE_HUB = 200;
 
-  # The NIC names machines/constants.nix owns (see that file's header: they are
+  # The NIC names machines/gw/constants.nix owns (see that file's header: they are
   # hardware facts, keyed by name because a VLAN device has no MAC of its own,
   # and the `links` rules that pin each name to a MAC are in
   # hardware-configuration.nix, so these two names are what the box answers on.

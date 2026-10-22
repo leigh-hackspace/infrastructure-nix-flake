@@ -3,8 +3,10 @@
 # `dhcp-host=<mac>,set:<tag>,<ipv4>,[<ipv6>],<name>` lines from its `<Interfaces>`
 # XML, machines/gw/dns.nix generates the same lines from this table, and the
 # addresses the flake's own machines live on are the ones in here (see
-# ./hosts.nix, which is generated from this table's mirror image: every entry
-# here that is a flake machine must appear there, and the check module says so).
+# ./hosts.nix, its hand-maintained mirror image: every entry here that is a flake
+# machine must appear there and `machines/gw/lib/check-network-tables.nix` refuses the
+# disagreement — nothing generates hosts.nix, so the two tables are kept in step by that
+# check rather than by a build step).
 #
 # Why the MAC and not a name: the router cannot know a device's name, only its
 # hardware address — the `ether` on the wire, or the DHCP client ID for the

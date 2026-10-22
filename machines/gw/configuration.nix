@@ -118,7 +118,7 @@
   # source either — its dnsmasq conf answers DNS and nothing else).
   services.timesyncd.enable = true;
 
-  # GOLDEN RULE: common/base.nix sets system.autoRollback.enable for all three
+  # GOLDEN RULE: common/base.nix sets system.autoRollback.enable for every deployable
   # deployed machines; this one inherits it, so a switch here needs nixos-confirm
   # in the same shell invocation like everywhere else.
 
