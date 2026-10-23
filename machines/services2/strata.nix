@@ -125,6 +125,19 @@ let
     (toString context)
     "--kv"
     "int8"
+    # Pinned 2026-10-23 (engine 0.1.48.1): upstream made this default to -1, which
+    # means "--serve sizes a host-RAM conversation cache from the RAM still free
+    # once the model is loaded": 40 % of (available - 2560 MiB), in 256 MiB steps,
+    # at most 8192 MiB, off below 1024 (include/strata/core/conversation_memory.hpp,
+    # auto_conversation_cache_mib, upstream #3493; the call is in generate.cpp and
+    # only `--serve` takes it).  This box sits right on that threshold - 28.3 GiB
+    # RSS of 30 GiB, `free -m` says 3556 available with nothing loaded - so the
+    # rule answers 0 today but would start parking 2 GiB the moment the load is
+    # sized differently, and 2 GiB more is OOM here beside Prometheus.  0.1.46's
+    # default was 0, so this line is the old behaviour spelled, not a change: turn
+    # it on only after re-reading the sizing table above.
+    "--conversation-cache-mib"
+    "0"
     # Low-RAM mode (the profile needs ~32 GB of experts' RAM; this box has 30):
     # the experts not in the GPU cache are copied into RAM once. The alternative
     # is --mmap-experts, which reads them through the OS file cache - steadier

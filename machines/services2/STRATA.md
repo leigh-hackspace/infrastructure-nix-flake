@@ -200,6 +200,73 @@ receipt). Fix forward instead: keep the tree dirty-but-good, re-switch, and conf
 *that* (which is what happened here; the fixed engine came up 52 s after the new
 unit started).
 
+### Update: engine 0.1.48.1 — 2026-10-23
+
+`nix flake update strata` moved the input `9ae93f7` (Control 0.1.46.1) →
+`7ddc17a` (Control 0.1.48.1: engine 0.1.48 plus the Control-only hotfix, whose
+whole change is Windows long-path handling). What the bump does **for us**, read
+off `git diff 9ae93f7 7ddc17a` before deploying:
+
+- **One new default can move us on memory, and it sits right on our threshold.**
+  `--conversation-cache-mib` went from `0` (off, opt-in) to `-1` = "`--serve`
+  sizes a host-RAM cache for parked conversations from the RAM still free once
+  the model is loaded": 40 % of (available − `conversation_cache_min_free_mib`,
+  default 2560 MiB), in 256 MiB steps, at most 8192 MiB, off below 1024
+  (`auto_conversation_cache_mib`, upstream #3493; `prompt_cache` 6 and 4 slots are
+  the defaults on both revs, so the path fires). `free -m` here says 3556 MiB
+  available with nothing loaded — 996 usable, i.e. under the 1024 floor, so the
+  rule would answer 0 today — but that is a reading of free RAM at engine start on
+  a box that runs at 28.3 GiB RSS of 30 GiB, and the next 2 GiB of it is OOM
+  beside Prometheus. So `strata.nix` now passes **`--conversation-cache-mib 0`
+  explicitly**: the old behaviour, spelled, and upstream's own comment says an
+  explicit value "is never touched". The engine prints its decision either way
+  (`strata serve: conversation cache off: not enough free RAM…`).
+- **The copy list still covers upstream.** `serve/`, `strata_control`, `strata_cli`,
+  `tools/` and `data/` are what the runtime layer needs: at 0.1.48 nothing in those
+  three packages imports a top-level package outside them (an `ast` sweep of every
+  module-scope `import`/`from` in `serve`, `strata_control`, `strata_cli` found
+  none), and the build-time guard imports all three anyway.
+- **The engine flags in `engineArgs` still parse**: all of
+  `--pack --native --ple-gguf --expert-profile --expert-cache --prefill --spec
+  --spec-min-p --mtp --max-context --kv --resident-experts` are still in
+  `src/program/generate.cpp` at the new rev. `--spec-min-p` is on its way out
+  (`--draft-conf` replaces it) but only for `--draft dflash2`, which we do not use;
+  we stay on MTP.
+- **The `configFile` keys still read**: `exe args cwd tokenizer model_name log
+  allowed_hosts api_key backend lib_dirs env` all appear in `serve/server.py`, and
+  nothing in the new server requires a key we do not set.
+- **The model data on disk stays valid.** In `data/` only `gguf_fingerprints.json`
+  changed, and `draft_vocab.bin` (425196 bytes) and `expert-profile-coder.bin`
+  (98328) are byte-identical across the two revs — same md5 at `9ae93f7` and at
+  `7ddc17a` — so the hand-prepared pack, the MTP runtime and the `draft_vocab.bin`
+  copy under `~/Strata/mtp/rt` need nothing redone. `tools/iq_pack.py` grew a
+  resume path for interrupted writes; the index format (`index.txt`'s 19-field rows,
+  `src/core/weights.cpp`) is untouched.
+- **Nothing new phones home.** The runtime layer's URLs are all `127.0.0.1`, test
+  fixtures (`evil.example…`) and doc strings; `batch_telemetry` is still opt-in and
+  is an engine log line, not a network call; `telemetry_read_key` is a local read
+  endpoint.
+- **Two answer-changing defaults** (upstream's own words: "Answers are not bit-identical…
+  near-tie differences at default settings") — prefill scheduling and draft
+  selection — so the Coder's answers move at the edges of ties. No flag of ours
+  changed meaning.
+- **The other Strix-Halo defaults in 0.1.48/0.1.48.1 are gated where we do not
+  compile them**: `STRATA_PF_PAD` refuses itself on non-gfx11 cards, `STRATA_HC_Q8`
+  is an opt-in experiment (`docs/HIP_FUSED_GR.md` names its 0.25 GB/layer trade), the
+  8192-prompt chunk is Windows, and the new integrated-GPU `expert-cache auto` guard
+  (`uma_cache.hpp`) is UMA — it is aibox's change, not ours.
+
+The one thing this bump does **not** buy us: Gyro — the `gyro` family, `--ple-mode
+hybrid` (Cantiga/Fora/Gyro), and DFlash2 — none of it is this model or this card
+(DFlash2 wants ~1.2 GiB of VRAM and `--vram-reserve-mib 1900`, which the 12 GB card
+here has already spent on the arena and the cache).
+
+What gated the bump: the four assertion evals and `just fmt-check` pass; `nix flake
+check --no-build` dies as it does at this lock for every tree (`sops-secret-pg_pass.drv
+is not valid` — the eval-time secret read, `docs/follow-ups.md`, "`just check` is
+machine-dependent"), and `git stash` shows the same death at clean HEAD, so it is not
+this change.
+
 ## Differences from aibox worth knowing
 
 - **Backend is `cuda`** and the config sets `lib_dirs = [ "/run/opengl-driver/lib" ]`

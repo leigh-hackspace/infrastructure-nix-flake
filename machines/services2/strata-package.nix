@@ -12,7 +12,9 @@
 #   * backend CUDA, one arch: GA106 is Ampere, compute capability **sm_86**.
 #   * CUDA 13.0 (nixpkgs `cudaPackages_13_0`, via the `cudaSupport` on services2's
 #     nixpkgs import). Upstream setup.py's ready-made engine is CUDA 13.0 and
-#     its `LLAMA_CPP_COMMIT` (pinned once below) is unchanged across 0.1.41-0.1.44.1.
+#     its `LLAMA_CPP_COMMIT` (pinned once below) is unchanged across 0.1.41-0.1.48.1
+#     (re-read at the 2026-10-23 bump: setup.py still names the same revision, so
+#     the ggml / i-quant side of this build is byte-for-byte what 0.1.46 built).
 #   * `STRATA_PREFILL_MMQ=ON` is HIP-only (CMake FATAL_ERRORs if CUDA is on with
 #     it), so CUDA takes the default MMQ path; do not copy that flag from aibox.
 #
