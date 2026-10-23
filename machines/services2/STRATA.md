@@ -219,8 +219,10 @@ off `git diff 9ae93f7 7ddc17a` before deploying:
   a box that runs at 28.3 GiB RSS of 30 GiB, and the next 2 GiB of it is OOM
   beside Prometheus. So `strata.nix` now passes **`--conversation-cache-mib 0`
   explicitly**: the old behaviour, spelled, and upstream's own comment says an
-  explicit value "is never touched". The engine prints its decision either way
-  (`strata serve: conversation cache off: not enough free RAM…`).
+  explicit value "is never touched". The engine prints **nothing** about it then —
+  the `conversation cache off: not enough free RAM…` line is the *auto* path's refusal
+  (`generate.cpp:9385`), not what an explicit 0 says — so the proof is the rendered
+  config and the running engine's own argv, not a log line.
 - **The copy list still covers upstream.** `serve/`, `strata_control`, `strata_cli`,
   `tools/` and `data/` are what the runtime layer needs: at 0.1.48 nothing in those
   three packages imports a top-level package outside them (an `ast` sweep of every
@@ -267,6 +269,61 @@ is not valid` — the eval-time secret read, `docs/follow-ups.md`, "`just check`
 machine-dependent"), and `git stash` shows the same death at clean HEAD, so it is not
 this change.
 
+**What the deploy proved**, 2026-10-23:
+
+- Built on aibox (its checkout at `affbbbd`): `nix build .#strata-cuda --no-link
+  --print-out-paths` → **`/nix/store/8ksf1q4s986ii6m44i86cvi0a22y35r4-strata-unstable`**,
+  exit 0, 1,506,771,880 bytes. It led with ~2.5 min of CUDA package builds
+  (`cuda_cudart-13.0.96`, `cuda_nvcc-13.0.88`, `cuda_nvrtc`, `libcublas-13.1.1.3`…):
+  those outputs were in **neither** store at this lock (aibox and services2 both), so a
+  bump pays them once and then ~7.5 min of engine.
+- Copied back with **`?ssh-key=`**: `sudo nix copy --no-check-sigs --from
+  'ssh://leigh-admin@10.3.1.32?ssh-key=/home/leigh-admin/.ssh/agent-hop-key' <path>`.
+  Without the key parameter nix's ssh gets `Too many authentication failures` — there is
+  no agent on these boxes, so the bare sshurl in the cutover block above is not enough
+  from a shell.
+- `just switch` on services2: generation 19 → 20, activated at 19:50:53, `nixos-confirm`
+  chained and `system-good` == `/run/current-system` (the GOLDEN RULE, and the box
+  survived: `Result=success`, `RestartCount=0`). Activation's own words were
+  `stopping the following units: strata.service` then `starting the following units:
+  strata.service` — the engine reload is part of the activation, as it has always been.
+- The new engine is the one running: log banner `strata generate: session is up (engine
+  0.1.48.1)` (the newest of ten sessions in `/var/lib/strata/strata.log`), and its argv
+  carries the pin — `… --max-context 131072 --kv int8 --conversation-cache-mib 0
+  --resident-experts` — read off `/proc`, and `"--conversation-cache-mib","0"` appears
+  once in the rendered store config `d2qmk8lq…-strata-coder-iq1m.json` that `ExecStart`
+  names (rule 10: read the rendered unit *and* the rendered config).
+- **Memory came up 1.2 GiB higher than the sizing table's 27.4 GiB RSS**: cgroup
+  `MemoryCurrent=29.97 GiB`, `MemoryPeak=30.30 GiB`; `nvidia-smi` 11643 of 12288 MiB
+  (was 11499); swap 1949 MiB used (was 2305); `free -m` 3211 available. The arena shape
+  is unchanged — the engine's new `prefill plan inputs` line says 23.4 GiB experts, 3.7
+  GiB in the GPU caches, 22.8 GiB RAM copy — so the extra ~1.2 GiB is other structures
+  around the same arena. Still inside, but tighter, and it is the reason the auto
+  conversation cache stays pinned off: the box now has ~1.5 GiB less room than the table
+  implies, and `--conversation-cache-mib 0` is what keeps the floor.
+- Endpoints, in order: `/health` `loaded: true`, `api_key: true`, max_context 131072;
+  `/v1/models` 200 with the key and **401** without; the LAN `Host` trick
+  (`curl -H 'Host: strata.int.leighhack.org' http://10.3.1.21:8080/v1/models`) answers
+  **401 now, not 403** — the boundary is the same refusal, 0.1.48 words it as the
+  authentication error; `strata.int.leighhack.org` 200 with no key (nginx injects),
+  `strata.leighhack.org` 401 without a key and 200 with one. A chat completion answers
+  and puts the thinking in **`reasoning_content`** with `content: null` while the
+  completion is cut mid-reasoning (`finish_reason: length`) — this is **not** new in this
+  bump (`reasoning_content` appears 7× in `serve/server.py` at both revs), but nothing in
+  this file said it, and a consumer that reads only `content` loses every truncated
+  answer from a thinking model. Ask for enough tokens, or read both fields.
+- **aibox needed nothing** (`machines/aibox/strata.nix` is PARKED, so the bump does not
+  touch a deployed engine there), but its store gained the CUDA set and the new engine,
+  which is what the next services1/services2 bump will substitute instead of rebuilding.
+
+One slip to keep out of the habit: checking the vhost boundary by grepping services1's
+rendered `/etc/nginx/nginx.conf` printed the **injected `Authorization` header value**
+into the session transcript (2026-10-23). That value was already a world-readable store
+path (`docs/flake-simplification-audit-2026-10-22.md`, the `strata_api_key` bullet), so
+nothing new was exposed, but AGENTS.md rule 13 is the rule that was broken: read a
+header block by *name*, not with a grep that prints its value, and if a secret has to be
+compared, compare hashes.
+
 ## Differences from aibox worth knowing
 
 - **Backend is `cuda`** and the config sets `lib_dirs = [ "/run/opengl-driver/lib" ]`
@@ -284,7 +341,11 @@ this change.
   server 403s any `Host` it does not answer to (DNS-rebinding protection,
   `host_allowed()` in `serve/server.py`) and nginx forwards the incoming header
   upstream, so a name that is served but not listed answers every request
-  `Host '…' is not allowed (DNS rebinding protection)`.  That check runs **only
+  `Host '…' is not allowed (DNS rebinding protection)`.  **0.1.48 words both that
+  refusal and the missing-key refusal as the authentication error, so the LAN `Host`
+  trick and a keyless public call answer 401, not the 403 this paragraph describes
+  (measured 2026-10-23 at `0.1.48.1`): the boundary is the same refusal, the code changed
+  shape.**  That check runs **only
   while the engine has no API key** (`if svc.api_key or host_allowed(...)`), so
   the key is what lets the public name through without listing it — and taking
   the key out would make the public vhost 403 rather than expose an
