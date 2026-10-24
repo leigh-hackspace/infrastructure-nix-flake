@@ -201,17 +201,22 @@
   # that is only used for this is safe: nothing else on the box reads marks, and
   # conntrack keeps the decision for the connection's later packets through the
   # established rule.
+  #
+  # The two numbers are ./networking.nix's MARK_AAISP and MARK_HUB, named here
+  # because the output chain below needs the same number the VLAN 225 rule sets.
+  MARK_AAISP = 1;
+  MARK_HUB = 2;
   vlanMarkRules =
     builtins.concatStringsSep "\n"
     (
       map
       (
         v: ''
-          iifname "${TABLES.vlanDevice v}" ip daddr != ${markLocalV4} meta mark set ${
+          iifname "${TABLES.vlanDevice v}" ip daddr != ${markLocalV4} meta mark set ${toString (
             if v.id == 225
-            then "1"
-            else "2"
-          }
+            then MARK_AAISP
+            else MARK_HUB
+          )}
         ''
       )
       VLANS
@@ -368,7 +373,32 @@ in {
             # old box sent it out of the hub (`route-to (em3 ...)` on
             # tailscale0).  A packet for the LAN never reaches this mark because
             # its destination is in markLocalV4.
-            iifname "tailscale0" ip daddr != ${markLocalV4} meta mark set 2
+            iifname "tailscale0" ip daddr != ${markLocalV4} meta mark set ${toString MARK_HUB}
+          }
+
+          # The same decision for packets this box *originates*.
+          #
+          # The `dstnat` rows below translate the routed DMZ address
+          # (81.187.195.17) onto this box's own 10.3.1.1, so a request from the
+          # internet arrives on ppp0 while nginx's answer is locally generated —
+          # and locally generated traffic is unmarked, so it takes the main
+          # table's default, which is the hub.  The reply therefore left by a
+          # different ISP from the one the request came in on, carrying a source
+          # address neither of them owns, and whether it survived depended on
+          # the far side's ingress filtering.  Measured 2026-10-24: some clients
+          # completed the handshake while others (`/ts2021` from a phone on 5G,
+          # every datacentre probe) got a reset or a timeout, and forcing the
+          # reply back out of ppp0 turned all of them into 200s.
+          #
+          # `ip daddr != markLocalV4` keeps NAT reflection out of it: a LAN
+          # client asking for the public name gets a reply addressed to the LAN,
+          # and table 100 has no route to it.  IPv6 needs no equivalent — the
+          # tunnel's ip-up already owns the v6 default (./networking.nix).
+          # `ct status dnat` is true in both directions of the conntrack entry,
+          # so it identifies the reply without needing the inbound interface.
+          chain output {
+            type route hook output priority mangle; policy accept;
+            ct status dnat ip daddr != ${markLocalV4} meta mark set ${toString MARK_AAISP}
           }
 
           chain forward {

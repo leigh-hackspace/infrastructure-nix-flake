@@ -71,6 +71,8 @@ tunnel.** Read off the live box on 2026-10-21:
 | IPv6, every VLAN | `ppp0` | one main-table `default dev ppp0`, and **no `ip -6 rule`** |
 | tailnet exit-node traffic | `router-uplink` | `oifname "router-uplink" ip saddr 100.64.0.0/10 masquerade` |
 | the router's own traffic | `router-uplink` | main-table `default via 192.168.20.1` |
+| replies to inbound public 80/443/3478 | `ppp0`, like the request | `ct status dnat` → `mark 1` |
+| `192.168.49.0/24` (Grafton) | `tailscale0` | table 52, from the route `grafton-hackspace-client` advertises |
 
 Why it is split that way: the tunnel's overhead is only worth paying for the VLAN that
 hosts the public services, because those need the public `/29` and the `/48`. The `/29`
@@ -79,6 +81,25 @@ the tunnel, so VLAN 225 has to egress the tunnel for *both* directions — a rep
 out of the hub would leave with a different source address than the client dialled and
 the connection would die. Everything else is ordinary internet access, which double NATs
 fine.
+
+Two rows above are not a VLAN choice but a per-packet one, and both were wrong until
+2026-10-24:
+
+- **Replies to inbound public traffic must go back out the tunnel.** The `dstnat` rows
+translate `81.187.195.17` onto this box's own `10.3.1.1`, so nginx's answer is *locally
+generated* — and locally generated traffic is unmarked, so it took the hub's default and
+left by a different ISP from the one the request arrived on, with a source address
+neither of them owns. Some clients completed the handshake; a phone on 5G and every
+datacentre probe got a reset or timed out. `machines/gw/firewall.nix`'s `output` chain
+marks `ct status dnat` replies for table 100 now, except to addresses in `markLocalV4`
+(NAT reflection is a LAN reply and table 100 has no route to the LAN).
+- **`192.168.49.0/24` is the tailnet's.** The Grafton site is reachable through the
+`grafton-hackspace-client` VM's advertised subnet route, which `gw` accepts
+(`machines/gw/uplink.nix`), so tailscaled installs it in table 52 and `ip rule 5270`
+consults that table for every source — forwarded LAN traffic included, which is what
+makes it reachable from any VLAN. There is no static route for it any more: the old
+`via services1` row pointed at a WireGuard peer that never handshook (`0 B received`),
+so the subnet was black-holed for the whole LAN.
 
 Mechanism, in the order a packet meets it (`machines/gw/`): `firewall.nix`'s
 `vlanMarkRules` sets `meta mark 1` for `vlan225` and `2` for all others (in `prerouting`,
@@ -128,6 +149,29 @@ and both hosts files are `addn-hosts` entries and `restartTriggers` values — s
 record and the restart that makes dnsmasq notice it arrive in the same activation.
 (`/var/lib/dnsmasq/names.hosts`, the fourth file, is dead: see
 `machines/gw/README.md`.)
+
+### Caches, and the one that bites
+
+Everything outside `int.leighhack.org` is forwarded to the four upstreams in
+`machines/gw/dns.nix` under **`strict-order`**, so the first one (`9.9.9.9`) answers for
+the whole network and the others are failover. A stale answer in *that* resolver's cache
+is therefore the LAN's answer for the record's TTL, and flushing our own cache changes
+nothing. Before blaming the local config, ask the authority itself:
+`dig @ns1.digitalocean.com AAAA nginx.leighhack.org`.
+
+- `systemctl reload dnsmasq` runs `kill -HUP`, and on dnsmasq 2.93 that does **not**
+  clear the cache (measured 2026-10-24: the answer kept its remaining TTL across a
+  reload). To flush without interrupting DHCP:
+  `sudo busctl call uk.org.thekelleys.dnsmasq /uk/org/thekelleys/dnsmasq uk.org.thekelleys.dnsmasq ClearCache`.
+  A restart clears it too.
+- The public front-door names all CNAME to `nginx.leighhack.org`, whose AAAA must be
+  `gw`'s `2001:8b0:1d14:225::1`. While it is still services1's `::20`, **nothing breaks
+  on IPv4 and everything breaks on IPv6**: services1 is an origin on plain :80 now, so
+  `[2001:8b0:1d14:225::20]:443` refuses, and a client that tries IPv6 first fails before
+  it falls back. `tailscale.leighhack.org` (headscale, also on this box) is the visible
+  casualty — its clients retry `/ts2021` forever. That record is 300 s now rather than
+  3600, and a TTL change is also what pushes a corrected value to every DigitalOcean
+  edge; `docs/router-front-door-migration.md` has the incident.
 
 ### What `*.int` answers with, and why it is that address
 

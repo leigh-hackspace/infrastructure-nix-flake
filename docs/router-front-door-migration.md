@@ -121,8 +121,17 @@ The HTTP servers bind loopback (8085 headscale, 8086 headplane); every client of
 * **DigitalOcean.** `nginx.leighhack.org` is the CNAME target of every public name and
   its AAAA must be `gw`'s address (`2001:8b0:1d14:225::1`); `nginx.int.leighhack.org`
   is the CNAME target used off-LAN and points at `10.3.1.1` /
-  `fd99:dead:beef:225d::1`; `haproxy.int` follows. TTL is 3600, so a recursive resolver can
-  keep an old answer for an hour after the API says 200.
+  `fd99:dead:beef:225d::1`; `haproxy.int` follows. **The AAAA was left at services1's
+  `2001:8b0:1d14:225::20` when the flip shipped** — invisible on IPv4, fatal on IPv6
+  (services1 is an origin on :80, so `:443` refuses and an IPv6-first client fails before
+  it falls back). The casualty was the thing this box now hosts: tailnet clients could no
+  longer reach `tailscale.leighhack.org`, retrying `/ts2021` indefinitely. The API held
+  the right value while individual `ns1/ns2/ns3.digitalocean.com` edges still answered
+  `::20`; **re-saving the record is what pushes it to every edge** (a TTL change is
+  enough), and the resolvers holding the old answer — including the four
+  `machines/gw/dns.nix` forwards to — drain on their own TTL. The record is 300 s now,
+  not 3600: an hour of stale answers after every move is exactly how long this lasted.
+  `docs/router-and-dns.md`, "Caches, and the one that bites".
 * **`headscale` routes.** `gw` is the network's tailnet subnet router. The routes are in
   `machines/gw/uplink.nix`, but a manual `tailscale up` outranks the flake and
   `extraUpFlags` are applied by a **boot**; check

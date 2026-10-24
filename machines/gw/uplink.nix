@@ -280,6 +280,20 @@ in {
       ++ [
         "--advertise-exit-node"
       ]
+      # The other direction: routes the tailnet says *this* box may reach.
+      # `192.168.49.0/24` is the Grafton site, advertised by the
+      # `grafton-hackspace-client` VM on that site's router and approved in
+      # headscale.  Accepting it here is what makes the subnet reachable from the
+      # whole LAN: the router is every VLAN's default gateway, so the route has to
+      # be in this box's table for a device on 10.3.14.0/24 to get there at all.
+      # It used to be a static route via services1, whose WireGuard peer to that
+      # site is dead (`0 B received`; the site-to-site runs over the tailnet now)
+      # — measured 2026-10-24, when `--accept-routes` was off and every LAN client
+      # was black-holed at services1.  `tailscale set --accept-routes` applies to
+      # the running node; this line is what makes it survive a re-registration.
+      ++ [
+        "--accept-routes"
+      ]
       # The network's own blocks, advertised to the tailnet: this is the rule that
       # makes a laptop on the tailnet able to reach 10.3.1.20.  The list is the
       # aggregate blocks rather than one /24 per VLAN because that is what the

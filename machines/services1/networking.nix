@@ -150,10 +150,18 @@ in {
 
           # Forward all the traffic via VPN.
           # allowedIPs = [ "0.0.0.0/0" ];
-          # Or forward only particular subnets
+          # Or forward only particular subnets.
+          #
+          # `192.168.49.0/24` used to be here as well, and that was wrong once the
+          # Grafton site-to-site moved to the tailnet: the peer has never
+          # handshook (`wg show` reports `0 B received`), so claiming the subnet
+          # gave this box a route into a dead tunnel and made it the one host on
+          # the LAN that could not reach Grafton.  The route lives on gw now
+          # (`machines/gw/uplink.nix` accepts the tailnet route advertised by
+          # `grafton-hackspace-client`), and every LAN client — this one included —
+          # reaches it through the default gateway.
           allowedIPs = [
             "10.47.0.0/16"
-            "192.168.49.0/24"
           ];
 
           # Set this to the server IP and port.

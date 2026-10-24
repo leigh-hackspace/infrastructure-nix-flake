@@ -21,14 +21,19 @@ The tailscale **client** is installed manually (not part of this flake):
 `/etc/systemd/system/tailscaled.service` is a symlink into the nix store,
 with a NixOS drop-in from the deployed system. The **server** (headscale +
 headplane) moved to `machines/gw/headscale.nix`; this box no longer runs it.
+The client is **inactive** here as of 2026-10-24 — the network's tailnet client is
+`machines/gw/uplink.nix`, and nothing on this box depends on this one.
 
 Grafton site-to-site (grafton LAN 192.168.49.0/24 reachable from the hackspace
-via the `grafton-hackspace-client` VM on the grafton router) depends on this
-client ACCEPTING the `192.168.49.0/24` subnet route advertised by that VM.
-The acceptance is stored in the tailscaled state file
-(`/var/lib/tailscale/tailscaled.state`) and survives reboots.
-
-If the node is ever re-registered / state reset, re-run:
+via the `grafton-hackspace-client` VM on the grafton router) is **gw's** job now:
+that VM advertises the subnet route, headscale approves it
+(`headscale nodes approve-routes -i <node> -r 192.168.49.0/24`), and gw accepts
+routes, so tailscaled installs it in table 52 and every LAN client reaches it
+through the default gateway. This box used to be the acceptor, and its WireGuard
+peer to the site (`wg0`, which listed `192.168.49.0/24` in `allowedIPs`) never
+handshook (`0 B received`) — that claim is what black-holed the subnet for this
+box, and it is gone from `networking.nix`. The command below is only needed if
+this client is put back into service:
 
 ```bash
 sudo tailscale up --accept-routes --accept-dns=false \

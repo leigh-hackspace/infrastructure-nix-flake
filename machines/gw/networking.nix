@@ -325,24 +325,24 @@ in {
                 # reason.
                 DHCPPrefixDelegation = v.id == 226 || v.id == 227;
               };
-              # One static route on the wired VLAN, and no default route anywhere
-              # in networkd: this box's way out is ./uplink.nix (the AAISP tunnel
-              # in table 100, the hub's default in table 200 and in the main table,
+              # No default route anywhere in networkd, and no static routes any
+              # more: this box's way out is ./uplink.nix (the AAISP tunnel in
+              # table 100, the hub's default in table 200 and in the main table,
               # all written by pppd's ip-up), and a `Gateway=` on a downstream VLAN
               # would be a router installing a route to itself.  A [Route] section
               # rather than [Network] Gateway=, which systemd deprecated.
               #
-              # The static route is the old box's `192.168.49.0/24 via 10.3.1.20`
-              # (its <staticroutes> section, read 2026-10-17): a tailnet subnet
-              # route served by services1, which is on the LAN and must be reached
-              # through it rather than through the tunnel — the tunnel's own
-              # default would otherwise swallow it.
-              routes = lib.optionals (v.id == 225) [
-                {
-                  Destination = "192.168.49.0/24";
-                  Gateway = HOSTS.services1;
-                }
-              ];
+              # There is **no** static `192.168.49.0/24 via services1` any more.
+              # That route was the old box's (its <staticroutes> section, read
+              # 2026-10-17) and pointed the Grafton site at services1's WireGuard
+              # peer, which is dead (`0 B received`), so it black-holed the subnet
+              # for the whole LAN.  Grafton is a tailnet subnet route advertised by
+              # `grafton-hackspace-client` now, and ./uplink.nix accepts routes, so
+              # tailscaled installs it in table 52 — which `ip rule 5270` consults
+              # for every source, forwarded LAN traffic included.  Removing this
+              # route is what lets that one win; `markLocalV4` in ./firewall.nix
+              # still lists the subnet so no VLAN marks it for the hub's uplink.
+              routes = [];
               # The delegated prefix's per-VLAN half: networkd takes the /64 it
               # asked for on ppp0, appends `SubnetId` (the old box's track6 prefix
               # id), gives the VLAN an address from it, and routes the /64 here.
