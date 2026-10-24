@@ -18,7 +18,7 @@ X first", X has already cost someone a day.
 | touch how Rust is built: `common/crane.nix`, a `Cargo.toml`, `build.rs`, a Dioxus SPA | `docs/building-rust-code.md` |
 | run non-trivial nix, debug a wedged/hanging nix, build detached, remote-build | `docs/nix-dev-workflow.md` |
 | touch DNS, dnsmasq, the router, the DigitalOcean zone, a new vhost's name | `docs/router-and-dns.md` (+ `machines/gw/README.md` — this box **is** the network's router, live at 10.3.1.1 since the 2026-10-21 cutover: it says what is proven on that box, what is still a guess, and what must not move) |
-| move TLS termination, a vhost, the nginx-sso gate or `headscale` **between boxes** — i.e. work the router-as-front-door plan is preparing | `docs/router-front-door-migration.md` (**decided 2026-10-24: `gw` terminates everything the network has *one* of — cert, public + `*.int` vhosts, `nginx-sso`, `anubis`, the ACLs — and the boxes behind it are origins reachable only from it. Phase 1 is in tree, nothing deployed**: the router already terminates `*.int` and is provable at it, and `frontDoor` still answers at services1) + `docs/router-and-dns.md` |
+| move TLS termination, a vhost, the nginx-sso gate, `anubis` or `headscale` **between boxes** — i.e. work the router-as-front-door plan is preparing | `docs/router-front-door-migration.md` (**deployed 2026-10-24: `gw` terminates everything the network has *one* of — cert, public + `*.int` vhosts, `nginx-sso`, `anubis`, the ACLs — and `services1` is an *origin*: plain HTTP on :80, `CONFIG.ROUTER_ONLY`, no cert, no gate, no anubis. `headscale`/`headplane` also run on `gw` now. Phase-by-phase history and the deploy findings are in that doc**) + `docs/router-and-dns.md` |
 | touch the ProCurve switches (device side, RADIUS, logins) | `docs/procurve-switches.md` + `crates/switch-gui/README.md` |
 | touch NAS mounts, the NAS itself, or backups/borg | `docs/nas-and-borg.md` |
 | touch the UniFi controller, its backups, or UniFi OS Server | `docs/unifi-os-server.md` — the appliance is a *downgrade* of the running controller, and `.unf` backups are encrypted with a key that is not on disk |
@@ -146,25 +146,27 @@ X first", X has already cost someone a day.
     parked module is never evaluated, so its rot is silent. The six in tree (affine,
     samba, gitlab, authentik on services1; nvidia, strata on aibox) each carry their own
     re-verify command, because "just uncomment it" is not one.
-24. **A vhost move is a guard move.** `machines/services1/int-dns.nix` refuses to
-    evaluate services1 unless `common/int-dns.nix` equals **that box's**
-    `services.nginx.virtualHosts` (names + `serverAliases`, derived by
-    `common/nginx/int-vhost-names.nix`), and the gatus endpoint guard in
-    `machines/services1/services/monitoring.nix` is the *same* derivation. So when
-    nginx, its ACME cert or the `nginx-sso` gate move to another box — the router-centred
-    front-door plan is exactly that — the guard moves in the **same** change, or the next
-    `just switch` on the old box fails on a table/vhost mismatch and the moved names stop
-    being checked. The router-side version is `machines/gw/int-dns.nix`, imported by
-    `machines/gw/default.nix`; it is a module rather than a third `just check` evaluator
-    because it compares against a config, and it has **two modes** — a subset check while
-    `common/int-dns.nix`'s `frontDoor` names another box (that is how a staged move gets
-    proven) and an equality check the moment it names `gw` — both read from the same string
-    the dnsmasq rendering reads, so the answer and the assertion cannot be moved apart. The
-    table-only half stays `machines/gw/lib/check-network-tables.nix`, which is the thing on
-    `gw` that cannot be "fixed by deploying" for the same reason. `docs/router-front-door-migration.md`
-    lists the other consequences of the move (two boxes issuing one wildcard cert, headscale's
-    state directory, `CONFIG.LOCAL_NETWORK` ACLs staying because a router vhost is reached
-    from the router's own interfaces).
+24. **A vhost move is a guard move.** There are two guards now, one per kind of box, and
+    a move fails one of them unless both halves move together:
+    * `machines/gw/int-dns.nix` (imported by `machines/gw/default.nix`) refuses to
+      evaluate `gw` unless its `services.nginx.virtualHosts` (names +
+      `serverAliases`, derived by `common/nginx/int-vhost-names.nix`) equal
+      `common/int-dns.nix`'s `names` + `exempt`. `frontDoor = "gw"` since the flip, so
+      the check is equality; before that it had a subset mode so a staged door could be
+      proven without moving an answer.
+    * `machines/services1/int-dns.nix` refuses to evaluate the origin unless its vhosts
+      are **exactly** the `upstream = "origin"` rows in `common/front-door.nix`. A name
+      that becomes a direct row (served by the door itself) and keeps a vhost here is a
+      second config for one name, which is the drift the move removed.
+    * the gatus endpoint guard in `machines/services1/services/monitoring.nix` reads
+      `common/int-dns.nix` rather than a vhost list, because after the move the names it
+      checks are answered by `gw`, not by this box.
+    The router-side guard is a module rather than a third `just check` evaluator because
+    it compares against a config; the table-only half stays
+    `machines/gw/lib/check-network-tables.nix`, which is the thing on `gw` that cannot be
+    "fixed by deploying". `docs/router-front-door-migration.md` has the full set of
+    consequences and the deploy's own findings (the headscale state-copy ownership, the
+    DigitalOcean records that had to move with the answers).
 25. **The remote-build hop is the daemon's ssh, not the operator's.** nix runs it as
     uid 0 out of `HOME=/root`, so the account whose `~/.ssh/known_hosts` makes a manual
     `ssh -i ~/.ssh/agent-hop-key 10.3.1.32` work is a **different ssh**, and a delegating
@@ -220,11 +222,14 @@ X first", X has already cost someone a day.
   network-wide for the same reason `hosts.nix` is,
   and `machines/gw/lib/check-network-tables.nix` is what refuses to let them drift,
   `nginx/`
-  (`sso-vhost.nix`, `int-vhost.nix`, `int-vhost-names.nix`), `exporters.nix`,
-  `build-farm.nix` (GC + remote building), `monitoring-endpoints.nix` (the gatus
-  endpoint data). `common/nginx/` and `common/config.nix` are shared because services1
-  is the TLS terminator for the whole network: a vhost defined there can proxy to a
-  service running on another box.
+  (`front-door.nix` — the renderer for `common/front-door.nix`; `origin-vhost.nix` —
+  what `services1`'s app-shaped vhosts use now; `int-vhost.nix`; `int-vhost-names.nix`;
+  `sso-vhost.nix` is the old services1 gate helper, kept for the parked modules),
+  `exporters.nix`, `build-farm.nix` (GC + remote building), `monitoring-endpoints.nix`
+  (the gatus endpoint data). `common/nginx/` and `common/config.nix` are shared because
+  `gw` is the TLS terminator and front door for the whole network: every name is one row
+  in `common/front-door.nix`, and an origin vhost can only proxy to a service running on
+  another box.
 - `crates/` — **every Rust crate lives under here**, and `crates/Cargo.toml` makes the
   native ones **one cargo workspace**: one `Cargo.lock`, one `target/`, and
   `cargo build|test|clippy --workspace` (or `-p <name>`) from `crates/` covers the
@@ -534,10 +539,16 @@ listed here is in the doc named for it.
 - **NixOS systemd units:** `Restart`/`RestartSec` live in `serviceConfig`;
   `StartLimitIntervalSec`/`StartLimitBurst` live on the unit itself
   (`systemd.services.<name>.startLimitIntervalSec`), **not** in `serviceConfig`.
-- **nginx:** public apps use `mkSSOVirtualHost` (auth via nginx-sso at 127.0.0.1:8082,
-  injects `X-WEBAUTH-USER`); internal apps use `status.int`-style vhosts with
-  `CONFIG.LOCAL_NETWORK` ACLs. ACME cert covers `*.leighhack.org` /
-  `*.int.leighhack.org` (DNS challenge).
+- **nginx:** `gw` is the front door. Every name is a row in `common/front-door.nix`,
+  rendered by `common/nginx/front-door.nix`; `*.int` names also live in
+  `common/int-dns.nix`. The ACME cert (`security.acme` on `gw` only) covers
+  `leighhack.org`, `*.leighhack.org`, `*.ai.leighhack.org` and `*.int.leighhack.org`
+  (DNS challenge), and `front-door-cert-check.service` is what proves it is CA-issued
+  rather than the minica fallback. `nginx-sso` and `anubis` run on `gw`, both on
+  loopback; public rows with `sso = true` inject `X-WEBAUTH-USER`, LAN rows use
+  `CONFIG.LOCAL_NETWORK`, and an origin uses `CONFIG.ROUTER_ONLY` on plain HTTP :80.
+  `services1` has no certificate, no gate and no anubis — putting one back is how a
+  second front door gets created.
 - **Core switches** are the ProCurve 2510G-48s at 10.3.1.2 (`switch1`) and 10.3.1.3
   (`switch2`) plus the 2824 at 10.3.1.4 (`switch3`), managed over **Telnet only** (no
   API). Their `agent` login goes out over **RADIUS (authentik)** and falls back to the

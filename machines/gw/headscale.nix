@@ -40,7 +40,11 @@ in {
 
   services.headscale = {
     enable = true;
-    address = "0.0.0.0";
+    # Loopback, like the gate's listener: every client of this HTTP server is `gw`'s
+    # nginx, and the DERP/STUN socket that does need a public listener is a separate
+    # bind (`stun_listen_addr` below, DNAT'd by ./firewall.nix). It was `0.0.0.0` on
+    # services1, where nftables was the only thing keeping it off the LAN.
+    address = "127.0.0.1";
     port = 8085;
 
     settings = {

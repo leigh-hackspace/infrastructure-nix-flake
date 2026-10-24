@@ -1,23 +1,22 @@
-# The front door on the router — decided; phase 1 and phase 3 step 1 **deployed 2026-10-24**, the flip not yet run
+# The front door on the router — **deployed 2026-10-24**: `gw` terminates everything, `services1` is an origin
 
-**Phase 1 is live on `gw` and no client is sent to it.** Measured after the deploy: the
-`int.leighhack.org` certificate is issued (Let's Encrypt, `CN=YE2`, `int` + `*.int`, expires
-2027-01-22), nginx is `active` and listening on 80/443 on both families, the two vhosts
-answer by forced name resolution (`curl --resolve …:10.3.1.1 https://…` → 200 from the
-canary, 200 from `network-info`'s API), the four front-door nft rules are in place and the
-`dstnat` chain still has exactly its four original rows — and `/etc/dnsmasq-int-vhosts.hosts`
-is **byte-identical to before the deploy** (`sha256sum` `b20c264cded8…`, taken before and
-after), so nothing any client resolves moved. Getting there cost three findings, all of
-them in the ACME path, and they are [below](#findings-2026-10-24-deploying-phase-1) — the
-short version is that a runbook whose every check passes while the certificate is a
-self-signed placeholder is a runbook that needed a new check, and that `dnsResolver` was not
-enough to make the TXT race stop existing on one box either.
+**The migration is done.** `gw` holds the network's one certificate and renews it, serves
+every public and `*.int` name from `common/front-door.nix`, runs the `nginx-sso` gate and
+`anubis`, and answers the `*.int` zone (`frontDoor = "gw"` in `common/int-dns.nix`).
+`services1` is an **origin**: the 22 vhosts whose apps are app-shaped stay there on plain
+HTTP :80 behind `CONFIG.ROUTER_ONLY`, with no ACME config, no gate, no anubis and no
+public name of its own. `headscale` and `headplane` moved to `gw` in phase 4 with their
+state copied, and the public AAAA/`nginx.int` records in DigitalOcean moved with the
+answers. The deploys, in order and with receipts, are under "Phase 3 and phase 4 are
+deployed" below.
 
-The plan: move **all** HTTPS termination — the certificate, every vhost, the `nginx-sso`
-gate and `anubis` — from `services1` to **`gw`**, the box that is already the network's
-front door for DNS, and later `headscale` too.
-Phase 1 is the two commits `034d7aa` and `e31884c`, deployed at `75e210a` on 2026-10-24 with
-the two commits after them (`6363ada`, `8197c88`, `75e210a`) being the deploy's own findings.
+What the four phases were for, and the findings that shaped them, are kept below because
+the reasoning is the part that is expensive to reconstruct. The plan was: move **all**
+HTTPS termination — the certificate, every vhost, the `nginx-sso` gate and `anubis` — from
+`services1` to **`gw`**, the box that is already the network's front door for DNS, and
+`headscale` too. Phase 1 was the two commits `034d7aa` and `e31884c`, deployed at `75e210a`
+on 2026-10-24 with the two commits after them (`6363ada`, `8197c88`, `75e210a`) being the
+deploy's own findings.
 A full `just check-build` is *not* green on aibox and is not green because of this change:
 `door-entry-management-system` sets `__noChroot` and aibox's `sandbox = true` daemon refuses
 it, which is `docs/follow-ups.md`'s known reason and lands before the gw closure is ever
@@ -70,25 +69,19 @@ duplicated — the ACME issuer, the gate, the bot gate, the ACL — stop being d
 5. **`headscale` follows** (phase 4), because its state directory has to be *moved* and
    that is an operation on live tailnet enrolment, not a config change.
 
-## What the front door is today
-
-*(“Today” = what a client is told and where its TLS actually terminates, which is still
-`services1` for every name. As of the deploy below, `gw` also serves all 59 of them and is
-provable at each by forced resolution — the columns below describe the answers, not the
-vhost files, and the answers have not moved.)*
+## What the front door is today (after the flip)
 
 | Name space | answered by | terminated by |
 | --- | --- | --- |
-| `*.int.leighhack.org`, `gw.int…` | `gw` dnsmasq, generated from `common/int-dns.nix` + `common/dns-records.nix` (`machines/gw/dns.nix`) | `services1` nginx (`machines/services1/http.nix`, `useACMEHost = "leighhack.org"`). Phase 1 puts a second, *provable* terminator for these names on `gw`; no client is sent there until `frontDoor` changes. |
-| `*.leighhack.org`, `*.ai.*`, `*.test.*` | DigitalOcean, hand-added | `services1` nginx, same cert, reached through `gw`'s DNAT rows. **Moves** — phase 2 serves it here, phase 3 turns the DNAT rows off. There is no table and no guard for these names yet; see `common/public-names.nix` under phase 2. |
-| `ts.leighhack.org`, tailscale node names | `headscale`'s own DNS, run on `services1` (`machines/services1/services/headscale.nix`), which tells tailnet clients to resolve `int.leighhack.org` through `10.3.1.1` | nobody — headscale serves the *web* console at `https://tailscale.leighhack.org`, a vhost on `services1`. It moves with phase 4. |
+| `*.int.leighhack.org`, `gw.int…` | `gw` dnsmasq, generated from `common/int-dns.nix` + `common/dns-records.nix` (`machines/gw/dns.nix`); `frontDoor = "gw"` | `gw` nginx, from `common/front-door.nix` — the single certificate, the gate and `anubis` all on the router |
+| `*.leighhack.org`, `*.ai.leighhack.org` | DigitalOcean, hand-added; the shared CNAME target is `nginx.leighhack.org`, whose A/AAAA point at `gw` | `gw` nginx, same certificate, via the DMZ DNAT rows that now translate onto the router |
+| `ts.leighhack.org`, tailscale node names | `headscale`'s own DNS, now on `gw` (`machines/gw/headscale.nix`), which tells tailnet clients to resolve `int.leighhack.org` through `10.3.1.1` | `gw` nginx — `tailscale.leighhack.org` and `headplane.leighhack.org` are rows in the table |
 
-So today the network has **two** front doors: `gw` for name resolution and nftables,
-`services1` for TLS and proxying. `http.nix` is one file of ~34 vhosts, the cert, and the
-`nginx-sso` unit (`machines/services1/lib/nginx-sso-config.nix` generates its config);
-`int-dns.nix` is what keeps the vhost list and the DNS table honest. The end state is one
-front door and one **origin** per backend box — services1 keeps an nginx forever, but an
-nginx with no certificate, no gate, no ACL and no public name in it (§Phase 2).
+The network now has **one** front door. `services1` keeps an nginx forever, but it is an
+**origin**: 22 vhosts on plain HTTP :80, `CONFIG.ROUTER_ONLY`, no certificate, no gate, no
+anubis. `common/front-door.nix` is the table both boxes are rendered/checked against —
+which rows stay origins is a fact in one file, and `machines/services1/int-dns.nix` fails
+the evaluation if its vhosts and the table's origin rows disagree.
 
 ## What moving TLS to `gw` costs, one consequence per line
 
@@ -555,6 +548,76 @@ about, so the move is stop-services → copy → `chown headscale:headscale` →
 proof is `headscale nodes list` answering the same node list on both sides *before* the old
 unit is allowed to start again. `derp_server_private.key` is the DERP server's identity and
 travels with it. The config half (consequence 6) is already router-shaped facts.
+
+## Phase 3 and phase 4 are deployed — what the flip cost, and the two records outside the repo
+
+Deployed on 2026-10-24 as one commit (`d145505`) rather than the five switches the plan
+listed, because the intermediate states are exactly the ones the plan says not to park in
+and both closures were built on aibox first, so neither switch had to compile. The order
+was still the one that leaves a rollback, compressed to minutes:
+
+1. `services1` → origin mode (`just switch`, confirmed in the same invocation). This stops
+   `headscale`/`headplane`, removes `security.acme`, the `nginx-sso` unit and `anubis`, and
+   leaves nginx serving 22 vhosts on :80. From this moment until step 2 every name that was
+   terminating on services1 is broken, which is why the window is a build-free switch and
+   not a deploy.
+2. `/var/lib/headscale` and `/var/lib/headplane` copied from services1 to `gw` (the source
+   was already stopped) before the router started a new one. A fresh `noise_private.key`
+   would have been a new control-server identity, i.e. an empty tailnet.
+3. `gw` (`just switch-gw` from services1, confirmed by the recipe). `dnsmasq` rewrites
+   `/etc/dnsmasq-int-vhosts.hosts` and restarts in the same activation, so the answers move
+   with the nginx that serves them; `frontDoor = "gw"` makes `machines/gw/int-dns.nix`
+   tighten from subset to equality in the same evaluation.
+4. `services2` and `aibox` pulled the commit and switched too (their configs did not change;
+   the generations are only for consistency).
+5. DigitalOcean records, outside the repo and therefore easy to forget: `nginx`'s AAAA
+   (`2001:8b0:1d14:225::20` → `2001:8b0:1d14:225::1`), `nginx.int`'s A and AAAA
+   (`10.3.1.20` → `10.3.1.1`, `fd99:dead:beef:225d::20` → `fd99:dead:beef:225d::1`), and
+   `haproxy.int`'s AAAA. `nginx.leighhack.org` is the CNAME target of every public name
+   (and `nginx.int` the private one the off-LAN `*.int` CNAMEs use); leaving either on
+   services1 is a public IPv6 site that connects to a box with no TLS listener. TTL is
+   3600, so cached resolvers keep the old answer for up to an hour after the API says 200.
+
+What was measured after the switch, not evaluated:
+
+* `bar.int` and `grafana.int` resolve to `10.3.1.1` (the dnsmasq hosts file hash moved from
+  `b20c264…` to `aa35bcf…`), the canary says `Served by gw`, `speed` answers 200 **through
+  anubis** on `gw`, `login.int` is a 302 off the gate, and every origin row in
+  `common/front-door.nix` answers through the door (doors 200, element 200, mattermost 200,
+  filestore 200, switch 302, matrix/api-doors 404 at `/` as they always did).
+* `front-door-cert-check.service` reports `Let's Encrypt, CN=YE2` — the real certificate,
+  not minica. It is the check from phase 1 and it is the only one that can tell.
+* a direct `curl -H 'Host: grafana.int…' http://10.3.1.20/` from the LAN is **403**, which
+  is `CONFIG.ROUTER_ONLY` doing its job; the door's own request to the same vhost is 200.
+* `headscale nodes list` shows the same node set (and the `gw` node connected), so the
+  copied database is the live enrolment, not a fresh one.
+* `ss -lnt` on services1 no longer shows :443, :8082, :8085 or :8086; `acme*` units are
+  absent. On `gw` the gate is `127.0.0.1:8082`, headplane `127.0.0.1:8086`, headscale
+  `127.0.0.1:8085`, and only nginx answers 80/443.
+
+Two findings from this deploy, both the same shape as phase 1's — *the check passed and the
+thing was still wrong*:
+
+1. **A `preStart` chown cannot fix a copied state directory.** The first version re-owned
+   `/var/lib/headscale` and `/var/lib/headplane` in `ExecStartPre`. `ExecStartPre` runs as
+   the unit's `User=headscale`, so the chown fails (`Read-only file system` for headplane's
+   state dir, which belongs to *another* unit's namespace; `Permission denied` inside it),
+   and `headscale` crash-looped while `headplane` sat in `dependency failed`. The fix in
+   `machines/gw/headscale.nix` is `systemd.tmpfiles.rules` with `d` + `Z`: it runs as root at
+   activation, recursively, before the units, and is idempotent on every later boot.
+2. **The state is only half the move; the names are the other half.** `headscale` bound
+   `0.0.0.0:8085` on services1 and inherited that line. Every client of that port is `gw`'s
+   nginx, so it now binds loopback like the gate (the public listener that genuinely needs
+   one, DERP's STUN socket, is a separate `stun_listen_addr` bind and is DNAT'd). The
+   `tailscale.leighhack.org` row's `/admin` split lives in `common/front-door.nix` as a
+   `locations` map, so the control endpoints (`/key`, `/machine/...`) still reach 8085 while
+   `/admin` reaches headplane on 8086.
+
+One dead name was carried through and should be deleted or fixed deliberately:
+`aibox.status.leighhack.org` is in `common/front-door.nix` and was a services1 vhost, but it
+has no DigitalOcean record and the certificate's `*.leighhack.org` does not match a
+**two-label** name (`aibox.status.leighhack.org`), so it has never worked from outside. It is
+not a regression: the old single cert did not cover it either.
 
 ## Phase 1 is deployed — the three things it took, and the one it exposed in itself
 

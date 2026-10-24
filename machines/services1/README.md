@@ -5,12 +5,22 @@ The services box (10.3.1.20). What runs here is the module list, not this file:
 `docs/services.md` describes what each of them does. This README keeps only what is not
 in the flake.
 
+## An origin, not a front door
+
+Since the 2026-10-24 front-door migration (`docs/router-front-door-migration.md`), `gw`
+terminates TLS, holds the certificate, runs `nginx-sso` and `anubis`, and answers the
+`*.int` zone. This box is an **origin**: nginx still runs, but only for the app-shaped
+vhosts in `common/front-door.nix` whose `upstream = "origin"`, on plain HTTP :80 behind
+`CONFIG.ROUTER_ONLY`. `machines/services1/int-dns.nix` fails the evaluation if its vhosts
+and that table's origin rows disagree. There is deliberately no `security.acme`, no
+`nginx-sso` unit and no anubis here — adding one back creates a second front door.
+
 ## Tailscale (client)
 
 The tailscale **client** is installed manually (not part of this flake):
 `/etc/systemd/system/tailscaled.service` is a symlink into the nix store,
 with a NixOS drop-in from the deployed system. The **server** (headscale +
-headplane) is in `services/headscale.nix`.
+headplane) moved to `machines/gw/headscale.nix`; this box no longer runs it.
 
 Grafton site-to-site (grafton LAN 192.168.49.0/24 reachable from the hackspace
 via the `grafton-hackspace-client` VM on the grafton router) depends on this
