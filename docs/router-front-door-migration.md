@@ -1,4 +1,4 @@
-# The front door on the router — decided, phase 1 **deployed 2026-10-24**, phases 2–3 not started
+# The front door on the router — decided; phase 1 and phase 3 step 1 **deployed 2026-10-24**, the flip not yet run
 
 **Phase 1 is live on `gw` and no client is sent to it.** Measured after the deploy: the
 `int.leighhack.org` certificate is issued (Let's Encrypt, `CN=YE2`, `int` + `*.int`, expires
@@ -590,7 +590,110 @@ Two smaller facts from the same deploy, both now in the runbook: `nginx` is not 
 unit; and this nixpkgs has no `systemd.services.<name>.startAfter` (it wants `after`, which
 is also the semantics that were meant — ordering with no dependency).
 
+## Phase 2 is in the tree and phase 3 step 1 is deployed — and four things it taught
+
+At `1ae2e59`, `gw` renders **every one of the network's 59 names** from one table, holds a
+certificate with the whole public SAN set (`leighhack.org`, `*.leighhack.org`,
+`*.ai.leighhack.org`, `*.int.leighhack.org` — Let's Encrypt, expires 2027-01-22), runs the
+`nginx-sso` gate and `anubis`, and has done it without moving an answer: `/etc/dnsmasq-int-
+vhosts.hosts` is still `b20c264cded8…`, `*.int` still resolves at 10.3.1.20 and still returns
+200 from services1. The gate is on `127.0.0.1:8082` here, which closes the `*:8082` finding
+for the box that will own it.
+
+Five lessons, all of them from being wrong in a way the review had already passed over:
+
+1. **The check that made this safe was a diff of rendered configs, not a review of the
+   table.** Two comparisons, both worth keeping in the toolkit:
+   * *name set*: the names the table renders (row keys **plus their `serverAliases`**,
+     because aliases share a server block and an ACL) against the `server_name`s in
+     services1's live `/etc/nginx/nginx.conf`, `comm`'d — 59 to 59, nothing added, nothing
+     dropped. Comparing keys only would have “found” two names that are really aliases.
+   * *per name*: for each TLS server block, `proxy_pass` / `client_max_body_size` /
+     `proxy_read_timeout` / number of `allow` lines / presence of `auth_request`, joined on
+     the name, printing only the differences. Everything below came out of that, and none of
+     it would have come out of reading the table.
+2. **A vhost's policy is not always visible at the vhost literal, and the table inherits
+   every blindness in it.** `ai.leighhack.org` is built by `lib.mkMerge` over an
+   `mkSSOVirtualHost` in `machines/services1/ai.nix`, so a reader looking for
+   `mkSSOVirtualHost {` does not see it — and my first table row for it had **no gate**.
+   That is an unauthenticated proxy onto aibox's inference endpoint, shipped as a
+   refactor. Its twin, in the other direction: `doors.int` and `api-doors.int` carry **no
+   `LOCAL_NETWORK` today** (0 `allow` lines), because the door hardware and members' phones
+   dial them from outside the LAN; the table's “`*.int` means LAN-only” default quietly
+   added an ACL that would have locked the doors. Both are recorded on their rows, because
+   the row is where the next reader will be.
+3. **`*.int` defaulting to LAN-only is a rule with public aliases behind it.** Any
+   `*.int` row with a public `serverAlias` inherits the LAN ACL for the public name too —
+   which is what services1 does today, so it is *faithful*, but it is now a decision
+   written in a table rather than an accident of nginx server blocks.
+4. **Let's Encrypt refuses an apex that a wildcard in the same order already covers.**
+   Listing `int.leighhack.org` beside `*.leighhack.org` is a `400 malformed` (“redundant
+   with a wildcard domain in the same request”), and services1's cert does not contradict
+   that — `leighhack.org` is not matched by `*.leighhack.org`. Full text on `certDomains`.
+5. **Step 1 is not a provable end state on its own, for the origin rows.** They proxy to
+   services1's port 80, which answers `301 → https://the same name`, and the client's next
+   request comes back to `gw` — a redirect loop, visible as a 301 to itself on
+   `grafana.int`/`doors.int` and harmless only because nothing resolves here. The direct
+   rows tell the truth: `network-info` 200, `monster` 200, `id` 302 into authentik, `speed`
+   200 through anubis, `aibox.status` 200 with the gate's LAN rule, `firewall` a 502 exactly
+   as it is on services1 today. So **steps 3 and 4 are the change that makes the door
+   serve**, and step 1 is the half that can sit indefinitely because nobody is sent to it.
+
+### Correction to the plan's ordering, from the same reading
+
+Step 2 — “`gw`: the origin-reachability rows, tightening only” — is **not** safe before the
+flip, and the one-sentence justification next to it is wrong. Dropping *forwarded* `tcp/80`
+and `tcp/443` to 10.3.1.20 while services1 is still the live front door does not cost “a
+redirect nobody needs”: clients on VLAN 226/227 and every tailnet node reach 10.3.1.20
+**through this box's forward chain**, so the rule cuts them off from every service, and only
+same-subnet VLAN-225 clients are unaffected because their traffic is never forwarded. The
+rows belong in the same switch as the flip (step 4), which is also where `X-Forwarded-For`
+starts being the only way an origin sees a client. Revised order:
+
+```
+1  gw serves everything                      (deployed — this change)
+2  services1 → origin mode                   ┐
+3  flip the answers + DNAT + v6, and the     ├ one sitting, minutes apart
+   origin-reachability rows, together        ┘
+4  services1: delete the front door          (immediately after)
+```
+
+**And the window the deploy has now opened is real:** services1 and `gw` both hold a
+certificate covering `*.int.leighhack.org`, so both write `_acme-challenge.int`. services1's
+cert expires 2026-12-12 (renews ~Nov 12) and gw's 2027-01-22 (renews ~Nov 23): the first
+collision risk is ~Nov 12, and phase 3's last step — services1 losing `security.acme`
+altogether — has to land before it. This is the “two boxes, one TXT record” finding with a
+date on it, and the date is the reason not to park between step 1 and step 3.
+
 ## Findings, 2026-10-24
+
+* **A switch that outlasts the auto-rollback window fails with a lie.** `security.acme`'s
+  issuance runs *inside* activation (`nginx` is `After=acme-<cert>`, and the "order and
+  renew" unit is `Wants`ed by it), so with `--dns.propagation.wait=120s` across four SANs
+  the switch takes ~5–6 minutes — longer than the 5-minute `auto-rollback` window. The timer
+  therefore fires **during** the next activation, finds `/run/current-system` and
+  `system-good` differing (which is what an in-flight activation always looks like from
+  there), tries to act, and loses the store lock to the switch it is supervising:
+
+  ```
+  auto-rollback-start: Could not acquire lock
+  auto-rollback.service: Main process exited, code=exited, status=11/n/a
+  warning: the following units failed: auto-rollback.service
+  switching to system configuration … failed (status 4)
+  ```
+
+  Nothing was wrong with the system, and **the box did not reboot** (a second reason to read
+  the failing unit's name before believing a rollback happened) — but `nixos-rebuild` exits
+  4 and the chained `nixos-confirm` is skipped, so the new generation is left current and
+  unconfirmed with `auto-rollback` spent and inactive. What to do: `readlink -f
+  /run/current-system /nix/var/nix/profiles/system-good`; if the first is the generation you
+  meant and the box is healthy, `sudo nixos-confirm` by hand and `systemctl restart
+  auto-rollback.timer`. Two ways to stop it recurring: keep the wait small enough that
+  activation stays inside the window, or move the first issuance out of the switch (start
+  `acme-order-renew-<cert>.service` deliberately, then switch). This is the same class as
+  the health-check finding above — **the safety net and the thing it supervises need to
+  agree about how long the thing takes** — with the twist that here the net was armed by the
+  *previous* switch, not this one.
 
 * **The TXT race is not between boxes; it is about one TXT name.** Written before the
   deploy, this section argued that a second issuing box would create the race. The router's

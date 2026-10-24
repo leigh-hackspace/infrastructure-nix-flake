@@ -60,9 +60,14 @@ X first", X has already cost someone a day.
     `wait-for-nas.service`** and keeps restarting forever.
 13. **Never print a secret, a token, or a config dump you cannot keep.** Reference
     secret *paths*; do not read contents into a transcript.
-14. **New vhosts need DNS** — a `*.int` name is a row in `common/int-dns.nix` (no
-    command to run: the router renders that table and services1 refuses to evaluate
-    unless it matches its own vhosts); public names are hand-added in DigitalOcean.
+14. **New vhosts need DNS and a front-door row** — a `*.int` name is a row in
+    `common/int-dns.nix` (no command to run: the router renders that table) **and** a row
+    in `common/front-door.nix`, which is the table `gw`'s nginx is rendered from; the guard
+    in `machines/gw/int-dns.nix` refuses an evaluation where the two disagree, and services1
+    refuses one where its own vhosts no longer match the DNS table. Public names are
+    hand-added in DigitalOcean. A `*.int` row takes the LAN ACL by default and a public
+    alias inherits whatever its row says — check what services1 does today before trusting
+    either default (`docs/router-front-door-migration.md` has the two near-misses).
 15. **Read the linked doc before creating an OIDC provider**, and keep new clients on
     the existing PKCE contract.
 16. **Nothing writes switch NVRAM unless asked.** A reboot is the only undo.
@@ -322,6 +327,19 @@ X first", X has already cost someone a day.
   ```bash
   readlink /run/current-system /nix/var/nix/profiles/system-good   # equal = confirmed
   ```
+
+  **An activation that runs longer than five minutes outruns its own safety net.** The timer
+  is armed when a configuration is activated, so a switch that takes over five minutes — one
+  where `security.acme` has to issue a certificate, because `nginx` is ordered after the acme
+  unit and the issuance waits out DNS propagation — has the timer fire *during* a later
+  activation. It then sees `/run/current-system` and `system-good` differing (what every
+  in-flight activation looks like from there), tries to act, and loses the store lock to the
+  switch it is supervising: `auto-rollback.service` exits 11, `switch-to-configuration`
+  reports `the following units failed: auto-rollback.service`, and `nixos-rebuild` exits 4
+  **with nothing wrong and no reboot**. Read the failing unit's name before reacting; then
+  `readlink` the two paths, `sudo nixos-confirm` if the running generation is the one you
+  meant, and `systemctl restart auto-rollback.timer` (it does not re-arm itself). Hit on gw,
+  2026-10-24, with the receipt in `docs/router-front-door-migration.md`.
 
   **The net is armed by an activation, for five minutes, and then it is gone by design.**
   `auto-rollback.timer` is `OnActiveSec=5min` with `RemainAfterElapse=false`: activating a
