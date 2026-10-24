@@ -383,12 +383,16 @@ from and pushes, so run it from services1.
    certificate no client trusts, which is *also* nobody resolving to it. Neither takes DNS,
    DHCP, the tunnel or the tailnet with it; that is the property phase 1 was scoped to keep.
 
-   **One thing the rollback cannot undo, and it bit on the way in:** if a switch *fails*,
-   do not `systemctl stop auto-rollback.timer` to buy time to work — the timer is
-   `OnActiveSec=5min`, so stopping it disarms it for good (nothing re-arms an unchanged
-   unit, and the next switch will not), leaving the router with no safety net. `systemctl
-   restart auto-rollback.timer` is the fix; `systemctl is-active auto-rollback.timer` is
-   the check, and it is now part of step 4's aftermath here.
+   **The five-minute window is a countdown, and on this box it counts down to a router
+   reboot.** `auto-rollback.timer` is `OnActiveSec=5min`/`RemainAfterElapse=false`: an
+   activation arms it, it fires once, and it stops — so `inactive` is the *normal* state on a
+   box more than five minutes past a switch (gw and the untouched services1 both read
+   `inactive`), and `is-active` is therefore not a health check. The comparison it makes is:
+   `readlink -f /run/current-system /nix/var/nix/profiles/system-good`. What bit on the way
+   in: a switch that fails after `/run/current-system` has flipped leaves the new generation
+   current against an older `system-good`, which is exactly the state the timer waits to
+   reboot for. Decide inside the window — fix the activation and confirm, or let it roll
+   back — and note that the next activation re-arms it, so leaving it stopped saves nothing.
 
 ## Phase 2 (to write): the origin — services1 stops being a front door
 
@@ -575,9 +579,11 @@ not see, because the shape of all three failures is *a check that passes*:
    `reboot`, five minutes later, taking DNS, DHCP, the tunnel and the tailnet with it. The
    timer is a wall-clock `OnCalendar` with no `Persistent` now, because a catch-up is the
    same trick from the other direction. Read `machines/gw/http.nix` before adding any timer
-   to this box. The related trap, hit while recovering: `systemctl stop auto-rollback.timer`
-   is not a pause — the timer is `OnActiveSec=5min`, so stopping it disarms it permanently,
-   and only `systemctl restart auto-rollback.timer` puts the net back.
+   to this box. (Recovering from that failed switch, I stopped `auto-rollback.timer` and
+   wrote a rule here saying it then stays disarmed forever. That is wrong, and the corrected
+   version is in step 7 below and in AGENTS.md's GOLDEN RULE: the timer is armed per
+   activation, `inactive` is its resting state on every healthy box, and that is exactly why
+   `is-active` proves nothing — read the two paths it compares.)
 
 Two smaller facts from the same deploy, both now in the runbook: `nginx` is not in gw's
 `systemPackages`, so the verification command has to take the binary's store path from the

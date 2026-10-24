@@ -323,14 +323,22 @@ X first", X has already cost someone a day.
   readlink /run/current-system /nix/var/nix/profiles/system-good   # equal = confirmed
   ```
 
-  **The net is armed by an activation and by nothing else.** `auto-rollback.timer` is
-  `OnActiveSec=5min`, so it is restarted whenever a configuration is activated — and if you
-  `systemctl stop auto-rollback.timer` (to stop a rollback firing while you dig out of a
-  failed switch, say) **it stays stopped for good**: an unchanged unit is never restarted,
-  so the next switch does not re-arm it and the box runs on until someone notices. Hit on
-  gw, 2026-10-24, where the exposure was the network's router. If you stop it, restart it in
-  the same sitting and prove it: `systemctl is-active auto-rollback.timer` should be
-  `active`, and `systemctl list-timers auto-rollback.timer` should have a `NEXT`.
+  **The net is armed by an activation, for five minutes, and then it is gone by design.**
+  `auto-rollback.timer` is `OnActiveSec=5min` with `RemainAfterElapse=false`: activating a
+  configuration (re)starts it, it fires once, compares the two paths, and stops. So
+  `systemctl is-active auto-rollback.timer` reads `inactive` on every healthy box more than
+  five minutes past a switch — measured on gw and on the untouched services1, both
+  `inactive` — and it is therefore **not** a health check. What is a health check is the
+  comparison itself: `readlink -f /run/current-system /nix/var/nix/profiles/system-good`,
+  equal means the box has decided to stay. And that five-minute window is a **countdown to a
+  reboot**, which matters most on `gw`: if a switch *fails* while the new generation is
+  already current, the timer is armed and the machine will reboot into `system-good` on a
+  schedule. Decide inside the window — fix the activation and confirm, or let it roll back —
+  rather than discovering the timer afterwards; stopping it to keep working is legitimate
+  only if you finish one of those two things before it would have fired, and it re-arms
+  itself at the next activation either way. (Hit on gw, 2026-10-24: a health-check unit that
+  failed during activation failed the switch, which armed the countdown on the network's
+  router. `docs/router-front-door-migration.md` has the outcome and the fix.)
 
   1. Run `sudo nixos-confirm` **immediately** after `switch`/`boot`, in the **same
      shell invocation** (`... switch ... && sudo nixos-confirm`), on the machine that
