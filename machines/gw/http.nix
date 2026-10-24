@@ -302,8 +302,9 @@ in {
     # Ordering, not a dependency: a check that runs while lego is mid-flight is a
     # false alarm, and `After=` is what makes the two units line up when they are in
     # the same transaction (a boot, a switch). It must not *require* lego, or a failed
-    # issuance would take the check that reports it down with it.
-    startAfter = ["acme-order-renew-${intCert}.service"];
+    # issuance would take the check that reports it down with it — hence `after` and
+    # not `requires`/`wants`.
+    after = ["acme-order-renew-${intCert}.service"];
   };
 
   systemd.timers.front-door-cert-check = {
