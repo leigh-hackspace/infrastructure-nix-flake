@@ -353,6 +353,18 @@ nix flake metadata           # locked inputs / rev
 
 ## Gotchas
 
+- **`nix hash path` is not the hash of a file.** It prints the hash of the *path*
+  (the NAR), and for a single regular file that is a different number from the
+  file's own digest: `sha256sum f` and `nix hash file f` agree, `nix hash path f`
+  agrees with neither. `fetchurl`/`fetchTarball` verify the **file** digest, so a
+  hash written down with `nix hash path` fails as
+  `hash mismatch in fixed-output derivation: specified: … got: …` — and "got" is the
+  correct one, which reads exactly like a corrupted download, a stale CDN edge or a
+  broken TLS middlebox. Measured 2026-10-25 on a `raw.githubusercontent.com`
+  fetch: three bytes-identical downloads, two digests, and an hour spent on the
+  network before the digests were compared with `sha256sum`. Write the pin with
+  `nix hash file`, or break it on purpose and copy the `specified:` value out of
+  the error; `nix-prefetch-url` reports the same thing `fetchurl` wants.
 - **Never evaluate this repo through a path literal.** `import
   /home/leigh-admin/Projects/infrastructure-nix-flake/common/crane.nix` resolves
   the `../crates` inside it against the **real working tree**, and

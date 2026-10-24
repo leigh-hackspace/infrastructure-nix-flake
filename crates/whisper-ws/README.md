@@ -63,7 +63,10 @@ compile time (`web/app/gen_assets.sh` generates `src/assets.rs` with
 `include_bytes!`), so the gateway stays a single self-contained binary — no
 CDN, nothing leaves the LAN. The flake builds the app automatically
 (`buildNpmPackage` + `OWW_DIR`, in `package.nix`); for a plain `cargo build`, run
-`web/app/build.sh` first.
+`web/app/build.sh` first. The wake-word runtime and models are **not** in the
+git tree — they are pinned fetches in `package.nix`, so a plain `npm run dev`
+needs `OWW_DIR` pointed at them (the one-liner is in
+`web/openwakeword/README.md`).
 
 Accessible through the reverse proxy as `https://whisper.int.leighhack.org/`.
 
@@ -78,9 +81,10 @@ replays the recorded audio via `/audio/...`. Mic capture needs the HTTPS URL
 
 
 A **wake word** card listens for "hey jarvis" hands-free: while enabled, the
-page runs [OpenWakeWord](https://github.com/dscripka/openWakeWord) (the
-vendored WASM engine under `web/openwakeword/`, served at `/engine`, `/ort`
-and `/models`) **entirely in the browser** — the ONNX models
+page runs [OpenWakeWord](https://github.com/dscripka/openWakeWord) (the WASM
+engine vendored under `web/openwakeword/`, with the runtime and models fetched
+by `package.nix`, served at `/engine`, `/ort` and `/models`) **entirely in the
+browser** — the ONNX models
 (melspectrogram / embedding / VAD / keyword heads) run through
 `onnxruntime-web`, so the server and the GTX 1060 are never involved while
 listening. On a match it starts capturing, and a
@@ -132,6 +136,9 @@ cargo build                # from this directory (its own workspace, its own loc
 
 The web app is in `web/app` (Solid.js + TypeScript, Vite): `npm run dev` in
 there serves it at `http://localhost:5173` for development (the
-`/engine /ort /models` assets are served from `web/openwakeword/`; the
+`/engine /ort /models` assets come from `OWW_DIR`, defaulting to
+`web/openwakeword/` — which holds only the engine, so a dev server without the
+fetched tree serves the card an engine that cannot load; see that directory's
+README); the
 `/status.json`, `/v1/realtime` and `/audio/*` endpoints need a running
 whisper-ws, so live behaviour is best checked against the deployed box).

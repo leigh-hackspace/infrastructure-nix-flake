@@ -27,20 +27,135 @@
 # `pkgs.whisper-ws`.
 #
 # The web app is embedded with `include_bytes!` of absolute store paths, so the
-# binary is self-contained: no CDN, nothing leaves the LAN.  The vendored
-# OpenWakeWord assets (engine / onnxruntime-web / ONNX models) live outside
-# `web/app` and reach the Vite build through `OWW_DIR`.
+# binary is self-contained: no CDN, nothing leaves the LAN.  The OpenWakeWord
+# runtime (engine / onnxruntime-web / ONNX models) is assembled from pinned
+# fetches below and reaches the Vite build through `OWW_DIR`.
 {
-  stdenvNoCC,
   buildNpmPackage,
+  fetchurl,
+  lib,
+  runCommand,
   rustPlatform,
 }: let
-  owwAssets = stdenvNoCC.mkDerivation {
-    pname = "openwakeword-assets";
-    version = "0.1.0";
-    src = ./web/openwakeword;
-    installPhase = "cp -r . $out";
+  # --- the wake-word runtime: fetched, pinned, no longer committed ---------------
+  #
+  # The status page runs its wake-word detection in the browser, so the binary
+  # embeds an ONNX runtime and nine OpenWakeWord models: 22 MB of upstream
+  # binaries that change only when one of two upstream versions does.  They used
+  # to be committed under `web/openwakeword/`, and what that cost is why they are
+  # not: they sat *inside the flake's own source*, so every single evaluation of
+  # this repo copied all 22 MB into the store to read 26 MB of config (measured on
+  # aibox, 2026-10-24: 27 store copies of this tree at 25–26 MB each — 669 MB —
+  # and 22 MB of every one of them was these files).  Same mechanism as
+  # `builtins.getFlake` of a working tree, in a second place:
+  # docs/nix-dev-workflow.md, "Never evaluate to find out what a change does".
+  #
+  # Pinned here rather than in `flake.nix`'s `inputs`, deliberately: a flake input
+  # is fetched by every evaluation on every box, which adds a network read to the
+  # thing this repo refuses to do at eval time ("Evaluation must not build",
+  # docs/nix-dev-workflow.md) — not least on `gw`, which has to be able to
+  # evaluate and must never be the box that pulls 22 MB because somebody asked it
+  # what a vhost does.  A fixed-output fetch inside a package costs nothing until
+  # the package is *built*, and building it already means an `npm ci` against the
+  # same registry.
+  #
+  # Every hash below is the hash of the bytes that were committed here, checked by
+  # fetching each URL and comparing (2026-10-24, `nix hash file` on both sides —
+  # `nix hash path` prints a *path* hash and `fetchurl` rejects the difference, see
+  # docs/nix-dev-workflow.md), so this move changed no byte the browser loads.
+  # If a URL ever dies, the answer is `git log` back past this commit — the tree
+  # had every byte until then, which is also why web/openwakeword/README.md keeps
+  # the table.
+  #
+  # `nix build --no-link --print-out-paths '.#whisper-ws.passthru.openwakewordAssets'`
+  # prints the assembled tree, which is what `npm run dev` wants as `OWW_DIR`
+  # (the dev fallback directory `web/openwakeword/{ort,models}` is git-ignored now).
+  # onnxruntime-web's wasm build.  The registry serves the package tarball and
+  # nothing smaller, so fetch that (25 MB compressed) and unpack only the three
+  # members the page loads — `package/dist/` is 115 MB once unpacked because it
+  # carries the webgpu/webgl/asyncify/jsep variants this app never imports, and
+  # fetching it whole would trade 12 MB in git for 115 MB in the store.
+  onnxruntimeWebVersion = "1.23.2";
+  onnxruntimeWebTarball = fetchurl {
+    url = "https://registry.npmjs.org/onnxruntime-web/-/onnxruntime-web-${onnxruntimeWebVersion}.tgz";
+    sha256 = "sha256-C4cH1++rmivqY1ZNZsrXnol8/QvWJ+WuAASI/8HEXH0=";
   };
+  ortFiles = [
+    "ort.wasm.min.mjs"
+    "ort-wasm-simd-threaded.mjs"
+    "ort-wasm-simd-threaded.wasm"
+  ];
+
+  # The models, from `dnavarrom/openwakeword_wasm` at a pinned commit (the same
+  # repo `web/openwakeword/engine/WakeWordEngine.js` is patched from).  Fetched
+  # one by one rather than as a repo tree: that repo is 56 MB of demo, `.tflite`
+  # and a packaged `.tgz` in aid of 10 MB of `.onnx`.  Each `sha256` is the file's
+  # own digest (`nix hash file`, `sha256sum`), which is what a flat-mode
+  # fixed-output derivation verifies.
+  openWakeWordRev = "42b2a2b27bd2d2561ce4523cd11395ae2b4ed0c0";
+  openWakeWordModels = [
+    {
+      name = "alexa_v0.1.onnx";
+      sha256 = "sha256-b/VmoB0SZw6NnjxZ2jJlHbFXXRcnKmAbf4o5KD37rj4=";
+    }
+    {
+      name = "embedding_model.onnx";
+      sha256 = "sha256-cNFkKQwdCV0dTuFJvF4AVDJQpzFrWfMdBWz/e9MHXB8=";
+    }
+    {
+      name = "hey_jarvis_v0.1.onnx";
+      sha256 = "sha256-lKE8/mAHWxMvakcufkYugSPucIYbw/tYQ0pzcS7g0ss=";
+    }
+    {
+      name = "hey_mycroft_v0.1.onnx";
+      sha256 = "sha256-wqMR6PoTON6Jwxs7RtxN/9SvL5qNbd6tSIk8LTAbHxg=";
+    }
+    {
+      name = "hey_rhasspy_v0.1.onnx";
+      sha256 = "sha256-Wps+074pEONXgOCXkFqp81qcEAON9HkUzys+xNZw9uo=";
+    }
+    {
+      name = "melspectrogram.onnx";
+      sha256 = "sha256-uisOD4t7h1NposicsTNg/1O6xDbyiVzO2fR5+mXrF28=";
+    }
+    {
+      name = "silero_vad.onnx";
+      sha256 = "sha256-o16/Uv085fFGmyo2FY26dhvEe5c+ozgrMYbKFbH1ryg=";
+    }
+    {
+      name = "timer_v0.1.onnx";
+      sha256 = "sha256-Nx5EU1RwopJIs7jxu7uvJSXIZBf9j3XGf88CrguWJt8=";
+    }
+    {
+      name = "weather_v0.1.onnx";
+      sha256 = "sha256-hEHajnRomejZaVKNW61WUc3VYwecBZYniPd3UwQfYOc=";
+    }
+  ];
+
+  # The tree Vite copies into the bundle: `engine/`, `ort/`, `models/` and the
+  # README that says where each came from.  `engine/WakeWordEngine.js` is the one
+  # file *not* fetched, because it is patched for this repo (the ORT import, the
+  # public `process()`/`reset()` — see its own README), so upstream has no copy of
+  # it; that also means this directory cannot simply be regenerated at runtime.
+  owwAssets = runCommand "openwakeword-assets" {} ''
+    mkdir -p $out/engine $out/ort $out/models
+    tar -xzf ${onnxruntimeWebTarball} -C $out/ort --strip-components=2 \
+      ${lib.concatMapStringsSep " " (f: "package/dist/${f}") ortFiles}
+    ${lib.concatMapStringsSep "\n" (m: ''
+        cp ${fetchurl {
+          url = "https://raw.githubusercontent.com/dnavarrom/openwakeword_wasm/${openWakeWordRev}/models/${m.name}";
+          inherit (m) name sha256;
+        }} $out/models/${m.name}
+      '')
+      openWakeWordModels}
+    cp ${./web/openwakeword/engine/WakeWordEngine.js} $out/engine/WakeWordEngine.js
+    cp ${./web/openwakeword/README.md} $out/README.md
+    # Fail loudly rather than ship a page whose wake word silently never loads:
+    # the engine imports `../ort/ort.wasm.min.mjs` and loads the other two by
+    # name, and nine models are a list the README is the only other copy of.
+    test -s $out/ort/ort-wasm-simd-threaded.wasm
+    test "$(ls $out/models | wc -l)" -eq ${toString (builtins.length openWakeWordModels)}
+  '';
 
   # `npm ci` + `npm run build` (via buildNpmPackage's hooks), then the generated
   # Rust asset module.  Only the two outputs the cargo build needs are installed;
@@ -73,4 +188,6 @@ in
     # include_bytes! paths, so only the .rs file needs to reach the cargo build.
     nativeBuildInputs = [webApp];
     preBuild = "cp ${webApp}/assets.rs src/assets.rs";
+
+    passthru.openwakewordAssets = owwAssets;
   }

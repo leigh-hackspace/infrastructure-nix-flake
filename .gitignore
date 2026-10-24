@@ -27,3 +27,12 @@ result-fd
 ai-resources
 notes.txt
 config.xml
+
+# The wake-word runtime and models: 22 MB of upstream binaries that are pinned
+# fetches in crates/whisper-ws/package.nix now. They used to be committed, and a
+# committed byte under here is a byte every evaluation of this flake copies into
+# the store — docs/flake-simplification-pass-2026-10-24.md §1. `npm run dev`
+# reads them from OWW_DIR instead; the fetch is documented in the README that
+# stays vendored next to the engine.
+/crates/whisper-ws/web/openwakeword/ort/
+/crates/whisper-ws/web/openwakeword/models/

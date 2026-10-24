@@ -9,10 +9,12 @@ import { defineConfig } from 'vite';
 // binary embeds the dist tree via generated include_bytes! paths
 // (gen_assets.sh), so the layout must be stable across builds.
 
-// The vendored OpenWakeWord engine + onnxruntime-web + ONNX models are served
-// as raw ES modules / WASM (see ../openwakeword/README.md) — they must NOT go
-// through the bundler. OWW_DIR lets the Nix build point at a store path: the
-// assets live outside web/app, so they don't survive the Nix source copy.
+// The OpenWakeWord engine + onnxruntime-web + ONNX models are served as raw ES
+// modules / WASM (see ../openwakeword/README.md) — they must NOT go through the
+// bundler. Only the engine is in the git tree; the Nix build assembles the whole
+// tree from pinned fetches and points OWW_DIR at it (crates/whisper-ws/package.nix),
+// and `npm run dev` without OWW_DIR therefore serves the wake-word card an engine
+// whose runtime and models are not there.
 const owwDir = process.env.OWW_DIR ?? fileURLToPath(new URL('../openwakeword', import.meta.url));
 const OWW_ITEMS = ['engine', 'ort', 'models', 'README.md'];
 
