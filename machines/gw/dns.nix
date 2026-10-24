@@ -118,7 +118,7 @@ in {
     # dns-sync-sync`, which is a command, not a guarantee.  A machine rebuilt from
     # this flake answered a different `*.int` zone than the one running, and no
     # amount of `just switch` on the router would have told anyone.
-    "dnsmasq-int-vhosts.hosts".text = TABLES.intHosts zone RECORDS HOSTS INT + "\n";
+    "dnsmasq-int-vhosts.hosts".text = TABLES.intHosts zone RECORDS HOSTS VLANS INT + "\n";
 
     # The generated conf file: the VLAN ranges, the reservations, the netboot
     # variants.  One file, three generated blocks, in the order dnsmasq reads them.

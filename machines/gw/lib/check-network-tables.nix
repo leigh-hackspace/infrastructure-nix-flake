@@ -95,19 +95,18 @@ let
   RECORDS_HOSTS = TABLES.recordsHosts CONFIG.LOCAL_DOMAIN RECORDS;
   # The front door's file, rendered the same way ./dns.nix renders it, so what is
   # asserted below is the text dnsmasq will read rather than the table it came from.
-  INT_HOSTS = TABLES.intHosts CONFIG.LOCAL_DOMAIN RECORDS HOSTS INT;
+  INT_HOSTS = TABLES.intHosts CONFIG.LOCAL_DOMAIN RECORDS HOSTS VLANS INT;
   # Every name the table answers with the front door's addresses: the vhosts that
   # need it and the legacy names kept so this file's first deploy changed no
   # answer.  Both lists get the same treatment from dnsmasq and from the checks
   # below; only the drift check on services1 tells them apart.
   INT_DOOR_NAMES = INT.names ++ builtins.attrNames INT.legacy;
-  # The addresses every front-door name must answer with.  Read from the record,
-  # never written here: "the name has its IPv6 half" is only a fact if it is the
-  # same fact common/dns-records.nix states.
-  DOOR_ADDRS = let
-    door = RECORDS.${INT.frontDoor};
-  in
-    [door.ipv4] ++ door.ipv6;
+  # The addresses every front-door name must answer with.  Read through the same
+  # helper ./dns.nix renders with, never written here: "the name has its IPv6 half"
+  # is only a fact if it is the same fact the table that owns the box's address
+  # states — common/dns-records.nix for a device door, common/vlans.nix for the
+  # router (docs/router-front-door-migration.md).  `[]` is a finding, asserted below.
+  DOOR_ADDRS = TABLES.doorAddresses RECORDS HOSTS VLANS INT.frontDoor;
   namedRecords =
     builtins.attrValues
     (builtins.mapAttrs (name: r: r // {inherit name;}) RECORDS);
@@ -549,10 +548,28 @@ in
         builtins.toJSON (builtins.filter (n: builtins.elem n (INT.names ++ INT.fromHosts ++ builtins.attrNames INT.legacy)) (builtins.attrNames INT.exempt))
       }''
   );
+  # The door has to resolve to at least one address, and to the *same* number of
+  # them whatever it is: `frontDoor` names a box, and the two boxes in the network
+  # keep their addresses in two different tables (a device in common/dns-records.nix,
+  # the router in common/vlans.nix's VLAN whose `ipv4` is `hosts.router`), which is
+  # the one thing the dnsmasq rendering cannot tell apart — a door that resolves to
+  # nothing renders as an empty file rather than as an error, and an empty file in an
+  # `addn-hosts` list is a zone that answers nothing.
   assert (
     need
-    (builtins.hasAttr INT.frontDoor RECORDS && (RECORDS.${INT.frontDoor}.ipv4 or null) != null)
-    ''common/int-dns.nix's frontDoor "${INT.frontDoor}" is not a record with an address in common/dns-records.nix''
+    (builtins.length DOOR_ADDRS > 1)
+    ''common/int-dns.nix's frontDoor "${INT.frontDoor}" resolves to no addresses: it must name a record in common/dns-records.nix or `gw`, and `gw` needs a VLAN in common/vlans.nix whose ipv4 is ${HOSTS.router}''
+  );
+  # And the door answers with both address families.  This is the PARTIAL fault read
+  # off the *door* rather than off a name: the assertion below counts the lines each
+  # name renders, so it proves every name gets every address — it cannot notice that
+  # the address list itself lost its IPv6 half, which is the version of the bug where
+  # every name is consistent, complete and v4-only, and a dual-stack client hangs on
+  # IPv6 before it falls back (docs/router-and-dns.md).
+  assert (
+    need
+    (builtins.any (a: has ":" a) DOOR_ADDRS)
+    ''common/int-dns.nix's frontDoor "${INT.frontDoor}" answers with no IPv6 address: ${builtins.toJSON DOOR_ADDRS}''
   );
   # **Every front-door name answers with every one of its addresses.** This is the
   # PARTIAL fault in docs/router-and-dns.md — a name with its A and not its AAAA is

@@ -40,7 +40,19 @@
 #
 # Fields
 #   names      labels served by the front door (`frontDoor`'s addresses)
-#   frontDoor  which `common/dns-records.nix` entry owns those addresses
+#   frontDoor  which box those addresses belong to — and therefore which box's nginx
+#              has to serve them.  `services1` is an entry of
+#              `common/dns-records.nix`; `gw` is the router, whose three addresses are
+#              the VLAN in `common/vlans.nix` whose `ipv4` is `hosts.router` (it has
+#              no reservation and cannot have one — it is the box handing leases out —
+#              so it is read from the VLAN table instead; the helper is
+#              `machines/gw/lib/network-tables.nix`'s `doorAddresses`).  One string, so
+#              the DNS answer and the guard cannot disagree about which box the door
+#              is: `machines/gw/int-dns.nix` reads this name and moves from "this box
+#              may pre-stage names" to "this box must serve every one of them", while
+#              `machines/services1/int-dns.nix` keeps asserting what *that* box serves.
+#              `docs/router-front-door-migration.md` is the plan that flips it, and it
+#              is the reason `gw` is spelled here rather than assumed.
 #   fromHosts  labels that answer with their own address, taken from
 #              `common/hosts.nix`: devices whose name has to resolve and that are
 #              not DHCP clients, so they have no reservation to hang a record on
@@ -55,6 +67,10 @@
 #              "forgotten" — a name here that resolves at the front door is a bug
 #              in whatever answers it, not in this table
 {
+  # The box every `*.int` name resolves to.  See the field's doc above for the two
+  # legal kinds of value; `docs/router-front-door-migration.md` phase 1 has the router
+  # serving and proving `*.int` vhosts *without* this line changing, which is the
+  # whole reason the guard has two modes.
   frontDoor = "services1";
 
   names = [

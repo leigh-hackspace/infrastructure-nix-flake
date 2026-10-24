@@ -131,6 +131,60 @@ in rec {
       )
     );
 
+  # The addresses every front-door name answers with, for whichever box
+  # ../../common/int-dns.nix says is the door.  The *answer* half of that table, and
+  # the reason it is a function of the tables rather than a field inside it: those
+  # strings are already stated once each, in the table that owns the box's address,
+  # and a second copy of them in the DNS table is how a front door moves without
+  # anybody deciding to move it.
+  #
+  # Two sources, because a door can be one of two kinds of box:
+  #
+  #   * a device in common/dns-records.nix (`services1` today): its `ipv4` plus its
+  #     `ipv6` — the reservation this box hands out, and the same three strings
+  #     common/hosts.nix, every nginx proxy and every Prometheus target read;
+  #   * **the router itself** (`gw`), which has no reservation and cannot have one:
+  #     it is the box handing out leases, so a record for it would carry no MAC and no
+  #     client-id, and ./check-network-tables.nix refuses such a record — rightly,
+  #     because a record with no identifier renders as no line at all.  Its addresses
+  #     are the VLAN's whose own `ipv4` *is* `hosts.router`: the same fact
+  #     ./networking.nix writes onto the interface, and the assertion that every
+  #     common/hosts.nix address is a reservation or a VLAN address is what says such
+  #     a VLAN exists.  Three addresses, the same shape as a device record's — IPv4,
+  #     public IPv6, ULA — because a front-door name missing its IPv6 half is the
+  #     PARTIAL fault spelled out in docs/router-and-dns.md.
+  #
+  # Read by VLAN address rather than by "VLAN 225", so that a renumbered hub moves the
+  # door with it instead of silently moving it nowhere.  `[]` when no VLAN carries
+  # `hosts.router`, and ./check-network-tables.nix is what turns that into a finding —
+  # because the empty answer is not an error for dnsmasq, it is a zone that answers
+  # nothing, and every `*.int` name in the table would render as zero lines.
+  doorAddresses = records: hosts: vlans: frontDoor: let
+    # The table that owns the box's address, reduced to the one entry that is it:
+    # a VLAN whose `ipv4` *is* `hosts.router` for the router, the record of that
+    # name for a device.  A list either way, so the two branches end in the same
+    # line and cannot disagree about what "its addresses" means (the IPv4 plus the
+    # `ipv6` list — three strings for both boxes today).
+    doors =
+      if frontDoor == "gw"
+      then builtins.filter (v: v.ipv4 == hosts.router) vlans
+      else [(records.${frontDoor} or {})];
+    matched = builtins.filter (d: (d.ipv4 or null) != null) doors;
+    door =
+      if matched == []
+      then null
+      else builtins.head matched;
+  in
+    # `null` rather than a throw: the empty answer becomes a finding in
+    # ./check-network-tables.nix, which prints which door resolved to nothing,
+    # instead of an `index out of bounds` from inside the rendering of a hosts file.
+    # It is also why two VLANs claiming one router address is not this function's
+    # argument — the check module refuses that table, and `head` of the first match
+    # keeps this one total.
+    if door == null
+    then []
+    else [door.ipv4] ++ door.ipv6;
+
   # The front door's `*.int` names as a hosts file (../../common/int-dns.nix).
   #
   # One line per (address, name) pair for the same two reasons `recordsHosts`
@@ -151,7 +205,7 @@ in rec {
   # in.  The zone is passed in, and the addresses come out of the two tables that
   # own them, so nothing here can say a name resolves at an address the flake does
   # not already promise at it.
-  intHosts = zone: records: hosts: int:
+  intHosts = zone: records: hosts: vlans: int:
     builtins.concatStringsSep "\n"
     (
       builtins.concatLists
@@ -162,10 +216,7 @@ in rec {
           (map (name: {
             inherit name;
             alias = "";
-            addresses = let
-              door = records.${int.frontDoor};
-            in
-              [door.ipv4] ++ door.ipv6;
+            addresses = doorAddresses records hosts vlans int.frontDoor;
           }) (int.names ++ builtins.attrNames int.legacy))
           ++ (map (name: {
               inherit name;
