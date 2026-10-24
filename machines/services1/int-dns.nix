@@ -67,7 +67,7 @@ in {
         direct row is one `gw` proxies straight to the box that runs the app. Moving a
         name between the two is one change in `common/front-door.nix` plus the vhost
         here, and the certificate/gate/ACL never come back to this box.  See
-        docs/router-front-door-migration.md phase 3.
+        docs/router-front-door-migration.md.
       '';
     }
   ];

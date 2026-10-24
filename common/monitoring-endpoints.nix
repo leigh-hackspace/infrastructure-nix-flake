@@ -32,7 +32,7 @@
   HOSTS = import ./hosts.nix;
 
   # Host of an https URL; null for http://, icmp://, tcp:// and friends.  Only
-  # https is checked: those are the vhosts services1 terminates TLS for.  The
+  # https is checked: those are the names `gw`'s front door answers.  The
   # http:// *.int endpoints (3d-*, woodwork) are dnsmasq hosts on the hackspace
   # LAN, not vhosts here.
   httpsHost = url: let

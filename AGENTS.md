@@ -122,12 +122,13 @@ X first", X has already cost someone a day.
     on aibox, and `nix flake check --no-build` on gw therefore dies **one read later**,
     at `path '…filestore-web-src.drv' is not valid` — the SPA-source read the section
     above predicted. Same verdict, one step further in: still run `just check` on aibox.
-    **On 2026-10-24 gw became a TLS endpoint as well** (`machines/gw/http.nix`: nginx, the
-    `int.leighhack.org` cert, two `*.int` vhosts — phase 1 of
-    `docs/router-front-door-migration.md`), which changes what a deploy here costs but not
-    the rule: `just switch-gw` from services1 still builds on aibox and pushes, nothing on
-    gw compiles, and the answer every `*.int` name gives is unchanged until `frontDoor` in
-    `common/int-dns.nix` says `gw`. The one new thing to know before you switch this box is
+    **On 2026-10-24 gw became the network's front door** (`machines/gw/http.nix`:
+    nginx, the one certificate, every public and `*.int` vhost, `nginx-sso`, `anubis`;
+    all of `docs/router-front-door-migration.md` is deployed), which changes what a
+    deploy here costs but not the rule: `just switch-gw` from services1 still builds on
+    aibox and pushes, nothing on gw compiles. `common/int-dns.nix`'s `frontDoor` says
+    `gw`, so every `*.int` answer is this box and `services1` is an origin. The one
+    thing to know before you switch this box is
     that lego asks **this box's own dnsmasq** whether its `_acme-challenge.int` TXT has
     propagated unless `dnsResolver` names public resolvers — dnsmasq is authoritative for
     the zone, so its "no" never expires — which is why the cert's health is a check to run
@@ -200,8 +201,8 @@ X first", X has already cost someone a day.
   `nix-dev-workflow.md`, `router-and-dns.md`, `procurve-switches.md`,
   `nas-and-borg.md`, `monster-proxmox.md`, `printer-servers.md`, `follow-ups.md`,
   `work-log-2026-10.md`) and the dated narrative write-ups, post-mortems and audits
-  (gtx1060 saga, sso-redesign, filestore gotchas, the repo audit). They live here
-  rather than next to the modules so the flake source stays config only; module
+  (gtx1060 saga, filestore gotchas, the repo audit, the gw cutover attempt). They live
+  here rather than next to the modules so the flake source stays config only; module
   comments point into them when they need the backstory.
 - `common/` — shared modules imported by more than one machine: `tools.nix`, `users.nix`,
   `sops.nix`, `nixbld.nix` (the build-user invariant), `crane.nix` (the shared crane
@@ -223,8 +224,8 @@ X first", X has already cost someone a day.
   and `machines/gw/lib/check-network-tables.nix` is what refuses to let them drift,
   `nginx/`
   (`front-door.nix` — the renderer for `common/front-door.nix`; `origin-vhost.nix` —
-  what `services1`'s app-shaped vhosts use now; `int-vhost.nix`; `int-vhost-names.nix`;
-  `sso-vhost.nix` is the old services1 gate helper, kept for the parked modules),
+  what `services1`'s app-shaped vhosts use now; `int-vhost.nix` — the door's TLS vhost
+  builder; `int-vhost-names.nix`),
   `exporters.nix`, `build-farm.nix` (GC + remote building), `monitoring-endpoints.nix`
   (the gatus endpoint data). `common/nginx/` and `common/config.nix` are shared because
   `gw` is the TLS terminator and front door for the whole network: every name is one row
@@ -581,8 +582,7 @@ listed here is in the doc named for it.
   any cabling** or WiFi clients lose their IPv6 default 20 minutes later. SSH as
   `leigh-admin@10.3.1.1` (root is not keyed); DO token is `DO_AUTH_TOKEN` in the shared
   env-file secret (`CONFIG.ENV_FILE`) — **never print it or copy it off services1.**
-  → `docs/router-and-dns.md`. The state to pick up from, and the ordered list of what
-  is still open after the cutover: `docs/handover-2026-10-21.md`.
+  → `docs/router-and-dns.md`, and the open items are in `docs/follow-ups.md`.
 - **3D print servers** `3d-blue` (10.3.14.62) / `3d-lime` (10.3.14.61), Klipper +
   Moonraker, user `hackspace`, polled by `moonraker-exporter` at **fixed IPv4 on purpose**
   (the two Pis were cloned from one SD card, so their DNS names used to advertise each

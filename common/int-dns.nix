@@ -3,16 +3,18 @@
 #
 # This is the DNS half of the front door.  `machines/gw/dns.nix` renders it into
 # `/etc/dnsmasq-int-vhosts.hosts` — one of dnsmasq's two `addn-hosts` files — and
-# `machines/services1/int-dns.nix` asserts that `names` plus `exempt` is *exactly*
-# the set of `*.int` names services1's nginx serves (vhost names plus their
+# `machines/gw/int-dns.nix` asserts that `names` plus `exempt` is *exactly* the set
+# of `*.int` names the front door's nginx serves (vhost names plus their
 # serverAliases, derived from `services.nginx.virtualHosts` by
-# `common/nginx/int-vhost-names.nix`).  So the table and the vhosts that need it can
-# only disagree by failing an evaluation, which is the whole point: until 2026-10-22
-# the same set was pushed onto the router by a tool (`crates/dns-sync`) that edited a
-# mutable file over ssh when someone remembered to run it.  Nothing was broken the day
-# it was deleted — every name the deployed nginx served had its record — and that is
-# precisely the debt being paid off: correctness that depended on a habit, a file no
-# deploy could reproduce, and a checker that was itself a manual command.
+# `common/nginx/int-vhost-names.nix`).  `machines/services1/int-dns.nix` is the
+# other half: it asserts that the origin box's vhosts are exactly the
+# `upstream = "origin"` rows in `common/front-door.nix`.  So the table and the boxes
+# that serve it can only disagree by failing an evaluation.  Until 2026-10-22 the
+# same set was pushed onto the router by a tool (`crates/dns-sync`) that edited a
+# mutable file over ssh when someone remembered to run it.  Nothing was broken the
+# day it was deleted — every name the deployed nginx served had its record — and
+# that is precisely the debt being paid off: correctness that depended on a habit, a
+# file no deploy could reproduce, and a checker that was itself a manual command.
 #
 # The rule for a new internal app: add the vhost on services1, add its `*.int`
 # name here, deploy.  Nothing else, no command, no router-side state.  Both
@@ -41,18 +43,17 @@
 # Fields
 #   names      labels served by the front door (`frontDoor`'s addresses)
 #   frontDoor  which box those addresses belong to — and therefore which box's nginx
-#              has to serve them.  `services1` is an entry of
-#              `common/dns-records.nix`; `gw` is the router, whose three addresses are
-#              the VLAN in `common/vlans.nix` whose `ipv4` is `hosts.router` (it has
-#              no reservation and cannot have one — it is the box handing leases out —
-#              so it is read from the VLAN table instead; the helper is
-#              `machines/gw/lib/network-tables.nix`'s `doorAddresses`).  One string, so
-#              the DNS answer and the guard cannot disagree about which box the door
-#              is: `machines/gw/int-dns.nix` reads this name and moves from "this box
-#              may pre-stage names" to "this box must serve every one of them", while
-#              `machines/services1/int-dns.nix` keeps asserting what *that* box serves.
-#              `docs/router-front-door-migration.md` is the plan that flips it, and it
-#              is the reason `gw` is spelled here rather than assumed.
+#              has to serve them.  It is `gw` now (the router, whose three addresses
+#              are the VLAN in `common/vlans.nix` whose `ipv4` is `hosts.router` —
+#              it has no reservation and cannot have one — read by
+#              `machines/gw/lib/network-tables.nix`'s `doorAddresses`).  It may also
+#              name an entry of `common/dns-records.nix` for a staged move.  One
+#              string, so the DNS answer and the guards cannot disagree about which
+#              box the door is: `machines/gw/int-dns.nix` reads it and requires this
+#              box to serve every answered name, and `machines/services1/int-dns.nix`
+#              independently checks what the origin serves.
+#              `docs/router-front-door-migration.md` is the architecture and the
+#              deploy record.
 #   fromHosts  labels that answer with their own address, taken from
 #              `common/hosts.nix`: devices whose name has to resolve and that are
 #              not DHCP clients, so they have no reservation to hang a record on
@@ -68,7 +69,7 @@
 #              in whatever answers it, not in this table
 {
   # The box every `*.int` name resolves to.  It moved from `services1` to `gw` on
-  # 2026-10-24 with phase 3 of `docs/router-front-door-migration.md`: the router
+  # 2026-10-24 with the front door (`docs/router-front-door-migration.md`): the router
   # terminates TLS, holds the certificate, runs the gate and `anubis`, and serves every
   # name in `common/front-door.nix`, so the addresses and the box serving them are one
   # fact again.  `machines/gw/int-dns.nix` reads this string to switch from "may stage a
@@ -143,9 +144,9 @@
     # dial the name, and a name that stops resolving fails more confusingly than
     # one that answers wrong.
     mqtt = "mosquitto speaks MQTT on its own ports, not HTTP; this name has never been fronted";
-    # The headscale admin UI lives at `tailscale.leighhack.org` today
-    # (machines/services1/services/headscale.nix, plus services1's own `extraHosts`
-    # entry); `tailscale.int` is the name from before that, with no vhost behind it.
+    # The headscale admin UI lives at `tailscale.leighhack.org` (a front-door row,
+    # served by machines/gw/headscale.nix); `tailscale.int` is the name from before
+    # that, with no vhost behind it.
     tailscale = "the headscale UI is `tailscale.leighhack.org` now; the int name predates that";
 
     # The other two names that predate any table — both answer with services1's nginx
@@ -178,7 +179,7 @@
     # dial `ldaps://authentik.int.leighhack.org` (`machines/aibox/sso.nix`,
     # `machines/pi-room-sys/configuration.nix`), and the appliance's :443 is not
     # served through the front door.  Which answer *should* win is an open
-    # decision — `docs/handover-2026-10-21.md` — but it is not a decision this
+    # decision — `docs/follow-ups.md` — but it is not a decision this
     # table gets to make by accident.
     authentik = "10.3.1.36, the appliance in common/dns-records.nix (RADIUS/LDAP dial it directly)";
   };

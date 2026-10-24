@@ -1,7 +1,7 @@
 # headscale + headplane: the network's own tailnet control server and its admin UI.
 #
-# Moved from services1 (`machines/services1/services/headscale.nix`) in phase 4 of
-# `docs/router-front-door-migration.md`. The reason it belongs here is the same one
+# Moved from services1 (`machines/services1/services/headscale.nix`) with the front-door
+# move (`docs/router-front-door-migration.md`). The reason it belongs here is the same one
 # that moved nginx: the router already owns the network's names (dnsmasq), its routes
 # (nftables, the AAISP tunnel) and its addresses (DHCP), and headscale owns the tailnet's
 # *node* addresses and ACLs — so keeping the control server on a box the tailnet reaches
@@ -102,7 +102,7 @@ in {
     };
   };
 
-  # The state directory is copied, not recreated (phase 4 of the migration doc):
+  # The state directory is copied, not recreated (the front-door move):
   # `noise_private.key` and the SQLite db (WAL included) are the tailnet's enrolment.
   # The copy comes from another box where the `headscale` UID is unrelated, so the files
   # need re-owning. `tmpfiles` and not `preStart`: ExecStartPre runs as the unit's

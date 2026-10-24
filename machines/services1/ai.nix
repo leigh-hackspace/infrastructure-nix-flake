@@ -12,7 +12,7 @@ in {
   services.nginx.virtualHosts = {
     # The public name. It used to be built with `lib.mkMerge` of an `mkSSOVirtualHost`
     # over an `mkIntVhost`, which is how the front-door table's first draft missed its
-    # gate (migration doc, phase 2 lesson 2). The gate is now a `sso = true` on the
+    # gate (the migration doc's table notes say why). The gate is now a `sso = true` on the
     # table row; this vhost only has to keep the paths.
     "ai.leighhack.org" =
       mkOriginVhost {

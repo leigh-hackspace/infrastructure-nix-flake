@@ -11,8 +11,8 @@ replacing the Windows install that shipped on the NVMe; the RTX 3060 arrived
 Its own status dashboard, the Strata engine, and the exporters — that is all.
 The observability stack that used to be here moved to services1 on 2026-10-17:
 
-- `./status.nix` — services2's own dashboard, proxied by services1 as
-  `services2-status.int.leighhack.org`.  It is the thing that keeps answering
+- `./status.nix` — services2's own dashboard, proxied by the front door (`gw`)
+  as `services2-status.int.leighhack.org`.  It is the thing that keeps answering
   while strata is thrashing, and it is the box's only self-measurement.
 - `./strata.nix` + `./strata-package.nix` — the Qwen3.8-Flash-Next **Coder**
   engine on the RTX 3060 (`http://10.3.1.21:8080/v1`), the network's only live
@@ -61,10 +61,10 @@ story above).  Aibox now serves builds; this box is a client with no builder of
 its own, and keeps its 211 GB for its own deployments and the engine's packs.
 `just build-remote` offloads to aibox, not here.
 
-The vhosts no longer depend on this box at all: they are on services1, which
-terminates TLS for the whole network, and since the move they proxy to a loopback
-bind, so a dead services2 shows up as a dead *check* rather than as an
-unreachable dashboard.
+The vhosts no longer depend on this box at all: they are rows in
+`common/front-door.nix`, terminated by `gw` (the network's front door), and they
+proxy to this box over the LAN.  A dead services2 shows up as a dead *check*
+rather than as an unreachable dashboard.
 
 Things that bind `0.0.0.0` because the scrape/proxy comes from another box: the
 exporters and services2's status dashboard.  Grafana, gatus and Prometheus used

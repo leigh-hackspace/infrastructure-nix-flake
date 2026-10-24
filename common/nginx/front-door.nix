@@ -3,8 +3,8 @@
 #
 # One row in, one vhost out, with no per-app knowledge anywhere in between. The point is
 # that the door's config *is* the table, so two boxes cannot hold an opinion about one name
-# (`docs/router-front-door-migration.md`, consequence 3 and phase 2). It has one consumer
-# today: `machines/gw/http.nix`.
+# (`docs/router-front-door-migration.md`). It has one consumer today:
+# `machines/gw/http.nix`.
 #
 # It deliberately **reuses `common/nginx/int-vhost.nix`** rather than re-deriving nginx
 # snippets: that helper is the code that already knows how this network writes a proxied

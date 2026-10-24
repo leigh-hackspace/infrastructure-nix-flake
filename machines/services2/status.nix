@@ -1,8 +1,8 @@
 # services2's own status dashboard (shared module: common/status-dashboard.nix).
 #
-# Bound on 0.0.0.0 because services1 — which terminates TLS for the whole network
-# — reverse-proxies it, exactly as it does for aibox's.  The vhost is
-# `services2-status.int.leighhack.org`, in machines/services1/services/status.nix.
+# Bound on 0.0.0.0 because `gw` — the network's front door — reverse-proxies it,
+# exactly as it does for aibox's.  The name is
+# `services2-status.int.leighhack.org`, a row in common/front-door.nix.
 #
 # The dashboard is the one thing on this box that is about *this* box: it probes
 # services2's own units and its own NAS mounts.

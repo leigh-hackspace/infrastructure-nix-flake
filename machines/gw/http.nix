@@ -3,12 +3,12 @@
 # Read `docs/router-front-door-migration.md` before changing anything here. It owns the
 # decision (every piece of nginx the network has **one** of terminates here — TLS and its
 # renewal, the public and `*.int` vhosts, the `nginx-sso` gate, `anubis`, the
-# `LOCAL_NETWORK` ACLs) and the order the move has to happen in. The boxes behind this one
-# are *origins*: they serve, they hold no certificate, and they are reachable from this box
-# and nowhere else, so they can be ignorant of where their traffic comes from because
-# something in front of them is not.
+# `LOCAL_NETWORK` ACLs), the lessons from the deploy, and the order to use if a name
+# moves. The boxes behind this one are *origins*: they serve, they hold no certificate,
+# and they are reachable from this box and nowhere else, so they can be ignorant of where
+# their traffic comes from because something in front of them is not.
 #
-# What this file is now, phase by phase:
+# What this file is:
 #
 #   * **The vhosts are not written here.** They are rendered from `common/front-door.nix`
 #     by `common/nginx/front-door.nix`, so the door's config *is* the table: a name the
@@ -20,9 +20,9 @@
 #     in `common/int-dns.nix`) and `*.test` is served by nothing, and every extra SAN is
 #     another `_acme-challenge` TXT to win at every renewal for 60 days.
 #   * **Both gates are here**, and that is a bug class removed rather than a service
-#     relocated: `nginx-sso`'s auth endpoint answers `*:8082` on services1 and decides
-#     LAN-or-tailnet from an `X-Real-IP` field only our nginx sets honestly. Next to the
-#     nginx that calls it, its listener can be loopback.
+#     relocated: `nginx-sso`'s auth endpoint used to answer `*:8082` on services1 and
+#     decide LAN-or-tailnet from an `X-Real-IP` field only our nginx sets honestly. Next
+#     to the nginx that calls it, its listener is loopback.
 #
 # The invariant that outlives all of it: **whoever can reach an origin can assert an
 # identity to it.** The apps behind the origins trust `X-WEBAUTH-USER` because they bind
@@ -73,10 +73,9 @@
   };
 
   # The cert's name, which is also its primary SAN and the directory under /var/lib/acme.
-  # Named after the registered domain rather than after the `*.int` half phase 1 started
-  # with, because from here on this is the only certificate the network has: phase 3's last
-  # step deletes services1's, and a fleet with exactly one cert should not have it named
-  # after a subdomain of the other one.
+  # Named after the registered domain because this is the only certificate the network
+  # has (services1 holds none) and a fleet with one cert should not name it after a
+  # subdomain.
   certDomain = CONFIG.PUBLIC_DOMAIN;
 
   # The first SAN of `certDomains` is the one nixpkgs takes as the cert's primary name, so

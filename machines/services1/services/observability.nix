@@ -5,9 +5,9 @@
 # stopped holding on 2026-10-17: services2 has 30 GB of RAM and strata's Coder
 # engine runs at ~28 GiB RSS against it, so anything else living there is what
 # takes the monitor down under memory pressure (see machines/services2/README.md
-# and machines/services2/STRATA.md).  services1 has the headroom and already
-# terminates TLS for these two vhosts, so the apps moved to it and the vhosts
-# stayed where they were.
+# and machines/services2/STRATA.md).  services1 has the headroom, so the apps moved
+# here; the names are rows in `common/front-door.nix` and the origin vhosts live in
+# ./monitoring.nix.  `gw` terminates TLS, not this box.
 #
 # What that costs is the one check that used to be worth having: gatus and
 # Prometheus now run on the box they watch, so a dead services1 goes down with

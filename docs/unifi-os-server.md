@@ -392,11 +392,12 @@ modified, so this is a restart, not a restore.
   the SPA's catch-all 200, so existence means "the one that doesn't", and
   `/proxy/network/ws` answers 401.
 - ~~Do we want the UniFi OS UI behind nginx-sso?~~ Not currently, and note
-  `unifi-admin.int` was **never** behind it: `mkIntVhost` is the LAN-ACL vhost, the
-  SSO one is `sso-vhost.nix` for public apps. So the controller's front door is
-  "reachable from the LAN and the tailnet ACLs, no second factor". If that ever
-  needs changing, the SSO `auth_request` dance plus UniFi OS's own websocket and
-  portal flows is the work, and it is not done here.
+  `unifi-admin.int` was **never** behind it: `mkIntVhost` is the LAN-ACL vhost, and
+  the SSO one was the deleted `sso-vhost.nix` (now a `sso = true` row in
+  `common/front-door.nix`). So the controller's front door is "reachable from the
+  LAN and the tailnet ACLs, no second factor". If that ever needs changing, the SSO
+  `auth_request` dance plus UniFi OS's own websocket and portal flows is the work,
+  and it is not done here.
 - `update-containers`' nightly `podman pull` failing on a locally-loaded image is
   harmless but noisy; either teach that script to skip `imageFile` containers or
   accept the log line.

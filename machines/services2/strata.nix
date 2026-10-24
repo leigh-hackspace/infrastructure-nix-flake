@@ -47,12 +47,11 @@
 #
 # Access: http://10.3.1.21:8080/v1 (OpenAI chat/completions, /v1/messages for
 # Anthropic-style clients, /v1/models, /health).  services2's firewall is off,
-# so this is reachable on the LAN directly; services1 also terminates TLS for it
-# as https://strata.int.leighhack.org (machines/services1/services/strata-proxy.nix).
-# Since 2026-10-18 the engine also answers publicly at
-# https://strata.leighhack.org: services1's nginx terminates that name on its own
-# public IPs (81.187.195.17 / 2001:8b0:1d14:225::20) and proxies over the LAN to
-# 10.3.1.21:8080, because services2 itself has no public IP.  That is only safe
+# so this is reachable on the LAN directly; the front door (`gw`) terminates TLS
+# for it as https://strata.int.leighhack.org (a row in common/front-door.nix).
+# It also answers publicly at https://strata.leighhack.org: `gw`'s nginx
+# terminates that name on the network's public addresses and proxies over the LAN
+# to 10.3.1.21:8080, because services2 itself has no public IP.  That is only safe
 # because the engine now has an api_key (apiKey below): /health says "api_key":
 # true and every /v1/* needs it (401 "missing or wrong API key" without one).
 #
@@ -61,8 +60,8 @@
 # host_allowed ...`), so the key is what lets the public name through, and the
 # public name staying out of the list is the fail-safe: take the key out and the
 # public vhost starts answering 403 instead of serving an unauthenticated engine
-# to the whole world.  See the ⚠️ note in strata-proxy.nix for why a LAN vhost
-# and this list still have to move together.
+# to the whole world.  See the ⚠️ note in common/front-door.nix for why a LAN
+# vhost and this list still have to move together.
 # Logs: journalctl -u strata -f and /var/lib/strata/strata.log.
 let
   cfg = config.services.strata;
@@ -175,10 +174,10 @@ let
       tokenizer = "${packDir}/tokenizer";
       model_name = "qwen3.8-flash-next-coder-iq1m";
       log = "/var/lib/strata/strata.log";
-      # The names this server answers to.  Keep in step with the vhosts on
-      # services1 that proxy :8080 (machines/services1/services/strata-proxy.nix):
-      # nginx forwards the incoming Host header upstream, and host_allowed() in
-      # serve/server.py 403s anything not listed here (an IP passes on trust).
+      # The names this server answers to.  Keep in step with the front-door rows
+      # in common/front-door.nix that proxy :8080: nginx forwards the incoming
+      # Host header upstream, and host_allowed() in serve/server.py 403s anything
+      # not listed here (an IP passes on trust).
       allowed_hosts = [
         "10.3.1.21"
         "services2"

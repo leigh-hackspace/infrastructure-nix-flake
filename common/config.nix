@@ -42,7 +42,7 @@ rec {
 
   # The tailnet's own address blocks, in the one place.  The IPv4 half is **/10**,
   # not the /16 three of the four copies of this fact used to carry: headscale
-  # allocates from `100.64.0.0/10` (`machines/services1/services/headscale.nix`'s
+  # allocates from `100.64.0.0/10` (`machines/gw/headscale.nix`'s
   # `ip_prefixes`, which reads these two strings now), and the old router's
   # `TAILSCALE` alias — which every tailnet rule in its `/conf/config.xml` was
   # keyed on — was `100.64.0.0/10, fd7a:115c:a1e0::/48`.  A /16 is not a

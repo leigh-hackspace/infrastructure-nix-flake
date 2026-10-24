@@ -253,10 +253,10 @@ in {
   # The control server is the network's own headscale — *not* Tailscale's hosted one
   # — which is why `--login-server` is below and why the join key is
   # common/config.nix's headscale pre-auth key rather than a Tailscale account key.
-  # Since phase 4 of docs/router-front-door-migration.md that control server is
-  # `./headscale.nix` on this same box: the URL still resolves through this box's nginx
-  # (`tailscale.leighhack.org`), so the client and server now hairpin locally rather
-  # than reaching a service behind the router. Get the login server or the key wrong and
+  # Since the front-door move that control server is `./headscale.nix` on this same
+  # box: the URL still resolves through this box's nginx (`tailscale.leighhack.org`),
+  # so the client and server now hairpin locally rather than reaching a service behind
+  # the router. Get the login server or the key wrong and
   # the box joins a tailnet that does not exist, quietly.
   services.tailscale = {
     enable = true;
@@ -306,12 +306,10 @@ in {
       # docs/follow-ups.md still owns `gw`.
       #
       # So the check after a cutover or a change here is the prefs, over ssh, not
-      # the unit's `active` state — and before applying it, settle the overlap this
-      # comment warns about: services1 advertises `10.3.0.0/16, 2001:8b0:1d14::/48,
-      # fd99:dead:beef:225::/64` (imperatively — the `tailscale set` line at the top
-      # of machines/services1/services/headscale.nix, not the flake), which is
-      # unequal to the `/48` below, and two advertisers of unequal prefixes is a
-      # route that flips depending on which one headscale accepted first.
+      # the unit's `active` state. services1's tailscaled was removed with the
+      # headscale move, so this box is the only subnet router now; the routes were
+      # set by hand and approved on 2026-10-24, and a hand-typed `tailscale set`
+      # still outranks this list until the next boot re-applies it.
       ++ [
         "--advertise-routes=10.3.0.0/16,192.168.2.0/24,2001:8b0:1d14::/48,fd99:dead:beef::/48"
       ];

@@ -58,26 +58,22 @@
   PUBLIC_SERVICES1 = "81.187.195.17";
   PUBLIC_YUNOHOST = "81.187.195.18";
 
-  # The addresses inbound public **IPv6** arrives on, and therefore the only ones
-  # the internet may reach on the LAN over IPv6 at all.  They have to be written
-  # down because IPv6 has no NAT to infer them from: the v4 forwards in
-  # ./firewall.nix name a public address and a LAN address in the same row, but a
-  # v6 connection is end-to-end, so the packet that arrives from the internet is
-  # already addressed to the box that answers it and the forward chain has to say
-  # so by name (`machines/gw/README.md`, "public IPv6 inbound is a rule, not a
-  # side effect").  Both are services1's own addresses and both are published:
+  # The addresses inbound public **IPv6** used to arrive on, and the ones this
+  # box now blocks forwarded HTTP(S) to when they still belong to an origin.
+  # They have to be written down because IPv6 has no NAT to infer them from. The
+  # public front door moved to this box on 2026-10-24, so the DO AAAA for
+  # `nginx.leighhack.org` is now `2001:8b0:1d14:225::1` (this box); both entries
+  # below are services1's addresses and are the origin-reachability side of
+  # `firewall.nix` rather than an inbound allowlist.
   #
-  #   2001:8b0:1d14:225::20    the AAAA every `*.leighhack.org` vhost answers with
-  #                            (`nginx.leighhack.org` is the CNAME they all share;
-  #                            read with `dig AAAA id.leighhack.org`), and
-  #                            services1's own address on VLAN 225
-  #                            (`machines/services1/networking.nix`).
-  #   2001:8b0:1d14:225:d::1020 the old box's `SERVICES1_IPV6` alias, which is what
-  #                            its three "Public IPv6 Services" pf rules were
-  #                            keyed on, still live on services1 (marked
-  #                            LEGACY TO BE DELETED in that same file) and still
-  #                            what headscale's DERP server publishes as its IPv6
-  #                            (`machines/services1/services/headscale.nix`).
+  #   2001:8b0:1d14:225::20    the AAAA every `*.leighhack.org` vhost used to
+  #                            answer with (`nginx.leighhack.org` was the CNAME
+  #                            they all share) and services1's own address on
+  #                            VLAN 225.
+  #   2001:8b0:1d14:225:d::1020 the old box's `SERVICES1_IPV6` alias, still on
+  #                            services1 (marked LEGACY TO BE DELETED there). It
+  #                            used to be headscale's DERP IPv6; DERP now
+  #                            publishes this box's `2001:8b0:1d14:225::1`.
   #
   # The yunohost appliance is *not* here: `yunohost.leighhack.org` has no AAAA, so
   # it has never been reachable over IPv6, and neither is anything else on the LAN

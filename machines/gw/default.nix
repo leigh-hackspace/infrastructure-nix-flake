@@ -63,9 +63,9 @@
     ./dns.nix
     ./firewall.nix
     # headscale + headplane: the network's tailnet control server and admin UI, moved
-    # here from services1 in phase 4 of docs/router-front-door-migration.md. The
-    # daemons bind 8085/8086 on loopback; `tailscale.leighhack.org` and
-    # `headplane.leighhack.org` are rows in common/front-door.nix.
+    # here from services1 with the front door. The daemons bind 8085/8086 on loopback;
+    # `tailscale.leighhack.org` and `headplane.leighhack.org` are rows in
+    # common/front-door.nix.
     ./headscale.nix
     # The router as a TLS endpoint: nginx, the `int.leighhack.org` certificate and
     # the first two `*.int` vhosts.  Phase 1 of docs/router-front-door-migration.md,

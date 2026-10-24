@@ -10,9 +10,9 @@ system RAM and the ~27 GiB n-gram table read from the NVMe.
 - Endpoint: `http://10.3.1.21:8080/v1` (OpenAI chat/completions,
   `/v1/messages` for Anthropic-style clients, `/v1/models`, `/health`).
   `services2.int.leighhack.org` already resolves to 10.3.1.21, so clients can
-  use that name with the port; services1 also terminates TLS for it as
-  `https://strata.int.leighhack.org` and — since 2026-10-18 — publicly as
-  `https://strata.leighhack.org` (`machines/services1/services/strata-proxy.nix`).
+  use that name with the port; the front door (`gw`) also terminates TLS for it as
+  `https://strata.int.leighhack.org` and publicly as `https://strata.leighhack.org`
+  (both rows in `common/front-door.nix`).
   The two LAN names are in `allowed_hosts` in `machines/services2/strata.nix`;
   the public one deliberately is not — see the Host-check note below.
 - API key: every `/v1/*` call needs `Authorization: Bearer <key>` or `x-api-key`
@@ -332,10 +332,9 @@ compared, compare hashes.
 - **No `HSA_*` / `STRATA_HIP_*` workarounds** — those are ROCm/gfx1030-specific.
 - **No nginx wiring** on this box. aibox serves its instance through its own
   nginx (`aibox.int.leighhack.org/llm`); services2 has no nginx. The vhost lives
-  on services1 instead — `machines/services1/services/strata-proxy.nix`, added
-  2026-10-15, and `just dns-sync-sync` gave it its `*.int` record.  The public
-  `strata.leighhack.org` record is hand-made in the DigitalOcean zone (dns-sync
-  manages only `*.int`): a CNAME to `nginx.leighhack.org`, the same trick every
+  on the front door instead — the `strata.int`/`strata.leighhack.org` rows in
+  `common/front-door.nix`.  The public `strata.leighhack.org` record is hand-made
+  in the DigitalOcean zone: a CNAME to `nginx.leighhack.org`, the same trick every
   other public name here uses, because services2 has no public IP of its own.
   **A LAN vhost and this file's `allowed_hosts` move together**: upstream's
   server 403s any `Host` it does not answer to (DNS-rebinding protection,

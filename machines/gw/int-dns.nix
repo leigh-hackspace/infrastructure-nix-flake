@@ -1,7 +1,7 @@
 # The router's half of the front door's guard: the *assertion* over
 # `common/int-dns.nix` read from this box's nginx, the mirror of
-# `machines/services1/int-dns.nix` that `docs/router-front-door-migration.md`
-# consequence 3 and AGENTS.md rule 24 demand ("a vhost move is a guard move").
+# `machines/services1/int-dns.nix` that AGENTS.md rule 24 demands ("a vhost move is a
+# guard move").
 #
 # Why this is a module and not a third entry in `just check`.  The file it belongs
 # next to is ./lib/check-network-tables.nix, which is a standalone evaluator
@@ -18,28 +18,18 @@
 # against.
 #
 # WHY THE RULE CHANGES SHAPE, which is the whole reason this file is not a copy of
-# services1's.  services1 is the front door today, so "the table equals the names
-# this box serves" is the honest invariant *there*.  Here it cannot be, not during
-# the migration:
+# services1's guard. `common/int-dns.nix`'s `frontDoor` names this box, so
+# "the table equals the names this box serves" is the honest invariant **here**,
+# and it is equality in both directions: a name in the table that no vhost here
+# serves is an NXDOMAIN-shaped 404 at the front door, and a vhost here whose name
+# is not in the table is a name that resolves somewhere else while this box answers
+# it. During the move the guard also permitted a subset, so the router could serve
+# a name before the answers pointed at it; that mode is gone, because there is no
+# second front door to pre-stage against any more.
 #
-#   * while `common/int-dns.nix` answers `*.int` at services1, this box's nginx is
-#     the front door in waiting.  It may pre-stage names — that is how the cert, the
-#     ACLs and the proxying get proven on the router while the network is still
-#     resolving them somewhere else — but it must not serve a name the table does not
-#     answer, because that name would be unservable-by-name forever: the router is
-#     not the address anyone dials yet.
-#   * the moment the table's `frontDoor` names this box, the answers move here, and
-#     "served here" and "answered here" have to be the same set exactly: a name in
-#     the table that no vhost here serves is an NXDOMAIN-shaped 404 at the front door,
-#     and a vhost here whose name is not in the table is a name that resolves
-#     somewhere else while this box answers it.
-#
-# So the assertion is *subset* while the door lives elsewhere and *equality* when it
-# is here — and the flip is what switches it, which is the point: `frontDoor = "gw"`
-# with a half-moved front door is a failed evaluation, not a half-broken network.
-# The strength is a function of a fact in one table, so nobody has to remember to
-# tighten the guard in the same change that moves the answers, and the guard cannot
-# be left loose by accident.
+# The origin's half is `machines/services1/int-dns.nix`, which compares that box's
+# vhosts to the `upstream = "origin"` rows of `common/front-door.nix` instead. The
+# pair covers both kinds of box, and each fails an evaluation rather than a client.
 {
   config,
   lib,

@@ -129,8 +129,8 @@ in {
 
     # The gate. `login` is a front-door name (it is in `common/int-dns.nix`'s `names`), so
     # once `*.int` answers here the gate has to be here too — a login flow served by a box
-    # that no longer answers the name is the incoherence the migration doc's consequence 4
-    # is about. `127.0.0.1` is *this* box by definition: the `nginx-sso` unit runs here
+    # that no longer answers the name is the incoherence the front-door move exists to
+    # remove. `127.0.0.1` is *this* box by definition: the `nginx-sso` unit runs here
     # (machines/gw/http.nix), so the OIDC callback is loopback again and the gate's listener
     # may finally be loopback. Public, because anyone who is not signed in must reach it.
     "login.int.leighhack.org" = {
@@ -421,7 +421,8 @@ in {
         `root = /sas-16tb/ds-downloads/Retro` — a directory that exists because services1
         mounts the NAS, and the router deliberately mounts nothing. This is the row that
         makes the filesystem root stay where the mount is: the door only needs the name
-        (migration doc, phase 2 point 2). Was plain HTTP; the door answers HTTPS.'';
+        (the reason the origin design keeps the filesystem root where the mount is). Was
+        plain HTTP; the door answers HTTPS.'';
     };
     "robot.ai.leighhack.org" = {
       upstream = "origin";
@@ -453,7 +454,7 @@ in {
     "headplane.leighhack.org" = {
       upstream = "http://127.0.0.1:8086";
       websockets = true;
-      note = "the headscale admin UI, kept as its own name; phase 4 moved the control server to this box";
+      note = "the headscale admin UI, kept as its own name; the daemons moved here with the front door";
     };
     "tailscale.leighhack.org" = {
       upstream = "http://127.0.0.1:8085";
@@ -477,7 +478,7 @@ in {
           proxyWebsockets = true;
         };
       };
-      note = "headscale's control server + `/admin` (headplane) — the name its OIDC issuer URLs point at; phase 4 moved the daemons to this box";
+      note = "headscale's control server + `/admin` (headplane) — the name its OIDC issuer URLs point at; the daemons moved here with the front door";
     };
   };
 }

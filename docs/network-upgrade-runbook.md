@@ -49,10 +49,10 @@ statement about *that day*; re-probe it, do not inherit it.
 
 | Box | Address | Reached as | What an upgrade means here | What must **not** happen here |
 | --- | --- | --- | --- | --- |
-| services1 | 10.3.1.20 | `leigh-admin` + hop key | full `switch`. The choke point: nginx terminates TLS for the whole network **and is the front door every `*.int` name answers at**, nginx-sso answers every `X-WEBAUTH-USER` app, postgres serves five DBs | a reboot that takes nginx/postgres/SSO down without knowing who is up |
+| services1 | 10.3.1.20 | `leigh-admin` + hop key | full `switch`. An **origin** now: nginx on plain HTTP :80 behind `ROUTER_ONLY`, with the app-shaped vhosts; postgres serves five DBs | a reboot that takes postgres or an origin app down without knowing who is up; putting a certificate or the gate back on this box |
 | services2 | 10.3.1.21 | `leigh-admin` + hop key | full `switch`. The RTX 3060 / Strata **Coder** engine, its own status dashboard, a 16 GiB swap file | being switched while its 30 GiB is the engine's; being mistaken for the builder or monitor it no longer is |
 | aibox | 10.3.1.32 | `leigh-admin` + hop key | full `switch`. Hosts immich, frigate, whisper, the netboot server, a status dashboard — and, since 2026-10-17, the **builder** | deploying from its **dirty** tree (see Phase 0) |
-| gw (the router) | 10.3.1.1 is the **flake's own box** (cut over from the OPNsense appliance on 2026-10-21; the appliance is retired) | `leigh-admin` + hop key, root not keyed — like every other machine here | `just switch-gw`, built **off** the router (builds delegate to aibox and `nix.settings.max-jobs = 0`, so nothing compiles here) and confirmed on the box. It answers DNS and hands out leases for the whole network | deploying gw while services1 is mid-switch (the deploy that adds a vhost's record is this one); anything that takes the router down; a build on the box itself (`_build-host-guard`) |
+| gw (the router) | 10.3.1.1 is the **flake's own box** (cut over from the OPNsense appliance on 2026-10-21; the appliance is retired) | `leigh-admin` + hop key, root not keyed — like every other machine here | `just switch-gw`, built **off** the router (builds delegate to aibox and `nix.settings.max-jobs = 0`, so nothing compiles here) and confirmed on the box. It answers DNS, hands out leases, and is the network's **front door**: nginx, the one certificate, `nginx-sso`, `anubis`, `headscale`/`headplane` | anything that takes the router down, including a failed switch (rollback here is a reboot); a build on the box itself (`_build-host-guard`) |
 | NAS | 10.3.1.6 | `leigh-admin` + hop key (root is **not** keyed) | nothing declarative. It must stay online: services1 and aibox NFS-mount it, borg runs on it | editing `/etc/sudoers` (middleware regenerates it); blaming a mount failure on the flake |
 | monster1 | 10.3.1.11 | `root` + hop key | nothing declarative. Its VMs' disks live on the NAS | `qm start` on an HA-managed VM; treating `storage 'nas2-nfs' is not online` as a VM fault |
 | authentik appliance | 10.3.1.36 | **not reachable** — the hop key was refused (`Permission denied (publickey,password)`) | nothing. It is the live IdP every app and every switch login goes through | un-parking `machines/services1/services/authentik.nix` (the shadow is **parked** for a reason) |
@@ -417,27 +417,29 @@ apply.
 The network is not three independent boxes:
 
 ```
-router 10.3.1.1  ── DNS for every *.int name + the DHCP reservation that gives
-  │                 every box its address. Never touched by this run.
+router 10.3.1.1  ── DNS for every *.int name + DHCP for the whole network, and the
+  │                 front door: TLS, certificate, nginx-sso, anubis, headscale
   ├── NAS 10.3.1.6 ── NFS exports; services1 and aibox mount it; borg lives here
   │        └── monster1 10.3.1.11 ── VM disks are on the NAS (nas2-nfs)
-  ├── services1 10.3.1.20 ── nginx (TLS terminator for the whole network),
-  │     └── proxies → services2 (grafana/prometheus/gatus/status)
-  │     └── proxies → aibox (immich/frigate/whisper/status)
-  ├── services2 10.3.1.21 ── the monitor (gatus → Slack) AND the build farm
+  ├── services1 10.3.1.20 ── an origin (plain HTTP :80 behind ROUTER_ONLY);
+  │     └── postgres, gatus/prometheus/grafana, the dashboards, most apps
+  ├── services2 10.3.1.21 ── strata (GPU engine) and its status dashboard
   └── aibox 10.3.1.32 ── the netboot server → clients 10.3.14.101–110
 ```
 
-**Default order: services1 → aibox → services2.**
+**Default order: services1 → aibox → services2 → gw.**
 
-- **services1 first.** It is the choke point: every public app, every OIDC
-  redirect, every `*.int` vhost and the ACME challenge live there. Landing it
-  first means the new nginx/vhost/cert set exists before the leaf boxes change
-  the ports they serve. If it fails, auto-rollback restores it and nothing else
-  has moved — the run stops at the cheapest possible point.
-- **aibox second.** Its apps are proxied by services1, whose new nginx is
-  already up. It is a leaf: nothing else waits on it except the netboot clients,
-  which only re-read the export on their next boot.
+- **services1 first.** It is the origin the front door proxies to for most apps;
+  landing it first means the vhosts the new generation renders are already there
+  when the door is switched. If it fails, auto-rollback restores it and nothing
+  else has moved.
+- **aibox second.** Its apps are proxied by the door, which is still on the old
+  generation and will answer from aibox the same way. It is a leaf: nothing else
+  waits on it except the netboot clients, which only re-read the export on their
+  next boot.
+- **gw last.** It is the front door and the router: its switch is the one that
+  briefly stops every name, and a failed activation there is a reboot. Doing it
+  last means every origin and leaf is already on the new generation.
 - **services2 last**, for two reasons that are the same box. It hosts the only
   live **Strata** engine, whose ~28 GiB RSS is most of the box's RAM, so its
   switch is the one most likely to need memory that is already spoken for; doing

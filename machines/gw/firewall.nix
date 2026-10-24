@@ -134,8 +134,8 @@
 
   # --- the front door: HTTP(S) *to the router itself* -----------------------
   #
-  # ./http.nix — phase 1 of docs/router-front-door-migration.md, and the two facts
-  # about these four lines are worth more than the lines:
+  # ./http.nix — the network's front door — and the two facts about these four lines
+  # are worth more than the lines:
   #
   # * **Matched by interface, not by `ip saddr ${aclV4}`** — the opposite of the ssh
   #   rule below, deliberately.  ssh is keyed on *who* you are; the front door is
@@ -153,13 +153,12 @@
   #   *if you can resolve the name from here, you can reach the front door from here*.
   #   nginx's per-vhost `LOCAL_NETWORK` is still what decides which name a given
   #   client may have; this is only which direction the listener answers at all.
-  # * **The public half is `publicInboundRules` now.** Phase 1 deliberately added no
-  #   DNAT row while nothing public arrived here; phase 3 step 4 retires that scoping:
-  #   the DMZ address still needs NAT (it is routed to the line, not assigned to an
-  #   interface) but `portForwards` translates it onto *this* box, so the packet arrives
-  #   on this input hook and is accepted there. On IPv6 there is no NAT to hide behind:
-  #   `nginx.leighhack.org`'s AAAA moved here with the certificate, so the packet is
-  #   already addressed to this box's own address and the same interface match is enough.
+  # * **The public half is `publicInboundRules`.** The DMZ address still needs NAT
+  #   (it is routed to the line, not assigned to an interface) but `portForwards`
+  #   translates it onto *this* box, so the packet arrives on this input hook and is
+  #   accepted there. On IPv6 there is no NAT to hide behind: `nginx.leighhack.org`'s
+  #   AAAA points here with the certificate, so the packet is already addressed to this
+  #   box's own address and the same interface match is enough.
   frontDoorRules = ''
     iifname "vlan*" tcp dport { 80, 443 } accept
     iifname "tailscale0" tcp dport { 80, 443 } accept
@@ -243,10 +242,10 @@
   #
   # What remains is the web pair on both public addresses, plus 3478/udp: the
   # public port of headscale's DERP STUN socket (`stun_listen_addr =
-  # 0.0.0.0:3479` in machines/services1/services/headscale.nix; UniFi claims 3478,
-  # which is why it is remapped).  STUN is UDP — the old table wrote it as TCP,
-  # which opened a TCP port to a UDP service and left tailnet clients' STUN
-  # unassisted.  `protocol` is per-row for that reason.
+  # 0.0.0.0:3479` in machines/gw/headscale.nix; UniFi claims 3478, which is why it
+  # is remapped).  STUN is UDP — the old table wrote it as TCP, which opened a TCP
+  # port to a UDP service and left tailnet clients' STUN unassisted.  `protocol`
+  # is per-row for that reason.
   # The web pair and DERP now terminate **on this box**. Phase 3 step 4 of
   # docs/router-front-door-migration.md moves the answers and the DNAT rows together:
   # the DMZ address still translates (it is a /29 routed to the AAISP line, not an

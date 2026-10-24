@@ -413,13 +413,14 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   target of every public `*.int` record in DigitalOcean. And `ldap.int` belongs with the
   authentik decision below, not with DNS.
 
-- **`nginx.int`'s AAAA record in DigitalOcean is a ULA** (`fd99:dead:beef:225d::20`,
-  while `nginx.leighhack.org`'s AAAA is the public `2001:8b0:1d14:225::20`). So the
-  public `*.int` CNAMEs hand any client outside the building one private IPv4 and one
-  private IPv6, which is coherent for a LAN zone and useless as a remote entry point —
-  if anything is expected to reach the internal apps off-LAN, it should be through the
-  tailnet (`int.leighhack.org` split-DNS → 10.3.1.1) and this record should point at the
-  public address or go away. Decide before pruning the `*.int` CNAMEs above.
+- **`nginx.int`'s AAAA record is a ULA, and now points at `gw`**
+  (`fd99:dead:beef:225d::1`; `nginx.leighhack.org`'s AAAA is the public
+  `2001:8b0:1d14:225::1`). The public `*.int` CNAMEs hand any client outside the
+  building one private IPv4 (`10.3.1.1`) and one private IPv6, which is coherent for a
+  LAN zone and useful only to a tailnet client (whose subnet router is `gw`). If
+  anything is expected to reach the internal apps from the open internet, this record
+  should point at the public address or go away. Decide before pruning the `*.int`
+  CNAMEs above.
 
 - **Two public status vhosts have no DNS record** (found 2026-10-12 while
   sanity-checking after the `nixbld` fix).
@@ -465,72 +466,16 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
 
 ## Router (gw)
 
-- **`firewall.int.leighhack.org` proxies a port nothing listens on** (found 2026-10-24
-  while planning the front door). `machines/services1/http.nix` sends it to
-  `https://10.3.1.1:60443`; `ss -lntp` on gw answers 53, 22, 8091 and tailscaled, and
-  `60443` appears in the whole tree exactly once — as that `proxyPass`. The retired
-  appliance's admin UI was deliberately never reopened (`machines/gw/README.md`, and
-  `firewall.nix`'s ssh-rule comment), so the vhost is a 502 today and the row in
-  `common/int-dns.nix` is a name the front door answers for an app that does not exist.
-  Either something is meant to be listening on 60443 — in which case say what, and on
-  which interface, because "the router's admin panel" is exactly what its firewall
-  audit concluded it should not have — or the vhost, the `firewall` label and the
-  `*.int` record all go. Not carried into `machines/gw/http.nix` in the meantime, which
-  is the difference between inheriting a dead upstream and choosing one.
-
-- **The front door, phases 2 and 3: everything the migration doc now commits to.** Read
-  `docs/router-front-door-migration.md`'s decision and its phase 2/3 lists; the short
-  version is that `gw` ends up terminating *all* of it — the full certificate (services1
-  with no `security.acme` at all), the public names, `nginx-sso`, `anubis`, the
-  `LOCAL_NETWORK` ACLs — and services1 keeps an **origin** nginx: no cert, no gate, no ACL,
-  reachable from `10.3.1.1` alone. The five pieces that must land together, and the two the
-  order of them exists to protect:
-
-  * `common/front-door.nix` + `common/nginx/front-door.nix`: one row per name the door
-    serves (`origin` | an address | `local`), with the per-name policy (`sso`, `anubis`,
-    body sizes, timeouts, aliases). Vhosts leave the service modules because a vhost is now
-    one box's business; leaving them in place is how two boxes keep opinions about one name.
-  * `common/public-names.nix` and its guard. The public names have **no table today** — that
-    is why `docs/router-and-dns.md` can narrate "two live vhosts and no DNS record" — and
-    the guard must check only what an evaluator may know: uniqueness, one upstream per name,
-    the `*.int` subset agreeing with `common/int-dns.nix`. "Does the DigitalOcean record
-    exist" is a gatus check; making it an eval-time fetch would put the network in the
-    evaluator (AGENTS.md: evaluation must not build, and here it must not talk either).
-  * The **origin-reachability rule** on `gw`'s forward chain, plus the origin's own
-    `allow 10.3.1.1; deny all;`. This is the piece phase 3's safety rests on: three apps
-    assert *who you are* from `X-WEBAUTH-USER` because loopback means no request can arrive
-    without passing through nginx (`crates/switch-gui/src/routes.rs` says so about its own
-    field), and the same reasoning refuses `--no-auth` on a routable bind. It ships before
-    or with the first moved vhost, never after.
-  * The gate and `anubis` moving, with `listen.addr = "127.0.0.1"` on the gate once it is
-    next to the nginx that calls it (it answers `*:8082` on services1 today),
-    `users.users.nginx.extraGroups = [ anubis ]` on `gw` or its unix socket is a 502, and
-    `anubis`'s `TARGET` retargeted from `127.0.0.1:8004` to `10.3.1.20:8004`.
-  * Phase 3 step 5's deletions on services1 — `security.acme`, `useACMEHost`s, the sso unit,
-    `machines/services1/int-dns.nix`, the `*.int` vhosts — **and the gatus endpoint guard
-    with them**, since `services/monitoring.nix` derives the internal endpoints from the box
-    own `virtualHosts`.
-
-  Two audit items fall out of the same change, both owed before the flip rather than after:
-  every app that logs, rate-limits or ACLs on the peer address (after the flip its peer *is*
-  the router, and `X-Forwarded-For` is only evidence if `set_real_ip_from` names the router
-  and nothing else — the module option does not exist in this nixpkgs, so it is
-  `extraConfig`), and every container whose `oci-containers.ports` entry publishes on
-  `0.0.0.0` while its only intended client is nginx (`127.0.0.1:PORT:PORT` fixes the ones
-  that are nginx-only; the UniFi controller's and mosquitto's ports have real consumers on
-  the LAN, so read the service's doc before narrowing anything).
-
-- **Deployed 2026-10-21 21:19** — the state to compare anything against. gw is at
-  `zb8s89v5w8ir5nv86i6kb3ghlsa4qh9y` (public IPv6 inbound with its counter, the tailnet
-  /10 in every rule, dnsmasq's four upstreams, the aibox build delegation and
-  `max-jobs = 0`) and services1 at `38zsm0pnmb9bwd7i58wqp2rlrnp0wh59` (the same ACL in
-  nginx and `pg_hba`), both switched *and confirmed in the same shell invocation*, both
-  `is-system-running = running`, `filestore.int` 200 / `id` 302 / `network-info.int` 200
-  afterwards. The new v6 rule read `counter packets 3` minutes after activation and 12 a
-  few minutes later — which proves the rule matches traffic and **not** that the internet
-  can arrive, because LAN clients hit it too; the off-network probe is still owed. Still
-  pending by choice: `--advertise-routes` (a boot, plus the services1 overlap settled),
-  the VPN, the rotations, and services2/aibox picking the ACL up.
+- **`firewall.int.leighhack.org` proxies a port nothing listens on** (found 2026-10-24).
+  Its row in `common/front-door.nix` sends it to `https://10.3.1.1:60443`;
+  `ss -lntp` on gw answers 53, 22, 8091 and tailscaled, and `60443` appears in the
+  whole tree exactly once — as that `proxyPass`. The retired appliance's admin UI was
+  deliberately never reopened (`machines/gw/README.md`, and `firewall.nix`'s ssh-rule
+  comment), so the vhost is a 502 and the row in `common/int-dns.nix` is a name the
+  front door answers for an app that does not exist. Either something is meant to be
+  listening on 60443 — in which case say what, and on which interface, because "the
+  router's admin panel" is exactly what its firewall audit concluded it should not
+  have — or the row and the `firewall` label go.
 
 - **`just switch-gw`'s `sync-gw` rsyncs the router's `.git` as well, and `--delete`
   means it.** Seen on the deploy above: 29 deletions, every one of them gw-only git
@@ -544,47 +489,29 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   files (`--exclude /.git`, and fetch on the rare occasion the router needs to be a repo)
   or stop describing it as a checkout.
 
-- **Public IPv6 inbound was never in the flake — fixed 2026-10-21, but unverified
-  from outside.** The old box let the internet dial services1 over IPv6
-  (`pass in quick on l2tp0 reply-to (…) inet6 proto tcp from any to
-  <SERVICES1_IPV6> port = {http, https, 8522}`, read out of the archived `pf.txt`
-  on 2026-10-21) and every `*.leighhack.org` vhost publishes a AAAA — `nginx.leighhack.org`
-  is the CNAME they all share and it answers `2001:8b0:1d14:225::20`. `firewall.nix`
-  had no v6 service rule at all: its forward chain is `policy drop` with one
-  `ip6 saddr <ACL>` accept, so an internet v6 client was dropped for four days while
-  every IPv4 test passed, and the only v6 traffic that got through was Chris's
-  `2a02:8010:6680::/48` — which passes *because it is in the shared ACL*, not because
-  a rule allows the service. `publicV6ForwardRules` is the ported rule; the two
-  addresses are `constants.nix`'s `PUBLIC_SERVICES1_V6`.  The post-cutover audit on
-  2026-10-21 narrowed it from the old box's {80, 443, 8522} to **80 and 443**,
-  matching the v4 policy (web plus tailscale only).
+- **Public IPv6 inbound still owes a probe from outside the ACL** (opened 2026-10-24,
+  after the front door moved). `nginx.leighhack.org`'s AAAA now points at the router
+  (`2001:8b0:1d14:225::1`) and the router answers public v6 itself; the DigitalOcean
+  record was changed on 2026-10-24. The old services1-forward rule is gone, so
+  `nft list chain ip6 router6 input` is the rule to read.
 
-  What this still owes someone: **a probe from a v6 address that is not in the ACL.**
   A LAN `curl -6` proves nothing (its source matches `2001:8b0:1d14::/48`), and the
-  external-v6 hits in services1's nginx access log stop at 08:46 on 2026-10-21, so
-  the pre-cutover behaviour is inferred from pf rules rather than observed. Read
-  `nft list chain ip6 router6 forward` and its counters after a probe from, say, a
-  phone on a mobile network. One deliberate non-change: 3478 stays v4-only because
-  the old box never let it in over v6 (so headscale's DERP has a published IPv6
-  with a v4-only STUN socket — worth a look if DERP ever needs to be reachable over
-  v6); 50443 and 51820 were removed entirely on 2026-10-21 (see `firewall.nix`), and
+  pre-cutover behaviour was inferred from pf rules rather than observed. Probe from a
+  v6 address that is not in the ACL — a phone on mobile data — and read the counters.
+  One deliberate non-change: 3478 stays v4-only (headscale's DERP has a published IPv6
+  with a v4-only STUN socket); 50443 and 51820 were removed on 2026-10-21; and
   `yunohost.leighhack.org` has no AAAA so the appliance has no v6 row.
 
-- **The tailnet's advertised routes are not applied, and a hand-typed `tailscale up`
-  outranks the flake** (measured 2026-10-21). `machines/gw/uplink.nix` advertises
+- **The tailnet's routes are applied but still boot-fragile** (measured 2026-10-21,
+  re-applied 2026-10-24). `machines/gw/uplink.nix` advertises
   `10.3.0.0/16,192.168.2.0/24,2001:8b0:1d14::/48,fd99:dead:beef::/48` and
-  `--advertise-exit-node`; `sudo tailscale debug prefs | jq .AdvertiseRoutes` on the
-  box answers `null`. `extraUpFlags` reach the daemon only through
-  `tailscaled-autoconnect.service`, which runs **at boot** — and at the cutover boot
-  that unit timed out and failed (`16:36:22 State = NoState` → `16:37:53 Failed`), the
-  join was done by hand, and a manual join is never re-asserted by a later `switch`.
-  It also registered as **`gw-1`** (see the stale-`gw`-node item below, now confirmed
-  rather than suspected). Before applying it: services1 advertises
-  `10.3.0.0/16, 2001:8b0:1d14::/48, fd99:dead:beef:225::/64` *imperatively* (the
-  `tailscale set` comment at the top of `machines/services1/services/headscale.nix`),
-  which is unequal to this box's `/48` — pick one advertiser or make the two lists
-  identical, then reboot and check the prefs, not the unit's state. Whether headscale
-  approves the routes at all is still unknown from this side.
+  `--advertise-exit-node`; after services1's tailscaled was removed with the headscale
+  move, gw is the only subnet router, and the routes were set by hand and approved on
+  the live node (`headscale nodes approve-routes`). `extraUpFlags` still reach the
+  daemon only through `tailscaled-autoconnect.service`, which runs **at boot**, and a
+  hand-typed `tailscale up` outranks the flake — check
+  `sudo tailscale debug prefs | jq .AdvertiseRoutes` and the approved list in
+  `headscale nodes list` after any reinstall or reboot.
 
 - **`100.64.0.0/16` was the network's idea of the tailnet, and headscale hands out a
   /10 — fixed 2026-10-21.** `common/config.nix` now carries `TAILNET_V4`/
@@ -654,13 +581,13 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   What it did — ssh from services1, read `/var/lib/dnsmasq/names.hosts` on the router,
   append the missing (address, name) pairs, `systemctl reload dnsmasq`, and separately
   create a DigitalOcean CNAME — is now a table: `common/int-dns.nix` lists every `*.int`
-  name that answers with services1's three addresses, `machines/gw/dns.nix` renders it to
+  name that answers with the front door (now `gw`)'s three addresses, `machines/gw/dns.nix` renders it to
   `/etc/dnsmasq-int-vhosts.hosts`, and that store path is a dnsmasq `restartTriggers`
   entry, so record and restart arrive in one activation. The gate that makes "forgot the
-  DNS" impossible to land is `machines/services1/int-dns.nix`: it derives the `*.int`
-  names from `services.nginx.virtualHosts` and refuses to evaluate services1 unless that
-  set equals the table (it caught three names of its own on its first build, which is the
-  argument for it). The crate, its workspace membership, `machines/services1/dns-sync.nix`
+  DNS" impossible to land is `machines/gw/int-dns.nix`: it derives the `*.int` names from
+  the front door's `services.nginx.virtualHosts` and refuses to evaluate `gw` unless that
+  set equals the table (the origin box's half is `machines/services1/int-dns.nix`, which
+  checks the table's `origin` rows instead). The crate, its workspace membership, `machines/services1/dns-sync.nix`
   (including the pinned router host keys, which nothing reads any more), the
   `just dns-sync-check|sync|prune` recipes and every doc pointer are gone; the facts worth
   keeping from the tool are in `docs/router-and-dns.md` ("What `*.int` answers with"). Two
@@ -806,18 +733,14 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   real box — the box is now live and forwarding, so read the counters and delete the
   half that never matches.
 
-- **A stale headscale node called `gw` may own the name** (noticed 2026-10-17;
-  **confirmed at the cutover**). `sudo headscale nodes list` on services1 listed a `gw`
-  at 100.64.0.11, registered 2025-08-25 and offline since 2026-04-13 — some earlier life
-  of this box, or of the old router's tailnet client. Nothing in the flake references
-  that address, but headscale's node names are what ACLs and humans read, so a second
-  `gw` is a finding either way: rename or expire the old node at the cutover, and
-  check `tailscale status --json` on the new box says it advertises no routes. **It
-  happened as predicted**: the live box registered on 2026-10-21 as `gw-1` (id 56,
-  100.64.0.28) because id 15 still holds `gw`, and the check —
-  `sudo tailscale debug prefs | jq .AdvertiseRoutes` — is the one that found the
-  advertise-routes item above. Expire id 15, rename id 56, and read the prefs rather
-  than `status`'s `AllowedIPs`, which hides an unapproved advertisement.
+- **A stale headscale node called `gw` still owns the name `gw`** (noticed 2026-10-17;
+  confirmed at the cutover). `headscale nodes list` has an old `gw` at 100.64.0.11
+  (offline since 2026-04-13) and the live box registered on 2026-10-21 as **`gw-1`**
+  (id 56, 100.64.0.28). Headscale's node names are what ACLs and humans read, so two
+  nodes called `gw` is still a finding. Expire id 15 and rename id 56. Its routes are
+  now advertised and approved (2026-10-24); read
+  `sudo tailscale debug prefs | jq .AdvertiseRoutes` and the approved list, not
+  `status`'s `AllowedIPs`, which hides an unapproved advertisement.
 
 - **The LAN port is doing 100 Mbit, not gigabit** (measured on the box,
   2026-10-17: `eno1` at 100Mb/s, full duplex). Either the cable, the SFP/PHY setting,
@@ -941,8 +864,8 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   (`authentik_env_file`), which is where they should have been.
 
 - **`id-shadow.int.leighhack.org` has no DNS record.** The vhost works and was
-  tested with `curl --resolve`; `sudo dns-sync sync` adds the record, and
-  `just dns-sync prune` should remove it when the shadow goes away.
+  tested with `curl --resolve`; the module is parked, and if it is un-parked the label
+  goes in `common/int-dns.nix` like every other `*.int` name (there is no dns-sync).
 
 - **The nightly authentik dump timer is off** while `shadow = true` (a dump of a
   copy of the live database would only confuse a restore). The unit itself is

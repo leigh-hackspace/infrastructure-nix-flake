@@ -131,32 +131,22 @@ record and the restart that makes dnsmasq notice it arrive in the same activatio
 
 ### What `*.int` answers with, and why it is that address
 
-**10.3.1.20 is services1, and services1's nginx is the network's front door.** Every
-`*.int.leighhack.org` vhost is a `server_name` in that one nginx (`machines/services1/
-http.nix` and `machines/services1/services/*.nginx`-shaped modules), which terminates
-TLS on the wildcard cert and proxies to the box that actually runs the thing —
-`grafana.int` to Grafana, `filestore.int` to filestore, `alexandria.int` to aibox:4200,
-`network-info.int` to gw:8091. So a `*.int` name is not a pointer to a host, it is a
-pointer to *a vhost*, and the vhost lives on services1: the answer is services1's
-addresses, and `common/int-dns.nix`'s `frontDoor = "services1"` says which record in
-`common/dns-records.nix` those come from. Three of them, one line each — the IPv4
-(`10.3.1.20`), the public IPv6 and the ULA — because a name missing its IPv6 half is a
-dual-stack client that hangs on IPv6 before it falls back, and because dnsmasq's hosts
-syntax cannot put two addresses on one line (the second field onwards *is names*).
-
-That is also why the front door's addresses are never written down again: they are read
-out of the reservation table, the same three strings `common/hosts.nix` and the nginx
-proxies use.
-
-**One field says which box that is, and it can say `gw`.** `frontDoor` names either an
-entry of `common/dns-records.nix` (`services1`, today) or the router — and the router has
-no reservation and cannot have one, because it is the box handing out leases, so its three
+**10.3.1.1 is `gw`, and `gw`'s nginx is the network's front door.** Every
+`*.int.leighhack.org` name is served from `common/front-door.nix` — either by that
+nginx directly, or proxied to the box that runs the app (`grafana.int` to services1's
+origin, `alexandria.int` to aibox:4200, `network-info.int` to gw:8091). So a `*.int`
+name is a pointer to *a vhost*, and the vhosts are on the router: the answer is the
+router's three addresses, and `common/int-dns.nix`'s `frontDoor = "gw"` says so. The
 addresses are read from `common/vlans.nix`'s VLAN whose `ipv4` is `hosts.router`
-(`machines/gw/lib/network-tables.nix`'s `doorAddresses`). Nothing else in the tree notices:
-the answers move, each box's guard reads the same string and changes mode, and
-`machines/gw/lib/check-network-tables.nix` refuses a `frontDoor` that resolves to no
-addresses — an empty hosts file is not an error to dnsmasq, it is a zone that answers
-nothing. `docs/router-front-door-migration.md` is the plan; as it writes, not applied.
+(`machines/gw/lib/network-tables.nix`'s `doorAddresses`) rather than from a reservation,
+because the router hands out leases and cannot hold one. One line per address (IPv4,
+public IPv6, ULA) — a name missing its IPv6 half is a dual-stack client that hangs
+before falling back, and dnsmasq's hosts syntax cannot put two addresses on one line.
+
+`machines/services1` is an **origin** now, not a second front door: it answers only the
+`upstream = "origin"` rows in `common/front-door.nix`, on plain HTTP :80, from
+`10.3.1.1` alone. `docs/router-front-door-migration.md` is the architecture and the
+deploy record.
 
 **The names that answer with something else, and why they are exceptions:**
 
@@ -167,12 +157,12 @@ nothing. `docs/router-front-door-migration.md` is the plan; as it writes, not ap
   device name, and `machines/gw/lib/check-network-tables.nix` refuses the pair if one
   appears in both: dnsmasq unions every `addn-hosts` file, so one name in two files is
   one name with two answers.
-- **`authentik.int` is served by the appliance**, 10.3.1.36, even though nginx also
-  serves the name (as an alias of `id.int`). `common/int-dns.nix`'s `exempt` list is
+- **`authentik.int` is served by the appliance**, 10.3.1.36, even though the door also
+  serves it (as an alias of `id.int`). `common/int-dns.nix`'s `exempt` list is
   where that is written down, with the reason: the switches' RADIUS and pi-room-sys's
   LDAP dial `ldaps://authentik.int.leighhack.org` directly and the appliance's `:443`
   is not fronted. Which answer *should* win is an open decision
-  (`docs/handover-2026-10-21.md`); what is no longer open is that the table says which
+  (`docs/follow-ups.md`); what is no longer open is that the table says which
   one does.
 - **`switch1`/`switch2`/`switch3` answer themselves** (`common/hosts.nix`) without being
   DHCP clients, so they have no reservation to hang a record on — that is what
@@ -214,11 +204,12 @@ sudo -n journalctl -u dnsmasq -n 30
 Three states worth recognising in that output, because each has its own cause:
 
 - **Nothing at all, and the name is a vhost** — the deploy that added the vhost did not
-  deploy gw, or `common/int-dns.nix` disagrees with nginx and services1 refuses to
-  build. `cat /etc/int-dns/served-int-names` on the box that terminates the name and
-  `dig <name>.int @10.3.1.1` are the two halves of that diff. Both files render the same
-  list from the same table, so once `frontDoor` says `gw` the box to `cat` on is the
-  router, and `machines/gw/int-dns.nix` is the guard that refuses the mismatch.
+  deploy gw, or `common/int-dns.nix` disagrees with nginx and one of the guards refuses to
+  build. `cat /etc/int-dns/served-int-names` on gw and
+  `/etc/int-dns/served-origin-names` on services1 are the two halves, and
+  `dig <name>.int @10.3.1.1` is the answer. Both files render from the same table, so
+  `machines/gw/int-dns.nix` and `machines/services1/int-dns.nix` are the guards that
+  refuse the mismatch.
 - **An A and no AAAA for a front-door name** — impossible from the generated file
   (`intHosts` emits one line per address of the record, and the check module counts the
   lines per name), so look for a hand edit or a stale `names.hosts` that something was
@@ -321,16 +312,16 @@ resolving over public DoH and are maintained by nobody.
   live vhosts once ended up with no record at all (`docs/follow-ups.md`).
 - **A new `*.int` vhost needs no record here.** The LAN gets it from the router
   (`common/int-dns.nix`) and the tailnet gets it from headscale's split DNS
-  (`machines/services1/services/headscale.nix`: `int.leighhack.org` → 10.3.1.1, with
+  (`machines/gw/headscale.nix`: `int.leighhack.org` → 10.3.1.1, with
   `int.leighhack.org` as a search domain), which is what the zone's ~40 `*.int` CNAMEs
   → `nginx.int.leighhack.org` were for before a tool was written to maintain them.
   They are left in place because deleting forty working records to prove a point is not
   a trade; `docs/follow-ups.md` carries pruning them, and the one-record wildcard
   alternative, with its caveat.
-- **The wildcard ACME cert covers `*.leighhack.org` and `*.int.leighhack.org`**
-  (`machines/services1/http.nix`, `dnsProvider = "digitalocean"`), so a new vhost needs
-  no cert work. It also means the zone's `_acme-challenge*` names are load-bearing on a
-  60-day timer: anything that puts a record *under* `_acme-challenge` — a `*.int` CNAME
+- **The ACME certificate lives on `gw` and covers `leighhack.org`, `*.leighhack.org`,
+  `*.ai.leighhack.org` and `*.int.leighhack.org`** (`machines/gw/http.nix`,
+  `dnsProvider = "digitalocean"`), so a new vhost needs no cert work. It also means
+  the zone's `_acme-challenge*` names are load-bearing on a 60-day timer: anything that puts a record *under* `_acme-challenge` — a `*.int` CNAME
   wildcard being the tempting one — has to be tested against a real renewal, not
   reasoned about. That is why the wildcard is a follow-up and not tonight's change.
 - **DigitalOcean stores record names as labels, not FQDNs.** Create a record named

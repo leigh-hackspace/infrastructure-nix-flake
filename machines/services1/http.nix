@@ -1,6 +1,6 @@
 # services1 as an **origin**: nginx with no certificate, no gate, no public ACL.
 #
-# `docs/router-front-door-migration.md` phase 3 step 2. Everything that terminates
+# `docs/router-front-door-migration.md` (the origin half). Everything that terminates
 # TLS, authenticates or decides which network may have a name now lives on `gw`
 # (`machines/gw/http.nix` + `common/front-door.nix`); this box keeps the vhosts whose
 # *applications* are app-shaped (a `/srv` root, an auth rewrite, a filesystem mount)

@@ -14,9 +14,9 @@
 # images, zoom crops and a thumbnail; objects already recorded are absorbed
 # into the background so their later removal is itself recorded.
 #
-# aibox has no nginx of its own; services1 reverse-proxies
-# frigate-monitor.int.leighhack.org to 10.3.1.32:8090 (see
-# machines/services1/services/frigate-monitor.nix).
+# aibox has no nginx of its own; the front door (`gw`) proxies
+# frigate-monitor.int.leighhack.org to 10.3.1.32:8090 (the row is in
+# common/front-door.nix).
 {
   config,
   lib,

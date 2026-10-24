@@ -51,10 +51,9 @@
 
     # The shared env-file secret (`CONFIG.ENV_FILE`), needed here for exactly one of
     # its keys: `DO_AUTH_TOKEN`, which ./http.nix's ACME DNS challenge presents to
-    # DigitalOcean to prove this box may issue for `int.leighhack.org`
-    # (docs/router-front-door-migration.md, consequence 1 — the cert moves with the
-    # nginx that uses it, and the token that answers for the zone moves with the
-    # cert).  It is a *runtime* file read by PID 1 at issuance time, so the token
+    # DigitalOcean to prove this box may issue for `int.leighhack.org` (the cert and
+    # the token that answers for the zone moved here together).  It is a *runtime* file
+    # read by PID 1 at issuance time, so the token
     # reaches no derivation and no process listing, and it is never printed or copied
     # off services1 (AGENTS.md, "Secrets").
     #
@@ -63,11 +62,10 @@
     # the moment sops renders it.  That is the argument for the sentence above being
     # true and for nothing else from machines/services1/sops.nix coming across with
     # it — a router that grows a secret because "the front door has one" has stopped
-    # being a router and started being a second services1.  The front door does grow from
-    # here — the `nginx-sso` gate and `anubis` arrive with the public names in phase 2/3 of
-    # the migration — and each of those owes its own line below with the same shape: name
-    # the key, name the unit that reads it.  "The front door needs secrets" is not a reason;
-    # "this oneshot dials the DO API with this token" is.
+    # being a router and started being a second services1.  The front door's own
+    # secrets are below — the gate and `anubis` run here — and each owes its own line
+    # with the same shape: name the key, name the unit that reads it.  "The front door
+    # needs secrets" is not a reason; "this oneshot dials the DO API with this token" is.
     env_file = {
       group = "secrets";
       mode = "0440";

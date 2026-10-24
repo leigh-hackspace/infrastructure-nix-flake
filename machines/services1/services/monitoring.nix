@@ -1,12 +1,13 @@
-# The vhosts for the observability apps: gatus, Prometheus and Grafana.
+# The origin vhosts for the observability apps: gatus, Prometheus and Grafana.
 #
-# services1 is the TLS terminator for this network — the wildcard ACME cert and
-# nginx-sso live here (see ../http.nix) — so the vhosts have always lived here.
-# Since 2026-10-17 the apps do too (./gatus.nix, ./observability.nix): services2
-# keeps only strata, so these proxy to a loopback bind on this box rather than
-# across the LAN.  The ports are the apps' own — 8999 gatus, 3000 Grafana,
-# 9091 Prometheus — and none of them collide with anything else services1 runs
-# (checked against the rendered units, not against this file).
+# `gw` is the network's front door — the certificate and `nginx-sso` live there
+# (`machines/gw/http.nix`) — and these are `upstream = "origin"` rows in
+# `common/front-door.nix`. Since 2026-10-17 the apps are on this box too
+# (./gatus.nix, ./observability.nix): services2 keeps only strata, so these proxy to
+# a loopback bind on this box rather than across the LAN.  The ports are the apps'
+# own — 8999 gatus, 3000 Grafana, 9091 Prometheus — and none of them collide with
+# anything else services1 runs (checked against the rendered units, not against this
+# file).
 #
 # This file also carries the drift guard that used to sit inside gatus.nix
 # (docs/repo-audit-2026-10-07.md §3.7).  It belongs here rather than with gatus,

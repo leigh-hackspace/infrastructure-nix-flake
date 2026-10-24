@@ -2,20 +2,17 @@
 #
 # The front door's gate, generated where the gate runs. It moved here from
 # `machines/services1/lib/nginx-sso-config.nix` with the duty rather than being copied, so
-# there is one cookie key, one OIDC client and one ACL for the network's logins
-# (`docs/router-front-door-migration.md`, consequence 4).
+# there is one cookie key, one OIDC client and one ACL for the network's logins.
 #
 # `listenAddr` is the argument that is the whole point of the move. It was `0.0.0.0`, and
-# services1's `ss -lntp` reads `*:8082`: the auth endpoint the whole network's
-# authentication depends on answers any LAN client (`curl http://10.3.1.20:8082/auth` from
-# another box returns 401 — refused, but *answered*), while the ACL below decides "is this
+# services1's `ss -lntp` read `*:8082`: the auth endpoint the whole network's
+# authentication depends on answered any LAN client, while the ACL below decides "is this
 # caller LAN or tailnet" from an `x-real-ip` **field** that only our nginx sets honestly and
 # any other caller can put anything in. Co-locating the gate with the nginx that calls it is
 # what lets the caller be this box alone, so `machines/gw/http.nix` passes `127.0.0.1`.
 #
-# services1 still runs its own copy at `0.0.0.0` until the front door flips — that is the
-# window the migration doc's phase 3 closes, and the reason the argument exists instead of
-# the value being hardcoded to something safe here.
+# services1 has no gate any more; the migration is deployed
+# (`docs/router-front-door-migration.md`).
 #
 # Both secrets go in through `sopsSecretText`, which puts them in a world-readable store
 # path; `common/sops.nix`'s `infra.buildTimeSecrets` carries the sentence justifying each

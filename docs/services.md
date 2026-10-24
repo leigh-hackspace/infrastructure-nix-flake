@@ -10,10 +10,12 @@ design decisions and the traps that only matter while you are in that one crate.
 deeper document that owns the long version, if there is one — this file is the
 index, not the final word.
 
-Machines: `services1` (10.3.1.20, the services box and TLS terminator),
-`services2` (10.3.1.21, strata — the observability stack that used to live there
- moved to services1 on 2026-10-17), `aibox` (10.3.1.32, the network's build machine
- since 2026-10-17).
+Machines: `services1` (10.3.1.20, the services box and an **origin** — it holds no
+TLS certificate and no public name), `services2` (10.3.1.21, strata — the
+observability stack that used to live there moved to services1 on 2026-10-17),
+`aibox` (10.3.1.32, the network's build machine since 2026-10-17), and `gw`
+(10.3.1.1, the router and **front door**: TLS, the certificate, `nginx-sso`,
+`anubis`, `headscale`/`headplane` and every vhost).
 Every address is in `common/hosts.nix`.
 
 ---
@@ -40,9 +42,10 @@ It kept the router's dnsmasq host overrides and the DigitalOcean zone in step wi
 `services.nginx.virtualHosts`, by ssh'ing from services1 into the router and appending
 lines to a mutable `/var/lib/dnsmasq/names.hosts` whenever someone ran
 `just dns-sync-sync`. The names are `common/int-dns.nix` now, rendered by
-`machines/gw/dns.nix` into a store path that dnsmasq is restarted for, and
-`machines/services1/int-dns.nix` refuses to evaluate services1 while that table and the
-box's vhost list disagree. **`docs/router-and-dns.md`** owns what "correct" means, which
+`machines/gw/dns.nix` into a store path that dnsmasq is restarted for; `machines/gw/int-dns.nix`
+refuses to evaluate `gw` while the table and the front door's vhost list disagree, and
+`machines/services1/int-dns.nix` checks that the origin box serves exactly the table's
+`origin` rows. **`docs/router-and-dns.md`** owns what "correct" means, which
 names answer somewhere other than the front door, and what is left in DigitalOcean with
 nothing maintaining it.
 
@@ -59,10 +62,10 @@ Events store before/after/diff JPEGs with the changed regions boxed, zoom crops
 and a thumbnail, under `/var/lib/frigate-monitor/events/`.
 
 Web UI is a Dioxus SPA (`frontend/`, wasm-built by the flake as `frontendDist`,
-embedded by `build.rs` — no bundle committed) on aibox:8090, proxied by
-services1 as `frigate-monitor.int.leighhack.org` (LAN-only). Packaging:
-`machines/aibox/frigate-monitor.nix` and
-`machines/services1/services/frigate-monitor.nix`.
+embedded by `build.rs` — no bundle committed) on aibox:8090, proxied by the front
+door (`gw`) as `frigate-monitor.int.leighhack.org` (LAN-only). Packaging:
+`machines/aibox/frigate-monitor.nix`; the vhost is a row in `common/front-door.nix`,
+not a services1 module.
 
 ## `crates/gocardless-dashboard/` — GoCardless sync + operator dashboard
 
@@ -119,11 +122,10 @@ tunnel does, so its absence is the WAN-down signal. (The binary still has the ol
 unit does not use it.)
 
 It listens on **10.3.1.1:8091**, not `0.0.0.0`: its only clients are on services1 —
-the nginx that terminates `network-info.int.leighhack.org` (TLS and the LAN ACL stay
-there; the vhost proxies to `http://10.3.1.1:8091`) and Prometheus, which scrapes
-`/metrics` (`machines/services1/services/observability.nix`). `machines/gw/firewall.nix`
-opens the port to `services1` alone. The JSON API is unauthenticated by design; the
-vhost ACL is the access control.
+Prometheus, which scrapes `/metrics` (`machines/services1/services/observability.nix`)
+— and `gw`'s own nginx, which serves `network-info.int.leighhack.org` from loopback.
+`machines/gw/firewall.nix` opens the port to `services1` alone. The JSON API is
+unauthenticated by design; the vhost ACL is the access control.
 
 It lives in `machines/gw/network-status.nix`. That does mean the router's system
 contains a Rust crate, so **deploy it by pushing from services1/aibox**
@@ -314,14 +316,14 @@ upstream fails the build rather than the boot; the update ritual — build on ai
 `nix copy --no-check-sigs` as root, switch, never confirm a failed activation — is
 in `machines/services2/STRATA.md`.
 
-services1 terminates TLS for services2's engine as
-`https://strata.int.leighhack.org` (LAN-only behind the `LOCAL_NETWORK` ACL) and,
-since 2026-10-18, as the public `https://strata.leighhack.org`
-(`machines/services1/services/strata-proxy.nix`).  One engine, two gates: the
-public name is open to the world and the engine's `api_key` (sops
-`strata_api_key`) is what makes that safe, while the `.int` name injects that same
-key at nginx so LAN clients — and the engine's own dashboard, which is nothing but
-`/v1/*` calls — stay keyless.  **A LAN vhost name and the engine's
+`gw` terminates TLS for services2's engine as `https://strata.int.leighhack.org`
+(LAN-only behind the `LOCAL_NETWORK` ACL) and as the public
+`https://strata.leighhack.org`; both are rows in `common/front-door.nix`, and the
+door proxies straight to `10.3.1.21:8080`. One engine, two gates: the public name is
+open to the world and the engine's `api_key` (sops `strata_api_key`) is what makes
+that safe, while the `.int` name injects that same key at nginx so LAN clients — and
+the engine's own dashboard, which is nothing but `/v1/*` calls — stay keyless.
+**A LAN vhost name and the engine's
 `allowed_hosts` are one fact in two files**: upstream's server refuses any `Host`
 it does not answer to (DNS-rebinding protection) and nginx forwards the incoming
 header upstream, so a vhost added without the name in

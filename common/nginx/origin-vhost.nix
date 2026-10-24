@@ -1,7 +1,7 @@
 # HELPER — function of {lib} returning the origin-vhost builder services1's apps call.
 #
-# An **origin** is what a box behind the front door runs after
-# `docs/router-front-door-migration.md` phase 3: the same vhost the app has always had,
+# An **origin** is what a box behind the front door runs (`docs/router-front-door-migration.md`):
+# the same vhost the app has always had,
 # with everything that terminates, authenticates or decides a network removed from it.
 # So this builder is `int-vhost.nix` minus three things and plus one:
 #

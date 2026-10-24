@@ -423,13 +423,11 @@ So the check after a cutover, or after editing that line, is:
 ssh -i ~/.ssh/agent-hop-key leigh-admin@10.3.1.1 'sudo tailscale debug prefs | jq -c .AdvertiseRoutes'
 ```
 
-and it wants a **boot**, not a switch. Before applying it, settle the overlap
-`./uplink.nix` warns about in its own comment: services1 advertises
-`10.3.0.0/16, 2001:8b0:1d14::/48, fd99:dead:beef:225::/64` imperatively (the
-`tailscale set` line at the top of
-`machines/services1/services/headscale.nix`, not the flake), which is unequal to the
-`/48` this box advertises, and two advertisers of unequal prefixes give a route that
-depends on which one headscale accepted first.
+and it wants a **boot**, not a switch. The overlap `./uplink.nix` used to warn about —
+services1 advertising a different set imperatively — is gone: services1's tailscaled was
+removed with the headscale move, so `gw` is the only subnet router. Its routes were set by
+hand and approved on 2026-10-24; verify the prefs and the approved list, not the unit's
+state.
 
 ## Comparing the two routers, which is how to find what is wrong here
 
@@ -586,7 +584,7 @@ records — was deleted on 2026-10-22; `common/int-dns.nix` is that feature now.
 
 ## Known-incomplete, by name
 
-* **The front door is live and `services1` is an origin** (`http.nix`, all four phases of
+* **The front door is live and `services1` is an origin** (`http.nix`, the migration in
   `docs/router-front-door-migration.md`, **deployed 2026-10-24**). `common/int-dns.nix`'s
   `frontDoor` is `gw`, so `/etc/dnsmasq-int-vhosts.hosts` answers 10.3.1.1 (hash
   `aa35bcf…`) and every name is terminated here. `services1` keeps only its app-shaped
@@ -596,7 +594,7 @@ records — was deleted on 2026-10-22; `common/int-dns.nix` is that feature now.
   flip — before it they would have cut clients off from the box still serving them.
   `headscale`/`headplane` moved here too (`./headscale.nix`), with their state copied while
   services1's units were stopped; the node list survived, which is the proof.
-  The part phase 1 could not test in advance was **renewal**, and the deploy learned what
+  The part the first deploy could not test in advance was **renewal**, and the deploy learned what
   that looks like anyway, because the first issuance *failed*: lego lost the propagation
   check for `_acme-challenge.int` — its own two SANs, one TXT name, and a public resolver
   answering from a cached negative about a record the CA had already confirmed — and
@@ -768,10 +766,10 @@ live rules rather than this list — `sudo nft list chain ip routerNat dstnat`,
 
 | From the internet | Port | What |
 | --- | --- | --- |
-| 81.187.195.17 | tcp 80, 443 | services1: nginx, every `*.leighhack.org` vhost |
-| 81.187.195.17 | udp 3478 | headscale DERP STUN → services1:3479 (tailscale) |
+| 81.187.195.17 | tcp 80, 443 | this box: nginx, every `*.leighhack.org` vhost |
+| 81.187.195.17 | udp 3478 | headscale DERP STUN → this box's 3479 (DNAT onto the router) |
 | 81.187.195.18 | tcp 80, 443 | the yunohost appliance |
-| services1's public IPv6 | tcp 80, 443 | the same vhosts, no NAT |
+| `2001:8b0:1d14:225::1` | tcp 80, 443 | the same vhosts, no NAT (the DO AAAA moved here) |
 | gw itself | udp 41641 | tailscale's direct data plane (both families) |
 
 The retired box's 8522 (GitLab SSH), 50443 (matrix/livekit) and 51820 (WireGuard to
@@ -790,12 +788,11 @@ contains five public ranges (next paragraph), this box has public addresses of i
 private namespace today is that **no public address answers one**. An ACL-shaped rule
 would have put the internal vhosts on the internet for five lucky sources; the interface
 rule puts them where the names resolve, which is the invariant worth stating: *if you can
-resolve it here, you can reach the door here*. In this phase it adds no DNAT row — the public
-80/443 still translate to services1 — and `machines/gw/http.nix` holds a certificate that
-does not cover a public name. Both halves are staging: the 2026-10-24 decision is that this
-box terminates everything the network has **one** of, so phase 3 brings the public vhosts
-here, retargets the DNAT rows and grows the cert, in one change and together with the
-`nginx-sso` gate that fronts those names.
+resolve it here, you can reach the door here*. The public half is separate and is now
+live: `portForwards` translates the DMZ address onto this box and `publicInboundRules`
+admits 80/443 (and DERP's 3479) arriving on the tunnel, while the certificate covers the
+public names. Put a public vhost on this box without moving the DO AAAA and IPv6 clients
+will still dial services1's old address, which no longer holds a certificate.
 
 Which is also why the match stays by interface and never becomes `ip saddr ${aclV6}`. Once
 `*.int` answers at this box, one of its three addresses (`2001:8b0:1d14:225::1`) is inside a

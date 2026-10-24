@@ -31,10 +31,9 @@
     };
 
     # headplane_pre_authkey, headplane_api_key and headplane_client_secret moved to
-    # machines/gw/sops.nix with headscale (phase 4 of
-    # docs/router-front-door-migration.md): the tailnet control server and its admin UI
-    # run on the router now, and a secret declared on a box that reads nothing is a
-    # grant with no reader.
+    # machines/gw/sops.nix with headscale (the front-door move): the tailnet control
+    # server and its admin UI run on the router now, and a secret declared on a box that
+    # reads nothing is a grant with no reader.
 
     outline_client_secret = {
       group = "secrets";
