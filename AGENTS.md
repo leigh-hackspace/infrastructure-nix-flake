@@ -18,7 +18,7 @@ X first", X has already cost someone a day.
 | touch how Rust is built: `common/crane.nix`, a `Cargo.toml`, `build.rs`, a Dioxus SPA | `docs/building-rust-code.md` |
 | run non-trivial nix, debug a wedged/hanging nix, build detached, remote-build | `docs/nix-dev-workflow.md` |
 | touch DNS, dnsmasq, the router, the DigitalOcean zone, a new vhost's name | `docs/router-and-dns.md` (+ `machines/gw/README.md` — this box **is** the network's router, live at 10.3.1.1 since the 2026-10-21 cutover: it says what is proven on that box, what is still a guess, and what must not move) |
-| move TLS termination, a vhost, the nginx-sso gate or `headscale` **between boxes** — i.e. work the router-as-front-door plan is preparing | `docs/router-front-door-migration.md` (**decided 2026-10-24; phase 1 in tree, nothing deployed** — the router now terminates `*.int` and is provable at it, `frontDoor` still answers at services1, and the public names plus the SSO gate are explicitly *not* moving) + `docs/router-and-dns.md` |
+| move TLS termination, a vhost, the nginx-sso gate or `headscale` **between boxes** — i.e. work the router-as-front-door plan is preparing | `docs/router-front-door-migration.md` (**decided 2026-10-24: `gw` terminates everything the network has *one* of — cert, public + `*.int` vhosts, `nginx-sso`, `anubis`, the ACLs — and the boxes behind it are origins reachable only from it. Phase 1 is in tree, nothing deployed**: the router already terminates `*.int` and is provable at it, and `frontDoor` still answers at services1) + `docs/router-and-dns.md` |
 | touch the ProCurve switches (device side, RADIUS, logins) | `docs/procurve-switches.md` + `crates/switch-gui/README.md` |
 | touch NAS mounts, the NAS itself, or backups/borg | `docs/nas-and-borg.md` |
 | touch the UniFi controller, its backups, or UniFi OS Server | `docs/unifi-os-server.md` — the appliance is a *downgrade* of the running controller, and `.unf` backups are encrypted with a key that is not on disk |
@@ -685,6 +685,16 @@ there is declarative. **Root SSH is keyed here** (unlike the flake machines):
   was gone. `common_service::is_loopback` carries the tests (`127.example.com`,
   `127.0.0.1.evil.com`, `::1234`). `--dev-user <name>` is a second test hook and is never
   passed in production.
+- **`X-WEBAUTH-USER` is an identity assertion, and "who may send it" is the boundary.**
+  `switch-gui`, `status-dashboard` and `filestore` read the signed-in user from that header
+  and trust it because the app binds loopback — the guarantee stated in
+  `crates/switch-gui/src/routes.rs` as *"there is no path to this socket that does not go
+  through nginx"*. Loopback is a boundary; a LAN address is not, and podman publishing on
+  `0.0.0.0` means "the app is loopback" is a per-service fact to check (`ss -lntp`), not an
+  assumption. So under the front-door plan no origin moves off loopback until the
+  origin-reachability rule (reachable from `10.3.1.1`, nothing else) ships with it, and an
+  app that genuinely must move takes a shared secret in place of the header's implicit
+  trust rather than an exception to the rule.
 - **filestore path containment:** `Store::resolve` rejects any `..` component and the root
   is canonicalised at startup, but symlinks **inside** the share are followed wherever they
   point (the NAS uses them). The guarantee is "no traversal *from the API*", not "nothing

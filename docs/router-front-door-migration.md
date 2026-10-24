@@ -1,8 +1,10 @@
 # The front door on the router — decided, phase 1 in tree, **not applied**
 
-The plan: move HTTPS termination for `*.int.leighhack.org` — and, later, `headscale` —
-from `services1` to **`gw`**, the box that is already the network's front door for DNS.
-**Nothing in this doc has been deployed.** Three commits are in tree: `just check` is
+The plan: move **all** HTTPS termination — the certificate, every vhost, the `nginx-sso`
+gate and `anubis` — from `services1` to **`gw`**, the box that is already the network's
+front door for DNS, and later `headscale` too.
+**Nothing in this doc has been deployed.** Six commits are in tree, all of them
+undeployed: `just check` is
 green (on aibox — rule 22), the gw system derivation **builds**, and both modes of the
 new guard were proven by making them fail rather than by reading them (below). A full
 `just check-build` is *not* green on aibox and is not green because of this change:
@@ -14,53 +16,64 @@ terminating TLS for the whole network, and `common/int-dns.nix` still answers ev
 first: `gw` hands out every address in the building, so a change here is a change to the
 box every client depends on, not to a shadow.
 
-## The decision, 2026-10-24
+## The decision, 2026-10-24 (operator): **all of it, on `gw`**
 
-The open question this file used to end with — *should the public names terminate at the
-router at all?* — is answered **no**, and the answer is load-bearing for everything
-below, so it is stated before the mechanics rather than deduced from which vhosts moved.
+Every piece of nginx that the network has **one** of terminates on the router: TLS and
+its certificate renewal, the `*.int` and public vhosts, the `nginx-sso` gate, `anubis`,
+the `LOCAL_NETWORK` ACLs, and the DNS answers. The services behind `gw` are to be
+*ignorant of where their traffic comes from* — they serve, and they know they are already
+protected. The reason SSL termination ever lived on services1 was that the old router was
+OPNsense and could not hold a NixOS nginx; it is `machines/gw/` now, so that reason is
+gone and the arrangement is kept only by habit.
 
-1. **What moves to `gw` is the `*.int` namespace**: the `int.leighhack.org` certificate,
-   the `*.int` vhosts, and the guard that keeps the vhosts honest with
-   `common/int-dns.nix`. Those are names whose answers are LAN addresses, reached from
-   the LAN and the tailnet, and `gw` is already on every path between them.
-2. **What stays on `services1` is everything the internet dials**: `*.leighhack.org`,
-   `*.ai.leighhack.org`, `*.test.leighhack.org`, the DNAT rows in
-   `machines/gw/firewall.nix` that carry them to services1, and therefore the `nginx-sso`
-   gate in front of them. `gw` is a 4-core box whose outage *is* the network's outage,
-   and it is now the thing that answers DNS and DHCP for every device in the building;
-   making it also the thing the internet connects to is a different bet from the one
-   this doc is about.
-3. That decision buys consequence 4 for free. `nginx-sso` injects `X-WEBAUTH-USER`, which
-   the *upstream* trusts, and every app it gates is a public name; if the public names
-   stay, the gate stays, and there is no window in which a gate on one box fronts apps on
-   another. It also means `web-test`/`retro`/`robot.ai` — the three public names the old
-   version of this file listed as "move by hand, forgetting one is a 409 and a 502" —
-   do not move at all.
-4. **The certificate splits instead of moving.** `gw` issues `int.leighhack.org` +
-   `*.int.leighhack.org`; services1 keeps the rest. Two boxes issuing one *name* is one
-   `_acme-challenge` TXT record with two writers, and this repo's rule for that shape
-   (see `docs/authentik-container-migration.md`) is that it must fail, not race. A split
-   nameset makes the steady state race-free and puts a hard limit on the blast radius:
-   the router *cannot* answer for a public name, whatever a firewall rule does later.
-   The overlap is not zero during the migration and is quantified under
-   [Findings](#findings-2026-10-24).
-5. **`headscale` follows later, not now.** Its state directory has to be *moved* (see
-   phase 4), which is an operation on live tailnet enrolment and does not belong in the
-   same change as a new TLS endpoint.
+An earlier revision of this file argued the opposite (public names stay on services1, the
+cert splits in two, the gate stays put) on blast-radius grounds. That argument is
+overridden, and it is recorded here rather than deleted because the *reason* it was
+written is the list of things the new decision has to engineer rather than inherit:
+
+1. **`gw` is already the single point of failure, so making it the single policy point
+takes no new availability risk and removes a class of drift.** `gw` leases every address,
+answers every name, holds the AAISP tunnel, the tailnet and the nftables sets. The outage
+that used to argue against putting the front door here is the outage the network already
+agreed to. What the move actually *buys* is that the four things which must not be
+duplicated — the ACME issuer, the gate, the bot gate, the ACL — stop being duplicated
+*config* that two boxes can disagree about.
+2. **One issuer means the TXT race stops existing** — see consequence 1. It goes from
+   "a window to minimise, quantified in Findings" to "closed, because services1 ends with
+   no `security.acme` at all". Phase 1 deliberately keeps two for a while and says why.
+3. **"Ignorant of where the traffic comes from" is a security claim, and it is only true
+   if the origin is reachable *only* by the front door.** The apps that assert identity do
+   it from a header. `crates/switch-gui/src/routes.rs` says the current guarantee out
+   loud: *"`X-WEBAUTH-USER` … is trusted because the vhost is LAN-only and the app binds
+   loopback: there is no path to this socket that does not go through nginx"* — the same
+   reasoning `status-dashboard` uses for its writes, the same reasoning behind `--no-auth`
+   being refused on a non-loopback bind (AGENTS.md). Move the terminator and that sentence
+   is the thing at risk, not a nicety: if a client can reach the origin directly it can
+   assert any username to it. That is why phase 2 is an **origin** design and not a
+   rebind-everything design (§Phase 2), and why the origin-reachability rule ships in the
+   same change as the first moved vhost, not after it.
+4. **Today's exposure list is wider than the vhost ACLs imply** — several "loopback"
+   upstreams are on `0.0.0.0` already (podman publishes, `nginx-sso`'s own listener is
+   `*:8082`), which is receipts-not-theory under [Findings](#findings-2026-10-24). The
+   design in phase 2 fixes those as a side effect rather than depending on them being
+   harmless.
+5. **`headscale` follows** (phase 4), because its state directory has to be *moved* and
+   that is an operation on live tailnet enrolment, not a config change.
 
 ## What the front door is today
 
 | Name space | answered by | terminated by |
 | --- | --- | --- |
 | `*.int.leighhack.org`, `gw.int…` | `gw` dnsmasq, generated from `common/int-dns.nix` + `common/dns-records.nix` (`machines/gw/dns.nix`) | `services1` nginx (`machines/services1/http.nix`, `useACMEHost = "leighhack.org"`). Phase 1 puts a second, *provable* terminator for these names on `gw`; no client is sent there until `frontDoor` changes. |
-| `*.leighhack.org`, `*.ai.*`, `*.test.*` | DigitalOcean, hand-added | `services1` nginx, same cert, reached through `gw`'s DNAT rows. **Not moving.** |
-| `ts.leighhack.org`, tailscale node names | `headscale`'s own DNS, run on `services1` (`machines/services1/services/headscale.nix`), which tells tailnet clients to resolve `int.leighhack.org` through `10.3.1.1` | nobody — headscale serves the *web* console at `https://tailscale.leighhack.org`, a vhost on `services1` |
+| `*.leighhack.org`, `*.ai.*`, `*.test.*` | DigitalOcean, hand-added | `services1` nginx, same cert, reached through `gw`'s DNAT rows. **Moves** — phase 2 serves it here, phase 3 turns the DNAT rows off. There is no table and no guard for these names yet; see `common/public-names.nix` under phase 2. |
+| `ts.leighhack.org`, tailscale node names | `headscale`'s own DNS, run on `services1` (`machines/services1/services/headscale.nix`), which tells tailnet clients to resolve `int.leighhack.org` through `10.3.1.1` | nobody — headscale serves the *web* console at `https://tailscale.leighhack.org`, a vhost on `services1`. It moves with phase 4. |
 
 So today the network has **two** front doors: `gw` for name resolution and nftables,
 `services1` for TLS and proxying. `http.nix` is one file of ~34 vhosts, the cert, and the
 `nginx-sso` unit (`machines/services1/lib/nginx-sso-config.nix` generates its config);
-`int-dns.nix` is what keeps the vhost list and the DNS table honest.
+`int-dns.nix` is what keeps the vhost list and the DNS table honest. The end state is one
+front door and one **origin** per backend box — services1 keeps an nginx forever, but an
+nginx with no certificate, no gate, no ACL and no public name in it (§Phase 2).
 
 ## What moving TLS to `gw` costs, one consequence per line
 
@@ -90,15 +103,47 @@ So today the network has **two** front doors: `gw` for name resolution and nftab
    a problem of the sort that comment was reaching for: port 80 on the router is not
    DNAT'd to anything, so an HTTP-01 issuance on `gw` could not work at all. It does not
    have to.)
-2. **`gw` needs nginx, and nginx needs the ACLs.** Every internal vhost carries
-   `CONFIG.LOCAL_NETWORK` (the tailnet + LAN ranges in `common/config.nix`) because a
-   vhost served *on the router* is reached by traffic that is already on the router's
-   interfaces. Do not delete those ACL blocks when the vhosts move: `gw`'s nft sets police
-   the *network*, nginx's `LOCAL_NETWORK` polices the *vhost*, and the second one is what
-   keeps a tailnet client out of `firewall.int` / `truenas.int` / `monster.int`. Note
-   `firewall.int.leighhack.org` already proxies `10.3.1.1:60443` — a **gw-local** upstream —
-   so after the move that vhost stops leaving the box at all; and note the finding under
-   [Findings](#findings-2026-10-24) about what answers 60443 today, which is nothing.
+
+   Under "one issuer" this consequence ends well: services1 finishes with **no
+   `security.acme` at all**, so there is one box writing `_acme-challenge*` records and the
+   race in [Findings](#findings-2026-10-24) is a phase-2 transition detail rather than a
+   standing condition. What has to be true while that happens:
+
+   * the cert on `gw` grows to the whole SAN set services1 holds today
+     (`leighhack.org`, `*.leighhack.org`, `*.ai`, `*.int`, `*.ai.int`, `*.test`) in the
+     **same change that takes the public vhosts**, and the one re-issue that implies is
+     worth checking for rate limits on (`leighhack.org` is one registered domain for both
+     boxes: 5 certificates a week).
+   * `machines/services1/http.nix` loses its `security.acme` block in the same change that
+     the last `useACMEHost` disappears from it — not one change later, because a box with
+     no cert and a `useACMEHost` is a box whose nginx will not start.
+   * the env-file secret is declared on both boxes only for the window (`env_file` is
+     already in `machines/gw/sops.nix`); services1's copy stays because it holds nine other
+     secrets, but `DO_AUTH_TOKEN` in it becomes unread-by-anything on that box.
+2. **The ACL moves with the terminator, and the origin keeps one rule.** Every internal
+   vhost carries `CONFIG.LOCAL_NETWORK` (the tailnet + LAN ranges in `common/config.nix`)
+   because a vhost served *on the router* is reached by traffic that is already on the
+   router's interfaces — and once the router terminates, the router is also the last place
+   `$remote_addr` still means the client. So the ACL is not copied to `gw` and left behind:
+   it moves, and the origin's rule becomes the one that actually protects anything —
+   *reachable from `10.3.1.1`, nothing else*. Keep `gw`'s nft sets and nginx's ACL distinct
+   in the reading too: the sets police the *network*, `LOCAL_NETWORK` polices the *vhost*,
+   and the second is what keeps a tailnet client out of `firewall.int` /
+   `truenas.int` / `monster.int`. `firewall.int.leighhack.org` already proxies
+   `10.3.1.1:60443` — a **gw-local** upstream — so after the move that vhost stops leaving
+   the box at all; see the finding under [Findings](#findings-2026-10-24) for what answers
+   60443 today, which is nothing.
+
+   The mechanism for the real client address, since the origin will see only the router:
+   `X-Forwarded-For`/`X-Real-IP` set by `gw` (`recommendedProxySettings` already does), and
+   if a backend genuinely needs the peer rather than the header, nginx's realip module has
+   to be switched on per-vhost — the package is built `--with-http_realip_module`
+   (nginx 1.30.5, read off services1's store path) but this nixpkgs' nginx **module** has no
+   option for it (no `real_ip` anywhere in `nixos/modules/services/web-servers/nginx/`), so
+   `set_real_ip_from 10.3.1.1; real_ip_header X-Forwarded-For;` goes in `extraConfig`.
+   Which is also the trap in header form: `set_real_ip_from` names the *only* address whose
+   forwarded header may be believed, and an origin that believes XFF from anywhere else is
+   `--bind 127.example.com` again (AGENTS.md rule 17).
 3. **The guards have to be re-rooted in the same change.**
    `machines/services1/int-dns.nix` refuses to evaluate services1 unless
    `common/int-dns.nix` equals **that box's** `services.nginx.virtualHosts` (names +
@@ -116,16 +161,31 @@ So today the network has **two** front doors: `gw` for name resolution and nftab
    name; the moment `frontDoor` names `gw` the assertion is equality in both directions. The
    mode is read from the same string `doorAddresses` renders the answers from, so the flip
    and the tightening cannot be two separate changes.
-4. **nginx-sso is decided, not deferred**: it stays on services1 with the public names it
-   gates (§3 of the decision). One loose end this leaves, and it is a phase-3 problem:
-   `login` is in `common/int-dns.nix`'s `names`, i.e. `login.int.leighhack.org` is a
-   *front-door* name, and its upstream is the gate at `127.0.0.1:8082` on services1. When
-   the door flips there are three answers and none of them is free — (a) gw forwards
-   `login.int` to services1:8082, which carries the OIDC authorization code in clear text
-   over the LAN, the hop that is loopback today; (b) the gate moves to gw, which drags the
-   public vhosts' `auth_request` upstream off the box they run on; (c) the table gains a
-   per-name owner so one name can answer at the door and be served by the origin. Pick one
-   in phase 3 and write it here; do not discover it as a redirect loop.
+4. **`nginx-sso` moves, and moving it fixes a hole the current layout cannot.** The gate
+   belongs at the terminator because its `X-WEBAUTH-USER` injection is trusted by whatever
+   serves the name — and, once `*.int` is served here too, `login` is a *front-door* name
+   (`common/int-dns.nix`'s `names`), so a gate left on services1 would mean the login flow
+   is served by a box that no longer answers the name. The three options an earlier
+   revision of this file listed — forward `login.int` to services1's gate and carry the
+   OIDC code in clear text over the LAN; keep a second gate; add a per-name owner to the
+   table — all collapse: the gate is on `gw`, `login.int` and `login.leighhack.org` are
+   vhosts on `gw`, and the OIDC callback is loopback again.
+
+   Which is the argument for doing it this way beyond tidiness. `nginx-sso`'s config
+   (`machines/services1/lib/nginx-sso-config.nix`) sets `listen.addr = "0.0.0.0"`, and
+   `ss -lntp` on services1 reads `*:8082`: **the auth endpoint the whole network's
+   authentication depends on answers any LAN client today** (401 to a bare
+   `curl http://10.3.1.20:8082/auth` from aibox, 2026-10-24 — refused, but *answered*),
+   while its own ACL decides "is this caller LAN or tailnet" from an `X-Real-IP` field that
+   only our nginx sets honestly — i.e. the caller that is not our nginx can put anything in
+   it. Co-locating the gate with the nginx that calls it is what lets `listen.addr` be
+   `127.0.0.1`, and that is a bug class removed rather than a service relocated. Two
+   details for the change: `nginx_sso_auth` (the cookie key) and the OIDC client secret are
+   read through `config.sopsSecretText` into the generated config — world-readable store
+   paths, already true today, and `common/sops.nix`'s `infra.buildTimeSecrets` is where the
+   sentence justifying that has to be re-justified for `gw`, not inherited — and the cookie
+   domain is `.leighhack.org`, so a rename of the login host would invalidate every session
+   at once, which is fine once and surprising twice.
 5. **headscale on the router puts two DNS servers on one box.** `gw` answers `*.int` from
    dnsmasq (`/etc/dnsmasq-int-vhosts.hosts`, a store path and a `restartTriggers` — see
    `machines/gw/README.md`, and *never* edit `/etc/dnsmasq.d/network.conf`). headscale runs
@@ -183,14 +243,19 @@ What it **does not** do, on purpose:
 
 * change any answer. `frontDoor` is `services1`, so `/etc/dnsmasq-int-vhosts.hosts` is
   byte-identical before and after — and proving *that* is half of the deploy.
-* serve the public names, or the other 31 `*.int` names. Two vhosts are enough
-  to prove a cert, an ACL, a listener and a guard; the rest is a move, and a move is
-  phase 3.
-* listen anywhere the internet can reach. `portForwards` in `machines/gw/firewall.nix`
-  still DNATs the public 80/443 to services1; the new rules are `iifname "vlan*"` and
-  `iifname "tailscale0"` — the interfaces dnsmasq serves — and *not* `ip saddr
-  ${aclV4}`, because the ACL contains public addresses and this box has public addresses of
-  its own. See the comment on `frontDoorRules`.
+* serve the public names, or the other 31 `*.int` names. Two vhosts are enough to prove a
+  cert, an ACL, a listener and a guard; the rest is a move, and a move is phase 2 (the
+  table) then phase 3 (the answers).
+* take any traffic it is not yet addressed for. `portForwards` in
+  `machines/gw/firewall.nix` still DNATs the public 80/443 to services1, and the new rules
+  are `iifname "vlan*"`/`tailscale0` — the interfaces dnsmasq serves — rather than
+  `ip saddr ${aclV4}`, because the ACL contains public addresses and this box has public
+  addresses of its own, so an ACL-shaped rule in phase 1 would put the *internal* vhosts on
+  the internet while nothing is meant to reach them. That is a phase-1 scoping decision, not
+  a permanent property: phase 3 step 4 turns the public 80/443 into input rules on the
+  internet-facing side, and `machines/gw/http.nix`'s cert grows to cover the public names in
+  the same change so that "this box cannot answer a public name" stops being a safety net
+  and becomes a fact with a certificate behind it. See the comment on `frontDoorRules`.
 
 ### Deploying phase 1 — the runbook (not yet run)
 
@@ -279,65 +344,130 @@ from and pushes, so run it from services1.
    start, which is *also* nobody resolving to it. Neither takes DNS, DHCP, the tunnel or
    the tailnet with it; that is the property phase 1 was scoped to keep.
 
-## Phase 2 (not written): the origin question
+## Phase 2 (to write): the origin — services1 stops being a front door
 
-Phase 3 cannot be written before this is answered, because most of the `*.int` upstreams
-are on services1's loopback and `gw` cannot reach a loopback. From the tree, the 33 labels
-in `common/int-dns.nix`'s `names` split:
+The shape is **front door + origin**, not "rebind every app": `gw` terminates and routes
+by name, and services1 keeps its per-service vhosts as *origin* vhosts — no certificate,
+no `forceSSL`, no gate, no `LOCAL_NETWORK`, reachable from the router alone. Apps stay
+exactly where they bind today. That is also the answer to the question this file used to
+call "the origin question": three of the four reasons to rebind-everything are reasons
+not to.
 
-* **12 name a `127.0.0.1` bind on services1**: `login` (8082, the gate), `doors` (8473),
-  `api-doors` (8472), `filestore` (8096), `gocardless` (8095), `gatus` (8999), `grafana`
-  (3000), `prometheus` (9091), `services1-status` (8088), `switch` (switch-gui),
-  `unifi-admin` (11443), `zigbee2mqtt` (8282).
-* **1 has no upstream at all**: `retro.int` serves `/sas-16tb/ds-downloads/Retro`, a
-  directory that exists on services1 because services1 mounts the NAS. The router
-  deliberately never mounts anything (`flake.nix`'s `routerModules`, and
-  `machines/gw/configuration.nix` on why), so this name is either left behind — with
-  `frontDoor` an exception the guard has to know about — or it stops being a filesystem
-  root. Decide, do not inherit.
-* **the other 19 already point off-box** and can move as they stand: aibox (6 — `ai`,
-  `mcp`, `whisper`, `alexandria`, `frigate-monitor`, `aibox-status`), the 10.3.1.30 VM
-  (`access-api`, `api`, `jenkins`, `user-tweaker`, `ha`), the appliance (`id`), monster,
-  the NAS (`truenas`), services2 (`strata`, `services2-status`), gw itself
-  (`network-info`, `firewall` — one of them dead, see Findings), `frigate` →
-  `10.3.1.20:5000` (services1, but on a LAN bind), and `bar`.
+1. **Rebinding breaks the invariant the identity headers depend on** (consequence 4 and
+   §3 of the decision). `switch-gui` on `0.0.0.0:8097` is a switch-configurator that trusts
+   `X-WEBAUTH-USER` from anyone who can reach it, and its doc comment says the trust *is*
+   the bind. Under the origin design the bind never moves: gw → services1's origin vhost
+   (loopback) → app. The guarantee is preserved by construction instead of re-created by a
+   firewall rule that someone will widen at 04:00.
+2. **`retro.int` dissolves.** It is a `root =` on `/sas-16tb/ds-downloads/Retro`, a
+   directory that exists on services1 because services1 mounts the NAS — and the router
+   deliberately never mounts anything (`flake.nix`'s `routerModules`,
+   `machines/gw/configuration.nix`). Under the origin design the filesystem root stays
+   where the mount is and `gw` only needs the name. What was going to be an exception in
+   the guard is now a row that says "origin".
+3. **"Loopback" is already not what it looks like, and the apps that are not loopback are
+   not loopback for the front door's benefit.** `ss -lntp` on services1 (2026-10-24) reads
+   `0.0.0.0:` on the podman-published ports — `8004` (the speedtest anubis fronts), `8282`
+   (zigbee2mqtt), `11443` (`unifi-admin`'s appliance UI), `5000` (frigate), `5671`/`1883`
+   (rabbitmq/mosquitto), `5432` (postgres), plus the UniFi controller's `8080/8443/8843/8880`
+   — while `grafana`(3000), `mattermost`(8065), `status-dashboard`(8088),
+   `gocardless`(8095), `filestore`(8096), `switch-gui`(8097), redis(8401) and
+   synapse(`[::1]:8008`) are real loopback binds. So "the app is private" is currently a
+   per-service accident, and the origin-reachability rule below is what turns it into a
+   property. It is **not** a licence to tighten all of them: several of those ports have
+   consumers that are not nginx (the UniFi devices dial the controller directly, the
+   cameras dial MQTT), so each port gets checked against its service's doc first.
 
-The three shapes for the 12, with what each costs:
+**The split to render.** `common/int-dns.nix`'s 33 labels:
 
-| Shape | Cost |
-| --- | --- |
-| Rebind each app to the LAN address (or `0.0.0.0` + a firewall rule) | 11 service modules, 11 exposure changes — `prometheus.int` and `grafana.int` listening on a LAN interface is a real widening, and every one of them needs its bind proven in the rendered unit. No new nginx on either box. |
-| services1 keeps the per-name vhosts as an **origin** on a router-only HTTP listener; `gw` generates one forward per name from `common/int-dns.nix` | Nothing rebinds and modularity survives (a service still defines its own vhost next to itself), but there is a plaintext hop on the LAN and it must be *closed to everyone but the router* — an `allow 10.3.1.1; deny all;` origin ACL, or the forward-chain drop that amounts to the same thing — or the origin is a second door into every internal app, minus TLS. The per-name tuning (body sizes, `proxy_buffering off`, the 50 GB `immich` upload) has to be right on the outer proxy too, or the request dies at the router. |
-| Move the apps off services1 (the direction the rest of the repo is already going) | The most work and the fewest compromises; not a precondition for anything. |
+* **13 are origin** — the 12 loopback ones (`login` moves with the gate rather than being
+  forwarded: see consequence 4), `doors` (8473), `api-doors` (8472), `filestore`,
+  `gocardless`, `gatus`, `grafana`, `prometheus`, `services1-status`, `switch`,
+  `unifi-admin`, `zigbee2mqtt`) and `retro`.
+* **20 are direct** and move as rows naming an address: aibox 6 (`ai`, `mcp`, `whisper`,
+  `alexandria`, `frigate-monitor`, `aibox-status`), the 10.3.1.30 VM 5 (`access-api`,
+  `api`, `jenkins`, `user-tweaker`, `ha`), the appliance (`id`), monster, `truenas`,
+  services2 2 (`strata`, `services2-status`), gw 2 (`network-info` — already here — and
+  `firewall`, whose upstream is dead), `frigate` → `10.3.1.20:5000`, and `bar` (already
+  here).
 
-Whichever wins, consequence 2's ACL note has teeth in this phase: the `LOCAL_NETWORK`
-check has to live where the client's real address is, which after any hop means the router,
-and `$remote_addr` on the origin stops meaning anything. That is a security change and it
-should be reviewed as one, not shipped as a side effect of moving a vhost.
+**The files.** A vhost is now exactly one box's concern, so the definitions leave the
+service modules: `common/front-door.nix` (DATA) — one row per name the door serves,
+`*.int` **and** public, with `upstream = "origin" | <address:port> | "local"`, the
+per-name policy it owns (`sso`, `anubis`, `websockets`, `bodySize`, `timeouts`,
+`proxyBuffering`, `aliases`) — rendered by `common/nginx/front-door.nix` (HELPER) into
+`machines/gw/http.nix`. The alternative (20 service modules each importing a router fact)
+is how two boxes end up with an opinion about one vhost, which is the bug being removed.
+The guards follow the data: `machines/gw/int-dns.nix` already checks `*.int` against the
+rendered vhosts, and the public names have no table today at all — which is why
+`docs/router-and-dns.md` can tell a story about "two live vhosts with no DNS record".
+`common/public-names.nix` is that table, and its guard can check every fact the evaluator
+is allowed to see (uniqueness, one upstream per name, the `*.int` subset matching
+`common/int-dns.nix`, aliases not colliding). **What it must not do is reach the network:**
+"this name has a DigitalOcean record" is a runtime check — gatus, which already checks the
+endpoints — not a `builtins.fetchurl` at eval time (AGENTS.md: evaluation must not build,
+and here it would not even be allowed to talk).
 
-## Phase 3 (not written): the flip
+**The reachability rule, which is the phase.** It lives on `gw` because `gw` is where every
+non-router client's packet to an origin is *forwarded* — including the tailnet's, and
+including services1's own clients — and the router's own traffic is not forwarded at all,
+which is exactly the exemption required. One pair of rows per origin host in
+`machines/gw/firewall.nix`'s forward chain (drop forwarded `tcp/{80,origin ports}` to the
+host unless `ip saddr` is the router), plus the origin nginx keeping
+`allow 10.3.1.1; deny all;` as the app-layer half. Two notes for whoever writes it: the
+origin's port list is a *table*, not a guess — it comes from the same rows
+`common/front-door.nix` renders, or it drifts; and a dropped forward is silent by design
+(AGENTS.md's anti-spoof rules say why), so `counter` on those rows is not decoration.
 
-One pair of switches, minutes apart, with the DNS answer last:
+**`anubis` moves with it**, because it is a front-door function and there is one of them:
+`machines/services1/services/librespeed.nix` runs the instance today with
+`TARGET = http://127.0.0.1:8004` and a unix socket that nginx proxies through
+(`http://unix:…`), plus `users.users.nginx.extraGroups = [ anubis ]` "required due to unix
+socket permissions" — a line that has to exist on `gw` too or the socket is a 502. On `gw`
+the target becomes `10.3.1.20:8004` (already published), the `METRICS_BIND` socket moves
+with it, and whatever scrapes anubis has to be retargeted in the same change.
 
-1. `gw`: every name in the table served, the cert already issued (phase 1), the guard
-   still in subset mode.
-2. `common/int-dns.nix`: `frontDoor = "gw"` — and the guard flips to equality **in the same
-   change**, because it reads the same string. `just switch-gw`, which rewrites
-   `/etc/dnsmasq-int-vhosts.hosts` and restarts dnsmasq in the same activation
-   (`restartTriggers`). `local-ttl = 1` means the network stops being sent to services1
-   within a second of that restart, not within a lease.
-3. services1: delete the `*.int` vhosts it no longer serves, drop `*.int` and `*.ai.int`
-   from its cert's `extraDomainNames` (closing the shared-TXT window of consequence §4),
-   and delete `machines/services1/int-dns.nix` — its guard is what the router-side one
-   replaced, and leaving it would be a check that compares a table against a box that
-   serves nothing from it. Its gatus endpoint guard moves too, or it fails:
-   `machines/services1/services/monitoring.nix` subtracts `intVhostNames
-   config.services.nginx.virtualHosts` from the endpoint list, so the moment the vhosts go
-   the internal endpoints become un-derivable there.
+## Phase 3: the flip, in the order that leaves a rollback
 
-Do not sit between 1 and 3: the overlap of two issuers of `_acme-challenge.int` is the
-thing this migration should be minimising, and the window is measured in *weeks* if it is
-left open.
+Five steps, each one a switch of one box, each one reversible without touching the next
+box. Read them as "what is briefly worse" rather than "what is briefly broken":
+
+1. **`gw` serves everything** — full SAN set (consequence 1), all vhosts from the table,
+   the gate, anubis, the ACLs. Nothing points here; prove it with
+   `curl --resolve grafana.int.leighhack.org:443:10.3.1.1 https://…` and
+   `curl --resolve status.leighhack.org:443:10.3.1.1 https://…` (the second is the gate
+   path). Guard still in subset mode.
+2. **`gw`: the origin-reachability rows**, tightening only (no traffic is served from here
+   yet, so dropping forwarded `tcp/80` to an origin can only cost a redirect nobody
+   needs). Check the counter, then check nothing else broke: the UniFi controller and the
+   MQTT broker are the two that will complain first if the port list is wrong.
+3. **services1: origin mode.** `forceSSL = false` with `addSSL = true` — 443 keeps
+   serving, 80 now *answers* instead of redirecting — and the vhost ACL narrows to the
+   router (`CONFIG.ROUTER_ONLY`, the 15-word sibling of `LOCAL_NETWORK`). Briefly worse: a
+   LAN client typing `http://foo.int` gets a 301 from a box that is about to stop
+   answering, or nothing. Do 3 and 4 in one sitting.
+4. **`gw`: the two answers move.** `common/int-dns.nix` `frontDoor = "gw"` (dnsmasq
+   rewrites `/etc/dnsmasq-int-vhosts.hosts` and restarts in the same activation;
+   `local-ttl = 1`, so the network follows in a second, not a lease), **and**
+   `portForwards` retargets the public 80/443 from services1 to the router — with the IPv6
+   half done properly, because v6 has no NAT to hide behind:
+   `publicV6ForwardRules` (a forward rule for services1's addresses) becomes an input rule
+   for this box's own. Roll back either half by reverting this one switch; services1 is
+   still serving TLS with a valid certificate until step 5.
+5. **services1: delete the front door.** `security.acme`, the `useACMEHost`s, the
+   `nginx-sso` unit and its config (moved, not copied, to `common/nginx-sso-config.nix`),
+   the anubis instance, `machines/services1/int-dns.nix`, and the `*.int` vhosts that are
+   now only rows in a table on another box. The gatus endpoint guard moves here too, or the
+   next switch on services1 fails: `machines/services1/services/monitoring.nix` subtracts
+   `intVhostNames config.services.nginx.virtualHosts` from the endpoint list, so deleting
+   the vhosts without moving the guard leaves the internal endpoints un-derivable. Also
+   verify from services1 after this step: `curl -ksS https://grafana.int.leighhack.org/`
+   now hairpins services1 → gw → services1, and it has to return 200 for that to be the
+   monitoring topology from now on.
+
+Steps 1–4 are where the two-issuer window from [Findings](#findings-2026-10-24) lives; do
+not park between 4 and 5, and do not park between 1 and 4 either — every week between them
+is a week the two configs can drift apart with only the guard on `gw` noticing.
 
 ## Phase 4: headscale
 
@@ -394,17 +524,46 @@ travels with it. The config half (consequence 6) is already router-shaped facts.
   a real renewal; the `_acme-challenge.int` renewal on services1 has been happening since
   before this repo had a word for "front door", so the half about `*.int` is already
   proven.
-* **`*.ai.int.leighhack.org` and `*.test.leighhack.org` are in services1's cert and in
-  nothing else**: no vhost in the tree serves a name in either space (the two names that
-  look like they do — `web-test.leighhack.org`, `robot.ai.leighhack.org` — are single-label
-  names in the other two namespaces, and they stay on services1 with the public names).
-  `machines/gw/http.nix` therefore does *not* inherit them, and phase 3 should delete them
-  from services1's `extraDomainNames` rather than carry them.
+* **`*.ai.int.leighhack.org` and `*.test.leighhack.org` are wildcards in services1's cert
+  that no vhost serves**: nothing in the tree answers a name in either space (the two names
+  that look like they do — `web-test.leighhack.org`, `robot.ai.leighhack.org` — are
+  single-label names in the other two namespaces, and they move to `gw` in phase 3 with the
+  rest of the public set). So the single cert on `gw` should carry the namespaces that have
+  vhosts, not the union of what the old cert happened to include: every extra SAN is an extra
+  `_acme-challenge` TXT at renewal time, and `*.ai.int` cannot even be resolved — dnsmasq is
+  authoritative for `int.leighhack.org` and `common/int-dns.nix` has no two-label names, so a
+  client dialling `foo.ai.int` is told NXDOMAIN by the box that *is* the zone.
+* **The gate's auth endpoint is listening on every interface.**
+  `machines/services1/lib/nginx-sso-config.nix` sets `listen.addr = "0.0.0.0"`, port 8082,
+  and services1's `ss -lntp` reads `*:8082`. So `curl http://10.3.1.20:8082/auth` from
+  another box answers (401 from aibox, 2026-10-24) rather than refusing the connection,
+  and the gate's own ACL decides "LAN or tailnet" from an `x-real-ip` *field* — honest when
+  our nginx sets it from `$remote_addr`, whatever the caller likes when it is not our
+  nginx. Fixing it is not a patch to that listener: it is consequence 4's move, which
+  co-locates the gate with the nginx that calls it and then `listen.addr` can be
+  `127.0.0.1`. Tracked in `docs/follow-ups.md` with the phase.
+* **Which "loopback" upstreams are not.** Receipts in Phase 2's point 3; the short version
+  is that podman publishes on `0.0.0.0`, so the speedtest sits in front of anubis at the
+  nginx layer and nowhere else, `unifi-admin`'s appliance UI and zigbee2mqtt's UI answer
+  the LAN without the vhost ACL, and postgres and rabbitmq do too. None of this is the
+  migration's fault and none of it survives phase 3 step 2 — but each port needs its
+  service's doc read before it is narrowed, because the UniFi devices and the cameras dial
+  some of these directly.
+* **nginx's realip module is built and un-optioned**: `--with-http_realip_module` in the
+  package, no `real_ip` option in this nixpkgs' nginx module. Noted because phase 3 makes
+  the origin see only the router, and the sentence "nothing needs the real client IP at the
+  origin" is a claim about every app that logs, rate-limits or ACLs, not a free assumption.
+  The audit is in `docs/follow-ups.md`.
 * **`immich.leighhack.org` is a public name built with the internal vhost helper**
   (`machines/services1/http.nix`, `mkIntVhost { acl = ""; … }`). It is a small thing, but it
   is the shape that turns "the internal helper is only used by internal names" into a lie,
   and the guard cannot tell: `int-vhost-names.nix` filters on the *suffix*, so an `acl =
-  ""` public name under `.int` would be silently at home in the front-door table.
-* **A phase-1 deploy is the only one in this plan that cannot break a name.** Every later
-  one either moves an answer or moves an upstream; worth being explicit about before the
-  third gets rushed.
+  ""` public name under `.int` would be silently at home in the front-door table. Under
+  `common/front-door.nix` the helper disappears and the row says what it is.
+* **A phase-1 deploy is the only one in this plan that cannot break a name** — and phase 2's
+  step 1 is nearly as safe, because it is provable with `--resolve` before anything is sent
+  there. Every step from phase 3 onward either moves an answer, moves an upstream or opens
+  the router to the internet; worth being explicit about before any of them gets rushed.
+  The one to schedule deliberately is phase 3 step 4, which is the only moment in the whole
+  plan where the public internet and the network's whole DNS zone point at the router at the
+  same time.

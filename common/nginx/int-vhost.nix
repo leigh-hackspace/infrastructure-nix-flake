@@ -13,9 +13,12 @@
 # Two boxes call it today, and they do **not** share a certificate: `useACMEHost`
 # defaults to services1's wildcard, and `machines/gw/http.nix` overrides it to the
 # `int.leighhack.org` cert that box issues (only `*.int` names, so the router cannot
-# answer a public name even if a firewall rule is opened by mistake).  A vhost added
-# on `gw` therefore passes `useACMEHost` explicitly — the default is the name that
-# works on services1, not the name that exists everywhere.
+# answer a public name *in this phase*).  A vhost added on `gw` therefore passes
+# `useACMEHost` explicitly — the default is the name that works on services1, not the
+# name that exists everywhere.  Phase 3 of `docs/router-front-door-migration.md` ends
+# with one certificate on `gw` and services1 holding no acme config at all; when it does,
+# this default is the thing to delete rather than to keep overriding, because a default
+# that points at a cert which no longer exists is a broken vhost on two boxes.
 #
 #   mkIntVhost = import common/nginx/int-vhost.nix { inherit lib; };
 #

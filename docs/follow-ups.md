@@ -478,21 +478,47 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   `*.int` record all go. Not carried into `machines/gw/http.nix` in the meantime, which
   is the difference between inheriting a dead upstream and choosing one.
 
-- **The front door's phases 2–4, in order, with the two decisions phase 3 cannot happen
-  without** — see `docs/router-front-door-migration.md`, which now carries the decision
-  (`*.int` to the router, public names and `nginx-sso` staying on services1, the cert
-  split in two), the phase-1 runbook, the 12-name loopback list and the three shapes for
-  the origin problem. The two decisions, so they are not made by whoever notices the
-  outage: `login.int` is a *front-door* name whose upstream is the gate on services1's
-  loopback (forward it and an OIDC code crosses the LAN in clear text; move the gate and
-  the public vhosts' `auth_request` leaves the box; add a per-name owner and the table
-  grows a concept), and `retro.int` is a filesystem root on a NAS the router will never
-  mount. Also owed at the flip, in the same change: services1's cert loses `*.int` and
-  `*.ai.int` (closing the window in which two boxes write one `_acme-challenge.int` TXT —
-  survivable, retried daily, silent for 30 days, so do not sit on it) and loses
-  `*.test.leighhack.org` while it is there, because nothing serves a name in either
-  space; and `machines/services1/int-dns.nix` is deleted with its vhosts, or it fails the
-  next switch on a box that serves nothing from the table.
+- **The front door, phases 2 and 3: everything the migration doc now commits to.** Read
+  `docs/router-front-door-migration.md`'s decision and its phase 2/3 lists; the short
+  version is that `gw` ends up terminating *all* of it — the full certificate (services1
+  with no `security.acme` at all), the public names, `nginx-sso`, `anubis`, the
+  `LOCAL_NETWORK` ACLs — and services1 keeps an **origin** nginx: no cert, no gate, no ACL,
+  reachable from `10.3.1.1` alone. The five pieces that must land together, and the two the
+  order of them exists to protect:
+
+  * `common/front-door.nix` + `common/nginx/front-door.nix`: one row per name the door
+    serves (`origin` | an address | `local`), with the per-name policy (`sso`, `anubis`,
+    body sizes, timeouts, aliases). Vhosts leave the service modules because a vhost is now
+    one box's business; leaving them in place is how two boxes keep opinions about one name.
+  * `common/public-names.nix` and its guard. The public names have **no table today** — that
+    is why `docs/router-and-dns.md` can narrate "two live vhosts and no DNS record" — and
+    the guard must check only what an evaluator may know: uniqueness, one upstream per name,
+    the `*.int` subset agreeing with `common/int-dns.nix`. "Does the DigitalOcean record
+    exist" is a gatus check; making it an eval-time fetch would put the network in the
+    evaluator (AGENTS.md: evaluation must not build, and here it must not talk either).
+  * The **origin-reachability rule** on `gw`'s forward chain, plus the origin's own
+    `allow 10.3.1.1; deny all;`. This is the piece phase 3's safety rests on: three apps
+    assert *who you are* from `X-WEBAUTH-USER` because loopback means no request can arrive
+    without passing through nginx (`crates/switch-gui/src/routes.rs` says so about its own
+    field), and the same reasoning refuses `--no-auth` on a routable bind. It ships before
+    or with the first moved vhost, never after.
+  * The gate and `anubis` moving, with `listen.addr = "127.0.0.1"` on the gate once it is
+    next to the nginx that calls it (it answers `*:8082` on services1 today),
+    `users.users.nginx.extraGroups = [ anubis ]` on `gw` or its unix socket is a 502, and
+    `anubis`'s `TARGET` retargeted from `127.0.0.1:8004` to `10.3.1.20:8004`.
+  * Phase 3 step 5's deletions on services1 — `security.acme`, `useACMEHost`s, the sso unit,
+    `machines/services1/int-dns.nix`, the `*.int` vhosts — **and the gatus endpoint guard
+    with them**, since `services/monitoring.nix` derives the internal endpoints from the box
+    own `virtualHosts`.
+
+  Two audit items fall out of the same change, both owed before the flip rather than after:
+  every app that logs, rate-limits or ACLs on the peer address (after the flip its peer *is*
+  the router, and `X-Forwarded-For` is only evidence if `set_real_ip_from` names the router
+  and nothing else — the module option does not exist in this nixpkgs, so it is
+  `extraConfig`), and every container whose `oci-containers.ports` entry publishes on
+  `0.0.0.0` while its only intended client is nginx (`127.0.0.1:PORT:PORT` fixes the ones
+  that are nginx-only; the UniFi controller's and mosquitto's ports have real consumers on
+  the LAN, so read the service's doc before narrowing anything).
 
 - **Deployed 2026-10-21 21:19** — the state to compare anything against. gw is at
   `zb8s89v5w8ir5nv86i6kb3ghlsa4qh9y` (public IPv6 inbound with its counter, the tailnet

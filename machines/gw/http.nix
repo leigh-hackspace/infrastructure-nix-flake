@@ -1,27 +1,32 @@
 # The router as a TLS endpoint: nginx, the network's **`*.int` certificate**, and the
 # first two internal vhosts.  This is phase 1 of
-# `docs/router-front-door-migration.md` — read that file's "The decision" before
-# changing anything here, because the two things this file *deliberately does not*
-# do are the interesting part:
+# `docs/router-front-door-migration.md` first: it records the decision (every piece of
+# nginx the network has **one** of terminates here — TLS and its renewal, the public names,
+# the `nginx-sso` gate, `anubis`, the `LOCAL_NETWORK` ACLs — and the boxes behind `gw` are
+# *origins*: they serve, hold no certificate, and are reachable from this box and nowhere
+# else, so they can be ignorant of where their traffic comes from because something in front
+# of them is not).  The two things this file has not done *yet* are staging, not design:
 #
-#   1. **It does not serve the public names.** `*.leighhack.org`, `*.ai.leighhack.org`
-#      and the `nginx-sso` gate in front of them stay terminated on services1, and
-#      the internet keeps arriving there through ./firewall.nix's DNAT rows.  This box
-#      is the only thing between every device in the building and its own traffic;
-#      making it also the thing the internet dials is a different bet, and the
-#      migration doc says why the bet was not taken.  What that buys, besides a
-#      smaller blast radius: `login.int`/`*.leighhack.org` and the whole
-#      `X-WEBAUTH-USER` chain (`../services1/lib/nginx-sso-config.nix`) do not move,
-#      so the gate cannot end up behind one front door while the apps it gates are
-#      behind another — consequence 4 of that doc, designed out rather than managed.
-#   2. **It does not hold the network's wildcard.** The cert issued here covers
-#      `int.leighhack.org` and `*.int.leighhack.org` and nothing else, so this box
-#      *cannot* answer a public name even if a rule is opened by mistake.  It is also
-#      what keeps two boxes from renewing one certificate against each other:
-#      lego writes the TXT for a DNS-01 challenge at `_acme-challenge.<name>`, and two
-#      issuers of overlapping names stomp on one record.  Overlap is still not zero —
-#      services1's wildcard covers `*.int` until the flip deletes those vhosts from
-#      it, and the window, its receipts and how to close it are in the migration doc.
+#   1. **The public names are not here yet.** Today `*.leighhack.org` is still terminated on
+#      services1 and ./firewall.nix's DNAT rows carry the internet there.  When they arrive
+#      they arrive *with* the gate in front of them: `nginx-sso`'s `X-WEBAUTH-USER`
+#      injection is trusted by whatever serves the name, so gate and names cannot move in
+#      separate changes — and co-locating them is what lets the gate's listener stop being
+#      `0.0.0.0:8082`, which it is on services1 today (consequence 4).
+#   2. **This cert is not yet the network's only cert.** It covers `int.leighhack.org` +
+#      `*.int.leighhack.org`, so while services1 still issues for `*.int` as part of its
+#      wildcard, two boxes write one TXT record (`_acme-challenge.int`) — the shape
+#      AGENTS.md says must fail rather than race, with its window quantified in the
+#      migration doc's findings and closed by phase 3, where services1 loses
+#      `security.acme` altogether.  Grow this SAN set in the change that takes the public
+#      vhosts, and do not inherit `*.ai.int`/`*.test` while growing it: no vhost serves
+#      either, and every extra SAN is an extra TXT at every renewal for 60 days.
+#
+# And the invariant that outlives all of it: **whoever can reach an origin can assert an
+# identity to it.** The apps behind the origins trust `X-WEBAUTH-USER` because they bind
+# loopback today — `crates/switch-gui/src/routes.rs` says so in the comment on the field —
+# so nothing in this file may be deployed ahead of the origin-reachability rule that keeps
+# that sentence true once the bind is no longer the boundary.
 #
 # What has to be true of anything added to this file, and why:
 #
@@ -32,14 +37,17 @@
 #     (10.3.1.1, 10.3.1.20, …) rather than typing them.
 #   * **Keep `CONFIG.LOCAL_NETWORK` on the internal vhosts.** ./firewall.nix polices
 #     the *network*; this ACL polices the *vhost*, and it is the half that keeps a
-#     tailnet client out of `truenas.int` and `monster.int`.  A vhost reached from the
-#     router's own interfaces still arrives with a client address the ACL can read, so
-#     nothing about the move weakens it — but the ACL only works where the client's
-#     real address survives, which is a thing to re-check per hop as the migration
-#     proceeds (see the migration doc's consequence 2).
+#     tailnet client out of `truenas.int` and `monster.int`.  This is also the last place
+#     `$remote_addr` still names the client: when the origins arrive, the ACL does not get
+#     copied downstream, it stays here, and the origin's rule becomes "`10.3.1.1`, nothing
+#     else" (consequence 2).  If an app genuinely needs the peer, nginx's realip module is
+#     built but un-optioned in this nixpkgs — `set_real_ip_from 10.3.1.1;` in
+#     `extraConfig`, and it names the *only* address whose `X-Forwarded-For` may be believed.
 #   * **A new `*.int` name here is a row in `common/int-dns.nix`** and is enforced by
 #     ./int-dns.nix, the guard that reads this file's `virtualHosts` and refuses the
-#     evaluation if the two disagree.
+#     evaluation if the two disagree.  The public names need the same relationship and do
+#     not have it yet: `common/public-names.nix` is phase 2's file, and until it exists a
+#     public vhost added here is checked by nothing but gatus, hours later.
 {
   config,
   lib,

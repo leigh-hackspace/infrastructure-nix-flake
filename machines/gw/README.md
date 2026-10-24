@@ -778,9 +778,19 @@ contains five public ranges (next paragraph), this box has public addresses of i
 private namespace today is that **no public address answers one**. An ACL-shaped rule
 would have put the internal vhosts on the internet for five lucky sources; the interface
 rule puts them where the names resolve, which is the invariant worth stating: *if you can
-resolve it here, you can reach the door here*. It adds no DNAT row — the public 80/443
-still translate to services1 — and this box could not answer a public name if asked,
-because `machines/gw/http.nix` holds a certificate that does not cover one.
+resolve it here, you can reach the door here*. In this phase it adds no DNAT row — the public
+80/443 still translate to services1 — and `machines/gw/http.nix` holds a certificate that
+does not cover a public name. Both halves are staging: the 2026-10-24 decision is that this
+box terminates everything the network has **one** of, so phase 3 brings the public vhosts
+here, retargets the DNAT rows and grows the cert, in one change and together with the
+`nginx-sso` gate that fronts those names.
+
+Which is also why the match stays by interface and never becomes `ip saddr ${aclV6}`. Once
+`*.int` answers at this box, one of its three addresses (`2001:8b0:1d14:225::1`) is inside a
+publicly routed prefix, so "no public address answers an internal name" stops being the
+sentence that protects it — the sentence that keeps protecting it is that a packet arriving
+on `ppp0` is not on `vlan*` or `tailscale0`, and is dropped by the input chain's policy. The
+address was never the boundary here; the interface is.
 
 **The ACL is a source exception, and it is wider than the port policy.**
 `common/config.nix`'s `LOCAL_NETWORK` contains five *public* ranges —

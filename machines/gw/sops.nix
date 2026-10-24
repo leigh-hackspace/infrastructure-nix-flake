@@ -49,7 +49,11 @@
     # the moment sops renders it.  That is the argument for the sentence above being
     # true and for nothing else from machines/services1/sops.nix coming across with
     # it — a router that grows a secret because "the front door has one" has stopped
-    # being a router and started being a second services1.
+    # being a router and started being a second services1.  The front door does grow from
+    # here — the `nginx-sso` gate and `anubis` arrive with the public names in phase 2/3 of
+    # the migration — and each of those owes its own line below with the same shape: name
+    # the key, name the unit that reads it.  "The front door needs secrets" is not a reason;
+    # "this oneshot dials the DO API with this token" is.
     env_file = {
       group = "secrets";
       mode = "0440";

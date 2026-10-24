@@ -153,10 +153,15 @@
   #   *if you can resolve the name from here, you can reach the front door from here*.
   #   nginx's per-vhost `LOCAL_NETWORK` is still what decides which name a given
   #   client may have; this is only which direction the listener answers at all.
-  # * **No DNAT row is added.** The internet's 80/443 still translate to services1
-  #   (`portForwards` above) and nothing on the public addresses answers HTTP here.
-  #   This is the network's own traffic arriving, not a new door from outside — and
-  #   `docs/router-front-door-migration.md`'s "The decision" is why it stays that way.
+  # * **No DNAT row is added in this phase.** The internet's 80/443 still translate to
+  #   (`portForwards` above) and nothing on the public addresses answers HTTP here.  That is
+  #   phase 1's scoping, and phase 3 retires it deliberately: when the public vhosts arrive
+  #   on this box the DNAT rows for `:80`/`:443` turn into input rules here (and the v6 half
+  #   stops being a forward rule for services1's addresses and becomes an input rule for
+  #   this box's own, because IPv6 has no NAT to hide behind).  That rule change is the one
+  #   moment in the plan where the router is the thing the internet dials, so it belongs in
+  #   the change that also moves the gate and the certificate — see the decision in
+  #   docs/router-front-door-migration.md.
   frontDoorRules = ''
     iifname "vlan*" tcp dport { 80, 443 } accept
     iifname "tailscale0" tcp dport { 80, 443 } accept
