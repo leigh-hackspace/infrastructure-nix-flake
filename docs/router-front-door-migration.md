@@ -72,6 +72,11 @@ duplicated — the ACME issuer, the gate, the bot gate, the ACL — stop being d
 
 ## What the front door is today
 
+*(“Today” = what a client is told and where its TLS actually terminates, which is still
+`services1` for every name. As of the deploy below, `gw` also serves all 59 of them and is
+provable at each by forced resolution — the columns below describe the answers, not the
+vhost files, and the answers have not moved.)*
+
 | Name space | answered by | terminated by |
 | --- | --- | --- |
 | `*.int.leighhack.org`, `gw.int…` | `gw` dnsmasq, generated from `common/int-dns.nix` + `common/dns-records.nix` (`machines/gw/dns.nix`) | `services1` nginx (`machines/services1/http.nix`, `useACMEHost = "leighhack.org"`). Phase 1 puts a second, *provable* terminator for these names on `gw`; no client is sent there until `frontDoor` changes. |
@@ -226,7 +231,11 @@ nginx with no certificate, no gate, no ACL and no public name in it (§Phase 2).
    `ipv4` is `hosts.router`. Read, not written: the addresses of a front door are one fact
    in one place exactly as long as that stays true.
 
-## Phase 1: what is in the tree, and what it does not do
+## Phase 1: what was in the tree, and what it did not do
+
+*(Everything below is deployed; this section is kept as the description of the first step,
+because phase 2 and 3 were built on top of its two vhosts and the reasoning about what a
+first step may safely leave undone is what still governs the flip.)*
 
 Two commits carry phase 1 (a third is this doc). Verified before writing any of this down,
 on aibox — never on `gw`, AGENTS.md rule 22: `just check` is green (four assertion evals,
@@ -394,7 +403,13 @@ from and pushes, so run it from services1.
    reboot for. Decide inside the window — fix the activation and confirm, or let it roll
    back — and note that the next activation re-arms it, so leaving it stopped saves nothing.
 
-## Phase 2 (to write): the origin — services1 stops being a front door
+## Phase 2: the origin — services1 stops being a front door
+
+*(Written and deployed since this heading was drafted — see “Phase 2 is in the tree and
+phase 3 step 1 is deployed” below for what was built, the two near-misses the table diff
+caught, and the places where the design below was amended: `origin` is one of **three**
+kinds of row, not two, and the public names went into `common/front-door.nix` rather than a
+separate `common/public-names.nix`.)*
 
 The shape is **front door + origin**, not "rebind every app": `gw` terminates and routes
 by name, and services1 keeps its per-service vhosts as *origin* vhosts — no certificate,
