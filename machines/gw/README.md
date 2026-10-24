@@ -127,7 +127,7 @@ evaluation of this machine succeeds with tables that disagree, and standalone vi
 | `constants.nix` | `LAN_NIC`, `UPLINK_NIC`, `UPLINK_TUNNEL` — the three interface names the rest of the directory keys on |
 | `networking.nix` | the VLAN netdevs, the addresses on them, the uplink NIC's DHCP |
 | `dns.nix` | dnsmasq: the generated conf, the two generated hosts files (the device records and the `*.int` front door), the netboot variants |
-| `http.nix` | nginx and the `int.leighhack.org` certificate: the `*.int` vhosts this box terminates, and the `dnsResolver` line the zone's own authority makes mandatory. Phase 1 of `docs/router-front-door-migration.md` — read that file before adding a vhost here |
+| `http.nix` | nginx and the `int.leighhack.org` certificate: the `*.int` vhosts this box terminates, the `dnsResolver` + propagation-wait lines the zone's own authority makes mandatory, and `front-door-cert-check` — the only check that can tell an issued certificate from nixpkgs' minica placeholder. Phase 1 of `docs/router-front-door-migration.md`, **deployed 2026-10-24**; read that file before adding a vhost here |
 | `int-dns.nix` | the guard over `common/int-dns.nix` read from *this box's* `virtualHosts`: subset while the answers live elsewhere, equal once `frontDoor` names `gw` (AGENTS.md rule 24) |
 | `firewall.nix` | nftables: forward, input, NAT, and the IPv6 pair |
 | `uplink.nix` | pppd's tunnel, the tailnet (headscale) client |
@@ -586,20 +586,30 @@ records — was deleted on 2026-10-22; `common/int-dns.nix` is that feature now.
 ## Known-incomplete, by name
 
 * **This box terminates TLS for `*.int` and nothing is sent to it yet** (`http.nix`,
-  phase 1 of `docs/router-front-door-migration.md`). `common/int-dns.nix`'s `frontDoor`
+  phase 1 of `docs/router-front-door-migration.md`, **deployed 2026-10-24**). `common/int-dns.nix`'s `frontDoor`
   still says `services1`, so every `*.int` answer is still 10.3.1.20 and the two vhosts
   here are reachable only by name resolution you force: `curl --resolve
   bar.int.leighhack.org:443:10.3.1.1 https://bar.int.leighhack.org/`. What that curl
   proves is the point — cert, ACL, listener and the `./int-dns.nix` guard, tested on the
-  box that will own them before any client depends on them — and the one part of it that
-  cannot be tested without waiting is *renewal*.
-  `security.acme.defaults.dnsResolver` in `http.nix` is what stops lego asking **this
-  box's own dnsmasq** whether the `_acme-challenge.int` TXT it wrote to DigitalOcean has
-  arrived: dnsmasq is authoritative for `int.leighhack.org`
-  (`local = "/int.leighhack.org/"`, `no-resolv`), so its answer is a negative that never
-  stops being true, and without that line the certificate would renew by never renewing
-  — silently, on a 60-day timer, at 04:00. If `acme-int.leighhack.org.service` is ever
-  red, read that comment before reading the config again.
+  box that will own them before any client depends on them — and it did prove it: the
+  rendered answers in `/etc/dnsmasq-int-vhosts.hosts` were byte-identical before and after
+  the deploy (`b20c264cded8…`), which is the fact that makes the whole phase safe.
+  The part phase 1 could not test in advance was **renewal**, and the deploy learned what
+  that looks like anyway, because the first issuance *failed*: lego lost the propagation
+  check for `_acme-challenge.int` — its own two SANs, one TXT name, and a public resolver
+  answering from a cached negative about a record the CA had already confirmed — and
+  nixpkgs then wrote a **minica self-signed certificate** with no red anything: nginx
+  `active`, both acme units `Result=success`, `nginx -t` clean, the canary answering 200,
+  and a client-visible `issuer=CN=minica root ca …`. Three things follow, all of them in
+  `./http.nix`:
+  `security.acme.defaults.extraLegoFlags = [ "--dns.propagation.wait=120s" ]` — stop asking
+  a resolver and let the zone settle, which is what actually issues the cert (`dnsResolver`
+  names the resolvers and cannot un-teach them); **`sudo systemctl start
+  front-door-cert-check.service` after any switch here**, which reads the *issuer* because
+  nothing else can; and no new timer on this box written as a monotonic one — `OnBootSec`
+  on a box that has been up past its window fires the instant the unit appears, and a unit
+  failing *during* activation fails the switch, which arms `auto-rollback`, which here means
+  rebooting the network's router over a health check's opinion.
 
 * **`/var/lib/dnsmasq/names.hosts` is dead weight, deliberately, for one deploy.** It
   is no longer in dnsmasq's `addn-hosts` list (`./dns.nix`), so nothing reads it, but

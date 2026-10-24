@@ -1,20 +1,30 @@
-# The front door on the router — decided, phase 1 in tree, **not applied**
+# The front door on the router — decided, phase 1 **deployed 2026-10-24**, phases 2–3 not started
+
+**Phase 1 is live on `gw` and no client is sent to it.** Measured after the deploy: the
+`int.leighhack.org` certificate is issued (Let's Encrypt, `CN=YE2`, `int` + `*.int`, expires
+2027-01-22), nginx is `active` and listening on 80/443 on both families, the two vhosts
+answer by forced name resolution (`curl --resolve …:10.3.1.1 https://…` → 200 from the
+canary, 200 from `network-info`'s API), the four front-door nft rules are in place and the
+`dstnat` chain still has exactly its four original rows — and `/etc/dnsmasq-int-vhosts.hosts`
+is **byte-identical to before the deploy** (`sha256sum` `b20c264cded8…`, taken before and
+after), so nothing any client resolves moved. Getting there cost three findings, all of
+them in the ACME path, and they are [below](#findings-2026-10-24-deploying-phase-1) — the
+short version is that a runbook whose every check passes while the certificate is a
+self-signed placeholder is a runbook that needed a new check, and that `dnsResolver` was not
+enough to make the TXT race stop existing on one box either.
 
 The plan: move **all** HTTPS termination — the certificate, every vhost, the `nginx-sso`
 gate and `anubis` — from `services1` to **`gw`**, the box that is already the network's
 front door for DNS, and later `headscale` too.
-**Nothing in this doc has been deployed.** Six commits are in tree, all of them
-undeployed: `just check` is
-green (on aibox — rule 22), the gw system derivation **builds**, and both modes of the
-new guard were proven by making them fail rather than by reading them (below). A full
-`just check-build` is *not* green on aibox and is not green because of this change:
-`door-entry-management-system` sets `__noChroot` and aibox's `sandbox = true` daemon
-refuses it, which is `docs/follow-ups.md`'s known reason and lands before the gw closure
-is ever reached. `git log` on both boxes still shows the generation that has services1
-terminating TLS for the whole network, and `common/int-dns.nix` still answers every
-`*.int` name at 10.3.1.20. Read `docs/router-and-dns.md` and `machines/gw/README.md`
-first: `gw` hands out every address in the building, so a change here is a change to the
-box every client depends on, not to a shadow.
+Phase 1 is the two commits `034d7aa` and `e31884c`, deployed at `75e210a` on 2026-10-24 with
+the two commits after them (`6363ada`, `8197c88`, `75e210a`) being the deploy's own findings.
+A full `just check-build` is *not* green on aibox and is not green because of this change:
+`door-entry-management-system` sets `__noChroot` and aibox's `sandbox = true` daemon refuses
+it, which is `docs/follow-ups.md`'s known reason and lands before the gw closure is ever
+reached. `git log -1` on services1 and gw both read `75e210a` after the deploy, and
+everything still answering `*.int` is still on 10.3.1.20. Read `docs/router-and-dns.md` and
+`machines/gw/README.md` first: `gw` hands out every address in the building, so a change
+here is a change to the box every client depends on, not to a shadow.
 
 ## The decision, 2026-10-24 (operator): **all of it, on `gw`**
 
@@ -96,6 +106,9 @@ nginx with no certificate, no gate, no ACL and no public name in it (§Phase 2).
    The challenge would fail at propagation and never issue. So
    `machines/gw/http.nix` sets `defaults.dnsResolver = "1.1.1.1:53,8.8.8.8:53"`, and the
    line is load-bearing on a 60-day timer, because the *renewal* asks the same question.
+   **It is not sufficient on its own**, though — naming the resolvers does not un-teach them
+   what they already cached — and the deploy found that out: see finding 2 under "Phase 1 is
+   deployed" for `--dns.propagation.wait`, which is the thing that issues the certificate.
    An earlier draft of this file explained the same situation as "still works while
    services1's nginx answers the ACME HTTP challenge", which is wrong twice over: the
    challenge here is DNS-01 — that is the whole reason the DO token is needed — and
@@ -257,7 +270,7 @@ What it **does not** do, on purpose:
   the same change so that "this box cannot answer a public name" stops being a safety net
   and becomes a fact with a certificate behind it. See the comment on `frontDoorRules`.
 
-### Deploying phase 1 — the runbook (not yet run)
+### Deploying phase 1 — the runbook (as run 2026-10-24; step 5 is what the run needed)
 
 `gw` cannot be switched from `gw` (rule 22): `just switch-gw` builds on the box it is run
 from and pushes, so run it from services1.
@@ -300,33 +313,56 @@ from and pushes, so run it from services1.
      `After=network.target acme-leighhack.org.service`, `Restart=always`, `RestartSec=5s`)
      is an ordering, not a dependency, and the acme unit is `WantedBy=multi-user.target`
      rather than `RequiredBy`: **a failed issuance does not fail the switch.** It leaves
-     nginx restarting forever behind a router that looks healthy, and nothing else on this
-     box notices, which in phase 1 means nothing notices for 60 days. Check the unit
-     `After=` line here too — it is one grep and it proves the pairing came from
-     `useACMEHost` and not from hope:
-     `systemctl cat nginx | grep ^After` should name
-     `acme-int.leighhack.org.service`.
+     nginx running forever behind a router that looks healthy — and *running*, not
+     crash-looping, which is what this paragraph used to get wrong: nixpkgs writes a
+     **minica self-signed certificate** when lego fails, so nginx starts, serves, and
+     stays up. Check the unit `After=` line here too — it is one grep and it proves the
+     pairing came from `useACMEHost` and not from hope:
+     `systemctl cat nginx | grep ^After` should name `acme-int.leighhack.org.service`.
    * `sudo -n systemctl list-units 'acme*' --no-pager` — the units are named after the
      cert, so expect `acme-int.leighhack.org.service` ("Ensure certificate for
      int.leighhack.org"), `acme-order-renew-int.leighhack.org.service` and
      `acme-renew-int.leighhack.org.timer`, exactly as services1 has its `leighhack.org`
-     trio. The request unit's `Result=success` and
-     `sudo -n ls -l /var/lib/acme/int.leighhack.org/` are the proof; if lego failed, read
-     the unit's journal before anything else, because the failure will be the propagation
-     check in consequence 1. The manual path back is
-     `sudo -n systemctl restart acme-int.leighhack.org.service && sudo -n systemctl
-     restart nginx` — say it here rather than have it be a discovery, because the renewal
-     timer is daily and "wait for the timer" is a 24-hour answer to a 20-second command.
-   * `sudo -n nginx -t -c /etc/nginx/nginx.conf` and
-     `grep -c server_name /etc/nginx/nginx.conf` — expect the two `*.int` servers plus the
-     redirect servers, and no `leighhack.org` (public) name anywhere on this box.
-   * `sudo -n nft list chain ip router input | tail` and
-     `sudo -n nft list chain ip6 router6 input | tail` — the four front-door rules present,
-     `vlan*`/`tailscale0`-scoped, and **no new `dstnat` row**.
-   * `sudo -n ss -lnt` — now also `0.0.0.0:80`, `0.0.0.0:443`.
+     trio.
+   * **`sudo -n systemctl start front-door-cert-check.service` — the check that actually
+     decides whether the cert is the network's.** `Result=success` and a populated
+     `/var/lib/acme/int.leighhack.org/` are **not** the proof, and this deploy is the
+     receipt for that sentence: lego failed, both acme units still reported
+     `Result=success`, the directory was full, `nginx -t` was happy, the canary answered
+     200, and the certificate was `issuer=CN=minica root ca 56254e`. Only the issuer
+     distinguishes the two states, so the issuer is what the unit checks (and it checks
+     expiry at 14 days too, on a daily `OnCalendar` — see the two comments in
+     `machines/gw/http.nix` for why that timer may not be monotonic). Its failure branch
+     is testable without waiting for a failure: point a copy of the rendered script at any
+     self-signed cert and it exits 1 with the `why:`/`fix:` lines. Expect
+     `int.leighhack.org is CA-issued and not near expiry: issuer=C=US, O=Let's Encrypt, …`.
+   * If it is red: read `journalctl -u acme-order-renew-int.leighhack.org.service -n 50`
+     before anything else, because the failure will be the propagation check (consequence
+     1 and the one-writer finding). The path back is
+     `sudo -n systemctl start acme-order-renew-int.leighhack.org.service && sudo -n
+     systemctl restart nginx` — say it here rather than have it be a discovery, because
+     the renewal timer is daily and "wait for the timer" is a 24-hour answer to a
+     20-second command. (`start`, not `restart`: the unit is a oneshot that has already
+     run.) Re-ran exactly this on 2026-10-24 after `--dns.propagation.wait` landed and it
+     issued in ~5 min — two SANs × the 120 s wait, which is the new cost of an issuance
+     here.
+   * `nginx -t` needs the **store path** on this box: `nginx` is not in gw's
+     `environment.systemPackages`, so `sudo -n nginx -t` is `command not found` and looks
+     like a missing service. Take it from the unit —
+     `NGX=$(sudo -n systemctl show -p ExecStart --value nginx | sed -E 's/^[^/]*//' | cut -d' ' -f1)`
+     then `sudo -n $NGX -t -c /etc/nginx/nginx.conf` — and
+     `grep -oE 'server_name [^;]*;' /etc/nginx/nginx.conf | sort -u`: the two `*.int`
+     servers, and **no `leighhack.org` public name** anywhere on this box (measured:
+     exactly `bar.int…` and `network-info.int…`).
+   * `sudo -n nft list chain ip routerIn input | tail` and
+     `sudo -n nft list chain ip6 router6 input | tail` — the four front-door rules present
+     (two per family), `vlan*`/`tailscale0`-scoped, and **no new `dstnat` row**: count them
+     (`nft list chain ip routerNat dstnat | grep -c 'tcp dport'` → 4 before, 4 after).
+   * `sudo -n ss -lnt` — now also `0.0.0.0:80`, `0.0.0.0:443` (and the `[::]` pair).
    * `sudo -n sha256sum /etc/dnsmasq-int-vhosts.hosts` **before and after**: identical.
      This is the proof that nothing a client resolves has moved, and it is the reason the
-     deploy is safe: the front door is up, and nobody is sent to it.
+     deploy is safe: the front door is up, and nobody is sent to it. (`b20c264cded8…` at
+     the 2026-10-24 deploy, unchanged across three switches.)
 6. **Prove the door answers, by IP:**
 
    ```
@@ -335,14 +371,24 @@ from and pushes, so run it from services1.
         https://network-info.int.leighhack.org/api/summary | head -c 200
    ```
 
-   The canary page says which box served it, so phase 3 has a way to ask that question at
-   both doors. From a client, the same two URLs with `--resolve …:10.3.1.20` still reach
-   services1's copies, which is the state the network is in until the flip.
+   No `-k`, and that is the point once the issuer check is green: these two curls failing
+   on trust *is* the minica state, seen from the client side. The canary page says which
+   box served it, so phase 3 has a way to ask that question at both doors. From a client,
+   the same two URLs with `--resolve …:10.3.1.20` still reach services1's copies, which is
+   the state the network is in until the flip — verified from services1 after this deploy:
+   `grafana.int` 200 from 10.3.1.20, `login.int` 302 off the gate, both untouched.
 7. Roll back the same way as anywhere else (`system.autoRollback` is armed;
    `nixos-rebuild switch --system` to a previous generation). The worst case is a router
-   with a listener nobody resolves to, and — if lego cannot issue — an nginx that will not
-   start, which is *also* nobody resolving to it. Neither takes DNS, DHCP, the tunnel or
-   the tailnet with it; that is the property phase 1 was scoped to keep.
+   with a listener nobody resolves to, and — if lego cannot issue — an nginx serving a
+   certificate no client trusts, which is *also* nobody resolving to it. Neither takes DNS,
+   DHCP, the tunnel or the tailnet with it; that is the property phase 1 was scoped to keep.
+
+   **One thing the rollback cannot undo, and it bit on the way in:** if a switch *fails*,
+   do not `systemctl stop auto-rollback.timer` to buy time to work — the timer is
+   `OnActiveSec=5min`, so stopping it disarms it for good (nothing re-arms an unchanged
+   unit, and the next switch will not), leaving the router with no safety net. `systemctl
+   restart auto-rollback.timer` is the fix; `systemctl is-active auto-rollback.timer` is
+   the check, and it is now part of step 4's aftermath here.
 
 ## Phase 2 (to write): the origin — services1 stops being a front door
 
@@ -491,7 +537,74 @@ proof is `headscale nodes list` answering the same node list on both sides *befo
 unit is allowed to start again. `derp_server_private.key` is the DERP server's identity and
 travels with it. The config half (consequence 6) is already router-shaped facts.
 
+## Phase 1 is deployed — the three things it took, and the one it exposed in itself
+
+Deployed on 2026-10-24 from services1 at `8197c88`, three switches deep rather than one, and
+the extra two were both the certificate. What is written here is what the first deploy could
+not see, because the shape of all three failures is *a check that passes*:
+
+1. **`Result=success` means "a certificate is on disk", never "the CA issued it."** This
+   nixpkgs' `security.acme` writes a **minica self-signed certificate** into the cert
+   directory when lego exits non-zero — deliberately, so dependent services start — so on
+   the first deploy nginx came `active`, served TLS, answered the canary with 200, passed
+   `nginx -t`, and reported both acme units `Result=success` over a certificate issued by
+   `CN=minica root ca 56254e`. Every check step 5 of the runbook listed was green. The only
+   fact that separates the two states is the issuer, so `machines/gw/http.nix` now carries
+   `front-door-cert-check.service`/`.timer` to read the issuer (and the expiry, at 14 days)
+   and the runbook runs it. Both branches are tested: the success path against the real
+   cert, and the failure path against a throwaway self-signed one — a check whose failure
+   branch first runs on the day the cert goes wrong is a check nobody has ever run.
+2. **The TXT race is real with *one* writer, because a cert's apex and its wildcard share
+   one challenge record.** The finding below is about two boxes writing
+   `_acme-challenge.int`; on the router the collision is *inside a single issuance*. lego
+   validated `*.int.leighhack.org` (+38 s, LE said so), then validated `int.leighhack.org`
+   — same TXT name, still present, cleanup happens after the run — and spent its whole 60 s
+   window being told `NXDOMAIN` by 1.1.1.1: a public resolver answering from a negative it
+   had cached earlier, about a record the CA had just confirmed. `dnsResolver` fixes *which*
+   resolvers are asked and cannot fix *what they remember*, so `security.acme.defaults` now
+   sets `--dns.propagation.wait=120s`: present the TXT, let the zone settle, then ask the
+   CA, and depend on no resolver's cache at all. Cost: ~5 min an issuance on a unit with
+   `TimeoutStartSec=infinity` behind a daily timer. The issuance that had failed issued on
+   the first try after it.
+3. **A health check must not be able to arm a router reboot.** The commit that added the
+   check deployed it with `OnBootSec=15min` — and a monotonic timer whose window has already
+   passed fires the moment it is created, so on a box two days into its uptime the first
+   switch started the check *inside the activation*, the check exited 1 (correctly: the cert
+   on disk was then minica's), and `switch-to-configuration` counts a unit failing during
+   activation as a failed switch: exit 4, rollback armed, and on `gw` the rollback is
+   `reboot`, five minutes later, taking DNS, DHCP, the tunnel and the tailnet with it. The
+   timer is a wall-clock `OnCalendar` with no `Persistent` now, because a catch-up is the
+   same trick from the other direction. Read `machines/gw/http.nix` before adding any timer
+   to this box. The related trap, hit while recovering: `systemctl stop auto-rollback.timer`
+   is not a pause — the timer is `OnActiveSec=5min`, so stopping it disarms it permanently,
+   and only `systemctl restart auto-rollback.timer` puts the net back.
+
+Two smaller facts from the same deploy, both now in the runbook: `nginx` is not in gw's
+`systemPackages`, so the verification command has to take the binary's store path from the
+unit; and this nixpkgs has no `systemd.services.<name>.startAfter` (it wants `after`, which
+is also the semantics that were meant — ordering with no dependency).
+
 ## Findings, 2026-10-24
+
+* **The TXT race is not between boxes; it is about one TXT name.** Written before the
+  deploy, this section argued that a second issuing box would create the race. The router's
+  first issuance lost the same race **alone**, because an apex and its wildcard are both
+  solved by `_acme-challenge.<apex>` — so this cert's two SANs are two writers of one name
+  whatever the second box does — and because lego asks a *public recursive resolver* whether
+  the TXT has arrived, and a resolver that has recently been told NXDOMAIN about a name
+  keeps saying so from cache after the record exists. Measured: wildcard validated at +38 s,
+  then 60 s of `NXDOMAIN` for the apex from 1.1.1.1, then `time limit exceeded`, with the
+  record still up (lego cleans up after the run). The fix is to stop asking: `--dns.
+  propagation.wait=120s`. Consequence for phase 3, when services1's SAN set moves here:
+  **every apex+wildcard pair in the SAN set is one TXT name and one chance to lose this
+  race**, which is a second reason not to carry `*.ai.int`/`*.test` forward.
+* **A failed ACME issuance on this nixpkgs is invisible, not red.** `security.acme` falls
+  back to a minica self-signed certificate so "dependent services will still start", and
+  every consequence of that is written up under "Phase 1 is deployed" above and in
+  `machines/gw/http.nix`, where the check that catches it now lives (`front-door-cert-check`).
+  The general form, for any box in this fleet rather than just this one: `Result=success`
+  plus a listening service plus a 200 is a statement about *state*, and the failure this
+  one hid was a state that is legitimately healthy-looking. Ask for the fact that differs.
 
 * **`firewall.int.leighhack.org` proxies `https://10.3.1.1:60443` and nothing listens
   there.** `ss -lntp` on gw answers 53 (dnsmasq), 22 (sshd), 8091 on 10.3.1.1

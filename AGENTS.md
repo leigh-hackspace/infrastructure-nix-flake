@@ -126,7 +126,12 @@ X first", X has already cost someone a day.
     that lego asks **this box's own dnsmasq** whether its `_acme-challenge.int` TXT has
     propagated unless `dnsResolver` names public resolvers — dnsmasq is authoritative for
     the zone, so its "no" never expires — which is why the cert's health is a check to run
-    after a switch here, not a month later.
+    after a switch here, not a month later. **It is now a unit: `sudo systemctl start
+    front-door-cert-check.service` on gw**, and it is mandatory after a switch there,
+    because `security.acme` reports `Result=success` while serving a minica self-signed
+    certificate whenever lego fails (measured 2026-10-24: every other check green, issuer
+    `CN=minica root ca 56254e`). Reading the *issuer* is the check; `Result=`, `nginx -t`
+    and a 200 cannot see this failure at all.
 23. **A parked module marks itself, not its import list.** The first line of a module
     commented out of an import list is `# PARKED — <date> (<commit>) — <the doc that
     owns it, or "no doc; the reason is this"> — re-verify with: <command>`, and the
@@ -317,6 +322,15 @@ X first", X has already cost someone a day.
   ```bash
   readlink /run/current-system /nix/var/nix/profiles/system-good   # equal = confirmed
   ```
+
+  **The net is armed by an activation and by nothing else.** `auto-rollback.timer` is
+  `OnActiveSec=5min`, so it is restarted whenever a configuration is activated — and if you
+  `systemctl stop auto-rollback.timer` (to stop a rollback firing while you dig out of a
+  failed switch, say) **it stays stopped for good**: an unchanged unit is never restarted,
+  so the next switch does not re-arm it and the box runs on until someone notices. Hit on
+  gw, 2026-10-24, where the exposure was the network's router. If you stop it, restart it in
+  the same sitting and prove it: `systemctl is-active auto-rollback.timer` should be
+  `active`, and `systemctl list-timers auto-rollback.timer` should have a `NEXT`.
 
   1. Run `sudo nixos-confirm` **immediately** after `switch`/`boot`, in the **same
      shell invocation** (`... switch ... && sudo nixos-confirm`), on the machine that
