@@ -29,7 +29,8 @@ X first", X has already cost someone a day.
 | create or debug an OIDC app / authentik anything | `docs/authentik-oidc-notes.md` — **every part of it has bitten once** |
 | touch the authentik container stack on services1, or the migration/cutover off 10.3.1.36 | `docs/authentik-container-migration.md` — the flake half is a **parked shadow**, the appliance is the live IdP |
 | run a **full network upgrade** — one flake pass landed on every box the hop key reaches | `docs/network-upgrade-runbook.md` (the order, the gates, and what must *not* move) |
-| are new to this flake, or are about to **restructure** `flake.nix`/`common/` rather than add a service | `docs/flake-simplification-audit-2026-10-22.md` — where each fact lives, what `just check` actually does on each box, the two secret models, and the five structural changes worth making |
+| are new to this flake, or are about to **restructure** `flake.nix`/`common/` rather than add a service | `docs/flake-simplification-audit-2026-10-22.md` — where each fact lives, what `just check` actually does on each box, the two secret models, and the five structural changes worth making (**its Status table is current, its body is the tree at `f923c6e` — read the table first**) |
+| are about to **simplify** — delete, merge or move config, or judge what is fat | `docs/flake-simplification-pass-2026-10-24.md` — the 2026-10-24 re-measure of the same question: 91 % of the tracked bytes are one vendored asset tree, three `AGENTS.md` rules are 93 of its 151 rule-lines, 1,044 lines cannot be deployed; every finding is gated **do now / decide / don't**, and its §3 says what may **not** be cut |
 | ask "why is it shaped like this?" | `docs/work-log-2026-10.md` and the dated post-mortems in `docs/` |
 
 ## The rules, in one place
