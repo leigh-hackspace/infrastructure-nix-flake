@@ -352,6 +352,72 @@ compared, compare hashes.
   unauthenticated engine.  Keep it that way: do not add
   `strata.leighhack.org` to `allowed_hosts`.
 
+## The Vega 8 (Cezanne, gfx90c) is not the expert tier
+
+Asked on 2026-10-24 whether this box's iGPU could take the CPU's share of the experts
+beside the 3060 — a co-processor, the thing aibox's whole page is about. It cannot, and
+the answer is three mechanisms and a number, all of it re-verified rather than argued
+from plausibility. **Do not re-explore it from the flag list**: upstream closed exactly
+this request, and the reason is memory, not a missing flag.
+
+- **Every second-device role enumerates the backend's own device list, and this box has
+  one CUDA device.** The shipped binary (`strata --version` → `strata 0.1.48.1`) offers
+  `--expert-cache-device1/2/3` as *`fill CUDA1 with N experts`*, `--peer-device N` as
+  *a second GPU as an adaptive expert-cache tier (rows over P2P; it also computes its
+  experts' prompt rows)* and `--layer-split`; all three take indices into the backend's
+  device list, and `strata-device --list-devices` on this box prints `device 0: NVIDIA
+  GeForce RTX 3060` and nothing else. The Vega 8 is not in that list, so no role can
+  name it: an engine binary compiles **one** backend (`CMakeLists.txt` makes the SYCL
+  build exclusive of CUDA/HIP with a `FATAL_ERROR`), so there is no CUDA-plus-HIP
+  process that could hold both cards.
+- **The card-fit rule deletes integrated chips before any arithmetic** (`gpu_fit.py`,
+  upstream at the 0.1.48.1 revision): `MIN_CARD_GB = 4.0  # under this a card cannot
+  hold the dense weights: ignored (an iGPU, a display card)`, and the sentence it shows
+  the user is `it shares the system memory (an integrated graphics chip), so it adds
+  nothing`. `docs/MULTI_GPU.md:91` states the rule in prose — *not an integrated chip
+  beside a real card* — and the not-supported list there includes *a mix of NVIDIA and
+  AMD cards*; `gpu_fit.py:38` keeps `one engine, one vendor`.
+- **gfx90c is in no HIP architecture list**, so the iGPU could not be an AMD engine
+  device even alone: `cmake/hip_backend.cmake` builds wave32 RDNA2/3/4 — validated
+  `gfx1100 gfx1201`, community `gfx1101 gfx1200`, opt-in list `gfx1010 … gfx1152`
+  (which includes `gfx1103`, a 780M iGPU, and `gfx1151`, Strix Halo) and `FATAL_ERROR`s
+  anything else. The GCN family is the separate wave64 `STRATA_HIP_GFX906` compat build
+  (`include/strata/platform/hip_compat/strata_hip.h:7`: every Strata kernel is written
+  for a 32-lane warp, and gfx906 runs 64-lane wavefronts) whose startup check refuses a
+  wave32 card (#1728). Cezanne is neither. Its own identity is on the box: `/sys/class/kfd/kfd/topology/nodes/1/properties` → `gfx_target_version 90012` (gfx90c), `simd_count 32` at `simd_per_cu 4` (8 CUs). Upstream's own detector agrees with the KFD, not with the engine: `hip_gpu_archs()` in the tree at the 0.1.48.1 revision answers `{0: 'gfx90c'}` on this box (it reads those same nodes), so the card is *identified* and still offered to nothing — the arch list above is the reason, not a missing probe.
+- **Upstream closed precisely this request**: issue **#514**, *Feature Request: use AMD
+  iGPU instead of CPU for offloading* (closed as not planned, 2026-10-03) — "Running CUDA
+  and HIP in one process would mean two backends side by side and a hand-off between them
+  for every layer. Also, the offloaded experts are mostly limited by memory bandwidth,
+  and an iGPU reads the same system RAM as the CPU, so the gain would be small next to
+  the cost. **Image generation is compute-heavy, which is why the iGPU helped there.**"
+  `machines/aibox/strata-uma-2026-10-08.md:46-48` already separates that issue (an iGPU as
+  a *second* device beside CUDA) from aibox's own case (the iGPU as the *primary* device),
+  so the closing reason is not a reading of a different question.
+- **And the number says it would not win anyway.** The nearest measured analogue is aibox's
+  iGPU — a *different, newer* ISA (RDNA2 gfx1035), and **smaller** than this box's: 6 CUs against
+  Cezanne's 8. There the engine on the iGPU is compute-bound on those CUs: prefill is 6-CU compute-bound
+  at ~45 tok/s, and decode is DRAM-bandwidth-bound, ~2.7 GB/token at ~50 GB/s → ~18 tok/s theoretical,
+  "we sit at 9-12" (`machines/aibox/STRATA.md:78-80`). This box's unit logs **26.4-28.2 tok/s end to
+  end** on its `done:` lines (`journalctl -u strata.service`, read 2026-10-24), so a same-or-smaller
+  chip on an older ISA has to beat a ~3x margin before it is worth a line of config — and aibox's own
+  reasoning says the direction cannot pay: putting experts on the GPU "moves expert work onto the same
+  6 CUs that are already the dense-compute bottleneck, instead of the idle CPU cores" (`:74-76`), and moving
+  them "changes *who computes*, not the DRAM traffic" (`:78-80`). An iGPU is a third reader of the CPU's DDR5,
+  not a new fast one.
+- **It is also a hazard rather than an idle resource**: the iGPU's GTT *is* this box's RAM.
+  The engine is already **25.7 GiB resident** of this box's ~30 GiB RAM (`ps -eo rss,comm` on
+  `strata-host`, 2026-10-24, with `--expert-cache --resident-experts --expert-profile` in the
+  rendered config), and the iGPU's GTT is that same RAM — `machines/services2/README.md:59`
+  keeps the memory-pressure and OOM story for whatever else competes with it. `src/core/expert_cache.cpp:30-34`
+  prices the expert cache against UMA-aware `device_free_bytes()`, which asks the *current* device
+  whether it is integrated — the comment there says a box can mix an APU with a discrete card, and
+  the answer is per device — and `machines/aibox/strata-uma-2026-10-08.md:31` states what it means:
+  on UMA a cache is only worth having if reading it is faster than reading the arena — it isn't, it
+  is the same DRAM.
+
+Where an AMD APU does earn a seat, per the same maintainer sentence and `tools/image/qimage.py:74-96` (whose APU list is `gfx902, gfx909, gfx90c` — Raven/Renoir/Cezanne — and whose AMD APU backend is `vulkan`), is the **image path**, not the expert tier; what that needs on this box is an open item in `docs/follow-ups.md`. The upstream file:line citations above are to the tree at the 0.1.48.1 revision — the same version this box's engine reports — read from the upstream clone `setup.sh --clone` puts in `/tmp/strata-up/up` (transient: `/tmp` is cleared at boot here, so re-clone before checking a line number).
+
 ## Operational notes
 
 - **A killed engine keeps its VRAM.** If an experiment engine is `SIGKILL`ed, the

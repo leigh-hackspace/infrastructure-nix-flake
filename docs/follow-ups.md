@@ -315,6 +315,58 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   change — say so, and say what you verified against a clean HEAD.
 
 
+## Strata (services2)
+
+- **The Vega 8's one plausible seat has never been tried: the picture reader, not an
+  expert tier** (found 2026-10-24 while answering "can the iGPU be a co-processor to the
+  3060" — the answer to *that* is in `machines/services2/STRATA.md`, "The Vega 8 (Cezanne,
+  gfx90c) is not the expert tier", and it is closed upstream, #514 *not planned*: two backends
+  in one process, and an iGPU reads the CPU's DDR5, so the expert tier gains nothing).
+  What the same maintainer sentence leaves open is the compute-heavy path: `tools/image/qimage.py:74-96`
+  lists `gfx902 gfx909 gfx90c` (Raven/Renoir/Cezanne) as APUs and gives them `backend: vulkan`
+  for the denoiser, and an AMD engine folder upstream carries a GPU picture reader
+  (upstream calls it `strata-vision-hip`: llama.cpp's HIP backend, built from
+  `tools/vision/CMakeLists.txt` with `STRATA_VISION_HIP` / `STRATA_VISION_HIP_ARCHS`, and
+  `strata_control/vision_reader.py:1,5` is the rule that picks one — an AMD engine folder gets
+  `strata-vision-hip`, an Intel Arc gets `strata-vision-sycl`, everything else the CPU reader).
+  **This box deploys none of them**: `machines/services2/strata-package.nix:100-106` builds
+  `-DSTRATA_ENABLE_CUDA=ON -DSTRATA_ENABLE_HIP=OFF -DCMAKE_CUDA_ARCHITECTURES=86`, the package's
+  `bin/` is `strata`, `strata-device`, `strata-prep`, `strata-server` (+ `libstrata_kq.so`), and
+  the engine's config is `env = { CUDA_VISIBLE_DEVICES = "0" }`, `lib_dirs =
+  [ "/run/opengl-driver/lib" ]` — one CUDA device and the CUDA runtime, nothing AMD.
+  **Blocks:** an engine package change, so the bump ritual in `machines/services2/STRATA.md`
+  ("Updating the engine") applies, `just check-build` before it; and because the rule above
+  *picks* a reader by what the engine folder carries, adding a GPU reader changes what
+  `strata-server` uses — test the fallback after, do not assume it.
+  **What to try, in the order that costs least:**
+  1. the arch define on the *reader's* build, not on the engine's: `STRATA_VISION_HIP=ON` and
+     `STRATA_VISION_HIP_ARCHS=gfx90c` belong to llama.cpp's own HIP build (`tools/vision/`), so
+     adding them does not touch `cmake/hip_backend.cmake`'s accepted-arch lists — those stay
+     `gfx1100`/`gfx1201` validated, `gfx1101`/`gfx1200` community, opt-in `gfx1010…gfx1152`, and
+     anything else is still a `FATAL_ERROR`.
+  2. the shape to copy is aibox's, which is **not** a dead end: `machines/aibox/strata-package.nix:9-12`
+     says its iGPU reports gfx1035, which is not in the accepted list, so the engine there is built
+     for **gfx1030** — the nearest accepted arch — behind a deliberately restricted `rocmPackages`
+     scope (lines 88-111, `cl`/`hipblas`/`rocblas`/`hipblaslt` only, because the default scope pulls
+     every gfx target). services2's package has **no** `rocmPackages` at all (0 hits against aibox's
+     11), and `find /run/current-system/sw /run/opengl-driver -maxdepth 4 -name 'libhsa*' -o
+     -name 'libroc*'` prints nothing: the runtime is the missing half on this box, not the ISA.
+  3. a Vulkan reader — the backend `qimage.py` gives an APU — needs the *loader*, which this box
+     does not have: `/run/opengl-driver/lib/` carries the driver `libvulkan_radeon.so` (and its
+     25.0.0-rc6 siblings), while `find /run/current-system/sw /run/opengl-driver -name 'libvulkan.so*'`
+     prints nothing in either `lib` or `lib32`. The CUDA path works without a loader because the
+     driver's `libcuda.so.1` is put on `LD_LIBRARY_PATH` by that `lib_dirs` line above.
+  **What the nearest measured analogue is worth** (upstream's own bench, `docs/AMD_HIP.md:594`,
+  read at the 0.1.48.1 tree): an AMD iGPU picture reader is a real win, not a marginal one — the
+  same reader built for gfx1103 ran on a Radeon 780M at **0.40 s for 260 tokens against 2.42 s on
+  its CPU**, and on the discrete R9700 57 ms / 0.40 s against the CPU reader's 3.13 s / 14.1 s,
+  with embeddings agreeing at cosine mean 0.99985. What is *not* measured is Cezanne: this box's
+  iGPU is 8 CUs of GCN5.1 (`simd_count 32`, `simd_per_cu 4`, `gfx_target_version 90012`) against
+  aibox's 6 CUs of RDNA2 gfx1035 (`machines/aibox/STRATA.md:79`) and upstream's RDNA3 gfx1103, and
+  no gfx90c compute kernel has ever run on this box — `amdgpu` is loaded and its only boot line
+  about the card so far is `amdgpu: ATOM BIOS: 13-CEZANNE-019`, i.e. the display path, and the
+  engine's device probe on this box answers `device 0: NVIDIA GeForce RTX 3060` (`11.6 GiB`) alone.
+
 ## Machines / access
 
 - **services2 cannot hop out.** `machines/services2/README.md` used to claim the
