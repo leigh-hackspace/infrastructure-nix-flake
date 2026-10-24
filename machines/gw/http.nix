@@ -249,13 +249,31 @@ in {
   # now says so.
   #
   # A timer rather than a one-shot because the fallback is offered to the renewal too,
-  # every day, for the rest of this box's life: a renewal that fails at 04:00 should
-  # be a red unit that night and not an expired-certificate dialog in March. It runs
-  # 15 min after boot and daily after that — after the acme units have finished (they
-  # run at boot) and, since the renewal timer here fires at 19:53 UTC, within a day of
-  # any renewal that fell back. `systemctl start front-door-cert-check` is the
-  # after-a-switch form; it is cheap enough to be part of the deploy rather than a
-  # thing someone remembers.
+  # every day, for the rest of this box's life: a renewal that fails at 04:00 should be
+  # a red unit that night and not an expired-certificate dialog in March. It runs daily
+  # at 06:30 — after this box's renewal timer (19:53 UTC at this generation), so a
+  # night's failed issuance is red by breakfast. `systemctl start front-door-cert-check`
+  # is the after-a-switch form; it is cheap enough to be part of the deploy rather than
+  # a thing someone remembers.
+  #
+  # **Wall-clock, and that is not a detail.** The first version of this timer was
+  # `OnBootSec = "15min"; OnUnitActiveSec = "1d";`, and it cost a failed deploy. A
+  # monotonic timer whose window has *already* passed when it is created fires the
+  # instant it appears, so on a box that had been up for two days the first switch
+  # started this service **inside the activation** — and `switch-to-configuration`
+  # counts "a unit failed during activation" as a failed switch (exit 4). Which is
+  # half-right of it: the remedy for a failed activation is `system.autoRollback`, and
+  # on this machine that remedy is *reboot the network's router* five minutes later,
+  # because a warning script printed an unfriendly sentence. **A health check whose
+  # failure can arm a rollback is a check that turns a warning into an outage**, so it
+  # stays out of the activation transaction: `OnCalendar` elapses at a time of day and
+  # so cannot fire on appearance. If this ever goes back to a monotonic timer, give the
+  # service `SuccessExitStatus = "1"` and accept the journal line in place of the red
+  # unit. Measured 2026-10-24: `the following units failed:
+  # front-door-cert-check.service` → `switching to system configuration … failed
+  # (status 4)`, with `auto-rollback.timer` armed to compare `/run/current-system`
+  # against `system-good` — and on this box a rollback is a router reboot, a lost DNS
+  # and DHCP for a minute, and a tailnet whose advertised routes only re-apply at boot.
   systemd.services.front-door-cert-check = {
     description = "The front door's certificate is CA-issued, not the minica fallback";
 
@@ -276,10 +294,19 @@ in {
           exit 1
         fi
 
+        # `${intCert}` is Nix interpolation and `$certDir` is the shell's; the
+        # difference is one pair of characters, because in an indented Nix string a bare
+        # `$foo` is literal text. The first version of this script wrote `$intCert`,
+        # shipped it, and died right here — on the `set -u`, in the *minica branch*
+        # — with `line 31: intCert: unbound variable`, while trying to report that the
+        # certificate was self-signed. A check that only runs its failure branch on the
+        # day it is first needed is a check that has never been tested, so the strings
+        # it needs from Nix are spelled with braces and the rendered script is worth
+        # reading once: `systemctl cat front-door-cert-check`.
         issuer=$("${pkgs.openssl}/bin/openssl" x509 -noout -in "$cert" -issuer)
         case "$issuer" in
           *minica*)
-            echo "$intCert is the minica self-signed fallback ($issuer): lego never issued." >&2
+            echo "${intCert} is the minica self-signed fallback ($issuer): lego never issued." >&2
             echo "  why:  sudo journalctl -u acme-order-renew-${intCert}.service -n 50" >&2
             echo "  fix:  sudo systemctl start acme-order-renew-${intCert}.service" >&2
             echo "        sudo systemctl restart nginx"
@@ -291,11 +318,11 @@ in {
         # 60 days and the daily timer retries it, so 14 days is not a warning about a
         # problem, it is a warning that the retries have been failing for a while.
         if ! "${pkgs.openssl}/bin/openssl" x509 -noout -in "$cert" -checkend $((14 * 86400)) >/dev/null; then
-          echo "$intCert expires within 14 days: $issuer" >&2
+          echo "${intCert} expires within 14 days: $issuer" >&2
           exit 1
         fi
 
-        echo "$intCert is CA-issued and not near expiry: $issuer"
+        echo "${intCert} is CA-issued and not near expiry: $issuer"
       '';
     };
 
@@ -310,9 +337,16 @@ in {
   systemd.timers.front-door-cert-check = {
     wantedBy = ["timers.target"];
     timerConfig = {
-      OnBootSec = "15min";
-      OnUnitActiveSec = "1d";
-      AccuracySec = "1min";
+      # A time of day, deliberately: see the service for what a monotonic version did.
+      # After the renewal timer (19:53 UTC here), before anyone dials the front door.
+      #
+      # And **no `Persistent`**, which is the other half of the same lesson: a
+      # persistent timer is allowed to catch up, and a catch-up on first activation is
+      # another way for this unit to land inside a switch. Missing one morning on a
+      # router that does not power off is worth less than a check that cannot be part of
+      # an activation transaction.
+      OnCalendar = "*-*-* 06:30";
+      RandomizedDelaySec = "15m";
     };
   };
 }
