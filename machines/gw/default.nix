@@ -62,11 +62,23 @@
 
     ./dns.nix
     ./firewall.nix
+    # The router as a TLS endpoint: nginx, the `int.leighhack.org` certificate and
+    # the first two `*.int` vhosts.  Phase 1 of docs/router-front-door-migration.md,
+    # and the file's header is the one that says what it deliberately does not do.
+    ./http.nix
     ./networking.nix
     ./network-status.nix
     ./openvpn.nix
     ./sops.nix
     ./uplink.nix
+
+    # The guard over common/int-dns.nix read from *this box's nginx*: the same table
+    # ./dns.nix answers with, compared against the vhosts ./http.nix declares.  It is
+    # a module rather than a `just check` evaluator because it needs a config, and it
+    # is the check that cannot be fixed by deploying — same argument as the file
+    # below, in the one place on this machine where the two sides of a comparison
+    # live on two boxes.  AGENTS.md rule 24: a vhost move is a guard move.
+    ./int-dns.nix
 
     # The assertions over common/vlans.nix and common/dns-records.nix.  This
     # module is the only thing in this machine's list that cannot be "fixed by

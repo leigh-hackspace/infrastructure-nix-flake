@@ -132,6 +132,36 @@
     iifname "${NICS.UPLINK_TUNNEL}" udp sport 547 udp dport 546 accept
   '';
 
+  # --- the front door: HTTP(S) *to the router itself* -----------------------
+  #
+  # ./http.nix — phase 1 of docs/router-front-door-migration.md, and the two facts
+  # about these four lines are worth more than the lines:
+  #
+  # * **Matched by interface, not by `ip saddr ${aclV4}`** — the opposite of the ssh
+  #   rule below, deliberately.  ssh is keyed on *who* you are; the front door is
+  #   keyed on *where it answers*, because the one property that keeps a `*.int` vhost
+  #   private on this network is that every address a `*.int` name resolves to is a
+  #   LAN-side one.  Read the other way round: common/config.nix's ACL contains
+  #   **public** addresses (Chris's Zen /32, Kian's /32, two /48s), so an ACL-shaped
+  #   rule here would be a listener on this box's own public IPv6
+  #   (`2001:8b0:1d14:225::1`) and on the tunnel's IPv4 — both routable from anywhere,
+  #   reachable by design from the handful of addresses the ACL trusts, and answering
+  #   internal vhosts.  Today no public address answers a `*.int` name at all, and
+  #   these rules are not the thing that changes that.  With the interface match the
+  #   door answers exactly where DNS answers — the `vlan*` and `tailscale0` interfaces
+  #   ./dns.nix serves, and nothing else — which is the invariant worth writing down:
+  #   *if you can resolve the name from here, you can reach the front door from here*.
+  #   nginx's per-vhost `LOCAL_NETWORK` is still what decides which name a given
+  #   client may have; this is only which direction the listener answers at all.
+  # * **No DNAT row is added.** The internet's 80/443 still translate to services1
+  #   (`portForwards` above) and nothing on the public addresses answers HTTP here.
+  #   This is the network's own traffic arriving, not a new door from outside — and
+  #   `docs/router-front-door-migration.md`'s "The decision" is why it stays that way.
+  frontDoorRules = ''
+    iifname "vlan*" tcp dport { 80, 443 } accept
+    iifname "tailscale0" tcp dport { 80, 443 } accept
+  '';
+
   # The destinations that are *not* the internet for the purpose of the routing
   # marks below: the old box's `<Local>` alias (10.3.0.0/16 and 192.168.2.0/24),
   # the tailnet (common/config.nix's `TAILNET_V4`, and the old box's `TAILSCALE`
@@ -401,6 +431,7 @@ in {
 
             ${lanServiceRules}
             ${uplinkServiceRules}
+            ${frontDoorRules}
 
             # The tailnet's data plane: tailscale's own UDP port, open to the
             # internet because the tailnet *is* the internet as far as this box is
@@ -424,12 +455,16 @@ in {
             ip saddr ${aclV4} tcp dport 22 accept
 
             # The network dashboard (./network-status.nix) listens on
-            # 10.3.1.1:8091.  Both of its clients are on services1 — the nginx
-            # that terminates network-info.int.leighhack.org and Prometheus —
+            # 10.3.1.1:8091.  Both of its *remote* clients are on services1 — the
+            # nginx that terminates network-info.int.leighhack.org and Prometheus —
             # so this is one address, not the ACL: the JSON API is
             # unauthenticated and has no other consumer.  Binding the LAN
             # address in the unit and this rule are two halves of the same
-            # decision.
+            # decision.  (./http.nix now proxies the same port from this box too,
+            # which needs no rule: a locally-generated request to a local address
+            # arrives on `lo`.  The remote client is the one this line is for, and
+            # it stays services1 until the answer moves — see
+            # docs/router-front-door-migration.md.)
             ip saddr ${HOSTS.services1} tcp dport 8091 accept
           }
         '';
@@ -533,6 +568,7 @@ in {
             iifname "tailscale0" udp dport 53 accept
             iifname "tailscale0" tcp dport 53 accept
             ${uplinkServiceRules}
+            ${frontDoorRules}
             # Same reasoning as the IPv4 side: tailscale's data plane, and nothing
             # that is not needed.  (No ICMPv6 *outbound* rule is needed — RAs leave
             # via the output path, which these chains do not filter.)
