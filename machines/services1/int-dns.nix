@@ -25,6 +25,12 @@
 # deliberately evaluates no machine config at all (AGENTS.md: never cold-evaluate
 # this flake to ask a question; the deploy answers it cheaper).
 #
+# Its twin on the router is `machines/gw/int-dns.nix`: the same comparison, read from
+# that box's vhosts, in two modes — subset while `frontDoor` names this box, equality
+# if it ever names `gw`. Read the two files together before moving a vhost: the table
+# has one owner-list and two boxes that have to agree with it, and which box is the
+# door is one string in that table (docs/router-front-door-migration.md).
+#
 # `environment.etc."int-dns/served-int-names"` is the same list rendered, for the
 # moment it isn't agreeing: diff it against the router's
 # `/etc/dnsmasq-int-vhosts.hosts` and the difference is the name and its address.

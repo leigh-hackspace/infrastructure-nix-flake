@@ -18,7 +18,7 @@ X first", X has already cost someone a day.
 | touch how Rust is built: `common/crane.nix`, a `Cargo.toml`, `build.rs`, a Dioxus SPA | `docs/building-rust-code.md` |
 | run non-trivial nix, debug a wedged/hanging nix, build detached, remote-build | `docs/nix-dev-workflow.md` |
 | touch DNS, dnsmasq, the router, the DigitalOcean zone, a new vhost's name | `docs/router-and-dns.md` (+ `machines/gw/README.md` — this box **is** the network's router, live at 10.3.1.1 since the 2026-10-21 cutover: it says what is proven on that box, what is still a guess, and what must not move) |
-| move TLS termination, a vhost, the nginx-sso gate or `headscale` **between boxes** — i.e. work the router-as-front-door plan is preparing | `docs/router-front-door-migration.md` (**prepared, not applied** — services1 still terminates TLS) + `docs/router-and-dns.md` |
+| move TLS termination, a vhost, the nginx-sso gate or `headscale` **between boxes** — i.e. work the router-as-front-door plan is preparing | `docs/router-front-door-migration.md` (**decided 2026-10-24; phase 1 in tree, nothing deployed** — the router now terminates `*.int` and is provable at it, `frontDoor` still answers at services1, and the public names plus the SSO gate are explicitly *not* moving) + `docs/router-and-dns.md` |
 | touch the ProCurve switches (device side, RADIUS, logins) | `docs/procurve-switches.md` + `crates/switch-gui/README.md` |
 | touch NAS mounts, the NAS itself, or backups/borg | `docs/nas-and-borg.md` |
 | touch the UniFi controller, its backups, or UniFi OS Server | `docs/unifi-os-server.md` — the appliance is a *downgrade* of the running controller, and `.unf` backups are encrypted with a key that is not on disk |
@@ -117,6 +117,16 @@ X first", X has already cost someone a day.
     on aibox, and `nix flake check --no-build` on gw therefore dies **one read later**,
     at `path '…filestore-web-src.drv' is not valid` — the SPA-source read the section
     above predicted. Same verdict, one step further in: still run `just check` on aibox.
+    **On 2026-10-24 gw became a TLS endpoint as well** (`machines/gw/http.nix`: nginx, the
+    `int.leighhack.org` cert, two `*.int` vhosts — phase 1 of
+    `docs/router-front-door-migration.md`), which changes what a deploy here costs but not
+    the rule: `just switch-gw` from services1 still builds on aibox and pushes, nothing on
+    gw compiles, and the answer every `*.int` name gives is unchanged until `frontDoor` in
+    `common/int-dns.nix` says `gw`. The one new thing to know before you switch this box is
+    that lego asks **this box's own dnsmasq** whether its `_acme-challenge.int` TXT has
+    propagated unless `dnsResolver` names public resolvers — dnsmasq is authoritative for
+    the zone, so its "no" never expires — which is why the cert's health is a check to run
+    after a switch here, not a month later.
 23. **A parked module marks itself, not its import list.** The first line of a module
     commented out of an import list is `# PARKED — <date> (<commit>) — <the doc that
     owns it, or "no doc; the reason is this"> — re-verify with: <command>`, and the
@@ -134,9 +144,14 @@ X first", X has already cost someone a day.
     nginx, its ACME cert or the `nginx-sso` gate move to another box — the router-centred
     front-door plan is exactly that — the guard moves in the **same** change, or the next
     `just switch` on the old box fails on a table/vhost mismatch and the moved names stop
-    being checked. The router-side version belongs next to
-    `machines/gw/lib/check-network-tables.nix`, which is the only thing on `gw` that
-    cannot be "fixed by deploying" for the same reason. `docs/router-front-door-migration.md`
+    being checked. The router-side version is `machines/gw/int-dns.nix`, imported by
+    `machines/gw/default.nix`; it is a module rather than a third `just check` evaluator
+    because it compares against a config, and it has **two modes** — a subset check while
+    `common/int-dns.nix`'s `frontDoor` names another box (that is how a staged move gets
+    proven) and an equality check the moment it names `gw` — both read from the same string
+    the dnsmasq rendering reads, so the answer and the assertion cannot be moved apart. The
+    table-only half stays `machines/gw/lib/check-network-tables.nix`, which is the thing on
+    `gw` that cannot be "fixed by deploying" for the same reason. `docs/router-front-door-migration.md`
     lists the other consequences of the move (two boxes issuing one wildcard cert, headscale's
     state directory, `CONFIG.LOCAL_NETWORK` ACLs staying because a router vhost is reached
     from the router's own interfaces).

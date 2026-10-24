@@ -303,8 +303,17 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   that has not already got that path — while a build or a deploy silently *compiles the
   secret* to satisfy the same read (`building '…-sops-secret-pg_pass.drv' on
   'ssh://leigh-admin@10.3.1.32'…`, seen live; the output is now in services1's and aibox's
-  stores, which is why the check passes today and will not pass on a fresh box). Two
-  things are wrong. One is the eval-time realisation itself — the class
+  stores, which is why the check passes today and will not pass on a fresh box). **It
+  stopped passing on aibox on 2026-10-24** — same command, same
+  `zicnr1hgclx6vmnrhh17w30sd2h4f8dz-sops-secret-pg_pass.drv`, same trace, because aibox's
+  GC had collected the realised path since the item was written and "the store has it"
+  was never a durable precondition, only a temporary one. That is the item's own
+  conclusion restated as a receipt: the check is store-state-dependent, so treat a
+  `sops-secret-*.drv` death as this and not as a regression — and the fix is not
+  `--no-build` gymnastics, it is realising the path by evaluating any one machine once
+  (`nix eval --raw ".#nixosConfigurations.services1.config.system.build.toplevel.drvPath"`
+  builds the five secret decrypts in seconds and no compiled packages), which is exactly
+  what was done here before `just check` was believed again. Two things are wrong. One is the eval-time realisation itself — the class
   `docs/nix-dev-workflow.md` says evaluation must never be in, and the class
   `common/crane.nix` deliberately designed around with `cargoLockContents`. The other is
   that `services.outline.databaseUrl` is a string, so the postgres password ends up in a
@@ -455,6 +464,35 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   catch a hung nginx, and it was removed on 2026-10-17 for that reason.
 
 ## Router (gw)
+
+- **`firewall.int.leighhack.org` proxies a port nothing listens on** (found 2026-10-24
+  while planning the front door). `machines/services1/http.nix` sends it to
+  `https://10.3.1.1:60443`; `ss -lntp` on gw answers 53, 22, 8091 and tailscaled, and
+  `60443` appears in the whole tree exactly once — as that `proxyPass`. The retired
+  appliance's admin UI was deliberately never reopened (`machines/gw/README.md`, and
+  `firewall.nix`'s ssh-rule comment), so the vhost is a 502 today and the row in
+  `common/int-dns.nix` is a name the front door answers for an app that does not exist.
+  Either something is meant to be listening on 60443 — in which case say what, and on
+  which interface, because "the router's admin panel" is exactly what its firewall
+  audit concluded it should not have — or the vhost, the `firewall` label and the
+  `*.int` record all go. Not carried into `machines/gw/http.nix` in the meantime, which
+  is the difference between inheriting a dead upstream and choosing one.
+
+- **The front door's phases 2–4, in order, with the two decisions phase 3 cannot happen
+  without** — see `docs/router-front-door-migration.md`, which now carries the decision
+  (`*.int` to the router, public names and `nginx-sso` staying on services1, the cert
+  split in two), the phase-1 runbook, the 12-name loopback list and the three shapes for
+  the origin problem. The two decisions, so they are not made by whoever notices the
+  outage: `login.int` is a *front-door* name whose upstream is the gate on services1's
+  loopback (forward it and an OIDC code crosses the LAN in clear text; move the gate and
+  the public vhosts' `auth_request` leaves the box; add a per-name owner and the table
+  grows a concept), and `retro.int` is a filesystem root on a NAS the router will never
+  mount. Also owed at the flip, in the same change: services1's cert loses `*.int` and
+  `*.ai.int` (closing the window in which two boxes write one `_acme-challenge.int` TXT —
+  survivable, retried daily, silent for 30 days, so do not sit on it) and loses
+  `*.test.leighhack.org` while it is there, because nothing serves a name in either
+  space; and `machines/services1/int-dns.nix` is deleted with its vhosts, or it fails the
+  next switch on a box that serves nothing from the table.
 
 - **Deployed 2026-10-21 21:19** — the state to compare anything against. gw is at
   `zb8s89v5w8ir5nv86i6kb3ghlsa4qh9y` (public IPv6 inbound with its counter, the tailnet

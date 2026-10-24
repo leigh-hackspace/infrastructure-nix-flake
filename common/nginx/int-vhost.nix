@@ -10,6 +10,13 @@
 # (see the status dashboards in machines/services1/services/status.nix).  That is
 # why this and sso-vhost.nix live in common/ rather than machines/services1/lib/.
 #
+# Two boxes call it today, and they do **not** share a certificate: `useACMEHost`
+# defaults to services1's wildcard, and `machines/gw/http.nix` overrides it to the
+# `int.leighhack.org` cert that box issues (only `*.int` names, so the router cannot
+# answer a public name even if a firewall rule is opened by mistake).  A vhost added
+# on `gw` therefore passes `useACMEHost` explicitly — the default is the name that
+# works on services1, not the name that exists everywhere.
+#
 #   mkIntVhost = import common/nginx/int-vhost.nix { inherit lib; };
 #
 #   services.nginx.virtualHosts."foo.int.leighhack.org" = mkIntVhost {

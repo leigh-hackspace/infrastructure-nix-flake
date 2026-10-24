@@ -127,10 +127,12 @@ evaluation of this machine succeeds with tables that disagree, and standalone vi
 | `constants.nix` | `LAN_NIC`, `UPLINK_NIC`, `UPLINK_TUNNEL` — the three interface names the rest of the directory keys on |
 | `networking.nix` | the VLAN netdevs, the addresses on them, the uplink NIC's DHCP |
 | `dns.nix` | dnsmasq: the generated conf, the two generated hosts files (the device records and the `*.int` front door), the netboot variants |
+| `http.nix` | nginx and the `int.leighhack.org` certificate: the `*.int` vhosts this box terminates, and the `dnsResolver` line the zone's own authority makes mandatory. Phase 1 of `docs/router-front-door-migration.md` — read that file before adding a vhost here |
+| `int-dns.nix` | the guard over `common/int-dns.nix` read from *this box's* `virtualHosts`: subset while the answers live elsewhere, equal once `frontDoor` names `gw` (AGENTS.md rule 24) |
 | `firewall.nix` | nftables: forward, input, NAT, and the IPv6 pair |
 | `uplink.nix` | pppd's tunnel, the tailnet (headscale) client |
 | `openvpn.nix` | the old box's two OpenVPN servers, **off by default** |
-| `sops.nix` | the secrets this box needs: the AAISP PPP password and the tailnet's join key |
+| `sops.nix` | the secrets this box needs: the AAISP PPP password, the tailnet's join key, and the shared env-file — for its `DO_AUTH_TOKEN` alone, because `http.nix` answers for the zone through DigitalOcean |
 | `lib/network-tables.nix` | the renderers: tables → dnsmasq lines, nft set literals, device names |
 | `lib/check-network-tables.nix` | the assertions over those tables (standalone, prints findings) |
 | `lib/assert-network-tables.nix` | the three-line module wrapper that runs them at eval time |
@@ -583,6 +585,22 @@ records — was deleted on 2026-10-22; `common/int-dns.nix` is that feature now.
 
 ## Known-incomplete, by name
 
+* **This box terminates TLS for `*.int` and nothing is sent to it yet** (`http.nix`,
+  phase 1 of `docs/router-front-door-migration.md`). `common/int-dns.nix`'s `frontDoor`
+  still says `services1`, so every `*.int` answer is still 10.3.1.20 and the two vhosts
+  here are reachable only by name resolution you force: `curl --resolve
+  bar.int.leighhack.org:443:10.3.1.1 https://bar.int.leighhack.org/`. What that curl
+  proves is the point — cert, ACL, listener and the `./int-dns.nix` guard, tested on the
+  box that will own them before any client depends on them — and the one part of it that
+  cannot be tested without waiting is *renewal*.
+  `security.acme.defaults.dnsResolver` in `http.nix` is what stops lego asking **this
+  box's own dnsmasq** whether the `_acme-challenge.int` TXT it wrote to DigitalOcean has
+  arrived: dnsmasq is authoritative for `int.leighhack.org`
+  (`local = "/int.leighhack.org/"`, `no-resolv`), so its answer is a negative that never
+  stops being true, and without that line the certificate would renew by never renewing
+  — silently, on a 60-day timer, at 04:00. If `acme-int.leighhack.org.service` is ever
+  red, read that comment before reading the config again.
+
 * **`/var/lib/dnsmasq/names.hosts` is dead weight, deliberately, for one deploy.** It
   is no longer in dnsmasq's `addn-hosts` list (`./dns.nix`), so nothing reads it, but
   tmpfiles still creates it — because a generation built before 2026-10-22 names it
@@ -750,6 +768,19 @@ had no listener left on services1.  Nothing else on the gateway answers from the
 WAN: DNS and DHCP are `iifname "vlan*"`/`tailscale0`, SSH is source-gated by the
 ACL below, `network-status` is `10.3.1.20` only, and the L2TP daemon's 1701 listener
 is not in any input rule (the tunnel's own replies are `ct established`).
+
+**The `*.int` front door is `iifname`-scoped for the same reason, and that is not a
+slip** (`frontDoorRules`, 2026-10-24). nginx now listens on 80/443 here, and the rules
+that admit traffic to it name the *interfaces* dnsmasq serves — `vlan*` and `tailscale0`
+— rather than `ip saddr ${aclV4}` the way the SSH rule two lines below does. The ACL
+contains five public ranges (next paragraph), this box has public addresses of its own
+(`2001:8b0:1d14:225::1`, and the tunnel's IPv4), and the only thing that keeps `*.int` a
+private namespace today is that **no public address answers one**. An ACL-shaped rule
+would have put the internal vhosts on the internet for five lucky sources; the interface
+rule puts them where the names resolve, which is the invariant worth stating: *if you can
+resolve it here, you can reach the door here*. It adds no DNAT row — the public 80/443
+still translate to services1 — and this box could not answer a public name if asked,
+because `machines/gw/http.nix` holds a certificate that does not cover one.
 
 **The ACL is a source exception, and it is wider than the port policy.**
 `common/config.nix`'s `LOCAL_NETWORK` contains five *public* ranges —

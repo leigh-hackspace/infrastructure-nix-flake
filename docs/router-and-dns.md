@@ -148,6 +148,16 @@ That is also why the front door's addresses are never written down again: they a
 out of the reservation table, the same three strings `common/hosts.nix` and the nginx
 proxies use.
 
+**One field says which box that is, and it can say `gw`.** `frontDoor` names either an
+entry of `common/dns-records.nix` (`services1`, today) or the router — and the router has
+no reservation and cannot have one, because it is the box handing out leases, so its three
+addresses are read from `common/vlans.nix`'s VLAN whose `ipv4` is `hosts.router`
+(`machines/gw/lib/network-tables.nix`'s `doorAddresses`). Nothing else in the tree notices:
+the answers move, each box's guard reads the same string and changes mode, and
+`machines/gw/lib/check-network-tables.nix` refuses a `frontDoor` that resolves to no
+addresses — an empty hosts file is not an error to dnsmasq, it is a zone that answers
+nothing. `docs/router-front-door-migration.md` is the plan; as it writes, not applied.
+
 **The names that answer with something else, and why they are exceptions:**
 
 - **A device answers its own name.** Every entry in `common/dns-records.nix` answers
@@ -205,8 +215,10 @@ Three states worth recognising in that output, because each has its own cause:
 
 - **Nothing at all, and the name is a vhost** — the deploy that added the vhost did not
   deploy gw, or `common/int-dns.nix` disagrees with nginx and services1 refuses to
-  build. `cat /etc/int-dns/served-int-names` on services1 and
-  `dig <name>.int @10.3.1.1` are the two halves of that diff.
+  build. `cat /etc/int-dns/served-int-names` on the box that terminates the name and
+  `dig <name>.int @10.3.1.1` are the two halves of that diff. Both files render the same
+  list from the same table, so once `frontDoor` says `gw` the box to `cat` on is the
+  router, and `machines/gw/int-dns.nix` is the guard that refuses the mismatch.
 - **An A and no AAAA for a front-door name** — impossible from the generated file
   (`intHosts` emits one line per address of the record, and the check module counts the
   lines per name), so look for a hand edit or a stale `names.hosts` that something was
