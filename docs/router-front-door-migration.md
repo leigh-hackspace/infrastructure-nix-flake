@@ -37,6 +37,14 @@ Two guards keep those in step, and both run at evaluation time:
 The gatus endpoint guard (`machines/services1/services/monitoring.nix`) reads
 `common/int-dns.nix`, not a vhost list, because the names it checks are answered by `gw`.
 
+Why the guards are shaped like that: both halves compare a name against a *config*, so they
+are modules and not two more `just check` evaluators — a table can be checked by a script, a
+rendered `virtualHosts` attrset can only be checked by evaluating the machine that renders
+it. The table-only half of the same question stays `machines/gw/lib/check-network-tables.nix`,
+run from `just check` *and* as a module assertion, because it is the thing on this box that
+cannot be "fixed by deploying": an address two records both claim is a client that gets the
+wrong address, not a build failure.
+
 ## Adding or moving a name
 
 1. `*.int`: add the label to `common/int-dns.nix`'s `names`. Public names are

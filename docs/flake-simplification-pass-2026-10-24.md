@@ -241,6 +241,16 @@ order. The rules must keep: what decides behaviour, and the pointer.
 Verdict: **do now** (docs-only, cannot break a box). This is the one change that makes the
 repo *feel* smaller without touching nix.
 
+**Done.** rules 22/24/25 are 13/8/9 lines where they were 54/21/13; `AGENTS.md` is 723 lines
+and its rules section 91 for 25 rules. Nothing was deleted that a doc did not already own,
+with one exception found while cutting — rule 24's *why the guards are modules, and why the
+table-only half stays a `just check` evaluator* existed nowhere else, and now heads a
+paragraph in `docs/router-front-door-migration.md`'s "Where the facts live". The justfile's
+`_build-host-guard` block went the same way: 14 lines, the story pointed at "Never build on
+the router". What the rules keep is what decides a behaviour an agent can get wrong without
+reading the doc: the refused recipes, where `just check` runs, the one mandatory check after
+a switch on `gw`, the two guard names, and the pin that makes the hop work.
+
 ---
 
 ## 5. Procedures that are now ceremony — the table the last audit never made
@@ -379,20 +389,24 @@ Do not "fix" either from this document — they are the two open items in
 
 ## 9. The order, and the gate
 
-1. **`AGENTS.md` rules 22/24/25 → 2 lines each** (§4). Docs-only, zero risk, biggest
-   "feels smaller" effect. Same commit: the justfile's guard narrative.
-2. **The asset move** (§1). Largest real lever. Prove it with `du -sh` before/after and one
+Worked through from 2026-10-24, one item per commit, each marked where it landed and what
+proved it. The commits are `git log --oneline` forward from `d78a6d5` (which lands this file).
+
+- [x] 1. **`AGENTS.md` rules 22/24/25 → 2 lines each** (§4). Docs-only, zero risk, biggest
+   "feels smaller" effect. Same commit: the justfile's guard narrative. — **done**; see §4
+   for the measured result and the one fact that had to move into a doc rather than be cut.
+- [ ] 2. **The asset move** (§1). Largest real lever. Prove it with `du -sh` before/after and one
    `nix flake check` on aibox.
-3. **The SPA helper + the `cargoLockContents` pairing** (§2). This is the prerequisite for
+- [ ] 3. **The SPA helper + the `cargoLockContents` pairing** (§2). This is the prerequisite for
    making `just check` uniform; do the class fix (no eval-time `readFile` on a derivation,
    §8) in the same change, and run the drv-path proof the follow-up prescribes, on aibox.
-4. **The small, obviously-safe nits**: `reboot.sh` (§5), `just switch-gw` reading
+- [ ] 4. **The small, obviously-safe nits**: `reboot.sh` (§5), `just switch-gw` reading
    `common/hosts.nix`, `just switch-netboot` deriving its client list from
    `common/dns-records.nix`, `pxe-client-uefi`'s firmware into `/tmp`, the stale sentences in
    the recipes' own comments (§5 rows marked **do**).
-5. **The `# PARKED` decisions** (§7) with the human who owns each service.
-6. **The import-argument experiment** (§6.2) on one machine directory, not fleet-wide.
-7. **Nothing else.** The DATA tables, the guards, the narrative comments in nix, `pi-room-sys`
+- [ ] 5. **The `# PARKED` decisions** (§7) with the human who owns each service.
+- [ ] 6. **The import-argument experiment** (§6.2) on one machine directory, not fleet-wide.
+- [ ] 7. **Nothing else.** The DATA tables, the guards, the narrative comments in nix, `pi-room-sys`
    (§3) are the shape; leaving them is not laziness, it is the design.
 
 Gate for all of it: `just check` (on aibox, not on gw, until 3 is done), `just check-build`

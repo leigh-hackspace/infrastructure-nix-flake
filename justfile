@@ -25,22 +25,17 @@ switch:
 
 # --- where builds may run ----------------------------------------------------
 #
-# The router must not compile anything.  Since 2026-10-21 it also cannot: gw sets
-# `infra.buildFarm.builderHost = HOSTS.aibox` and `nix.settings.max-jobs = 0`, so a build
-# started here is built on aibox or fails — the second half is what removes the silent
-# local fallback (common/build-farm.nix documents that `--max-jobs 0` "does not enable
-# delegation, it removes the local fallback").  Before that, a build here ran locally on
-# 8 GB and 4 cores, and `nix develop` **was** one: the one devShell of the time depended
-# on CRANE.wasmBindgenCli, compiled from source with cargo, and on 2026-10-21 a
-# `just check` on the gateway (`fmt-check` → `nix develop`) put four rustc processes on
-# the box that answers DNS for the whole network.  The toolchain is split now —
-# `nix develop` builds nothing, `nix develop .#wasm` is the one that compiles the pinned
-# wasm-bindgen — but the recipes below stay guarded either way.
+# The router must not compile anything, and since 2026-10-21 it cannot: gw delegates every
+# build to aibox and sets `nix.settings.max-jobs = 0`, which is the half that removes the
+# silent local fallback (common/build-farm.nix documents that `--max-jobs 0` "does not enable
+# delegation, it removes the local fallback").
 #
-# The guard stays anyway, and the reason is not compilation: **evaluation still happens
-# on the box you are standing on**, and a 4-core router is also the network's resolver.
-# `check` and `fmt` are eval/format only and stay allowed there; every build-shaped
-# recipe below depends on this guard.
+# The guard stays anyway, and the reason is not compilation: **evaluation still happens on
+# the box you are standing on**, and a 4-core router is also the network's resolver.
+# `check` and `fmt` are eval/format only and stay allowed there; every build-shaped recipe
+# below depends on this guard.  What it replaced — the devShell that *was* a build, and the
+# split toolchain that closed it — the full allowed/refused table, and what to read if rustc
+# ever appears on the router again: docs/nix-dev-workflow.md, "Never build on the router".
 #
 # Build on aibox (the network's builder) or services1.  If you genuinely need to
 # build on the router, say so explicitly.

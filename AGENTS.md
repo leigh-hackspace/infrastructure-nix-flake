@@ -85,60 +85,19 @@ X first", X has already cost someone a day.
     `$SYS/etc/systemd/system/<unit>.service`). A `nix eval --impure --expr` against
     `builtins.getFlake` cold-evaluates the whole flake, is slower than the switch
     that answers the same question, and its aborted survivor holds the big lock.
-22. **Don't build on the router — and now it can't.** gw had **no remote builder** until
-    2026-10-21, so a build there compiled locally on the 4-core box that answers DNS and
-    DHCP for the whole network; it now sets `infra.buildFarm.builderHost = HOSTS.aibox`
-    **and `nix.settings.max-jobs = 0`**, which removes the silent local fallback — a build aibox
-    can't take fails instead of melting the gateway (`nix config show | grep max-jobs`
-    is `0`, `/etc/nix/machines` names 10.3.1.32, and `infra.buildFarm.gc = false` keeps
-    the garbage collector off this box). `nix develop` **was** a build: the one devShell
-    then depended on `CRANE.wasmBindgenCli`, which is compiled with cargo, and on
-    2026-10-21 a `just check` on gw (its `fmt-check` ran `nix develop`) put four `rustc`
-    processes on the gateway. The toolchain is split now — `nix develop` substitutes
-    everything it carries, `nix develop .#wasm` is the one that compiles the pinned
-    wasm-bindgen, and the justfile's SPA recipes ask for it by name — but that is not
-    why the guard stays. `just fmt` (format only, from the flake's `formatter`) is safe on
-    gw; `just test|clippy|check-build|build-frontend|filestore-*|switch-gui-test|build-remote`
-    remain refused on gw via `_build-host-guard` in the justfile — the guard stays
-    because **evaluation is still paid on the router** even when every derivation is
-    built elsewhere — as does `just switch-gw`, since gw gained a Rust crate
-    (`machines/gw/network-status.nix`, hosted on the router since 2026-10-21) and its
-    deploy became build-here-push-there. Run the refused recipes from aibox or services1.
-    **`just check` is currently broken *on* gw, as of 2026-10-22** — not by a build it
-    takes but by one it *forces*: `nix flake check --no-build` dies on
-    `Cannot build '…-Cargo.lock.drv'`, because `lockFile` is still handed to crane as
-    `cargoLock` without `cargoLockContents` and gw's `max-jobs = 0` refuses the read. Run
-    `just check` on aibox; on gw the four assertion evals (`nix eval --impure --raw -f
-    <file>`) and `just fmt-check` still work, because none of them evaluates a machine.
-    Mechanism, receipts and what was tried: `docs/nix-dev-workflow.md`, "Reopened
-    2026-10-22". A broken check is not permission to skip checking, and this failure is
-    rule 22 working, not misfiring. `just switch` on gw still works as the emergency local
-    build, but it now compiles that crate, so it is the fallback, not the way. Full
-    mechanism: `docs/nix-dev-workflow.md`, "Never build on the router".
-    **Later the same day the hop itself turned out to be broken too** — every delegated
-    build from gw died with `Host key verification failed` while
-    `ssh -i ~/.ssh/agent-hop-key … 10.3.1.32` from the operator account worked, because
-    the hop's ssh is the *daemon's* (uid 0, `HOME=/root`) and gw's root had never visited
-    the builder (rule 25). That got pinned in the tree, the Cargo.lock read now resolves
-    on aibox, and `nix flake check --no-build` on gw therefore dies **one read later**,
-    at `path '…filestore-web-src.drv' is not valid` — the SPA-source read the section
-    above predicted. Same verdict, one step further in: still run `just check` on aibox.
-    **On 2026-10-24 gw became the network's front door** (`machines/gw/http.nix`:
-    nginx, the one certificate, every public and `*.int` vhost, `nginx-sso`, `anubis`;
-    all of `docs/router-front-door-migration.md` is deployed), which changes what a
-    deploy here costs but not the rule: `just switch-gw` from services1 still builds on
-    aibox and pushes, nothing on gw compiles. `common/int-dns.nix`'s `frontDoor` says
-    `gw`, so every `*.int` answer is this box and `services1` is an origin. The one
-    thing to know before you switch this box is
-    that lego asks **this box's own dnsmasq** whether its `_acme-challenge.int` TXT has
-    propagated unless `dnsResolver` names public resolvers — dnsmasq is authoritative for
-    the zone, so its "no" never expires — which is why the cert's health is a check to run
-    after a switch here, not a month later. **It is now a unit: `sudo systemctl start
-    front-door-cert-check.service` on gw**, and it is mandatory after a switch there,
-    because `security.acme` reports `Result=success` while serving a minica self-signed
-    certificate whenever lego fails (measured 2026-10-24: every other check green, issuer
-    `CN=minica root ca 56254e`). Reading the *issuer* is the check; `Result=`, `nginx -t`
-    and a 200 cannot see this failure at all.
+22. **Don't build on the router — and now it can't.** gw delegates every build to aibox and
+    runs `nix.settings.max-jobs = 0`, so nothing compiles here and there is no silent local
+    fallback to fall back to; the guard stays anyway because **evaluation is still paid on
+    the box that answers DNS for the whole network**. So: every build-shaped recipe refuses
+    on gw (`_build-host-guard`), a routine deploy of this box is `just switch-gw` *from
+    services1 or aibox*, and `just check` — eval/format only, so safe here in principle — is
+    **broken *on* gw as of 2026-10-22** by an eval-time read of a derivation and is run on
+    aibox until that is fixed (the four assertion evals and `just fmt-check` still run here).
+    After any switch here, `sudo systemctl start front-door-cert-check.service`: reading the
+    *issuer* is the only check that can tell an issued certificate from minica's fallback.
+    Mechanism, receipts, the split devShells and the exact allowed/refused list:
+    `docs/nix-dev-workflow.md` ("Never build on the router", "Evaluation must not build") and
+    `docs/router-front-door-migration.md` ("Certificate facts that are easy to get wrong").
 23. **A parked module marks itself, not its import list.** The first line of a module
     commented out of an import list is `# PARKED — <date> (<commit>) — <the doc that
     owns it, or "no doc; the reason is this"> — re-verify with: <command>`, and the
@@ -148,40 +107,23 @@ X first", X has already cost someone a day.
     parked module is never evaluated, so its rot is silent. The six in tree (affine,
     samba, gitlab, authentik on services1; nvidia, strata on aibox) each carry their own
     re-verify command, because "just uncomment it" is not one.
-24. **A vhost move is a guard move.** There are two guards now, one per kind of box, and
-    a move fails one of them unless both halves move together:
-    * `machines/gw/int-dns.nix` (imported by `machines/gw/default.nix`) refuses to
-      evaluate `gw` unless its `services.nginx.virtualHosts` (names +
-      `serverAliases`, derived by `common/nginx/int-vhost-names.nix`) equal
-      `common/int-dns.nix`'s `names` + `exempt`. `frontDoor = "gw"` since the flip, so
-      the check is equality; before that it had a subset mode so a staged door could be
-      proven without moving an answer.
-    * `machines/services1/int-dns.nix` refuses to evaluate the origin unless its vhosts
-      are **exactly** the `upstream = "origin"` rows in `common/front-door.nix`. A name
-      that becomes a direct row (served by the door itself) and keeps a vhost here is a
-      second config for one name, which is the drift the move removed.
-    * the gatus endpoint guard in `machines/services1/services/monitoring.nix` reads
-      `common/int-dns.nix` rather than a vhost list, because after the move the names it
-      checks are answered by `gw`, not by this box.
-    The router-side guard is a module rather than a third `just check` evaluator because
-    it compares against a config; the table-only half stays
-    `machines/gw/lib/check-network-tables.nix`, which is the thing on `gw` that cannot be
-    "fixed by deploying". `docs/router-front-door-migration.md` has the full set of
-    consequences and the deploy's own findings (the headscale state-copy ownership, the
-    DigitalOcean records that had to move with the answers).
-25. **The remote-build hop is the daemon's ssh, not the operator's.** nix runs it as
-    uid 0 out of `HOME=/root`, so the account whose `~/.ssh/known_hosts` makes a manual
-    `ssh -i ~/.ssh/agent-hop-key 10.3.1.32` work is a **different ssh**, and a delegating
-    box whose root never visited the builder dies seconds in with
-    `Host key verification failed` / `Failed to find a machine for remote build!`. The
-    pin is `common/ssh-known-hosts.nix` (DATA: the four flake machines, rsa + ed25519
-    each) handed to `programs.ssh.knownHosts` from `common/build-farm.nix`, which writes
-    `/etc/ssh/ssh_known_hosts` — the one file every ssh, root's included, reads; `just
-    known-hosts` regenerates it the day a box is reinstalled. Do **not** hand-write a
-    root `known_hosts` on one box to fix it: that is the shape where the box that works is
-    the box somebody visited. (And OpenSSH 10.5p1 has dropped `KnownHostsFile` from the
-    command line — `-o KnownHostsFile=…` is a hard error — so the generated file is the
-    only lever. Receipts: `docs/nix-dev-workflow.md`, "The hop itself was broken, separately".)
+24. **A vhost move is a guard move.** A name is a row in `common/int-dns.nix` (what it
+    answers with) *and* a row in `common/front-door.nix` (what the door serves), and two
+    evaluation-time guards refuse a half-move: `machines/gw/int-dns.nix` (gw's vhosts must
+    equal that DNS table) and `machines/services1/int-dns.nix` (the origin's vhosts must be
+    exactly the `upstream = "origin"` rows). The gatus endpoint guard reads
+    `common/int-dns.nix` rather than a vhost list. Adding a name, moving one, why each guard
+    is where it is, and what the deploy itself found:
+    `docs/router-front-door-migration.md`.
+25. **The remote-build hop is the daemon's ssh, not the operator's.** nix runs it as uid 0
+    out of `HOME=/root`, so a working `ssh -i ~/.ssh/agent-hop-key 10.3.1.32` from your own
+    account proves nothing about it, and a delegating box whose root never visited the
+    builder dies seconds in with `Host key verification failed`. The pin is
+    `common/ssh-known-hosts.nix` (DATA), handed to `programs.ssh.knownHosts` by
+    `common/build-farm.nix`, which writes `/etc/ssh/ssh_known_hosts` — the one file every
+    ssh, root's included, reads; `just known-hosts` regenerates it the day a box is
+    reinstalled, and a hand-written root `known_hosts` on one box is what this replaces.
+    Receipts: `docs/nix-dev-workflow.md`, "The hop itself was broken, separately".
 
 ---
 
