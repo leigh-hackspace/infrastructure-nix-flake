@@ -233,10 +233,14 @@ from and pushes, so run it from services1.
    * `systemctl is-active nginx`, first, because it is the only check here with an answer
      that fast. What nixpkgs renders for a box that uses `useACMEHost` (read off services1:
      `After=network.target acme-leighhack.org.service`, `Restart=always`, `RestartSec=5s`)
-     is an ordering, not a dependency: a lego failure does not stop the router — it leaves
-     **nginx restarting forever** while dnsmasq, the tunnel and the tailnet carry on. In
-     phase 1 a front door that never came up is otherwise indistinguishable from a deploy
-     that did nothing at all, which is the whole point of phase 1.
+     is an ordering, not a dependency, and the acme unit is `WantedBy=multi-user.target`
+     rather than `RequiredBy`: **a failed issuance does not fail the switch.** It leaves
+     nginx restarting forever behind a router that looks healthy, and nothing else on this
+     box notices, which in phase 1 means nothing notices for 60 days. Check the unit
+     `After=` line here too — it is one grep and it proves the pairing came from
+     `useACMEHost` and not from hope:
+     `systemctl cat nginx | grep ^After` should name
+     `acme-int.leighhack.org.service`.
    * `sudo -n systemctl list-units 'acme*' --no-pager` — the units are named after the
      cert, so expect `acme-int.leighhack.org.service` ("Ensure certificate for
      int.leighhack.org"), `acme-order-renew-int.leighhack.org.service` and
@@ -244,7 +248,10 @@ from and pushes, so run it from services1.
      trio. The request unit's `Result=success` and
      `sudo -n ls -l /var/lib/acme/int.leighhack.org/` are the proof; if lego failed, read
      the unit's journal before anything else, because the failure will be the propagation
-     check in consequence 1.
+     check in consequence 1. The manual path back is
+     `sudo -n systemctl restart acme-int.leighhack.org.service && sudo -n systemctl
+     restart nginx` — say it here rather than have it be a discovery, because the renewal
+     timer is daily and "wait for the timer" is a 24-hour answer to a 20-second command.
    * `sudo -n nginx -t -c /etc/nginx/nginx.conf` and
      `grep -c server_name /etc/nginx/nginx.conf` — expect the two `*.int` servers plus the
      redirect servers, and no `leighhack.org` (public) name anywhere on this box.
