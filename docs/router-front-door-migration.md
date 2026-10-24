@@ -2,12 +2,17 @@
 
 The plan: move HTTPS termination for `*.int.leighhack.org` — and, later, `headscale` —
 from `services1` to **`gw`**, the box that is already the network's front door for DNS.
-**Nothing in this doc has been deployed.** The two commits named below are in tree and
-`just check-build`-clean; `git log` on both boxes still shows the generation that has
-services1 terminating TLS for the whole network, and `common/int-dns.nix` still answers
-every `*.int` name at 10.3.1.20. Read `docs/router-and-dns.md` and
-`machines/gw/README.md` first: `gw` hands out every address in the building, so a change
-here is a change to the box every client depends on, not to a shadow.
+**Nothing in this doc has been deployed.** Three commits are in tree: `just check` is
+green (on aibox — rule 22), the gw system derivation **builds**, and both modes of the
+new guard were proven by making them fail rather than by reading them (below). A full
+`just check-build` is *not* green on aibox and is not green because of this change:
+`door-entry-management-system` sets `__noChroot` and aibox's `sandbox = true` daemon
+refuses it, which is `docs/follow-ups.md`'s known reason and lands before the gw closure
+is ever reached. `git log` on both boxes still shows the generation that has services1
+terminating TLS for the whole network, and `common/int-dns.nix` still answers every
+`*.int` name at 10.3.1.20. Read `docs/router-and-dns.md` and `machines/gw/README.md`
+first: `gw` hands out every address in the building, so a change here is a change to the
+box every client depends on, not to a shadow.
 
 ## The decision, 2026-10-24
 
@@ -150,19 +155,35 @@ So today the network has **two** front doors: `gw` for name resolution and nftab
 
 ## Phase 1: what is in the tree, and what it does not do
 
-Two commits, both `just check` + `just check-build` clean (run **on aibox** — `just check`
-is still broken *on* `gw`, AGENTS.md rule 22):
+Two commits carry phase 1 (a third is this doc). Verified before writing any of this down,
+on aibox — never on `gw`, AGENTS.md rule 22: `just check` is green (four assertion evals,
+the four known warnings, alejandra clean), and `nix build
+.#nixosConfigurations.gw.config.system.build.toplevel` completes. A full `just check-build`
+is red on aibox for the pre-existing `__noChroot` reason in `docs/follow-ups.md` and does
+not reach the gw closure, so it is not the gate for this change and pretending otherwise
+would make the gate meaningless:
 
 | Commit | Files | What it does |
 | --- | --- | --- |
 | `int-dns: the front door's addresses come from whichever box the table names` | `common/int-dns.nix`, `machines/gw/lib/network-tables.nix`, `machines/gw/lib/check-network-tables.nix`, `machines/gw/dns.nix` | `frontDoor` resolves through `doorAddresses`, so it may name `gw`; the check module refuses a door with no addresses and a door with no IPv6 half. Rendered `*.int` records are unchanged: `frontDoor` still says `services1`. |
 | `gw: nginx, an int-only cert, and the guard that reads this box's vhosts` | `machines/gw/http.nix`, `machines/gw/int-dns.nix`, `machines/gw/default.nix`, `machines/gw/firewall.nix`, `machines/gw/sops.nix` | nginx + the `int.leighhack.org` cert + two `*.int` vhosts (`bar`, the canary, and `network-info`, whose upstream is this box) + the two-mode guard + 80/443 to the router from `vlan*`/`tailscale0` only + the env-file secret for the DO token. |
 
+Two facts about phase 1 are only visible by breaking it, and both were done on aibox at
+the commits above rather than asserted here:
+
+* flipping `frontDoor` to `gw` while only two vhosts are served **fails the evaluation**
+  with the 32 names it answers and nothing serves — the 31 labels still unmoved plus
+  `authentik.int`, which is in `exempt` and so is expected to be answered by a device
+  rather than served. The answer and the guard move together or not at all, which is what
+  makes phase 3's last step one edit instead of a checklist.
+* adding one vhost whose name is not in the table (`typo.int.leighhack.org`) fails it too,
+  in the other direction, while `frontDoor` still says `services1`.
+
 What it **does not** do, on purpose:
 
 * change any answer. `frontDoor` is `services1`, so `/etc/dnsmasq-int-vhosts.hosts` is
   byte-identical before and after — and proving *that* is half of the deploy.
-* serve the public names, or the ~31 `*.int` names that are not it. Two vhosts are enough
+* serve the public names, or the other 31 `*.int` names. Two vhosts are enough
   to prove a cert, an ACL, a listener and a guard; the rest is a move, and a move is
   phase 3.
 * listen anywhere the internet can reach. `portForwards` in `machines/gw/firewall.nix`
@@ -179,7 +200,15 @@ from and pushes, so run it from services1.
 1. `just check` **on aibox**, and `just check-build` (everything compiles, nothing
    activates). Both were green for the two commits above; re-run them at whatever HEAD you
    are about to deploy.
-2. **Pre-flight, all read-only:**
+2. **`git log -1` on the box you are deploying from.** `just switch-gw` runs `sync-gw`
+   first, which rsyncs *that box's* tree onto the router with `--delete` — so a stale
+   checkout does not merely deploy the wrong generation, it mirrors the wrong generation
+   onto `gw` and removes the files under review from the router's copy of the tree. On
+   2026-10-24 services1's checkout was ten commits behind `origin/main` and aibox's three;
+   the deploy is from whichever box now has the commit named in "Phase 1" above, and the
+   rule generalises the other way too (AGENTS.md rule 20: a box can be *running* newer
+   than it reads).
+3. **Pre-flight, all read-only:**
    * `sudo -n ls -l /var/lib/acme/leighhack.org/ && sudo -n openssl x509 -enddate -noout -in
      /var/lib/acme/leighhack.org/cert.pem` on services1. The point is the *renewal date*:
      gw's new cert and services1's wildcard both write
@@ -196,10 +225,18 @@ from and pushes, so run it from services1.
      **nothing at all** (no record at rest — checked 2026-10-24, and the zone has no `*.int`
      wildcard that a TXT could collide with, which is the failure
      `docs/router-and-dns.md` warns about).
-3. `just switch-gw` from services1 — which chains `sync-gw` and `&& sudo nixos-confirm`
+4. `just switch-gw` from services1 — which chains `sync-gw` and `&& sudo nixos-confirm`
    (GOLDEN RULE). Then, on gw, in the same session:
    `readlink -f /run/current-system /nix/var/nix/profiles/system-good`.
-4. **Verify from rendered files, not from evaluation** (rule 10/21):
+5. **Verify from rendered files, not from evaluation** (rule 10/21):
+
+   * `systemctl is-active nginx`, first, because it is the only check here with an answer
+     that fast. What nixpkgs renders for a box that uses `useACMEHost` (read off services1:
+     `After=network.target acme-leighhack.org.service`, `Restart=always`, `RestartSec=5s`)
+     is an ordering, not a dependency: a lego failure does not stop the router — it leaves
+     **nginx restarting forever** while dnsmasq, the tunnel and the tailnet carry on. In
+     phase 1 a front door that never came up is otherwise indistinguishable from a deploy
+     that did nothing at all, which is the whole point of phase 1.
    * `sudo -n systemctl list-units 'acme*' --no-pager` — the units are named after the
      cert, so expect `acme-int.leighhack.org.service` ("Ensure certificate for
      int.leighhack.org"), `acme-order-renew-int.leighhack.org.service` and
@@ -218,7 +255,7 @@ from and pushes, so run it from services1.
    * `sudo -n sha256sum /etc/dnsmasq-int-vhosts.hosts` **before and after**: identical.
      This is the proof that nothing a client resolves has moved, and it is the reason the
      deploy is safe: the front door is up, and nobody is sent to it.
-5. **Prove the door answers, by IP:**
+6. **Prove the door answers, by IP:**
 
    ```
    curl -fsS --resolve bar.int.leighhack.org:443:10.3.1.1 https://bar.int.leighhack.org/
@@ -229,7 +266,7 @@ from and pushes, so run it from services1.
    The canary page says which box served it, so phase 3 has a way to ask that question at
    both doors. From a client, the same two URLs with `--resolve …:10.3.1.20` still reach
    services1's copies, which is the state the network is in until the flip.
-6. Roll back the same way as anywhere else (`system.autoRollback` is armed;
+7. Roll back the same way as anywhere else (`system.autoRollback` is armed;
    `nixos-rebuild switch --system` to a previous generation). The worst case is a router
    with a listener nobody resolves to, and — if lego cannot issue — an nginx that will not
    start, which is *also* nobody resolving to it. Neither takes DNS, DHCP, the tunnel or

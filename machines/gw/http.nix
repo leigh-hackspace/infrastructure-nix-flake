@@ -160,10 +160,10 @@ in {
               </head>
               <body>
                 <h1>bar.int.leighhack.org</h1>
-                <p>Served by <strong>gw</strong> — the router's nginx
-                   (${config.networking.hostName}), on the <code>${intCert}</code>
-                   certificate. The record comes from common/int-dns.nix and is
-                   answered by this box's dnsmasq.</p>
+                <p>Served by <strong>${config.networking.hostName}</strong> — the
+                   router's nginx, on the <code>${intCert}</code> certificate. The
+                   record comes from common/int-dns.nix and is answered by this box's
+                   dnsmasq.</p>
               </body>
             </html>
           ''}/bar";
