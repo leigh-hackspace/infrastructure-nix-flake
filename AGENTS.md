@@ -18,6 +18,7 @@ X first", X has already cost someone a day.
 | touch how Rust is built: `common/crane.nix`, a `Cargo.toml`, `build.rs`, a Dioxus SPA | `docs/building-rust-code.md` |
 | run non-trivial nix, debug a wedged/hanging nix, build detached, remote-build | `docs/nix-dev-workflow.md` |
 | touch DNS, dnsmasq, the router, the DigitalOcean zone, a new vhost's name | `docs/router-and-dns.md` (+ `machines/gw/README.md` — this box **is** the network's router, live at 10.3.1.1 since the 2026-10-21 cutover: it says what is proven on that box, what is still a guess, and what must not move) |
+| move TLS termination, a vhost, the nginx-sso gate or `headscale` **between boxes** — i.e. work the router-as-front-door plan is preparing | `docs/router-front-door-migration.md` (**prepared, not applied** — services1 still terminates TLS) + `docs/router-and-dns.md` |
 | touch the ProCurve switches (device side, RADIUS, logins) | `docs/procurve-switches.md` + `crates/switch-gui/README.md` |
 | touch NAS mounts, the NAS itself, or backups/borg | `docs/nas-and-borg.md` |
 | touch the UniFi controller, its backups, or UniFi OS Server | `docs/unifi-os-server.md` — the appliance is a *downgrade* of the running controller, and `.unf` backups are encrypted with a key that is not on disk |
@@ -108,6 +109,14 @@ X first", X has already cost someone a day.
     rule 22 working, not misfiring. `just switch` on gw still works as the emergency local
     build, but it now compiles that crate, so it is the fallback, not the way. Full
     mechanism: `docs/nix-dev-workflow.md`, "Never build on the router".
+    **Later the same day the hop itself turned out to be broken too** — every delegated
+    build from gw died with `Host key verification failed` while
+    `ssh -i ~/.ssh/agent-hop-key … 10.3.1.32` from the operator account worked, because
+    the hop's ssh is the *daemon's* (uid 0, `HOME=/root`) and gw's root had never visited
+    the builder (rule 25). That got pinned in the tree, the Cargo.lock read now resolves
+    on aibox, and `nix flake check --no-build` on gw therefore dies **one read later**,
+    at `path '…filestore-web-src.drv' is not valid` — the SPA-source read the section
+    above predicted. Same verdict, one step further in: still run `just check` on aibox.
 23. **A parked module marks itself, not its import list.** The first line of a module
     commented out of an import list is `# PARKED — <date> (<commit>) — <the doc that
     owns it, or "no doc; the reason is this"> — re-verify with: <command>`, and the
@@ -117,6 +126,33 @@ X first", X has already cost someone a day.
     parked module is never evaluated, so its rot is silent. The six in tree (affine,
     samba, gitlab, authentik on services1; nvidia, strata on aibox) each carry their own
     re-verify command, because "just uncomment it" is not one.
+24. **A vhost move is a guard move.** `machines/services1/int-dns.nix` refuses to
+    evaluate services1 unless `common/int-dns.nix` equals **that box's**
+    `services.nginx.virtualHosts` (names + `serverAliases`, derived by
+    `common/nginx/int-vhost-names.nix`), and the gatus endpoint guard in
+    `machines/services1/services/monitoring.nix` is the *same* derivation. So when
+    nginx, its ACME cert or the `nginx-sso` gate move to another box — the router-centred
+    front-door plan is exactly that — the guard moves in the **same** change, or the next
+    `just switch` on the old box fails on a table/vhost mismatch and the moved names stop
+    being checked. The router-side version belongs next to
+    `machines/gw/lib/check-network-tables.nix`, which is the only thing on `gw` that
+    cannot be "fixed by deploying" for the same reason. `docs/router-front-door-migration.md`
+    lists the other consequences of the move (two boxes issuing one wildcard cert, headscale's
+    state directory, `CONFIG.LOCAL_NETWORK` ACLs staying because a router vhost is reached
+    from the router's own interfaces).
+25. **The remote-build hop is the daemon's ssh, not the operator's.** nix runs it as
+    uid 0 out of `HOME=/root`, so the account whose `~/.ssh/known_hosts` makes a manual
+    `ssh -i ~/.ssh/agent-hop-key 10.3.1.32` work is a **different ssh**, and a delegating
+    box whose root never visited the builder dies seconds in with
+    `Host key verification failed` / `Failed to find a machine for remote build!`. The
+    pin is `common/ssh-known-hosts.nix` (DATA: the four flake machines, rsa + ed25519
+    each) handed to `programs.ssh.knownHosts` from `common/build-farm.nix`, which writes
+    `/etc/ssh/ssh_known_hosts` — the one file every ssh, root's included, reads; `just
+    known-hosts` regenerates it the day a box is reinstalled. Do **not** hand-write a
+    root `known_hosts` on one box to fix it: that is the shape where the box that works is
+    the box somebody visited. (And OpenSSH 10.5p1 has dropped `KnownHostsFile` from the
+    command line — `-o KnownHostsFile=…` is a hard error — so the generated file is the
+    only lever. Receipts: `docs/nix-dev-workflow.md`, "The hop itself was broken, separately".)
 
 ---
 

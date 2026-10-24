@@ -30,6 +30,15 @@
 # set `nix.distributedBuilds = false` (which also makes `--max-jobs 0` fail with "local
 # builds are disabled", since nothing is left to delegate to).
 #
+#   3. the pinned host keys for the hop (`programs.ssh.knownHosts` from
+#      ./ssh-known-hosts.nix).  Not optional and not per-box: the hop's ssh is
+#      the *daemon's*, run as root out of /root, so the operator account's
+#      known_hosts — the file that makes a manual `ssh -i ~/.ssh/agent-hop-key
+#      10.3.1.32` work — is a different ssh entirely, and a delegating box whose
+#      root has never visited the builder fails the hop before the build starts.
+#      Mechanism and receipts: docs/nix-dev-workflow.md, "Remote building: the
+#      hop is not the operator's ssh".
+#
 # Per machine (see the two default.nix files):
 #
 #   services1:  infra.buildFarm.builderHost = HOSTS.aibox; maxJobs = 6;
@@ -128,6 +137,15 @@ in {
     # sweep has nothing of ours to hit, on either end of the hop — verified with a
     # delegated build and a `--max-jobs 0` build, both clean.
     nix.distributedBuilds = cfg.builderHost != null;
+
+    # Every box that takes part in the hop pins the network's own host keys, in
+    # the store, rather than trusting whichever root `known_hosts` happens to
+    # exist: when a delegated build fails with `Host key verification failed`
+    # there is nothing else in the log, and the box that *works* is the one
+    # someone ssh'ed from by hand at some point. See ./ssh-known-hosts.nix for
+    # why pinning (rather than accept-new) is the point, and `just known-hosts`
+    # for regenerating it after a box regenerates its keys.
+    programs.ssh.knownHosts = import ./ssh-known-hosts.nix;
 
     nix.buildMachines = lib.optionals (cfg.builderHost != null) [
       {

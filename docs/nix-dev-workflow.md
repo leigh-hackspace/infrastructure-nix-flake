@@ -230,6 +230,89 @@ the machines, so they run on gw exactly as before. `nix flake check --no-build`,
 a workaround for a broken check, not as a licence to skip it: rule 22's reason for
 refusing builds on gw is untouched, and this failure is rule 22 *working*.
 
+### The hop itself was broken, separately — and it is not the operator's ssh
+
+Same day, a different symptom: every delegated build from gw died seconds in with
+
+```
+cannot build on 'ssh://leigh-admin@10.3.1.32': error: failed to start SSH connection
+to '10.3.1.32': Host key verification failed.
+Failed to find a machine for remote build!
+```
+
+while `ssh -i ~/.ssh/agent-hop-key -o BatchMode=yes -o ConnectTimeout=5
+leigh-admin@10.3.1.32` from the same box answered `aibox` and returned 0. The two
+commands are not the same ssh. **nix runs the hop as the daemon — uid 0, `HOME=/root`
+— and that root has no `known_hosts` on gw**, so ssh has no record of `10.3.1.32`,
+nix's ssh has no tty to be asked on, and it refuses. Read on gw, 2026-10-22:
+
+- `sudo ls -la /root/.ssh/` → `.` (4096) and **`agent`** (the systemd-ssh-proxy socket
+dir) and nothing else: no `known_hosts`, no key. The operator's
+`~leigh-admin/.ssh/known_hosts` is what the manual hop reads.
+- `sudo cat /etc/static/ssh/ssh_known_hosts` (the target of the
+`/etc/ssh/ssh_known_hosts` symlink, i.e. NixOS's system-wide file, the one every
+ssh — root's included — gets to through the `GlobalKnownHostsFile` line NixOS writes
+in `/etc/ssh/ssh_config`) → **one blank line**. Nothing in the flake declared a
+host key, so the file the daemon could have used was empty.
+- the failure is reproducible without nix in one line: `sudo env -i HOME=/root … ssh -i
+/home/leigh-admin/.ssh/agent-hop-key -o BatchMode=yes leigh-admin@10.3.1.32 true` →
+`Host key verification failed`, and adding a `known_hosts` that names that address
+makes it return 0.
+
+Why services1 and services2 never showed this: their **root** has a hand-made
+`/root/.ssh/known_hosts` (services1's has 15 lines — `10.3.1.21`, `10.3.1.32`,
+`10.3.1.36`, the cams, `[nas2.int.leighhack.org]:3022`), so the hop works *there*
+because someone ssh'ed from a root shell at some point. That is the same shape of
+debt as every other mutable file no deploy can reproduce: the box that works is the
+box somebody visited, and nothing in the tree says so.
+
+The fix is in the tree: `common/ssh-known-hosts.nix` (DATA — the four flake machines,
+rsa + ed25519 each, addresses from `common/hosts.nix`) handed to
+`programs.ssh.knownHosts` from `common/build-farm.nix`, so it lands in
+`/etc/ssh/ssh_known_hosts` on every box that imports `commonModules`, and the
+daemon's ssh is the pin whether or not its root ever visited anything. `just
+known-hosts` prints the lines to paste in, for the day a box is reinstalled or
+rotates its keys — pinning rather than `accept-new` is deliberate, and is the same
+call `docs/repo-audit-2026-10-07.md` §3.4 made for the router's keys.
+
+Two things worth not rediscovering:
+
+- **`-o KnownHostsFile=…` does not exist on this fleet's ssh.** OpenSSH 10.5p1
+(`ssh -V`) removed the keyword from the command line: `ssh -G 10.3.1.1 -o
+KnownHostsFile=/tmp/kh` is a hard error — `command-line: line 0: Bad configuration
+option: knownhostsfile` — so there is no way to point one ssh at another file, and
+the generated config file is the only lever. `strings` on the binary shows why:
+the surviving keyword is `KnownHostsCommand`.
+- gw was left working *before* the deploy: on 2026-10-22 its `/root/.ssh/known_hosts`
+was written with exactly the eight pinned lines, so the hop is live on a box whose
+checkout predates the flake change (rule 20: check `git log -1` before blaming a
+config change for a box's behaviour — this is the reverse of that, and it will be
+silently superseded by the next switch of any box, which writes the store version).
+
+With the hop fixed, gw builds elsewhere: `nix build --max-jobs 0 --expr 'derivation {
+name = "gw-hop-test"; … }'` printed `building '…gw-hop-test.drv' on
+'ssh://leigh-admin@10.3.1.32'… copying 1 paths…` and `cat` of the output path in **gw's**
+store returned `hi`. It also changes where `just check` on gw dies: the `Cargo.lock`
+read above now *resolves* (the daemon can build that drv on aibox and copy it back),
+so the call fails one read later, at `error: path
+'xc2p67qsy0500f2z38krv1kkq7lwjfin-filestore-web-src.drv' is not valid` — the
+**same** store path the section above predicts once the `cargoLock`/`cargoLockContents`
+pairing is in. Two independent passes agreeing on one hash is corroboration that the
+pairing is the right next step and that the SPA source read is the real work.
+
+**Observed on the second pass, 2026-10-22, after the new files were `git add`ed**: the
+untracked file cost its own error first — `nix flake check` died at
+`Path 'common/ssh-known-hosts.nix' in the repository "…" is not tracked by Git`, with
+the trace going *through* `nixos/modules/programs/ssh.nix` evaluating
+`programs.ssh.knownHosts` — which is the proof the option name and its
+`attrsOf (submodule …)` shape are accepted in the real system context, and the
+module is in nixpkgs' module list unconditionally (`grep -n programs/ssh
+<nixpkgs>/nixos/modules/module-list.nix` → line 337; the module has no
+`programs.ssh.enable` gate, so `/etc/ssh/ssh_known_hosts` is written on every
+system — that blank line is the module, running). Then, tracked, the call died at
+the filestore read above. Both halves of this section are now measurements, not
+predictions.
+
 ## Inspect the generated output (the reliable way to know what a service runs)
 
 Once you have a system path `$SYS`:
@@ -389,7 +472,13 @@ builder used to be services2; it moved to aibox on 2026-10-17, when strata was
 parked there to give the builds its 59 GiB of RAM (the 6-core `maxJobs` in
 `machines/services1/default.nix` is aibox's, not services2's 8).
 Flip `nix.distributedBuilds = false` in `common/build-farm.nix` to go back to
-local-only.
+local-only. **Before believing a hop is configured, believe the host keys**: the
+hop's ssh is the daemon's, not the operator's, and it fails with `Host key
+verification failed` long before the build starts —
+`common/ssh-known-hosts.nix` and `just known-hosts` are the pin and its
+regeneration, and the receipts for why an empty `/etc/ssh/ssh_known_hosts` breaks
+`nix build` while `ssh -i ~/.ssh/agent-hop-key …` works are below, at "The hop
+itself was broken, separately".
 
 Verified working 2026-10-12 (delegated build and a `--max-jobs 0` build both
 completed on services2 and copied back, with no SIGKILL sweep on either box) — the

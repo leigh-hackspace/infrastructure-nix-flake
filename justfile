@@ -251,6 +251,26 @@ network-status-dist-check:
 router-known-hosts:
     ssh -i ~/.ssh/agent-hop-key -o BatchMode=yes leigh-admin@10.3.1.1 'sh -c "ssh-keyscan -t ed25519,ecdsa,rsa 10.3.1.1 2>/dev/null"'
 
+# The pinned host keys of the four flake machines, in the form
+# common/ssh-known-hosts.nix carries them (which is what
+# `programs.ssh.knownHosts` turns into /etc/ssh/ssh_known_hosts, and therefore
+# what the *nix daemon's* ssh reads when it runs a remote-build hop).  Run this
+# after any box is reinstalled or rotates its host keys, paste the new lines into
+# that DATA table, deploy; until then the hop to that box fails with
+# `Host key verification failed` (docs/nix-dev-workflow.md,
+# "Remote building: the hop is not the operator's ssh").
+#
+# Keyscanned over the wire rather than read from /etc/ssh/ssh_host_*.pub: the
+# client connects to an address and is offered whatever that address answers now,
+# which is the only thing that can make the hop work.  -T 5 because ssh-keyscan's
+# one-second default drops lines when several addresses are queried at once, and
+# a half-written pin is worse than a missing one.
+known-hosts:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    addrs=$(nix eval --impure --raw --expr 'let h = import ./common/hosts.nix; in builtins.concatStringsSep " " [ h.router h.services1 h.services2 h.aibox ]')
+    ssh-keyscan -T 5 -t rsa,ed25519 ${addrs} 2>/dev/null | grep -v '^#'
+
 # Rebuild+switch for the netboot setup, then reboot the netbooted clients.
 #
 # The image is `machines/pi-room-sys` — an in-tree machine, so edit it and

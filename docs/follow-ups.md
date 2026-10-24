@@ -22,6 +22,20 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   was latent because `…-Cargo.lock` was sitting in gw's store, and it cannot go back: the
   path is an unsigned local build (`nix copy --from ssh://…aibox` → `lacks a signature by
   a trusted key`), and there is no cache for it.
+  **Fixed later the same day, and it moved this item's failure point:** the hop itself was
+  broken — every delegated build from gw died with `Host key verification failed` because
+  the hop's ssh is the **daemon's** (uid 0, `HOME=/root`), not the operator account's, and
+  gw's root had no host key for the builder. `common/ssh-known-hosts.nix` (DATA, the four
+  flake machines pinned rsa+ed25519) handed to `programs.ssh.knownHosts` from
+  `common/build-farm.nix` writes `/etc/ssh/ssh_known_hosts`, and a trivial delegated
+  drv built on aibox and copied back. So the `Cargo.lock` read now **resolves** and
+  `just check` on gw dies at the **filestore** read — `path
+  'xc2p67qsy…-filestore-web-src.drv' is not valid` — the "second read" this item already
+  predicted, seen from a clean pass. **The item is therefore one step shorter than written:
+  the remaining work is the SPA-source reader**, not the `cargoLock`/`cargoLockContents`
+  pairing (still worth doing, and still measured to uncover a read). Mechanism of the
+  hop, the `-o KnownHostsFile=` dead end, and why the pin is declarative: `docs/nix-dev-workflow.md`,
+  "The hop itself was broken, separately".
   **What to do:** `lockFile`'s result is handed to crane as `cargoLock` at three sites —
   `workspaceArtifacts`, the native crate arguments, `wasmSpa`'s `buildPackage` — without
   the `cargoLockContents` pairing `vendorDirFor` already uses, and reading a `writeText`
