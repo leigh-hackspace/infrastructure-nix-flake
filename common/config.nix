@@ -63,6 +63,25 @@ rec {
   # endpoints, the machines' `networking.search`): open in docs/follow-ups.md.
   LOCAL_DOMAIN = "int.leighhack.org";
 
+  # The registered domain everything public lives under, and the cookie scope of the SSO
+  # session (`cookie.domain = ".leighhack.org"` in the nginx-sso config). It is a fact in
+  # one place because the login redirect and the cookie have to agree with each other and
+  # with every public name in `common/front-door.nix`; renaming the login host, not this,
+  # is what invalidates every session at once.
+  PUBLIC_DOMAIN = "leighhack.org";
+
+  # The ACL an **origin** vhost gets, and the only one the apps need once the front door is
+  # up: the router, and nothing else. It is `LOCAL_NETWORK`'s one-line sibling rather than a
+  # narrower version of the same allow-map because the question is different — not "is this
+  # a friendly network" but "is this the front door" — and $remote_addr means the front door
+  # on an origin because nothing else is allowed to reach it (the forward rules in
+  # `machines/gw/firewall.nix` are the other half of that sentence, and the app-layer rule
+  # here is what still holds if a firewall rule is ever widened at 04:00).
+  ROUTER_ONLY = ''
+    allow ${(import ./hosts.nix).router};
+    deny all;
+  '';
+
   # NGINX Firewall for "*.int.leighhack.org"
   # Allow only LAN access for internal services
   LOCAL_NETWORK = ''

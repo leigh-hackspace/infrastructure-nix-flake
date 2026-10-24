@@ -1,53 +1,50 @@
-# The router as a TLS endpoint: nginx, the network's **`*.int` certificate**, and the
-# first two internal vhosts.  This is phase 1 of
-# `docs/router-front-door-migration.md` first: it records the decision (every piece of
-# nginx the network has **one** of terminates here — TLS and its renewal, the public names,
-# the `nginx-sso` gate, `anubis`, the `LOCAL_NETWORK` ACLs — and the boxes behind `gw` are
-# *origins*: they serve, hold no certificate, and are reachable from this box and nowhere
-# else, so they can be ignorant of where their traffic comes from because something in front
-# of them is not).  The two things this file has not done *yet* are staging, not design:
+# The router as the network's **front door**: one certificate, every name, both gates.
 #
-#   1. **The public names are not here yet.** Today `*.leighhack.org` is still terminated on
-#      services1 and ./firewall.nix's DNAT rows carry the internet there.  When they arrive
-#      they arrive *with* the gate in front of them: `nginx-sso`'s `X-WEBAUTH-USER`
-#      injection is trusted by whatever serves the name, so gate and names cannot move in
-#      separate changes — and co-locating them is what lets the gate's listener stop being
-#      `0.0.0.0:8082`, which it is on services1 today (consequence 4).
-#   2. **This cert is not yet the network's only cert.** It covers `int.leighhack.org` +
-#      `*.int.leighhack.org`, so while services1 still issues for `*.int` as part of its
-#      wildcard, two boxes write one TXT record (`_acme-challenge.int`) — the shape
-#      AGENTS.md says must fail rather than race, with its window quantified in the
-#      migration doc's findings and closed by phase 3, where services1 loses
-#      `security.acme` altogether.  Grow this SAN set in the change that takes the public
-#      vhosts, and do not inherit `*.ai.int`/`*.test` while growing it: no vhost serves
-#      either, and every extra SAN is an extra TXT at every renewal for 60 days.
+# Read `docs/router-front-door-migration.md` before changing anything here. It owns the
+# decision (every piece of nginx the network has **one** of terminates here — TLS and its
+# renewal, the public and `*.int` vhosts, the `nginx-sso` gate, `anubis`, the
+# `LOCAL_NETWORK` ACLs) and the order the move has to happen in. The boxes behind this one
+# are *origins*: they serve, they hold no certificate, and they are reachable from this box
+# and nowhere else, so they can be ignorant of where their traffic comes from because
+# something in front of them is not.
 #
-# And the invariant that outlives all of it: **whoever can reach an origin can assert an
+# What this file is now, phase by phase:
+#
+#   * **The vhosts are not written here.** They are rendered from `common/front-door.nix`
+#     by `common/nginx/front-door.nix`, so the door's config *is* the table: a name the
+#     network resolves and a name this box serves can only disagree by failing an evaluation
+#     (`./int-dns.nix`), and a vhost cannot exist in two places and be right in one of them.
+#   * **The certificate is the network's.** `certDomains` in the table is the SAN set, and
+#     it is not the union of what services1's cert happened to carry: `*.ai.int` cannot be
+#     resolved (this box is authoritative for `int.leighhack.org` and no two-label name is
+#     in `common/int-dns.nix`) and `*.test` is served by nothing, and every extra SAN is
+#     another `_acme-challenge` TXT to win at every renewal for 60 days.
+#   * **Both gates are here**, and that is a bug class removed rather than a service
+#     relocated: `nginx-sso`'s auth endpoint answers `*:8082` on services1 and decides
+#     LAN-or-tailnet from an `X-Real-IP` field only our nginx sets honestly. Next to the
+#     nginx that calls it, its listener can be loopback.
+#
+# The invariant that outlives all of it: **whoever can reach an origin can assert an
 # identity to it.** The apps behind the origins trust `X-WEBAUTH-USER` because they bind
-# loopback today — `crates/switch-gui/src/routes.rs` says so in the comment on the field —
-# so nothing in this file may be deployed ahead of the origin-reachability rule that keeps
-# that sentence true once the bind is no longer the boundary.
+# loopback (`crates/switch-gui/src/routes.rs` says so in the comment on the field), so the
+# origin-reachability rules in ./firewall.nix and `CONFIG.ROUTER_ONLY` on the origins are
+# what keep that sentence true once the bind is no longer the boundary. Nothing in this file
+# may be deployed ahead of them.
 #
-# What has to be true of anything added to this file, and why:
+# What has to be true of anything added to the table, and why:
 #
-#   * **Every upstream is an address, never a name.** dnsmasq runs on this box, so an
-#     nginx that resolves its own upstreams at startup is asking the thing it is
-#     starting to start itself, and a router whose front door waits on its own DNS is
-#     a boot-order loop with no timeout.  Read them from `common/hosts.nix`
-#     (10.3.1.1, 10.3.1.20, …) rather than typing them.
-#   * **Keep `CONFIG.LOCAL_NETWORK` on the internal vhosts.** ./firewall.nix polices
-#     the *network*; this ACL polices the *vhost*, and it is the half that keeps a
-#     tailnet client out of `truenas.int` and `monster.int`.  This is also the last place
-#     `$remote_addr` still names the client: when the origins arrive, the ACL does not get
-#     copied downstream, it stays here, and the origin's rule becomes "`10.3.1.1`, nothing
-#     else" (consequence 2).  If an app genuinely needs the peer, nginx's realip module is
-#     built but un-optioned in this nixpkgs — `set_real_ip_from 10.3.1.1;` in
-#     `extraConfig`, and it names the *only* address whose `X-Forwarded-For` may be believed.
-#   * **A new `*.int` name here is a row in `common/int-dns.nix`** and is enforced by
-#     ./int-dns.nix, the guard that reads this file's `virtualHosts` and refuses the
-#     evaluation if the two disagree.  The public names need the same relationship and do
-#     not have it yet: `common/public-names.nix` is phase 2's file, and until it exists a
-#     public vhost added here is checked by nothing but gatus, hours later.
+#   * **Every upstream is an address, never a name.** dnsmasq runs on this box, so an nginx
+#     that resolves its own upstreams at startup is asking the thing it is starting to start
+#     itself, and a front door that waits on its own DNS is a boot-order loop with no
+#     timeout. The table reads `common/hosts.nix` for the same reason.
+#   * **`CONFIG.LOCAL_NETWORK` stays on the internal names.** ./firewall.nix polices the
+#     *network*; this ACL polices the *name*, and it is the half that keeps a tailnet client
+#     out of `truenas.int` and `monster.int`. This is also the last place `$remote_addr`
+#     still names the client. If an app genuinely needs the peer, nginx's realip module is
+#     built but un-optioned in this nixpkgs — `set_real_ip_from 10.3.1.1;` in `extraConfig`,
+#     and it names the *only* address whose `X-Forwarded-For` may be believed.
+#   * **A new name is a row in the table**, and for `*.int` also in `common/int-dns.nix`,
+#     which ./int-dns.nix enforces in both directions once `frontDoor` names this box.
 {
   config,
   lib,
@@ -56,22 +53,48 @@
 }: let
   CONFIG = import ../../common/config.nix;
   HOSTS = import ../../common/hosts.nix;
-  mkIntVhost = import ../../common/nginx/int-vhost.nix {inherit lib;};
 
-  # The zone this box answers `*.int` for — the same string dnsmasq's `domain=` and
-  # `local=` use in ./dns.nix, read rather than retyped.
-  zone = CONFIG.LOCAL_DOMAIN;
+  # Both gates talk to each other and to nginx over this box's loopback. The anubis socket
+  # lives where its module asserts it must (a path systemd creates, not one we choose).
+  anubisSocket = "/run/anubis/anubis-front-door/front-door.sock";
 
-  # The cert's name, which is also its primary domain and the directory under
-  # /var/lib/acme.  Named after the zone it covers rather than reusing
-  # `leighhack.org` — services1's cert — because two boxes with one cert directory
-  # name and one overlapping SAN set is the race this file's header describes.
-  intCert = zone;
+  # The renderer, and the one place its arguments are allowed to appear: `certName` is the
+  # `useACMEHost` of every vhost the door serves, and anubis's TARGET is the row that names
+  # the app it fronts.
+  door = import ../../common/nginx/front-door.nix {
+    inherit
+      lib
+      pkgs
+      config
+      anubisSocket
+      ;
+    hostName = config.networking.hostName;
+    certName = certDomain;
+  };
+
+  # The cert's name, which is also its primary SAN and the directory under /var/lib/acme.
+  # Named after the registered domain rather than after the `*.int` half phase 1 started
+  # with, because from here on this is the only certificate the network has: phase 3's last
+  # step deletes services1's, and a fleet with exactly one cert should not have it named
+  # after a subdomain of the other one.
+  certDomain = CONFIG.PUBLIC_DOMAIN;
+
+  # The first SAN of `certDomains` is the one nixpkgs takes as the cert's primary name, so
+  # the rest are the extras.
+  certExtraDomains = builtins.filter (d: d != certDomain) door.certDomains;
+
+  anubisTarget = door.rows."speed.leighhack.org".upstream;
 in {
   # `users.groups.secrets.members = ["nginx"]` is deliberately **not** copied from
-  # machines/services1/http.nix.  That line exists so services1's nginx can open a
-  # rendered secret file; nothing here opens one (no basic auth, no SSO gate), and
-  # group `secrets` is read access to every runtime secret on the box.
+  # machines/services1/http.nix. That line exists so services1's nginx can open a rendered
+  # secret file under /run/secrets; nothing here opens one — the gate's config and the two
+  # injected headers are build-time store paths, which nginx reads as any user — and group
+  # `secrets` is read access to every runtime secret on the box.
+
+  # ---------------------------------------------------------------------------
+  # The certificate, and the two lines that make issuing it possible on the box
+  # that runs the zone.
+  # ---------------------------------------------------------------------------
   security.acme = {
     acceptTerms = true;
 
@@ -80,90 +103,216 @@ in {
       email = "admin@leighhack.org";
       dnsPropagationCheck = true;
 
-      # **The one line that is not a copy of services1, and the reason it is here.**
-      # lego's propagation check asks "is the TXT record answering yet?" and, with no
-      # resolver configured, asks *the system resolver* — which on this box is
-      # dnsmasq, and dnsmasq is authoritative for `int.leighhack.org`
-      # (`local = "/int.leighhack.org/"` in ./dns.nix) and never forwards a name in
-      # the zone.  So the TXT lego wrote to DigitalOcean for
-      # `_acme-challenge.int.leighhack.org` is, from this box's point of view, a name
-      # that authoritatively has no record:
+      # **The one pair of lines that is not a copy of services1, and the reason they are
+      # both here.** lego has to ask whether the TXT it wrote to DigitalOcean has arrived,
+      # and on this box the naive question is unanswerable twice over.
+      #
+      # (1) *Whom it asks.* With no resolver configured lego asks the system resolver, the
+      # system resolver is dnsmasq, and dnsmasq is authoritative for `int.leighhack.org`
+      # (`local = "/int.leighhack.org/"` in ./dns.nix) and never forwards a name in the
+      # zone — so `_acme-challenge.int.leighhack.org` is, from this box's point of view, a
+      # name that authoritatively has no record, forever:
       #
       #   dig @127.0.0.1 _acme-challenge.int.leighhack.org TXT
-      #   -> status: NXDOMAIN, flags: qr rd ra     (measured on gw, 2026-10-24)
+      #   -> status: NXDOMAIN, flags: qr rd ra        (measured on gw, 2026-10-24)
       #
-      # forever, and the challenge fails at propagation rather than at issuance.  The
-      # network's own resolver is right to answer that way — that is what makes it
-      # authoritative for the network — so the fix is on the asking side: name the
-      # public resolvers, which are the ones DigitalOcean's answers are visible
-      # through.  Comma-separated because lego takes a list in one argument.
+      # Hence naming the public resolvers, which are the ones DigitalOcean's answers are
+      # visible through. The network's own resolver is *right* to answer that way; the fix
+      # is on the asking side.
       #
-      # It is also the check the *service*'s renewal does every day for the rest of
-      # this cert's life, so the line is load-bearing on a 60-day timer and belongs in
-      # ./README.md's list of things that only break at night.
+      # (2) *Whether asking works at all.* Naming the resolvers does not un-teach them what
+      # they cached, and an apex and its wildcard are solved by **one** TXT name — so the
+      # phase-1 deploy lost the race alone: lego validated `*.int` (+38 s, Let's Encrypt
+      # said so), then spent 60 s being told `NXDOMAIN` by 1.1.1.1 for `int` while the
+      # record was still up (lego cleans up after the run), and the whole order died.
+      # `--dns.propagation.wait` stops the asking: present the TXT, let the zone settle,
+      # then go to the CA. ~2 min per SAN pair on a unit with `TimeoutStartSec=infinity`
+      # behind a daily timer, in exchange for not depending on which answer a public
+      # resolver happens to be holding.
+      #
+      # Both lines are load-bearing on a renewal timer, and neither failure is loud:
+      # `security.acme` writes a minica self-signed certificate when lego fails, so nginx
+      # starts, serves, and reports success. That is what `front-door-cert-check` below is
+      # for, and why it reads the *issuer*.
       dnsResolver = "1.1.1.1:53,8.8.8.8:53";
-
-      # **Stop asking a resolver whether the TXT has propagated; wait.** The line
-      # above fixes *which* resolvers are asked, and that was not enough: the phase-1
-      # deploy lost the challenge anyway, on the second of this cert's two SANs.
-      #
-      # What happened, off the journal of the first `just switch-gw` (2026-10-24):
-      # lego validated `*.int.leighhack.org` at +38 s — the TXT existed, 1.1.1.1 was
-      # answering it, LE said "The server validated our request" — then began the
-      # check for `int.leighhack.org`, which is the **same TXT name**
-      # (`_acme-challenge.int.leighhack.org`: an apex and its wildcard share one
-      # challenge record), and asked 1.1.1.1 about it for the next 60 s. Every answer
-      # was NXDOMAIN, the window closed and the order died:
-      #
-      #   ERROR … [int.leighhack.org: dns01: time limit exceeded: last error:
-      #         recursive nameservers: NS 1.1.1.1:53 returned NXDOMAIN for
-      #         _acme-challenge.int.leighhack.org.]
-      #
-      # So the resolver that had just confirmed the record spent the next minute
-      # denying it ever existed, while the record was still up (lego cleaned it only
-      # afterwards). `docs/router-front-door-migration.md`'s "two boxes, one TXT
-      # record" finding is about two *boxes* writing that name; this is the same race
-      # with one writer, and it is not a thing that can be reasoned about further —
-      # it is a cache answering from a negative it was told about earlier, which is
-      # what a resolver is for.
-      #
-      # Hence the wait: `--dns.propagation.wait` tells lego to skip both propagation
-      # checks (authoritative and recursive) and simply let the zone settle before it
-      # asks the CA. Two domains × 120 s, which is minutes against a unit with
-      # `TimeoutStartSec=infinity` on a daily timer, in exchange for not depending on
-      # which answer a public resolver happens to have cached. `dnsResolver` stays:
-      # lego still uses those resolvers to find the zone apex and any CNAME, and the
-      # reason it must not use *this box's* dnsmasq for that is unchanged above.
-      #
-      # Spliced into the lego command **unescaped** (`extraLegoFlags` is
-      # `concatStringsSep " "` in this nixpkgs' module), so: one argument, no spaces,
-      # and read the rendered script back after a switch rather than trusting this
-      # comment (AGENTS.md rule 10).
       extraLegoFlags = ["--dns.propagation.wait=120s"];
     };
 
-    certs.${intCert} = {
-      # The DO token is `DO_AUTH_TOKEN` inside the shared env-file secret, read by the
-      # acme unit from this path at runtime.  `machines/gw/sops.nix` is what renders
-      # it, and the token is never printed, copied or embedded in a derivation
-      # (AGENTS.md, "Secrets") — which is the whole reason this is
-      # `environmentFile` and not `config.sopsSecretText`.
+    certs.${certDomain} = {
+      # The DO token is `DO_AUTH_TOKEN` inside the shared env-file secret, read by the acme
+      # unit from this path at runtime. ./sops.nix renders it; the token is never printed,
+      # copied, or embedded in a derivation (AGENTS.md, "Secrets") — which is the whole
+      # reason this is `environmentFile` and not `config.sopsSecretText`.
       environmentFile = CONFIG.ENV_FILE;
 
-      # nginx reads the key from this group, the same handoff services1 uses.
+      # nginx reads the key from this group.
       group = config.services.nginx.group;
 
-      # One wildcard, because one wildcard is all the router can be dialled for:
-      # every name `common/int-dns.nix` answers is a single label under
-      # `int.leighhack.org`, and a name with two labels under it (`foo.ai.int`) is not
-      # in that table, so it is not in the zone the router answers either — dnsmasq
-      # would be authoritatively silent about it.  services1's cert carries
-      # `*.ai.int.leighhack.org` and `*.test.leighhack.org`; nothing in the tree
-      # serves a name in either space, and the cleanup is a follow-up rather than
-      # something to inherit here.
-      extraDomainNames = ["*.${zone}"];
+      extraDomainNames = certExtraDomains;
     };
   };
+
+  # ---------------------------------------------------------------------------
+  # The only check that can tell an issued certificate from a *present* one.
+  # ---------------------------------------------------------------------------
+  #
+  # `security.acme` does not fail when the CA does not answer: it writes a minica
+  # self-signed certificate so "dependent services will still start", nginx comes up, and
+  # `acme-<cert>.service` reports `Result=success`. Measured on the phase-1 deploy —
+  # `Result=success`, a full cert directory, `nginx -t` clean, the canary answering 200,
+  # and `issuer=CN=minica root ca 56254e`. Nothing distinguishes the two states except the
+  # issuer, so the issuer is what gets checked (and expiry at 14 days, because the fallback
+  # is offered to every renewal too and a renewal that fails at 04:00 should be red that
+  # night rather than an expired-certificate dialog in March).
+  #
+  # **Wall-clock, and that is not a detail.** The first version was
+  # `OnBootSec = "15min"; OnUnitActiveSec = "1d";` and it cost a failed deploy: a monotonic
+  # timer whose window has already passed fires the instant it is created, so on a box two
+  # days into its uptime the first switch started this service *inside the activation*, the
+  # check exited 1 (correctly), and `switch-to-configuration` counts a unit failing during
+  # activation as a failed switch — exit 4, `auto-rollback` armed, and on this machine the
+  # rollback is a router reboot five minutes later. **A health check whose failure can arm a
+  # rollback is a check that turns a warning into an outage**, so it stays out of the
+  # activation transaction: `OnCalendar` cannot fire on appearance, and `Persistent` is off
+  # because catching up is the same trick from the other direction.
+  systemd.services.front-door-cert-check = {
+    description = "The front door's certificate is CA-issued, not the minica fallback";
+
+    serviceConfig = {
+      Type = "oneshot";
+
+      # Root, because that is who may read it: the cert directory is `acme:nginx 0750`, and
+      # this is a check *about* that directory, not a consumer of the key. It reads the
+      # issued files and never copies, prints, or logs them.
+      ExecStart = pkgs.writeShellScript "front-door-cert-check" ''
+        set -euo pipefail
+
+        certDir="/var/lib/acme/${certDomain}"
+        cert="$certDir/cert.pem"
+
+        if [ ! -r "$cert" ]; then
+          echo "no readable certificate at $cert — is security.acme deployed and acme-${certDomain}.service run?" >&2
+          exit 1
+        fi
+
+        # `${certDomain}` is Nix interpolation and `$certDir` is the shell's; the difference
+        # is one pair of characters, because in an indented Nix string a bare `$foo` is
+        # literal text. The first version of this script wrote `$certDomain`, shipped it,
+        # and died here — on the `set -u`, in the *minica branch* — with
+        # `line 31: certDomain: unbound variable`, while trying to report that the
+        # certificate was self-signed. A check that first runs its failure branch on the day
+        # the cert goes wrong is a check nobody has ever run, so: braces for the strings that
+        # come from Nix, and read the rendered script once
+        # (`systemctl cat front-door-cert-check`).
+        issuer=$("${pkgs.openssl}/bin/openssl" x509 -noout -in "$cert" -issuer)
+        case "$issuer" in
+          *minica*)
+            echo "${certDomain} is the minica self-signed fallback ($issuer): lego never issued." >&2
+            echo "  why:  sudo journalctl -u acme-order-renew-${certDomain}.service -n 50" >&2
+            echo "  fix:  sudo systemctl start acme-order-renew-${certDomain}.service" >&2
+            echo "        sudo systemctl restart nginx"
+            exit 1
+            ;;
+        esac
+
+        # Loud while there is still a week to be loud about it: the renewal is due at 60
+        # days and the daily timer retries it, so 14 days means the retries have been failing
+        # for a while.
+        if ! "${pkgs.openssl}/bin/openssl" x509 -noout -in "$cert" -checkend $((14 * 86400)) >/dev/null; then
+          echo "${certDomain} expires within 14 days: $issuer" >&2
+          exit 1
+        fi
+
+        echo "${certDomain} is CA-issued and not near expiry: $issuer"
+      '';
+    };
+
+    # Ordering, not a dependency: a check that runs while lego is mid-flight is a false
+    # alarm, and it must not *require* lego — or a failed issuance would take down with it
+    # the one unit that reports the failure. Hence `after`, not `requires`/`wants`.
+    after = ["acme-order-renew-${certDomain}.service"];
+  };
+
+  systemd.timers.front-door-cert-check = {
+    wantedBy = ["timers.target"];
+    timerConfig = {
+      # After this box's renewal timer (19:53 UTC at this generation), before anyone dials
+      # the door. See the service for what a monotonic version did.
+      OnCalendar = "*-*-* 06:30";
+      RandomizedDelaySec = "15m";
+    };
+  };
+
+  # ---------------------------------------------------------------------------
+  # The gate: `nginx-sso`, next to the nginx that calls it.
+  # ---------------------------------------------------------------------------
+  #
+  # Moved from services1 rather than duplicated: one gate, one cookie key, one OIDC client,
+  # and the callback on loopback. Its config (`common/nginx-sso-config.nix`) is generated
+  # with two build-time secrets in it, which is why the names have to be justified in
+  # `common/sops.nix` for *this* box and not inherited — the generated file is a
+  # world-readable store path like every other build-time secret.
+  systemd.services.nginx-sso = let
+    gateConfig = pkgs.writeText "nginx-sso-config" (import ../../common/nginx-sso-config.nix {
+      inherit lib;
+      sopsSecretText = config.sopsSecretText;
+      listenAddr = "127.0.0.1";
+    });
+  in {
+    description = "NGINX SSO (the front door's gate)";
+    wantedBy = ["multi-user.target"];
+
+    # No network ordering, and not a leftover: the gate listens on loopback and is reached
+    # only by this box's nginx `auth_request`, so an `After=network-online.target` here
+    # would be a unit ordered after something it does not require — which is exactly the
+    # warning `just check` is meant to stay free of (AGENTS.md rule 9). It needs no
+    # certificate either: TLS is nginx's half, and nginx's own `After=` on the acme unit
+    # comes from `useACMEHost`.
+    serviceConfig = {
+      ExecStart = "${pkgs.nginx-sso}/bin/nginx-sso --frontend-dir=${pkgs.nginx-sso}/share/frontend -c ${gateConfig}";
+
+      # The config's `audit_log.targets` writes here. Declared rather than hoped for: on
+      # services1 nothing creates the directory, so the audit half of the gate has been
+      # failing quietly.
+      LogsDirectory = ["nginx-sso"];
+      Restart = "always";
+      RestartSec = "5s";
+      StartLimitIntervalSec = 0;
+    };
+  };
+
+  # ---------------------------------------------------------------------------
+  # The bot gate.
+  # ---------------------------------------------------------------------------
+  #
+  # One instance, fronting the one name that has ever needed it (`speed`, whose target is a
+  # row in the table). Moving it moves the unix socket, and nginx must be in the `anubis`
+  # group to open it — on services1 that line carried the comment "required due to unix
+  # socket permissions"; without it every request through the gate is a 502 whose only
+  # evidence is in nginx's error log.
+  # No `enable`: this nixpkgs' anubis module has no enable option — an instance *is* the
+  # unit, which is why services1's librespeed.nix sets only `defaultOptions`/`instances`.
+  #
+  # The socket directory is `/run/anubis/anubis-<instance>/` because the module asserts
+  # exactly that when the settings mention a unix socket — it is the module telling us the
+  # path systemd will create, not a convention to choose.
+  services.anubis = {
+    defaultOptions.settings = {
+      SLOG_LEVEL = "debug";
+      OG_PASSTHROUGH = true;
+      OG_EXPIRY_TIME = "1h";
+    };
+
+    instances.front-door = {
+      settings = {
+        TARGET = anubisTarget;
+        BIND = anubisSocket;
+        METRICS_BIND = "/run/anubis/anubis-front-door/front-door-metrics.sock";
+      };
+    };
+  };
+
+  users.users.nginx.extraGroups = [config.users.groups.anubis.name];
 
   services.nginx = {
     enable = true;
@@ -172,181 +321,56 @@ in {
     recommendedOptimisation = true;
     recommendedGzipSettings = true;
 
-    # Inherited from services1's http.nix before it is needed, not after.  Two names
-    # do not need 128 hash buckets; the ~34 that arrive with the flip do, and the
-    # deploy that moves the front door is the wrong one to discover it in.  nginx's
-    # own failure here is at startup, which on this box means the front door is down
-    # while the router keeps answering DNS and looks healthy.
+    # ~60 vhosts, several of them long (`services1-status.int` is not the longest); nginx's
+    # own failure here is at startup, which on this box means the front door is down while
+    # the router keeps answering DNS and looks healthy. Inherited from services1 before it
+    # was needed rather than after.
     appendHttpConfig = ''
       server_names_hash_bucket_size 128;
     '';
 
-    virtualHosts = {
-      # The DNS canary, and the reason it is the first vhost here rather than one of
-      # the apps: it has no upstream, so a 200 from it is proof of exactly the four
-      # things this box is newly responsible for and nothing else — the record
-      # (common/int-dns.nix → /etc/dnsmasq-int-vhosts.hosts), this nginx, this
-      # certificate, this ACL.
-      #
-      # The page says which box served it, on purpose.  During the migration the name
-      # resolves at services1 and is served by both boxes, so "which front door
-      # answered?" is the question an operator actually has, and a canary that cannot
-      # answer it is worth less than the curl that prints it.
-      "bar.${zone}" = {
-        useACMEHost = intCert;
-        forceSSL = true;
-
-        locations."/" = {
-          root = "${pkgs.writeTextDir "bar/index.html" ''
-            <!doctype html>
-            <html lang="en">
-              <head>
-                <meta charset="utf-8">
-                <title>bar.int.leighhack.org</title>
-              </head>
-              <body>
-                <h1>bar.int.leighhack.org</h1>
-                <p>Served by <strong>${config.networking.hostName}</strong> — the
-                   router's nginx, on the <code>${intCert}</code> certificate. The
-                   record comes from common/int-dns.nix and is answered by this box's
-                   dnsmasq.</p>
-              </body>
-            </html>
-          ''}/bar";
-          extraConfig = CONFIG.LOCAL_NETWORK;
-        };
-      };
-
-      # The router's own dashboard (./network-status.nix, 10.3.1.1:8091).  The first
-      # app vhost to be fronted here is the one whose upstream is this box: services1's
-      # copy of the vhost proxies *out* to 10.3.1.1, and after the move the request
-      # never leaves.  It is also the only vhost on the network that can be tested with
-      # the router as the subject rather than the object — `curl --resolve
-      # network-info.int.leighhack.org:443:10.3.1.1 https://…` asks the front door about
-      # the front door.
-      #
-      # An address, not a name: see this file's header.
-      "network-info.${zone}" = mkIntVhost {
-        useACMEHost = intCert;
-        proxyPass = "http://${HOSTS.router}:8091";
-      };
-    };
+    virtualHosts = door.virtualHosts;
   };
 
   # ---------------------------------------------------------------------------
-  # The check that can tell an issued certificate from a *present* one.
-  #
-  # `security.acme` here does not fail when the CA does not answer. The
-  # "Ensure certificate" unit writes **minica's own self-signed certificate** into
-  # the cert directory when lego exits non-zero — nginx then starts, the vhosts
-  # serve, `acme-int.leighhack.org.service` reports `Result=success` and the whole
-  # box looks healthy behind a certificate no client trusts. Measured on the phase-1
-  # deploy: every check `docs/router-front-door-migration.md`'s runbook listed passed
-  # — `Result=success`, a populated `/var/lib/acme/int.leighhack.org/`, `nginx -t`, a
-  # 200 from the canary, the `After=acme-…` pairing — and
-  # `openssl x509 -issuer` said `CN=minica root ca 56254e`. Nothing distinguishes the
-  # two states except the issuer, so the issuer is what gets checked, and the runbook
-  # now says so.
-  #
-  # A timer rather than a one-shot because the fallback is offered to the renewal too,
-  # every day, for the rest of this box's life: a renewal that fails at 04:00 should be
-  # a red unit that night and not an expired-certificate dialog in March. It runs daily
-  # at 06:30 — after this box's renewal timer (19:53 UTC at this generation), so a
-  # night's failed issuance is red by breakfast. `systemctl start front-door-cert-check`
-  # is the after-a-switch form; it is cheap enough to be part of the deploy rather than
-  # a thing someone remembers.
-  #
-  # **Wall-clock, and that is not a detail.** The first version of this timer was
-  # `OnBootSec = "15min"; OnUnitActiveSec = "1d";`, and it cost a failed deploy. A
-  # monotonic timer whose window has *already* passed when it is created fires the
-  # instant it appears, so on a box that had been up for two days the first switch
-  # started this service **inside the activation** — and `switch-to-configuration`
-  # counts "a unit failed during activation" as a failed switch (exit 4). Which is
-  # half-right of it: the remedy for a failed activation is `system.autoRollback`, and
-  # on this machine that remedy is *reboot the network's router* five minutes later,
-  # because a warning script printed an unfriendly sentence. **A health check whose
-  # failure can arm a rollback is a check that turns a warning into an outage**, so it
-  # stays out of the activation transaction: `OnCalendar` elapses at a time of day and
-  # so cannot fire on appearance. If this ever goes back to a monotonic timer, give the
-  # service `SuccessExitStatus = "1"` and accept the journal line in place of the red
-  # unit. Measured 2026-10-24: `the following units failed:
-  # front-door-cert-check.service` → `switching to system configuration … failed
-  # (status 4)`, with `auto-rollback.timer` armed to compare `/run/current-system`
-  # against `system-good` — and on this box a rollback is a router reboot, a lost DNS
-  # and DHCP for a minute, and a tailnet whose advertised routes only re-apply at boot.
-  systemd.services.front-door-cert-check = {
-    description = "The front door's certificate is CA-issued, not the minica fallback";
-
-    serviceConfig = {
-      Type = "oneshot";
-
-      # Root, because that is who may read it: the cert directory is `acme:nginx
-      # 0750`/`0640` and this is a check *about* that directory, not a consumer of the
-      # key. Reads the issued files; never copies, prints or logs them.
-      ExecStart = pkgs.writeShellScript "front-door-cert-check" ''
-        set -euo pipefail
-
-        certDir="/var/lib/acme/${intCert}"
-        cert="$certDir/cert.pem"
-
-        if [ ! -r "$cert" ]; then
-          echo "no readable certificate at $cert — is security.acme deployed and acme-${intCert}.service run?" >&2
-          exit 1
-        fi
-
-        # `${intCert}` is Nix interpolation and `$certDir` is the shell's; the
-        # difference is one pair of characters, because in an indented Nix string a bare
-        # `$foo` is literal text. The first version of this script wrote `$intCert`,
-        # shipped it, and died right here — on the `set -u`, in the *minica branch*
-        # — with `line 31: intCert: unbound variable`, while trying to report that the
-        # certificate was self-signed. A check that only runs its failure branch on the
-        # day it is first needed is a check that has never been tested, so the strings
-        # it needs from Nix are spelled with braces and the rendered script is worth
-        # reading once: `systemctl cat front-door-cert-check`.
-        issuer=$("${pkgs.openssl}/bin/openssl" x509 -noout -in "$cert" -issuer)
-        case "$issuer" in
-          *minica*)
-            echo "${intCert} is the minica self-signed fallback ($issuer): lego never issued." >&2
-            echo "  why:  sudo journalctl -u acme-order-renew-${intCert}.service -n 50" >&2
-            echo "  fix:  sudo systemctl start acme-order-renew-${intCert}.service" >&2
-            echo "        sudo systemctl restart nginx"
-            exit 1
-            ;;
-        esac
-
-        # Loud while there is still a week to be loud about it. The renewal is due at
-        # 60 days and the daily timer retries it, so 14 days is not a warning about a
-        # problem, it is a warning that the retries have been failing for a while.
-        if ! "${pkgs.openssl}/bin/openssl" x509 -noout -in "$cert" -checkend $((14 * 86400)) >/dev/null; then
-          echo "${intCert} expires within 14 days: $issuer" >&2
-          exit 1
-        fi
-
-        echo "${intCert} is CA-issued and not near expiry: $issuer"
-      '';
-    };
-
-    # Ordering, not a dependency: a check that runs while lego is mid-flight is a
-    # false alarm, and `After=` is what makes the two units line up when they are in
-    # the same transaction (a boot, a switch). It must not *require* lego, or a failed
-    # issuance would take the check that reports it down with it — hence `after` and
-    # not `requires`/`wants`.
-    after = ["acme-order-renew-${intCert}.service"];
-  };
-
-  systemd.timers.front-door-cert-check = {
-    wantedBy = ["timers.target"];
-    timerConfig = {
-      # A time of day, deliberately: see the service for what a monotonic version did.
-      # After the renewal timer (19:53 UTC here), before anyone dials the front door.
-      #
-      # And **no `Persistent`**, which is the other half of the same lesson: a
-      # persistent timer is allowed to catch up, and a catch-up on first activation is
-      # another way for this unit to land inside a switch. Missing one morning on a
-      # router that does not power off is worth less than a check that cannot be part of
-      # an activation transaction.
-      OnCalendar = "*-*-* 06:30";
-      RandomizedDelaySec = "15m";
-    };
-  };
+  # Table hygiene the renderer cannot express as a type.
+  # ---------------------------------------------------------------------------
+  assertions = [
+    {
+      # nginx's failure mode for a duplicated `server_name` is a config that does not load,
+      # and on this box a config that does not load is every name the network has. The
+      # table is keyed, so row keys cannot collide — but an *alias* can repeat a name, and
+      # the renderer happily emits two servers with it.
+      assertion = let
+        all = builtins.concatLists (
+          map (n: [n] ++ (door.rows.${n}.serverAliases or [])) (builtins.attrNames door.rows)
+        );
+      in
+        all == lib.unique all;
+      message = ''
+        common/front-door.nix: a name is served by more than one row (as a key or as
+        another row's serverAlias). nginx would get two `server_name`s for one name and
+        refuse to start; fold the two rows into one, or drop the alias.'';
+    }
+    {
+      # A row that points at a *name* rather than an address is the boot-order loop this
+      # file's header describes. The table reads common/hosts.nix precisely so this cannot
+      # happen by accident, and this is what keeps it from happening by amendment.
+      # The first version of this assertion required a port and was right about the intent
+      # and wrong about the fleet: `voron` is `http://10.3.2.50`, port 80 implied. The thing
+      # being forbidden is a *hostname*, so that is what the pattern asks about.
+      assertion =
+        builtins.filter (n: let
+          u = door.rows.${n}.upstream or "page";
+        in
+          u != "origin" && u != "page" && builtins.match "https?://[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+(:[0-9]+)?" u == null)
+        (builtins.attrNames door.rows)
+        == [];
+      message = ''
+        common/front-door.nix: every upstream must be `origin`, a page, or a URL with a
+        dotted-quad address and a port. dnsmasq runs on this box: an upstream that is a
+        name is nginx asking its own resolver to start itself. Read the address from
+        common/hosts.nix.'';
+    }
+  ];
 }

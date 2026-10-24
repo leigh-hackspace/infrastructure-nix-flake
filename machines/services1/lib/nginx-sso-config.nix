@@ -1,118 +1,21 @@
+# SHIM — the gate's config moved to `common/nginx-sso-config.nix` in phase 2 of
+# `docs/router-front-door-migration.md`; this file only fixes the listener to what services1
+# still runs it on, and it goes away with `systemd.services.nginx-sso` in
+# machines/services1/http.nix (phase 3 step 5). Not a PARKED module — this one is
+# evaluated and deployed, which is why `grep -rl '^# PARKED' machines/` must not list it.
+#
+# Why `0.0.0.0` is still passed here rather than being fixed in place: the gate answers the
+# nginx on its own box, and until the front door flips that nginx is reached by clients from
+# every interface. Loopback would break nothing today either, but the change belongs with the
+# move — one box's listener, one change, and the window where two gates exist stays short
+# (see the finding about `*:8082` answering a bare curl in the migration doc).
 {
   lib,
   sopsSecretText,
 }: let
-  CONFIG = import ../../../common/config.nix;
-
-  readSecret = name: lib.strings.trim (builtins.readFile (sopsSecretText name));
+  common = import ../../../common/nginx-sso-config.nix;
 in
-  lib.generators.toYAML {} {
-    login = {
-      title = "Leigh Hackspace - Login";
-      default_method = "oidc";
-      hide_mfa_field = true;
-      names.oidc = "Leigh Hackspace Account";
-    };
-
-    cookie = {
-      domain = ".leighhack.org";
-      authentication_key = readSecret "nginx_sso_auth";
-      expire = 86400;
-    };
-
-    listen = {
-      addr = "0.0.0.0";
-      port = 8082;
-    };
-
-    audit_log = {
-      targets = [
-        "fd://stdout"
-        "file:///var/log/nginx-sso/audit.jsonl"
-      ];
-      events = [
-        "access_denied"
-        "login_success"
-        "login_failure"
-        "logout"
-        "validate"
-      ];
-      headers = ["x-origin-uri"];
-      trusted_ip_headers = [
-        "X-Forwarded-For"
-        "RemoteAddr"
-        "X-Real-IP"
-      ];
-    };
-
-    acl.rule_sets = [
-      # Grant Authenticated Access
-      {
-        rules = [
-          {
-            field = "x-host";
-            regexp = ".*";
-          }
-        ];
-        allow = ["@_authenticated"];
-      }
-      # Grant Tailscale (IPv4)
-      {
-        rules = [
-          {
-            field = "x-real-ip";
-            regexp = "^100.64.";
-          }
-        ];
-        allow = ["@_anonymous"];
-      }
-      # Grant Tailscale (IPv6)
-      {
-        rules = [
-          {
-            field = "x-real-ip";
-            regexp = "^fd7a:115c:a1e0";
-          }
-        ];
-        allow = ["@_anonymous"];
-      }
-      # Grant Hackspace LAN (IPv4)
-      {
-        rules = [
-          {
-            field = "x-real-ip";
-            regexp = "^10.3.";
-          }
-        ];
-        allow = ["@_anonymous"];
-      }
-      # Grant Hackspace LAN (IPv6)
-      {
-        rules = [
-          {
-            field = "x-real-ip";
-            regexp = "^2001:8b0:1d14";
-          }
-        ];
-        allow = ["@_anonymous"];
-      }
-      # Grant Chris (IPv6)
-      {
-        rules = [
-          {
-            field = "x-real-ip";
-            regexp = "^2a02:8010:6680";
-          }
-        ];
-        allow = ["@_anonymous"];
-      }
-    ];
-
-    providers.oidc = {
-      client_id = "pyBuPjaPD7xaiy8hAQpy4W02A3G0aIKyUakPtSaD";
-      client_secret = readSecret "nginx_sso_client_secret";
-      redirect_url = "https://login.leighhack.org/login";
-      issuer_name = "Leigh Hackspace";
-      issuer_url = "https://${CONFIG.AUTHENTIK_DOMAIN}/application/o/nginx-login/";
-    };
+  common {
+    inherit lib sopsSecretText;
+    listenAddr = "0.0.0.0";
   }
