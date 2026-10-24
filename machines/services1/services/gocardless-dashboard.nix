@@ -22,7 +22,7 @@
   ...
 }: let
   CONFIG = import ../../../common/config.nix;
-  mkIntVhost = import ../../../common/nginx/int-vhost.nix {inherit lib;};
+  mkOriginVhost = import ../../../common/nginx/origin-vhost.nix {inherit lib;};
 
   # The Dioxus SPA compiled to wasm (pinned wasm-bindgen-cli and the wasm build
   # recipe live in common/crane.nix).  Its gdash-dto path dependency is a
@@ -116,7 +116,7 @@ in {
   };
 
   # LAN-only vhost (the binary only listens on 127.0.0.1).
-  services.nginx.virtualHosts."gocardless.int.leighhack.org" = mkIntVhost {
+  services.nginx.virtualHosts."gocardless.int.leighhack.org" = mkOriginVhost {
     proxyPass = "http://127.0.0.1:8095";
   };
 }

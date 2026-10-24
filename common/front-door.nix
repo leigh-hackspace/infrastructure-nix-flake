@@ -451,12 +451,33 @@ in {
       upstream = "origin";
     };
     "headplane.leighhack.org" = {
-      upstream = "origin";
-      note = "the headscale admin UI; phase 4 moves the control server itself here";
+      upstream = "http://127.0.0.1:8086";
+      websockets = true;
+      note = "the headscale admin UI, kept as its own name; phase 4 moved the control server to this box";
     };
     "tailscale.leighhack.org" = {
-      upstream = "origin";
-      note = "headscale's own console — the name its OIDC issuer URLs point at";
+      upstream = "http://127.0.0.1:8085";
+      websockets = true;
+      # headscale's own console. Two paths, which is why the row carries `locations`: the
+      # root is headscale's 404 page and redirects to the admin UI, and `/admin` is
+      # headplane on 8086. Everything else (the control protocol's `/key`, `/register`,
+      # `/machine/...`) stays on 8085 — pointing the whole name at headplane would leave
+      # every tailnet node unable to register.
+      locations = {
+        # `= /` rather than `/`: an exact match redirects the root, while every other
+        # path (including `/key` and `/machine/...`) keeps the default proxy to 8085.
+        "= /" = {
+          extraConfig = ''
+            rewrite ^/$ https://tailscale.leighhack.org/admin permanent;
+          '';
+        };
+        "/admin" = {
+          proxyPass = "http://127.0.0.1:8086";
+          recommendedProxySettings = true;
+          proxyWebsockets = true;
+        };
+      };
+      note = "headscale's control server + `/admin` (headplane) — the name its OIDC issuer URLs point at; phase 4 moved the daemons to this box";
     };
   };
 }

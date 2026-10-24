@@ -100,11 +100,14 @@ in {
     };
   };
 
-  # This server handles HTTP traffic so we need to re-route to itself
+  # Names that used to be re-routed to this box because it was the TLS terminator.
+  # That is the front door's job now (`machines/gw/http.nix`), so `id.leighhack.org`
+  # and `tailscale.leighhack.org` must resolve through the network's DNS instead of
+  # being pinned here: a client on this box dialling `id.leighhack.org` now reaches the
+  # door, which proxies to the appliance.  The two `unifi.int` entries stay — that is a
+  # different controller on 10.3.1.21, not a name this box used to terminate.
   networking.extraHosts = ''
-    10.3.1.20                 id.leighhack.org id.int.leighhack.org tailscale.leighhack.org
     10.3.1.21                 unifi.int.leighhack.org
-    2001:8b0:1d14:225:d::1020 id.leighhack.org id.int.leighhack.org tailscale.leighhack.org
     2001:8b0:1d14:225:d::1021 unifi.int.leighhack.org
   '';
 

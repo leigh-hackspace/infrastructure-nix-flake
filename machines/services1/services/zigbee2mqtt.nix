@@ -5,8 +5,7 @@
 }: let
   CONFIG = import ../../../common/config.nix;
   ZIGBEE2MQTT_UID = 8124;
-  mkSSOVirtualHost = import ../../../common/nginx/sso-vhost.nix;
-  mkIntVhost = import ../../../common/nginx/int-vhost.nix {inherit lib;};
+  mkOriginVhost = import ../../../common/nginx/origin-vhost.nix {inherit lib;};
 in {
   users.users.zigbee2mqtt = {
     uid = ZIGBEE2MQTT_UID;
@@ -37,11 +36,12 @@ in {
   };
 
   services.nginx.virtualHosts = {
-    "zigbee2mqtt.leighhack.org" = mkSSOVirtualHost {
+    "zigbee2mqtt.leighhack.org" = mkOriginVhost {
       proxyPass = "http://127.0.0.1:8282";
+      websockets = true;
     };
 
-    "zigbee2mqtt.int.leighhack.org" = mkIntVhost {
+    "zigbee2mqtt.int.leighhack.org" = mkOriginVhost {
       proxyPass = "http://127.0.0.1:8282";
       websockets = true;
     };

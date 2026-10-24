@@ -250,10 +250,14 @@ in {
   # in that file is its DNS: `server=/ts.leighhack.org/<address>@tailscale0`).  It is
   # on the router because the router is the box that owns the network's routes.
   #
-  # The control server is the network's own headscale on services1, *not* Tailscale's
-  # hosted one — which is why `--login-server` is below and why the join key is
+  # The control server is the network's own headscale — *not* Tailscale's hosted one
+  # — which is why `--login-server` is below and why the join key is
   # common/config.nix's headscale pre-auth key rather than a Tailscale account key.
-  # Get either wrong and the box joins a tailnet that does not exist, quietly.
+  # Since phase 4 of docs/router-front-door-migration.md that control server is
+  # `./headscale.nix` on this same box: the URL still resolves through this box's nginx
+  # (`tailscale.leighhack.org`), so the client and server now hairpin locally rather
+  # than reaching a service behind the router. Get the login server or the key wrong and
+  # the box joins a tailnet that does not exist, quietly.
   services.tailscale = {
     enable = true;
     # `server` is the module's word for "this box routes": it turns on IP forwarding

@@ -91,23 +91,19 @@ in {
   services.nginx.virtualHosts = {
     "api-doors.int.leighhack.org" = {
       serverAliases = ["api-doors.leighhack.org"];
-      useACMEHost = "leighhack.org";
-      forceSSL = true;
+      extraConfig = CONFIG.ROUTER_ONLY;
       locations."/" = {
         proxyPass = "http://127.0.0.1:8472";
         recommendedProxySettings = true;
-        # extraConfig = CONFIG.LOCAL_NETWORK;
       };
     };
 
     "doors.int.leighhack.org" = {
       serverAliases = ["doors.leighhack.org"];
-      useACMEHost = "leighhack.org";
-      forceSSL = true;
+      extraConfig = CONFIG.ROUTER_ONLY;
       locations."/" = {
         proxyPass = "http://127.0.0.1:8473";
         recommendedProxySettings = true;
-        # extraConfig = CONFIG.LOCAL_NETWORK;
       };
     };
 

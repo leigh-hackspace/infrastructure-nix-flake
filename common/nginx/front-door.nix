@@ -214,7 +214,11 @@
         proxy_set_header Authorization "Bearer ${readSecret "strata_api_key"}";
       '';
 
-    proxied = mkIntVhost {
+    # A row may add locations (`tailscale.leighhack.org`'s `/admin` split is the
+    # first). `recursiveUpdate` so a row that only adds a path keeps the default
+    # `location /`'s proxy and limits rather than replacing them, and so the merge is
+    # the same operation here as in `common/nginx/origin-vhost.nix`.
+    base = mkIntVhost {
       proxyPass = upstream;
       useACMEHost = certName;
       forceSSL = true;
@@ -242,6 +246,29 @@
       serverAliases = row.serverAliases or [];
       extraConfig = secretHeaders + lib.optionalString (row.sso or false) ssoLocationConfig;
     };
+
+    # A row may add locations (`tailscale.leighhack.org`'s `/admin` split is the
+    # first). Each added location inherits the vhost's ACL: the ACL is the row's
+    # statement about *who may have the name*, and a location that forgot it would be a
+    # hole in the middle of a LAN-only vhost. `"/"` is the one exception — the base
+    # location already carries the ACL, and a row that restated it would double it.
+    extraLocations =
+      lib.mapAttrs (
+        name: loc:
+          loc
+          // {
+            extraConfig =
+              lib.optionalString (name != "/") (aclText acl)
+              + (loc.extraConfig or "");
+          }
+      )
+      (row.locations or {});
+
+    proxied =
+      base
+      // lib.optionalAttrs (row ? locations) {
+        locations = lib.recursiveUpdate base.locations extraLocations;
+      };
   in
     if row ? page
     then {

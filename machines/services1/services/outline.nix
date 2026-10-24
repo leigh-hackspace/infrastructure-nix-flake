@@ -40,8 +40,7 @@ in {
 
   services.nginx.virtualHosts = {
     "outline.leighhack.org" = {
-      forceSSL = true;
-      useACMEHost = "leighhack.org";
+      extraConfig = CONFIG.ROUTER_ONLY;
 
       locations."/" = {
         proxyPass = "http://127.0.0.1:8400";

@@ -24,8 +24,7 @@ in {
   services.nginx = {
     virtualHosts = {
       "matrix.leighhack.org" = {
-        useACMEHost = "leighhack.org";
-        forceSSL = true;
+        extraConfig = CONFIG.ROUTER_ONLY;
 
         # It's also possible to do a redirect here or something else, this vhost is not
         # needed for Matrix. It's recommended though to *not put* element
@@ -56,8 +55,7 @@ in {
       };
 
       "element.leighhack.org" = {
-        useACMEHost = "leighhack.org";
-        forceSSL = true;
+        extraConfig = CONFIG.ROUTER_ONLY;
 
         root = pkgs.element-web.override {
           conf = {

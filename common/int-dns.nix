@@ -67,11 +67,13 @@
 #              "forgotten" — a name here that resolves at the front door is a bug
 #              in whatever answers it, not in this table
 {
-  # The box every `*.int` name resolves to.  See the field's doc above for the two
-  # legal kinds of value; `docs/router-front-door-migration.md` phase 1 has the router
-  # serving and proving `*.int` vhosts *without* this line changing, which is the
-  # whole reason the guard has two modes.
-  frontDoor = "services1";
+  # The box every `*.int` name resolves to.  It moved from `services1` to `gw` on
+  # 2026-10-24 with phase 3 of `docs/router-front-door-migration.md`: the router
+  # terminates TLS, holds the certificate, runs the gate and `anubis`, and serves every
+  # name in `common/front-door.nix`, so the addresses and the box serving them are one
+  # fact again.  `machines/gw/int-dns.nix` reads this string to switch from "may stage a
+  # subset" to "must serve every name", so the answer and the guard move together.
+  frontDoor = "gw";
 
   names = [
     "access-api"

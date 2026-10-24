@@ -25,7 +25,7 @@
   pkgs,
   ...
 }: let
-  mkIntVhost = import ../../../common/nginx/int-vhost.nix {inherit lib;};
+  mkOriginVhost = import ../../../common/nginx/origin-vhost.nix {inherit lib;};
 
   # Pin: the installer is a self-extracting ELF with the payload as a zip at
   # offset 4751312; `image.tar` is one member of it.  Both hashes below are
@@ -234,7 +234,7 @@ in {
   # client's Host through (which `recommendedProxySettings` does) is fine: the
   # appliance answers 200 for any Host, so there is no host-validation trap here.
   services.nginx.virtualHosts = {
-    "unifi-admin.int.leighhack.org" = mkIntVhost {
+    "unifi-admin.int.leighhack.org" = mkOriginVhost {
       proxyPass = "https://127.0.0.1:11443";
       websockets = true;
       timeouts = "3600s";

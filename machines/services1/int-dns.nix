@@ -1,64 +1,54 @@
-# The front door's half of the network's DNS: the *guard* on
-# `common/int-dns.nix`, which is the table the router answers `*.int` from.
+# The **origin guard**: the vhosts this box still serves must be exactly the
+# `upstream = "origin"` rows in `common/front-door.nix`.
 #
-# Two things have to agree and neither can see the other at build time: this box's
-# nginx, which serves the `*.int.leighhack.org` vhosts, and
-# `common/int-dns.nix`, which is rendered into `/etc/dnsmasq-int-vhosts.hosts` on
-# gw (`machines/gw/dns.nix`).  This module derives the first from
-# `services.nginx.virtualHosts` — vhost names plus their serverAliases, the same
-# derivation `common/nginx/int-vhost-names.nix` gives the gatus endpoint guard, so
-# the two cannot disagree about what "an internal app on this box" means — and
-# refuses to evaluate unless it equals the second.
+# This file used to assert that this box's nginx served every `*.int` name in
+# `common/int-dns.nix`, because services1 was the front door. It is not any more:
+# `gw` terminates TLS, holds the certificate, runs the gate and `anubis`, and answers
+# the `*.int` zone (machines/gw/int-dns.nix is the guard for that half). What is left
+# here is the *origin* — the handful of vhosts whose applications are app-shaped (a
+# `/srv` root, an auth rewrite, a filesystem mount) rather than one-line proxies.
 #
-# What that replaces is worth a line, because the tool is gone: until 2026-10-22
-# `crates/dns-sync` ssh'd to the router from this box and appended lines to a
-# mutable `/var/lib/dnsmasq/names.hosts`, when someone remembered to run
-# `just dns-sync-sync`.  Nothing was broken the day it was removed — all 34 `*.int`
-# vhosts the deployed nginx serves had their records — and that is exactly the
-# shape of the debt: a vhost deployed without the command is live, linked,
-# TLS-served and unresolvable, and the only thing that would notice is the same
-# manual command, run by hand, comparing two files.  Now the record is a store path
-# on the router and the drift is an eval error here.
+# So the invariant changes shape with the box, and this is the shape that keeps it
+# honest:
 #
-# The check runs wherever this box is evaluated, which is every `just switch`,
-# `nixos-rebuild dry-run` and `just check-build` — not `just check`, which
-# deliberately evaluates no machine config at all (AGENTS.md: never cold-evaluate
-# this flake to ask a question; the deploy answers it cheaper).
+#   * every vhost on this box (including `serverAliases`) is an origin row in the
+#     front-door table, and
+#   * every origin row in the table has a vhost here.
 #
-# Its twin on the router is `machines/gw/int-dns.nix`: the same comparison, read from
-# that box's vhosts, in two modes — subset while `frontDoor` names this box, equality
-# if it ever names `gw`. Read the two files together before moving a vhost: the table
-# has one owner-list and two boxes that have to agree with it, and which box is the
-# door is one string in that table (docs/router-front-door-migration.md).
+# Equality, not subset: a direct row is served by the door itself, so a stale copy
+# here would be a second config for the same name — the drift this migration exists
+# to remove. A name moved from `origin` to a direct address, or an origin row added
+# without its vhost, fails the evaluation. That is AGENTS.md rule 24 in its new
+# position: a vhost move is a guard move, and the guard moved with the vhosts.
 #
-# `environment.etc."int-dns/served-int-names"` is the same list rendered, for the
-# moment it isn't agreeing: diff it against the router's
-# `/etc/dnsmasq-int-vhosts.hosts` and the difference is the name and its address.
+# It runs wherever this machine is evaluated — every `just switch`, `nixos-rebuild
+# dry-run` and `just check-build` — which is the same coverage the old guard had.
 {
   config,
   lib,
   ...
 }: let
-  CONFIG = import ../../common/config.nix;
-  INT = import ../../common/int-dns.nix;
-  intVhostNames = import ../../common/nginx/int-vhost-names.nix {inherit lib;};
+  TABLE = import ../../common/front-door.nix {
+    hosts = import ../../common/hosts.nix;
+  };
 
-  zone = CONFIG.LOCAL_DOMAIN;
-
-  # Every `*.int` name this box's nginx is configured to serve, FQDNs, sorted.
-  served = intVhostNames config.services.nginx.virtualHosts;
-
-  # What the network is told this box serves: the front-door list, plus the names
-  # that are answered somewhere else *on purpose*.  Both halves are needed for the
-  # comparison — without `exempt` the honest answer to "why isn't authentik.int in
-  # the table?" would be "because it would answer twice", which is not a thing a
-  # failing assertion should make someone deduce.
+  # Names the door sends to this box's origin nginx, plus the aliases that share the
+  # same server block. A row's `serverAliases` are names the origin must also answer,
+  # because the door forwards the client's `Host` untouched.
+  originRows = builtins.filter (n: (TABLE.names.${n}.upstream or null) == "origin") (builtins.attrNames TABLE.names);
   declared =
     lib.sort (a: b: a < b)
-    (
-      (map (n: "${n}.${zone}") INT.names)
-      ++ (map (n: "${n}.${zone}") (builtins.attrNames INT.exempt))
-    );
+    (builtins.concatLists (map (n: [n] ++ (TABLE.names.${n}.serverAliases or [])) originRows));
+
+  # Every name this box's nginx serves, from its vhost list (the same derivation the
+  # front-door guard uses, read the other way round).
+  served =
+    lib.sort (a: b: a < b)
+    (builtins.concatLists (
+      map
+      (n: [n] ++ (config.services.nginx.virtualHosts.${n}.serverAliases or []))
+      (builtins.attrNames config.services.nginx.virtualHosts)
+    ));
 
   missing = builtins.filter (n: !builtins.elem n declared) served;
   extra = builtins.filter (n: !builtins.elem n served) declared;
@@ -67,20 +57,21 @@ in {
     {
       assertion = served == declared;
       message = ''
-        common/int-dns.nix and this box's nginx do not serve the same `*.int` names.
+        machines/services1/http.nix (and the service modules' vhosts) no longer match
+        the `upstream = "origin"` rows in common/front-door.nix.
 
-          served by nginx, missing from the table: ${builtins.toJSON missing}
-          in the table, served by nothing here:    ${builtins.toJSON extra}
+          served here, not an origin row: ${builtins.toJSON missing}
+          an origin row, not served here: ${builtins.toJSON extra}
 
-        Fix the table, then deploy *both* boxes: `common/int-dns.nix` is rendered
-        into /etc/dnsmasq-int-vhosts.hosts on gw, so a name this box starts serving
-        resolves only once the router has been switched too (`just switch-gw`), and
-        a name it stops serving keeps resolving until then.  A `*.int` vhost that
-        is served but deliberately not answered at the front door goes in `exempt`,
-        with the reason.
+        An origin is a vhost on this box that `gw` proxies to over plain HTTP; a
+        direct row is one `gw` proxies straight to the box that runs the app. Moving a
+        name between the two is one change in `common/front-door.nix` plus the vhost
+        here, and the certificate/gate/ACL never come back to this box.  See
+        docs/router-front-door-migration.md phase 3.
       '';
     }
   ];
 
-  environment.etc."int-dns/served-int-names".text = lib.concatStringsSep "\n" served + "\n";
+  # The same list rendered, for the moment it is not agreeing.
+  environment.etc."int-dns/served-origin-names".text = lib.concatStringsSep "\n" served + "\n";
 }

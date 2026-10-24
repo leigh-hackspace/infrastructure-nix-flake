@@ -1,61 +1,42 @@
+# The AI front end's origin vhosts. The **names** are rows in `common/front-door.nix`
+# (`ai.int` and `ai.leighhack.org`, the latter with the gate); `mcp` and `whisper` are
+# direct rows there, so they have no vhost on this box any more — the door proxies
+# straight to aibox.
+#
+# Both rows here are `upstream = "origin"` because the app is not one line: the chat UI
+# serves a `/resources` file root and a PWA manifest that has to stay unauthenticated.
+# The gate and the certificate are the door's; what stays is the routing.
 {lib, ...}: let
-  CONFIG = import ../../common/config.nix;
-  mkSSOVirtualHost = import ../../common/nginx/sso-vhost.nix;
-  mkIntVhost = import ../../common/nginx/int-vhost.nix {inherit lib;};
+  mkOriginVhost = import ../../common/nginx/origin-vhost.nix {inherit lib;};
 in {
   services.nginx.virtualHosts = {
-    "ai.leighhack.org" = lib.mkMerge [
-      (mkSSOVirtualHost {
+    # The public name. It used to be built with `lib.mkMerge` of an `mkSSOVirtualHost`
+    # over an `mkIntVhost`, which is how the front-door table's first draft missed its
+    # gate (migration doc, phase 2 lesson 2). The gate is now a `sso = true` on the
+    # table row; this vhost only has to keep the paths.
+    "ai.leighhack.org" =
+      mkOriginVhost {
         proxyPass = "http://10.3.1.32:8081";
-      })
-      {
+      }
+      // {
         locations."/resources" = {
           root = "/srv/ai-resources";
         };
 
-        # Browsers fetch the PWA manifest without cookies, so SSO would 401 it
-        # and bounce it to the login page (CORS error in the console). Serve it
-        # unauthenticated, like the fake /sw.js above.
+        # Browsers fetch the PWA manifest without cookies, so the gate would 401 it and
+        # the console would show a CORS error. It is still a proxy to the app (not a
+        # static file) because the manifest is generated there.
         locations."= /manifest.webmanifest" = {
           proxyPass = "http://10.3.1.32:8081";
           recommendedProxySettings = true;
         };
-      }
-    ];
+      };
 
-    # Long timeouts and a big body limit: the chat UI uploads images and can
-    # hold a request open while the model thinks.
-    "ai.int.leighhack.org" = mkIntVhost {
+    # Long timeouts and a big body limit: the chat UI uploads images and can hold a
+    # request open while the model thinks.
+    "ai.int.leighhack.org" = mkOriginVhost {
       proxyPass = "http://10.3.1.32:8081";
       bodySize = "1024M";
-      timeouts = "3600";
-    };
-
-    "mcp.int.leighhack.org" = mkIntVhost {
-      proxyPass = "http://10.3.1.32:8000";
-      websockets = true;
-      extraConfig = ''
-        add_header 'Access-Control-Allow-Origin' * always;
-
-        if ($request_method = 'OPTIONS') {
-          add_header 'Access-Control-Allow-Origin' '*';
-          add_header 'Access-Control-Allow-Credentials' 'true';
-          add_header 'Access-Control-Allow-Methods' '*';
-          add_header 'Access-Control-Allow-Headers' '*';
-          add_header 'Access-Control-Max-Age' 86400;
-          add_header 'Content-Type' 'text/plain charset=UTF-8';
-          add_header 'Content-Length' 0;
-          return 204; break;
-        }
-      '';
-    };
-
-    # Whisper.cpp WebSocket gateway (whisper-ws on aibox:8083, OpenAI
-    # Realtime protocol). LAN-only; DNS alias added on the router's dnsmasq.
-    # Long timeouts: WebSocket sessions can sit idle for a while.
-    "whisper.int.leighhack.org" = mkIntVhost {
-      proxyPass = "http://10.3.1.32:8083";
-      websockets = true;
       timeouts = "3600";
     };
 

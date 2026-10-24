@@ -153,15 +153,13 @@
   #   *if you can resolve the name from here, you can reach the front door from here*.
   #   nginx's per-vhost `LOCAL_NETWORK` is still what decides which name a given
   #   client may have; this is only which direction the listener answers at all.
-  # * **No DNAT row is added in this phase.** The internet's 80/443 still translate to
-  #   (`portForwards` above) and nothing on the public addresses answers HTTP here.  That is
-  #   phase 1's scoping, and phase 3 retires it deliberately: when the public vhosts arrive
-  #   on this box the DNAT rows for `:80`/`:443` turn into input rules here (and the v6 half
-  #   stops being a forward rule for services1's addresses and becomes an input rule for
-  #   this box's own, because IPv6 has no NAT to hide behind).  That rule change is the one
-  #   moment in the plan where the router is the thing the internet dials, so it belongs in
-  #   the change that also moves the gate and the certificate — see the decision in
-  #   docs/router-front-door-migration.md.
+  # * **The public half is `publicInboundRules` now.** Phase 1 deliberately added no
+  #   DNAT row while nothing public arrived here; phase 3 step 4 retires that scoping:
+  #   the DMZ address still needs NAT (it is routed to the line, not assigned to an
+  #   interface) but `portForwards` translates it onto *this* box, so the packet arrives
+  #   on this input hook and is accepted there. On IPv6 there is no NAT to hide behind:
+  #   `nginx.leighhack.org`'s AAAA moved here with the certificate, so the packet is
+  #   already addressed to this box's own address and the same interface match is enough.
   frontDoorRules = ''
     iifname "vlan*" tcp dport { 80, 443 } accept
     iifname "tailscale0" tcp dport { 80, 443 } accept
@@ -249,24 +247,30 @@
   # which is why it is remapped).  STUN is UDP — the old table wrote it as TCP,
   # which opened a TCP port to a UDP service and left tailnet clients' STUN
   # unassisted.  `protocol` is per-row for that reason.
+  # The web pair and DERP now terminate **on this box**. Phase 3 step 4 of
+  # docs/router-front-door-migration.md moves the answers and the DNAT rows together:
+  # the DMZ address still translates (it is a /29 routed to the AAISP line, not an
+  # address on any interface here), but it translates onto this box rather than onto
+  # 10.3.1.20, so the packet arrives on the input hook and the matching accept rules are
+  # `publicInboundRules` below. The yunohost rows stay pointed at the appliance.
   portForwards = [
     {
       public = NICS.PUBLIC_SERVICES1;
       port = 80;
-      to = HOSTS.services1;
+      to = HOSTS.router;
       toPort = 80;
     }
     {
       public = NICS.PUBLIC_SERVICES1;
       port = 443;
-      to = HOSTS.services1;
+      to = HOSTS.router;
       toPort = 443;
     }
     {
       public = NICS.PUBLIC_SERVICES1;
       port = 3478;
       protocol = "udp";
-      to = HOSTS.services1;
+      to = HOSTS.router;
       toPort = 3479;
     }
     {
@@ -299,41 +303,38 @@
       portForwards
     );
 
-  # --- inbound NAT's IPv6 counterpart --------------------------------------
+  # --- the front door's public half, and the origin boundary ---------------
   #
-  # The `dstnat` chain has no v6 twin, because none is needed: an internet client
-  # dialling a public name is *already* addressing the box that answers it, since
-  # every `*.leighhack.org` vhost publishes a AAAA (`2001:8b0:1d14:225::20`) rather
-  # than a NAT'd v4 pair.  What that means is the opposite of convenient — the v6
-  # forward chain's `policy drop` answers nothing at all unless a rule names the
-  # destination by address, so "public IPv6 inbound" is a rule here rather than a
-  # side effect of the NAT, and forgetting it is silent (the site works over IPv4,
-  # from the LAN, and from anyone whose address happens to be in the shared ACL).
+  # `publicInboundRules` is what lets the internet reach this box's own 80/443 and
+  # headscale's STUN socket. The v4 packets arrive on the tunnel because `dnatRules`
+  # above translates the routed DMZ address onto this box; the v6 packets arrive on the
+  # tunnel already addressed to this box (`nginx.leighhack.org`'s AAAA moved here with
+  # the certificate). Both are input, not forward.
+  publicInboundRules = ''
+    iifname "${NICS.UPLINK_TUNNEL}" tcp dport { 80, 443 } accept
+    # headscale's DERP STUN socket: public 3478/udp is DNAT'd to 3479 on this box
+    # (machines/gw/headscale.nix binds `stun_listen_addr = 0.0.0.0:3479`).
+    iifname "${NICS.UPLINK_TUNNEL}" udp dport 3479 accept
+  '';
+
+  # **An origin is reachable from the front door and nowhere else.** This is the packet
+  # half of `CONFIG.ROUTER_ONLY`, and the app-layer half is the server-level ACL every
+  # `common/nginx/origin-vhost.nix` vhost carries. It belongs in the same switch as the
+  # flip: before it, clients on other VLANs and the tailnet reach services1 *through
+  # this forward chain*, so dropping their 80/443 early would cut them off from the box
+  # that is still the front door (migration doc, "Correction to the plan's ordering").
   #
-  # This started as the old box's three "Public IPv6 Services" rules:
-  # `pass in quick on l2tp0 reply-to (l2tp0 fe80::9e89:1eff:fe3f:0) inet6 proto tcp
-  # from any to <SERVICES1_IPV6> port = {http, https, 8522}` (read out of the
-  # archived `pf.txt`, `~/tmp/opnsense-archive-20261017` on services1).  The
-  # 2026-10-21 audit cut 8522 (GitLab SSH, not web, and nothing listening) to
-  # match the v4 policy: **80 and 443 only**.  3478/50443/51820 were never
-  # allowed in over v6 and stay that way — headscale's DERP has an IPv6 *address*
-  # but a STUN socket reachable over v4 only (docs/follow-ups.md).  The yunohost
-  # appliance has no row because `yunohost.leighhack.org` has no AAAA.
-  #
-  # Matched on the tunnel rather than on "not a VLAN" for the same reason the old
-  # rules named `l2tp0`: the hub's handoff has no public IPv6 to arrive on, and an
-  # interface-less rule would let the mill's segment pose as the internet.  The
-  # reply path needs no rule of its own — services1's answer is `established`, and
-  # VLAN 225's routing mark sends it back out of the tunnel, which is the job the
-  # pf `reply-to` did.
-  #
-  # `counter` is the one on this file, and it is here because this rule's only failure
-  # mode is silence and it cannot be proven from inside the network: a LAN client
-  # matches `ip6 saddr 2001:8b0:1d14::/48` two rules later, so every local test passes
-  # whether or not the internet can arrive. Read it after a probe from a v6 address
-  # that is not in the ACL — `nft list chain ip6 router6 forward`.
-  publicV6ForwardRules = ''
-    iifname "${NICS.UPLINK_TUNNEL}" ip6 daddr ${TABLES.setOf NICS.PUBLIC_SERVICES1_V6} tcp dport { 80, 443 } counter accept
+  # It deliberately names `80`/`443` only. The direct rows (`frigate` on 5000, `speed`
+  # on 8004) are reached by *this box*, locally, not forwarded, and the same-subnet
+  # VLAN-225 clients never enter this chain at all — the origin vhost's ACL is what
+  # covers them. `counter` because a dropped forward is silent by design and this is the
+  # rule whose over-reach is only visible as "the LAN can't reach services1 any more".
+  originReachabilityRules = ''
+    ip daddr ${HOSTS.services1} tcp dport { 80, 443 } ip saddr != ${HOSTS.router} counter drop
+  '';
+
+  originReachabilityRules6 = ''
+    ip6 daddr ${TABLES.setOf NICS.PUBLIC_SERVICES1_V6} tcp dport { 80, 443 } counter drop
   '';
 in {
   # The router forwards: that is the whole point of it.  Written as sysctls rather
@@ -399,6 +400,11 @@ in {
             # allows that address" is exactly the lie this rule exists to catch.
             ${vlanAntiSpoof}
 
+            # An origin is reachable only from this box. See `originReachabilityRules`
+            # above; it sits before the DNAT acceptance so a future DNAT row pointing at
+            # an origin cannot bypass it.
+            ${originReachabilityRules}
+
             # A packet this box translated on the way in (the `dstnat` chain in
             # the nat table below) is one the internet asked for, and its source
             # is never in the ACL.  The old box's `rdr pass` lines admitted those
@@ -437,6 +443,7 @@ in {
             ${lanServiceRules}
             ${uplinkServiceRules}
             ${frontDoorRules}
+            ${publicInboundRules}
 
             # The tailnet's data plane: tailscale's own UDP port, open to the
             # internet because the tailnet *is* the internet as far as this box is
@@ -553,7 +560,7 @@ in {
             ct state established,related accept
             ct state invalid drop
             icmpv6 type { destination-unreachable, packet-too-big, time-exceeded, parameter-problem } accept
-            ${publicV6ForwardRules}
+            ${originReachabilityRules6}
             ip6 saddr ${aclV6} accept
           }
 
@@ -574,6 +581,7 @@ in {
             iifname "tailscale0" tcp dport 53 accept
             ${uplinkServiceRules}
             ${frontDoorRules}
+            ${publicInboundRules}
             # Same reasoning as the IPv4 side: tailscale's data plane, and nothing
             # that is not needed.  (No ICMPv6 *outbound* rule is needed — RAs leave
             # via the output path, which these chains do not filter.)

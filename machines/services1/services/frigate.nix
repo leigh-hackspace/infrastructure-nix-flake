@@ -4,10 +4,7 @@
   pkgs,
   modulesPath,
   ...
-}: let
-  CONFIG = import ../../../common/config.nix;
-  mkSSOVirtualHost = import ../../../common/nginx/sso-vhost.nix;
-in {
+}: {
   # sudo smem -r | sort -k 4 -nr | head
   # sudo smem -rs swap | head
   virtualisation.oci-containers.containers.frigate = {
@@ -63,23 +60,5 @@ in {
       "wait-for-nas.service"
       "mnt-cameras.mount"
     ];
-  };
-
-  services.nginx.virtualHosts = {
-    "frigate.leighhack.org" = mkSSOVirtualHost {
-      proxyPass = "http://10.3.1.20:5000";
-    };
-
-    "frigate.int.leighhack.org" = {
-      useACMEHost = "leighhack.org";
-      forceSSL = true;
-
-      locations."/" = {
-        proxyPass = "http://10.3.1.20:5000";
-        recommendedProxySettings = true;
-        proxyWebsockets = true;
-        extraConfig = CONFIG.LOCAL_NETWORK;
-      };
-    };
   };
 }

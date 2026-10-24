@@ -4,10 +4,7 @@
   ...
 }: let
   CONFIG = import ../../../common/config.nix;
-  mkSSOVirtualHost = import ../../../common/nginx/sso-vhost.nix;
-  mkIntVhost = import ../../../common/nginx/int-vhost.nix {inherit lib;};
-
-  HOSTS = import ../../../common/hosts.nix;
+  mkOriginVhost = import ../../../common/nginx/origin-vhost.nix {inherit lib;};
 
   # LAN restart token, shared with aibox via the sops secret
   # status_dashboard_lan_token.
@@ -34,41 +31,17 @@ in {
   services.nginx.virtualHosts = {
     # --- services1's own dashboard --------------------------------------
 
-    # Public, SSO-protected: restart buttons work here (nginx injects
-    # X-WEBAUTH-USER which the dashboard requires for POST /api/restart).
-    "status.leighhack.org" = mkSSOVirtualHost {
+    # Public name, gated by the front door (the `status.leighhack.org` row in
+    # common/front-door.nix is `sso = true`). The dashboard still needs
+    # `X-WEBAUTH-USER` for POST /api/restart, and nginx forwards the header the door
+    # sets because this vhost does not replace it.
+    "status.leighhack.org" = mkOriginVhost {
       proxyPass = "http://127.0.0.1:8088";
     };
 
-    # LAN-only (ACL-restricted), restart allowed via the LAN token below.
-    "services1-status.int.leighhack.org" = mkIntVhost {
+    # LAN-only name (ACL at the door), restart allowed via the LAN token below.
+    "services1-status.int.leighhack.org" = mkOriginVhost {
       proxyPass = "http://127.0.0.1:8088";
-      extraConfig = lanTokenHeader lanToken;
-    };
-
-    # --- aibox's dashboard (proxied from 10.3.1.32) ---------------------
-    # services1 remains the SSL terminator for aibox too; X-WEBAUTH-USER is
-    # injected by nginx here and forwarded to the aibox dashboard, so the
-    # restart buttons work over the SSO vhost.
-
-    "aibox.status.leighhack.org" = mkSSOVirtualHost {
-      proxyPass = "http://${HOSTS.aibox}:8088";
-    };
-
-    "aibox-status.int.leighhack.org" = mkIntVhost {
-      proxyPass = "http://${HOSTS.aibox}:8088";
-      extraConfig = lanTokenHeader lanToken;
-    };
-
-    # --- services2's dashboard (proxied from 10.3.1.21) -------------------
-    # LAN-only.  There is no public vhost for services2: the public
-    # *.leighhack.org names need an explicit record in the DigitalOcean zone
-    # `*.int` names are answered by the router from common/int-dns.nix, but a
-    # public name is a record in the DigitalOcean zone and services2 has no public IP, so
-    # a public name would point at this box anyway.  Restart buttons work over the
-    # LAN vhost via the token header.
-    "services2-status.int.leighhack.org" = mkIntVhost {
-      proxyPass = "http://${HOSTS.services2}:8088";
       extraConfig = lanTokenHeader lanToken;
     };
   };

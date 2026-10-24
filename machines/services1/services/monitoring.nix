@@ -20,40 +20,47 @@
   lib,
   ...
 }: let
-  mkIntVhost = import ../../../common/nginx/int-vhost.nix {inherit lib;};
-  intVhostNames = import ../../../common/nginx/int-vhost-names.nix {inherit lib;};
+  mkOriginVhost = import ../../../common/nginx/origin-vhost.nix {inherit lib;};
+  INT = import ../../../common/int-dns.nix;
+  CONFIG = import ../../../common/config.nix;
   ENDPOINTS = import ../../../common/monitoring-endpoints.nix {inherit lib;};
 
-  # https *.int endpoints that are not names this nginx serves; the assertion at
-  # the bottom requires this to be empty.
+  # https *.int endpoints that the **front door** does not answer. The guard used to
+  # compare against this box's vhosts, which was right while services1 was the front
+  # door. After the move the names live in `common/int-dns.nix` (the router renders
+  # them into dnsmasq) and this box only keeps the origin vhosts for a handful of
+  # them, so reading the vhost list here would report every direct row as unbacked.
+  # The table is the fact that actually decides whether the name resolves; the
+  # origin-vs-direct split is `machines/services1/int-dns.nix`'s guard.
+  declaredIntNames = map (n: "${n}.${CONFIG.LOCAL_DOMAIN}") INT.names;
   unbackedIntEndpoints = let
     hosts =
       builtins.filter (h: h != null && lib.hasSuffix ".int.leighhack.org" h)
       (map (e: ENDPOINTS.httpsHost (e.url or "")) ENDPOINTS.list);
   in
-    lib.subtractLists (intVhostNames config.services.nginx.virtualHosts) hosts;
+    lib.subtractLists declaredIntNames hosts;
 in {
   assertions = [
     {
       assertion = unbackedIntEndpoints == [];
-      message = "gatus: these https *.int.leighhack.org endpoints are not vhosts this nginx serves: ${builtins.toJSON unbackedIntEndpoints}.  The app was renamed or removed and its gatus endpoint was left behind — remove or retarget it in common/monitoring-endpoints.nix.";
+      message = "gatus: these https *.int.leighhack.org endpoints are not answered at the front door (common/int-dns.nix): ${builtins.toJSON unbackedIntEndpoints}.  The app was renamed or removed and its gatus endpoint was left behind — remove or retarget it in common/monitoring-endpoints.nix.";
     }
   ];
 
   services.nginx.virtualHosts = {
     # kuma's status page was LAN/tailnet only; gatus stays the same.
-    "gatus.int.leighhack.org" = mkIntVhost {
+    "gatus.int.leighhack.org" = mkOriginVhost {
       proxyPass = "http://127.0.0.1:8999";
     };
 
     # Replaces the old grafana.int vhost in http.nix which proxied to the
     # (now superseded) Grafana on 10.3.1.30.
-    "grafana.int.leighhack.org" = mkIntVhost {
+    "grafana.int.leighhack.org" = mkOriginVhost {
       proxyPass = "http://127.0.0.1:3000";
       websockets = true;
     };
 
-    "prometheus.int.leighhack.org" = mkIntVhost {
+    "prometheus.int.leighhack.org" = mkOriginVhost {
       proxyPass = "http://127.0.0.1:9091";
     };
   };

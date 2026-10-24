@@ -1,8 +1,4 @@
-{
-  config,
-  lib,
-  ...
-}: let
+{lib, ...}: let
   LIBRESPEED_UID = 8004;
 in {
   users.users.librespeed = {
@@ -11,6 +7,13 @@ in {
     isNormalUser = true;
   };
 
+  # The speedtest container itself, still published on the wildcard at 8004. The name
+  # `speed.leighhack.org` and the **anubis** bot gate that fronts it are rows/targets on
+  # the front door now (`common/front-door.nix`'s `anubis = true`, rendered by
+  # `machines/gw/http.nix`): the gate is a front-door function and there is one of it,
+  # so its target is `10.3.1.20:8004` and the unix socket and the `nginx`-in-`anubis`
+  # group line moved with it. A second instance here would be a second gate deciding
+  # about the same name.
   virtualisation.oci-containers.containers = {
     librespeed = {
       hostname = "librespeed";
@@ -24,58 +27,4 @@ in {
       };
     };
   };
-
-  # journalctl -u anubis-default -f
-  services.anubis = {
-    defaultOptions.settings = {
-      SLOG_LEVEL = "debug";
-      OG_PASSTHROUGH = true;
-      OG_EXPIRY_TIME = "1h";
-    };
-
-    instances.default = {
-      settings = {
-        TARGET = "http://127.0.0.1:${toString LIBRESPEED_UID}";
-        BIND = "/run/anubis/anubis-default/anubis.sock";
-        METRICS_BIND = "/run/anubis/anubis-default/anubis-metrics.sock";
-      };
-    };
-  };
-
-  # required due to unix socket permissions
-  users.users.nginx.extraGroups = [config.users.groups.anubis.name];
-
-  services.nginx.virtualHosts = {
-    "speed.leighhack.org" = {
-      useACMEHost = "leighhack.org";
-      forceSSL = true;
-
-      locations."/" = {
-        proxyPass = "http://unix:${config.services.anubis.instances.default.settings.BIND}";
-        recommendedProxySettings = true;
-        proxyWebsockets = true;
-
-        extraConfig = ''
-          client_max_body_size 100M;
-        '';
-      };
-    };
-  };
-
-  # services.nginx.virtualHosts = {
-  #   "speed.leighhack.org" = {
-  #     useACMEHost = "leighhack.org";
-  #     forceSSL = true;
-
-  #     locations."/" = {
-  #       proxyPass = "http://127.0.0.1:${toString LIBRESPEED_UID}";
-  #       recommendedProxySettings = true;
-  #       proxyWebsockets = true;
-
-  #       extraConfig = ''
-  #         client_max_body_size 100M;
-  #       '';
-  #     };
-  #   };
-  # };
 }

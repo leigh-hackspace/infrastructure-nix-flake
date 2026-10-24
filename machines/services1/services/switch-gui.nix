@@ -87,7 +87,7 @@
   ...
 }: let
   HOSTS = import ../../../common/hosts.nix;
-  mkIntVhost = import ../../../common/nginx/int-vhost.nix {inherit lib;};
+  mkOriginVhost = import ../../../common/nginx/origin-vhost.nix {inherit lib;};
 
   port = 8097;
   hostname = "switch.int.leighhack.org";
@@ -236,7 +236,7 @@ in {
   # route, not a file), so the vhost must not add a `location` block that would
   # swallow `/api/*`: `mkIntVhost` proxies everything, which is what the app
   # expects.  Uploads are not a thing here, so the default body limit is fine.
-  services.nginx.virtualHosts.${hostname} = mkIntVhost {
+  services.nginx.virtualHosts.${hostname} = mkOriginVhost {
     proxyPass = "http://127.0.0.1:${toString port}";
   };
 }

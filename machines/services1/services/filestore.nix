@@ -25,7 +25,7 @@
   ...
 }: let
   CONFIG = import ../../../common/config.nix;
-  mkIntVhost = import ../../../common/nginx/int-vhost.nix {inherit lib;};
+  mkOriginVhost = import ../../../common/nginx/origin-vhost.nix {inherit lib;};
 
   # The upload limit, in the two places it has to agree: the backend's
   # --max-upload and nginx's client_max_body_size.  Written as bytes so the
@@ -100,7 +100,7 @@ in {
   };
 
   # LAN-only vhost (the binary only listens on 127.0.0.1).
-  services.nginx.virtualHosts."filestore.int.leighhack.org" = mkIntVhost {
+  services.nginx.virtualHosts."filestore.int.leighhack.org" = mkOriginVhost {
     proxyPass = "http://127.0.0.1:8096";
     # Uploads are raw request bodies, so the vhost's client_max_body_size must
     # match the --max-upload above: nginx's default here is 10m, which 413'd

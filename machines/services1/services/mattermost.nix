@@ -36,8 +36,7 @@ in {
   services.nginx.virtualHosts = {
     # Replace with the domain from your siteUrl
     "mattermost.leighhack.org" = {
-      forceSSL = true; # Enforce SSL for the site
-      useACMEHost = "leighhack.org";
+      extraConfig = CONFIG.ROUTER_ONLY;
 
       locations."/" = {
         proxyPass = "http://127.0.0.1:8065"; # Route to Mattermost

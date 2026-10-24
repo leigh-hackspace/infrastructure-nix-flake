@@ -18,7 +18,6 @@
     ./cockpit.nix
     ./door-entry-management-system.nix
     ./filestore.nix
-    ./frigate-monitor.nix
     ./frigate.nix
     # Gatus — the endpoint checks and the Slack alerting.  Moved here from
     # machines/services2/gatus.nix on 2026-10-17; the endpoint list is data in
@@ -26,7 +25,6 @@
     ./gatus.nix
     # ./gitlab.nix
     ./gocardless-dashboard.nix
-    ./headscale.nix
     ./librespeed.nix
     ./matrix.nix
     ./mattermost.nix
@@ -46,9 +44,10 @@
     ./redis.nix
     # ./samba.nix
     ./status.nix
-    # The vhost for services2's Strata engine (see machines/services2/strata.nix);
-    # the name must stay in that file's allowed_hosts too.
-    ./strata-proxy.nix
+    # The vhost for services2's Strata engine moved to the front door's table
+    # (`common/front-door.nix`'s `strata.int`/`strata.leighhack.org` rows) — the door
+    # proxies directly to 10.3.1.21:8080 and injects the engine key on the LAN name.
+    # ./strata-proxy.nix is deleted with it.
     # Ports and VLANs on the ProCurve core switch (10.3.1.2) over HTTPS.
     # Needs the switch_gui_env_file sops secret before it will start.
     ./switch-gui.nix

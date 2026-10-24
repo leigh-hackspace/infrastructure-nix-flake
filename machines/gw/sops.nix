@@ -35,6 +35,20 @@
       mode = "0440";
     };
 
+    # headplane's admin API key and its authentik OIDC client secret. ./headscale.nix
+    # feeds them to the headplane unit, which reads them as files from /run/secrets
+    # (CONFIG.HEADPLANE_API_KEY_FILE / HEADPLANE_CLIENT_SECRET_FILE). They moved with
+    # headscale from services1, where they were declared for the same two daemons.
+    headplane_api_key = {
+      group = "secrets";
+      mode = "0440";
+    };
+
+    headplane_client_secret = {
+      group = "secrets";
+      mode = "0440";
+    };
+
     # The shared env-file secret (`CONFIG.ENV_FILE`), needed here for exactly one of
     # its keys: `DO_AUTH_TOKEN`, which ./http.nix's ACME DNS challenge presents to
     # DigitalOcean to prove this box may issue for `int.leighhack.org`
