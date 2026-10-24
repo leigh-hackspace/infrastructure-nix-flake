@@ -102,6 +102,44 @@ in {
       # this cert's life, so the line is load-bearing on a 60-day timer and belongs in
       # ./README.md's list of things that only break at night.
       dnsResolver = "1.1.1.1:53,8.8.8.8:53";
+
+      # **Stop asking a resolver whether the TXT has propagated; wait.** The line
+      # above fixes *which* resolvers are asked, and that was not enough: the phase-1
+      # deploy lost the challenge anyway, on the second of this cert's two SANs.
+      #
+      # What happened, off the journal of the first `just switch-gw` (2026-10-24):
+      # lego validated `*.int.leighhack.org` at +38 s — the TXT existed, 1.1.1.1 was
+      # answering it, LE said "The server validated our request" — then began the
+      # check for `int.leighhack.org`, which is the **same TXT name**
+      # (`_acme-challenge.int.leighhack.org`: an apex and its wildcard share one
+      # challenge record), and asked 1.1.1.1 about it for the next 60 s. Every answer
+      # was NXDOMAIN, the window closed and the order died:
+      #
+      #   ERROR … [int.leighhack.org: dns01: time limit exceeded: last error:
+      #         recursive nameservers: NS 1.1.1.1:53 returned NXDOMAIN for
+      #         _acme-challenge.int.leighhack.org.]
+      #
+      # So the resolver that had just confirmed the record spent the next minute
+      # denying it ever existed, while the record was still up (lego cleaned it only
+      # afterwards). `docs/router-front-door-migration.md`'s "two boxes, one TXT
+      # record" finding is about two *boxes* writing that name; this is the same race
+      # with one writer, and it is not a thing that can be reasoned about further —
+      # it is a cache answering from a negative it was told about earlier, which is
+      # what a resolver is for.
+      #
+      # Hence the wait: `--dns.propagation.wait` tells lego to skip both propagation
+      # checks (authoritative and recursive) and simply let the zone settle before it
+      # asks the CA. Two domains × 120 s, which is minutes against a unit with
+      # `TimeoutStartSec=infinity` on a daily timer, in exchange for not depending on
+      # which answer a public resolver happens to have cached. `dnsResolver` stays:
+      # lego still uses those resolvers to find the zone apex and any CNAME, and the
+      # reason it must not use *this box's* dnsmasq for that is unchanged above.
+      #
+      # Spliced into the lego command **unescaped** (`extraLegoFlags` is
+      # `concatStringsSep " "` in this nixpkgs' module), so: one argument, no spaces,
+      # and read the rendered script back after a switch rather than trusting this
+      # comment (AGENTS.md rule 10).
+      extraLegoFlags = ["--dns.propagation.wait=120s"];
     };
 
     certs.${intCert} = {
@@ -192,6 +230,88 @@ in {
         useACMEHost = intCert;
         proxyPass = "http://${HOSTS.router}:8091";
       };
+    };
+  };
+
+  # ---------------------------------------------------------------------------
+  # The check that can tell an issued certificate from a *present* one.
+  #
+  # `security.acme` here does not fail when the CA does not answer. The
+  # "Ensure certificate" unit writes **minica's own self-signed certificate** into
+  # the cert directory when lego exits non-zero — nginx then starts, the vhosts
+  # serve, `acme-int.leighhack.org.service` reports `Result=success` and the whole
+  # box looks healthy behind a certificate no client trusts. Measured on the phase-1
+  # deploy: every check `docs/router-front-door-migration.md`'s runbook listed passed
+  # — `Result=success`, a populated `/var/lib/acme/int.leighhack.org/`, `nginx -t`, a
+  # 200 from the canary, the `After=acme-…` pairing — and
+  # `openssl x509 -issuer` said `CN=minica root ca 56254e`. Nothing distinguishes the
+  # two states except the issuer, so the issuer is what gets checked, and the runbook
+  # now says so.
+  #
+  # A timer rather than a one-shot because the fallback is offered to the renewal too,
+  # every day, for the rest of this box's life: a renewal that fails at 04:00 should
+  # be a red unit that night and not an expired-certificate dialog in March. It runs
+  # 15 min after boot and daily after that — after the acme units have finished (they
+  # run at boot) and, since the renewal timer here fires at 19:53 UTC, within a day of
+  # any renewal that fell back. `systemctl start front-door-cert-check` is the
+  # after-a-switch form; it is cheap enough to be part of the deploy rather than a
+  # thing someone remembers.
+  systemd.services.front-door-cert-check = {
+    description = "The front door's certificate is CA-issued, not the minica fallback";
+
+    serviceConfig = {
+      Type = "oneshot";
+
+      # Root, because that is who may read it: the cert directory is `acme:nginx
+      # 0750`/`0640` and this is a check *about* that directory, not a consumer of the
+      # key. Reads the issued files; never copies, prints or logs them.
+      ExecStart = pkgs.writeShellScript "front-door-cert-check" ''
+        set -euo pipefail
+
+        certDir="/var/lib/acme/${intCert}"
+        cert="$certDir/cert.pem"
+
+        if [ ! -r "$cert" ]; then
+          echo "no readable certificate at $cert — is security.acme deployed and acme-${intCert}.service run?" >&2
+          exit 1
+        fi
+
+        issuer=$("${pkgs.openssl}/bin/openssl" x509 -noout -in "$cert" -issuer)
+        case "$issuer" in
+          *minica*)
+            echo "$intCert is the minica self-signed fallback ($issuer): lego never issued." >&2
+            echo "  why:  sudo journalctl -u acme-order-renew-${intCert}.service -n 50" >&2
+            echo "  fix:  sudo systemctl start acme-order-renew-${intCert}.service" >&2
+            echo "        sudo systemctl restart nginx"
+            exit 1
+            ;;
+        esac
+
+        # Loud while there is still a week to be loud about it. The renewal is due at
+        # 60 days and the daily timer retries it, so 14 days is not a warning about a
+        # problem, it is a warning that the retries have been failing for a while.
+        if ! "${pkgs.openssl}/bin/openssl" x509 -noout -in "$cert" -checkend $((14 * 86400)) >/dev/null; then
+          echo "$intCert expires within 14 days: $issuer" >&2
+          exit 1
+        fi
+
+        echo "$intCert is CA-issued and not near expiry: $issuer"
+      '';
+    };
+
+    # Ordering, not a dependency: a check that runs while lego is mid-flight is a
+    # false alarm, and `After=` is what makes the two units line up when they are in
+    # the same transaction (a boot, a switch). It must not *require* lego, or a failed
+    # issuance would take the check that reports it down with it.
+    startAfter = ["acme-order-renew-${intCert}.service"];
+  };
+
+  systemd.timers.front-door-cert-check = {
+    wantedBy = ["timers.target"];
+    timerConfig = {
+      OnBootSec = "15min";
+      OnUnitActiveSec = "1d";
+      AccuracySec = "1min";
     };
   };
 }
