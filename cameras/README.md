@@ -5,7 +5,10 @@ surveillance cameras**, and `cam1` (10.3.2.6) is a device on the same VLAN that
 is **not** OpenIPC.  None of them runs NixOS, none has systemd, none is a module
 in the flake: their entire state is files under `/etc` sitting on a tmpfs root
 (`overlay` on `/`, 704 KB, **~452 KB free**) that busybox init re-reads on boot
-and that a **firmware reflash overwrites**.  They are the reason a fault can be
+and that a **firmware reflash overwrites** — a *reflash* destroys that state, and an
+*update* moves where it lives, because the settings partition starts where the new
+squashfs ends (see *Firmware updates* below: that is the difference between a retry and a
+bench visit).  They are the reason a fault can be
 invisible where it matters: services1's frigate container pulls their RTSP
 through its own go2rtc, and the table that maps a feed name to a camera lives
 **inside that container** (`/dev/shm/go2rtc.yaml`, generated at start from
@@ -18,7 +21,9 @@ Read the sibling doc this directory owns before touching a camera:
 **[`./c110.md`](./c110.md)**, "TP-Link Tapo C110 v2.0 — Complete Hacking Guide"
 (610 lines / 50 KB: the SPI-NOR dump, the flash layout, the boot chain, what
 stock firmware contains, the app-less WiFi options, §8 the reflash route —
-U-Boot plus an SD-card or TFTP `sf erase`/`sf write` of an OpenIPC image — and
+**superseded on two points by *Firmware updates* below**: a 2026 image is a kernel plus a
+rootfs and not an 8 MB chip image, and the tool is `sysupgrade` and not `fw`. The route
+as written is U-Boot plus an SD-card or TFTP `sf erase`/`sf write` of an OpenIPC image — and
 §9 restoring stock).  It came with the fleet rather than from this pass, and it
 is the device-side story `just cam-push`/`just cam-init` assume; the one
 operation this repo will not do (reflash) is written there because someone will
@@ -283,6 +288,160 @@ camera's config before the repo can hold it (`cam-pull` → `cam-diff` →
 9. **`/etc/custom.ok` exists and is empty** on cam5, cam7 and cam9: an install
    hook ran and completed on each — and on cam9 it is **absent**, which is
    another way cam9 got a different install path despite reporting 2.4.08.22.
+
+## Firmware updates (measured 2026-10-25) — what "restoring needs soldering" really covers
+
+Nothing has been updated. This is what an update *is*, measured from current upstream
+against these three devices before anyone touches one; `just cam-preflight <cam>`
+re-measures the device half of every number here (read-only) and is the recipe to run
+before believing any of it.
+
+**Upstream changed shape after these boxes were flashed, and `c110.md` §8 describes the
+old shape.** The 2026-10-24 nightly for our SoC (`openipc.ssc337-nor-lite.tgz`,
+7,137,552 B) holds `uImage.ssc337` (2,003,872 B) + `rootfs.squashfs.ssc337`
+(5,136,384 B) — no IPL, no U-Boot, no `art` — and the tool is `/usr/sbin/sysupgrade`
+(v1.0.77), not §8.5's `fw`. The two consequences point opposite ways:
+
+- **The boot chain is not what an update threatens.** `-k`/`-r` write the kernel and the
+  rootfs and never touch IPL, U-Boot or the env, so "the board stops responding to
+  everything but a clip programmer" is not the failure mode here. (§8.2's jenkins
+  artifact is gone too: `jenkins.int…/job/OpenIPC-Builds/` answers 502 as of 2026-10-25.)
+- **The settings are more at risk than "the diff tells you what the device thinks, not
+  what the repo believes" allows for.** A split NOR layout has no fixed slots: the
+  kernel's DT declares one `firmware` partition and divides it at boot (`mtdsplit`), so
+  `rootfs_data` — the overlay, i.e. the WiFi credentials, the host keys,
+  `authorized_keys`, every file `cam-diff` protects — *starts where the new squashfs
+  ends*. Changing either image moves the settings, and they cross the boundary as a blob
+  the updater writes at the new overlay start (`OPENIPC-OVL1` + gzipped tar) which
+  `/init` restores before mounting `rootfs_data`. **When that blob is written, and how it
+  is verified, is not established here, and it is the first thing to establish**: it
+  decides whether an interrupted update reboots onto its old settings or onto no WiFi and
+  no keys, over a link nobody can cable around.
+
+**The arithmetic, on the numbers this repo actually holds, says it probably does not
+fit — and the numbers this repo holds are not the devices' own.** What is recorded: each
+of the three is `8 MB nor flash` (their sysinfo signature lines, the table above), and the
+donor unit in `c110.md` §3 has every partition before the kernel at `0x000000–0x080000`
+(524,288 B) plus a 128 KB `config` inside that. What is measured: the staged build is
+7,137,552 B of kernel+rootfs (5,136,384 B of that is the rootfs). So the slack is
+8,388,608 − 7,137,552 = **1,251,056 B** for the boot region, the env *and* the settings —
+and the settings are a 704 KB overlay with ~250 KB in it (the `overlay` on `/` figures at
+the top of this file). At the donor's 512 KiB boot region that is roughly
+22 KB of room to spare, with no env partition; add the donor's 128 KB `config` and it is
+about **109 KB over a chip that does not have another byte**. Two conclusions, and only
+one of them is about firmware:
+
+- the verdict is decided by *tens of kilobytes* on a layout **nobody has ever recorded for
+  these three devices** — there is not one partition size of cam5, cam7 or cam9 anywhere in
+  this repo or its history. So the fit is **unmeasured**, and `just cam-preflight <cam>` is
+  the thing that measures it (it reads `/proc/mtd` and `/sys/class/mtd/*`, and it is
+  deliberately read-only). Nobody should quote a number for these three until that has run.
+- the guard that ought to catch a mis-fit is explicitly built **not** to:
+  `sysupgrade`'s per-partition pre-check is commented *"Fails OPEN. A size it cannot read
+  … must never block a flash that would have worked"*, and upstream's own history is the
+  reason — before #2426 the split path never looked at `flashcp`'s status, so a run that
+  wrote **nothing** printed "RootFS updated to <exactly the version you asked for>" and
+  rebooted (#2238 was a camera whose rootfs partition had been resized in the U-Boot env
+  without `/proc/cmdline` following, which is precisely the state a hand-laid 8 MB
+  partition table reaches by accident). The split path does have a real pre-write check
+  (`"The new firmware and the settings do not fit the flash … Nothing was written; -n
+  upgrades without the settings"`), but `-f, --force_all` is documented as **"Do not
+  validate anything"**, so every one of these guards is one flag from being off.
+
+**What is actually at risk is the settings, and upstream has shipped losing them.** The
+snapshot is taken *before* anything is written (`tar … | gzip` into RAM, and a failure
+there dies with "Nothing was written"), the settings partition is released before the
+write, and both writes are read back (`"… failed: the flash does not read back as the
+image"`). That is the good news, and then:
+
+- the settings are **restored from a blob written after the firmware**, and its failure
+  message is *"Writing the settings at 0x… failed; the camera starts from defaults."*
+  Defaults on this fleet means no `wlanpass`, no `wpa_supplicant.conf`, no host key, no
+  `authorized_keys` — a camera that is up on nobody's network and admitting nobody.
+- `sysupgrade` carries the comment for the bug that did exactly that to a whole
+  generation of upgrades: after the boot hand-off the overlay was no longer mounted,
+  reading `/proc/mounts` alone "took the camera for one without settings and staged an
+  empty blob, which the first boot honours by starting from defaults — **every NOR upgrade
+  since the hand-off (#2648)**". That sentence is the honest answer to "make sure the
+  WiFi and SSH keep working": on a split-NOR OpenIPC box, that promise has been broken
+  before by the tool itself, and it fails silently.
+- **this file's own model of where `/etc` lives is not good enough to bet on it.** The top
+  of this file says `/etc` sits on a *tmpfs* root; `sysupgrade`'s split path mounts
+  `rootfs_data` **`-t jffs2` on an `mtdblock`** to read the settings, and the overlay
+  surviving a reboot only makes sense on flash. Both cannot be the whole story, and the
+  difference is "the config lives in a chip" versus "the config lives in RAM" —
+  pre-flight gate 5 is exactly this question, and it must be answered by a measurement
+  rather than by this paragraph.
+
+**A new rootfs also ships a new sensor selection, and two of the three devices have no pin
+to fall back on.** Proven here: **only cam5 pins its pad** (`isp:` → `sensorConfig:
+/etc/sensors/sc3338.bin`); cam7 and cam9 have **no `isp:` section at all** while
+`/etc/sensors/` on them holds more than one pad, and cam9 is `sc401ai` where cam5/cam7 are
+`sc3338` (`docs/follow-ups.md`) — while cam9's own sysinfo signature line in the table
+above reads `sc3338`, a conflict this file has never resolved. What a new loader does when
+nothing is pinned is **not recorded anywhere**, and the observable failure is already known
+from the other direction: this fleet has seen `Sensor panic!` reboots and pads that do not
+load. A camera that comes back streaming nothing, with WiFi and SSH healthy, is therefore
+a realistic outcome, and only `cam-diff` after the fact would say so.
+
+**If it ever happens, the order is: cam7 first** — most room after its firmware
+partition, ssc333, and its `/etc/wlanpass` + `wpa_supplicant.conf` are exactly the two
+files the carry-over moves; **cam5 second** (the only device with an `isp:` pin to fall
+back on); **cam9 last, or not at all until its pad is pinned** (autodetect hazard *and*
+smallest rootfs partition). Before any of it: `just cam-key` (the operator, at a terminal
+— no vendor password is stored on any machine here), `just cam-preflight`,
+`just cam-flashdump`, `just cam-backup`; and cam7's admin closed first, since it answers
+`200` unauthenticated as of 2026-10-25 where cam5/cam9 answer `401`
+(`docs/follow-ups.md`). There is no update recipe, and none should be written: a
+recipe that reboots a camera cannot promise the association and the keys come back. The
+three new recipes write only to the operator's disk — `cam-push` and `cam-init` stay the
+only things that write a device.
+
+### The SD card as an unbrick route: plausible, not yet load-bearing
+
+Asked on 2026-10-25 whether a card could restore these boxes. **It cannot be answered
+from a running camera, and the honest answer is "we do not know, and here is the cheapest
+way to find out".** The only device-side fact on record is that while Linux runs there is
+**no `/dev/mmc*` node at all** and `/proc/partitions` holds `mtdblock0…mtdblock4` — which
+says the running kernel exposes no MMC block device, and says nothing about whether the
+SoC could *boot* from one, since the boot loader is not Linux and the driver may simply not
+be enabled in this build.
+
+- **SD is already part of this hardware's install story, on paper.** `c110.md` §8.1–8.3 use
+  a FAT32 micro-SD card (≤32 GB) for image staging and flash the image **from U-Boot**, and
+  §8.4 has the customizer reading WiFi credentials off a card (`wlanssid`, `wlanpass`) — so
+  for the donor C110 v2 a card is enough both to boot from and to re-provision the
+  radios. **The donor is not our three units**, which arrived with OpenIPC already on them
+  and whose PCBs nobody here has opened (cam9 does not even report a board line).
+- **Stock firmware had an SD recovery path too** (`c110.md` §9B: `etc/init.d/check_upgrade`
+  at START=13 takes an image from a FAT card) — but that is the TP-Link userspace, not
+  OpenIPC, so it is gone the moment the box is OpenIPC, which all three are.
+- **What would settle it, in order of cost:** (1) `just cam-flashdump` a unit and read the
+  IPL/U-Boot it contains — an OpenIPC U-Boot built with MMC support will say so in its
+  banner and its `help`; (2) put a card in and watch a *spare* board, never a wired-in one;
+  (3) `c110.md` §8.3's serial console, which is the route already worked out on this
+  silicon — **3.3 V logic, 115200 8N1**, pads on the main PCB near `TP501`, IPL banner
+  `IPL g77fc04e`, and from there U-Boot's `sf` commands over TFTP or a card.
+- **The soldering risk is real and it is on the record**: `c110.md` §2 notes the donor's
+  test pads were solder-jumpered to a header, so assume these three may need hot air over
+  a shield to reach a console at all. The clip route is documented too (CH341A + SOP8,
+  with the 3.3 V VCC mod, plus OpenIPC's `snander` for bit-bang), and the same caveat the
+  file already carries applies: a clip can read a chip it cannot boot.
+- **So the unbrick that is actually payable in advance is the dump.** `just cam-flashdump`
+  reads every MTD partition with a per-partition md5 checked against the device, so the
+  chip never has to be *read* again — only written, from serial, from a card, or from a
+  clip, whichever turns out to exist. That is the one action that makes "restoring needs
+  soldering" untrue, and it costs a minute of WiFi and about 8 MB of disk.
+
+**And there is no rescue userspace to fall back on.** OpenIPC *has* one — `failsafe-rescue`
+brings a camera up on network + SSH only after repeated failed boots, with the overlay
+mounted so authentication still works, which would be the perfect net for a bad update —
+but its own `Config.in` restricts it to "SoC families whose U-Boot keeps a boot counter in
+a reserved DRAM word … (currently Goke gk7205v200 and gk7205v300)", and the package
+comment says it is "kept out of the shared overlay so it does not ship to … families that
+do not reserve it". **On ssc333/ssc337 an update that crash-loops gets no failsafe, no
+serial console proven present, and no cable.** That, more than any of the arithmetic above,
+is the reason this directory says no.
 
 ## What belongs where
 

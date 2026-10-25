@@ -1033,3 +1033,63 @@ that **need an owner or a decision** rather than another measurement.
   device (they are **not** all the same sensor: cam5/cam7 are `sc3338`-based
   SSC009A, cam9 is `sc401ai` SSC33X), so it is a decision with a hardware
   consequence, not a config tidy-up.
+- **A firmware update on this fleet is blocked on measurements we have never taken, not
+  on access** (audited 2026-10-25 from current upstream; **no device was touched, nothing
+  was flashed**). What is known: all three are `8 MB nor flash` and run OpenIPC 2.4.08.22 /
+  2.4.08.22 / 2.3.11.22 from 2024, and the current build for their SoC is 7,137,552 B of
+  kernel+rootfs (5,136,384 B of it rootfs), which leaves **1,251,056 B** of the chip for
+  the boot region, the env and the settings — where the donor board's boot region alone is
+  524,288 B and its settings partition is 3,839 KB-class. So it fits only in the reading
+  where the env costs nothing, and the reading is the donor's, not ours: **this repo
+  contains not one partition size for cam5, cam7 or cam9**, and the fit check that should
+  catch a mis-fit is commented as failing **OPEN** by design (upstream #2426: before it, a
+  run that wrote nothing printed "RootFS updated to <what you asked for>" and rebooted).
+  Full argument, including why the settings and not the boot chain are what an update
+  threatens, and the upstream comment recording that **every NOR upgrade lost its settings
+  for a while (#2648)**: **`docs/camera-firmware-audit-2026-10-25.md`**. **Blocks:** every
+  update of every one of the three, and any promise that WiFi and SSH survive one.
+  **Needs, in order:** (1) `just cam-preflight <cam>` — the gates, including the one that
+  asks whether `/etc` is on flash at all, because `cameras/README.md` currently describes it
+  as tmpfs while `sysupgrade` mounts it `jffs2` on an `mtdblock`; (2) `just cam-flashdump` +
+  `just cam-backup`, which together are what make "the undo needs a clip" untrue — these
+  three arrived already flashed, with **their own** calibration, and only `cam7`'s pads were
+  ever pulled into the repo; (3) read `sysupgrade`'s two `nor_write_at` calls and the blob's
+  write ordering as deployed code, not as comments; (4) decide the sensor question for cam9
+  (`sc401ai` per this file, `sc3338` in cam9's own sysinfo line — unresolved, and cam9 has
+  no `isp:` pin). A re-partition is the only fix for "it does not fit", and a re-partition
+  is the bench route: so the first decision is whether we own a bench path at all —
+  `c110.md` §8.3 proves serial on this silicon (3.3 V, 115200), §2 says the pads may sit
+  under a shield, and OpenIPC's `failsafe-rescue` (network + SSH on repeated boot failure)
+  is **gk7205-only**, so a crash-looping ssc33x here has no rescue at all.
+- **cam7's web admin answers `200` with no authentication** (measured 2026-10-25 from
+  services1: `:80` and `:85`, identical 228-byte body by IP and by `cam7.int`,
+  `Access-Control-Allow-Origin: *`), while cam5 and cam9 still answer `401` — which
+  contradicts `cameras/README.md`, where 401-on-all-three is listed under *proven*.
+  `/etc/httpd.conf` is byte-identical across the fleet (`6f9c8c6e…`, and it contains
+  `A:*`), so the gate is majestic's own credential file and cam7 — the 2.3.11.22 one, the
+  oldest firmware of the three — appears not to be honouring it. Either the record was
+  wrong about cam7, or cam7 reverted something today (`/etc` is an overlay re-read from
+  flash on boot on a box whose root overlay is RAM-tiny). **Blocks:** updating cam7, which
+  is otherwise the right first device, and any claim that the fleet's admin plane is
+  closed. **Needs:** `just cam-key cam7` (operator, at a terminal: the vendor password is
+  stored nowhere on this network), then `just cam-check cam7`, then restore parity with
+  cam5/cam9's 401 and re-probe; and re-read the 401 claim on the other two while keyed.
+- **`/etc/custom.ok` on cam9 is recorded twice and the records disagree** — the pull
+  table gives it size 0, fault 9 says it is absent. That file is the marker a new rootfs
+  *deletes* to stop the SDK re-running, so "which is it" is a fact about whether cam9's
+  install took at all. **Blocks:** nothing until someone is keyed in. **Needs:** one
+  `[ -e /etc/custom.ok ]` on cam9 at the first `just cam-check cam9`, and the README
+  corrected to whatever it says.
+- **On 2026-10-25 nothing was staged onto a device and nothing was flashed** — the work
+  stopped at the first gate: no camera is keyed, and keying needs a human at a terminal
+  because the vendor password is on no machine by design. What exists: four new recipes
+  (`just cam-preflight`, `cam-flashdump`, `cam-backup`, `cam-image`), two device-side
+  scripts (`cameras/preupdate-check.sh`, `cameras/backup-etc.sh`, both busybox-ash and
+  `sh -n` clean, no awk), and one build staged and md5-verified on services1 at
+  `~/camera-images/nightly-20261024-856f22e-ssc337_lite.tgz`
+  (`sha256 56b98abe…`, verified against the `.md5sum` members *inside* the tarball, the
+  only check that means anything here) and the matching `ssc333_lite` build for cam7
+  (`sha256 c2437ef0…`). Both are **outside** the flake source on purpose: a tarball in
+  the repo is a copy cost on every evaluation, so `just cam-image` stages in
+  `~/camera-images` and the repo-local `camera-images/` entry in `.gitignore` is only a
+  guard against staging in the wrong place.

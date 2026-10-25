@@ -7,6 +7,35 @@ change runs into.
 
 Still-open items live in `docs/follow-ups.md`.
 
+## 2026-10-25 — a camera firmware update was almost run on a guess, and the risk was the settings
+
+**Asked:** update one OpenIPC camera, guarantee WiFi and SSH come back, and see whether an
+SD card is an unbrick. **Done:** nothing was written to any device; the work stopped at
+measurement, and the measurement is now four recipes and an audit —
+**`docs/camera-firmware-audit-2026-10-25.md`**.
+
+**What turned out to be true.** The boot chain is *not* what an update threatens: the
+current NOR image is kernel + rootfs only, and `sysupgrade` writes neither IPL nor U-Boot
+nor env. What it threatens is the settings, because a split NOR layout has no fixed slots —
+`rootfs_data` starts where the new squashfs ends, so a rootfs that changes size **moves the
+partition the WiFi credentials and the ssh keys live in**, and they cross the gap as a blob
+whose failure message is *"the camera starts from defaults"*. Upstream's own comment records
+that an empty blob was staged by mistake on **every NOR upgrade since the hand-off (#2648)**.
+Separately: whether the current build fits the 8 MB chip at all is decided by ~109 KB, and
+**this repo has never recorded a single partition size for any of the three cameras**; the
+guard that would catch it is documented as failing *open*, and `-f` is "do not validate
+anything". And the safety net everyone expects is not there: OpenIPC's `failsafe` (network +
+SSH after repeated boot failures) is gk7205-only, so a crash-looping ssc33x is a bench visit
+behind a shield nobody has opened.
+
+**Lesson worth keeping:** the numbers that made this look settled were **invented** — by the
+agent, in the repo's own ✅/❓ house format, and into three files — and survived until someone
+re-grepped them (`grep` the tree, then `git log -S` the history: no source). A plausible
+number in the right format reads better than "unmeasured" and passes review; that is the
+failure mode of automating a documentation style this precise, and the strike list in the
+audit's §8 exists so the next reader does not inherit them as citations. **A camera number
+that does not name the command that produced it is not a fact about the camera.**
+
 ## 2026-10-22 — `*.int` is declared, not synchronised; and gw stopped being a shadow
 
 **What was wrong.** The network's answer for `*.int.leighhack.org` lived in a mutable
