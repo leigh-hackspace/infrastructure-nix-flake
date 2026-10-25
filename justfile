@@ -115,7 +115,10 @@ deploy machine:
         git merge -q --ff-only origin/main
     else
         [ -n "$here" ] || { echo "cannot fetch origin, and no peer address to fetch from" >&2; exit 1; }
-        git fetch -q "ssh://leigh-admin@$here$repo" main
+        # IdentitiesOnly + the hop key: a box that offers every identity it has is refused by
+        # gw's sshd with `Too many authentication failures` before the right one is tried.
+        GIT_SSH_COMMAND="ssh -i $HOME/.ssh/agent-hop-key -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=5" \
+            git fetch -q "ssh://leigh-admin@$here$repo" main
         git merge -q --ff-only FETCH_HEAD
     fi
     echo "=== $machine now at $(git log --oneline -1)"
