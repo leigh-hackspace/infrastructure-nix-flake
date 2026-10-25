@@ -154,15 +154,27 @@ test: _build-host-guard
     bash common/shared-rs-links.sh
     nix develop --command bash -c 'cd crates && cargo test --workspace --offline'
 
-# cargo clippy over the same set.  Warnings are reported, not fatal: the point
-# is to see them (they used to go entirely unchecked).
+# cargo clippy over the same set.  Warnings are reported, not fatal: the point is to see
+# them (they used to go entirely unchecked).  A **failure** is fatal, though, and it was
+# not: the body used to pipe clippy into `grep … || true`, so the recipe exited 0 whatever
+# clippy said, and a lint gate that cannot fail is worse than no gate at all.  The status is
+# now carried out of the filter explicitly.
 clippy: _build-host-guard
     #!/usr/bin/env bash
     set -euo pipefail
     bash common/shared-rs-links.sh
     nix develop --command bash -c '
-      cd crates && cargo clippy --workspace --all-targets --offline 2>&1 \
-        | grep -vE "^(Compiling|Checking|Finished|    Finished)" || true'
+      set -euo pipefail
+      cd crates
+      out=$(mktemp)
+      trap "rm -f \"$out\"" EXIT
+      status=0
+      cargo clippy --workspace --all-targets --offline >"$out" 2>&1 || status=$?
+      # One Compiling/Checking line per crate is most of the output and none of the
+      # information; the diagnostics and clippy's own summary are what is wanted.
+      grep -vE "^(Compiling|Checking|Finished|    Finished)" "$out" || true
+      exit $status
+    '
 
 # --- frontend (the four Dioxus SPAs) ---
 
