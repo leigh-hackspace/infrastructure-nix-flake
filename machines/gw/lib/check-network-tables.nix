@@ -31,6 +31,11 @@ let
   INT = import ../../../common/int-dns.nix;
   TABLES = import ./network-tables.nix;
 
+  # The connection table's "ours", derived the way ../network-status.nix derives
+  # it, so the assertions below are about the same list the router is handed.
+  localPrefixes = TABLES.localPrefixes VLANS;
+  localPrefixesV4 = builtins.filter (p: !has ":" p) localPrefixes;
+
   need = cond: msg:
     if cond
     then true
@@ -78,13 +83,27 @@ let
   # address and its `dynFrom`-`dynTo` pool.
   lastOctet = addr: builtins.fromJSON (builtins.elemAt (TABLES.quadsOf addr) 3);
 
-  # A VLAN's block is inside an ACL block when the ACL's prefix is a prefix of
-  # the VLAN's: the ACL says "10.3.0.0/16" and the VLAN lives in "10.3.1.0/24",
+  # A block is inside the network's ACL when one of the ACL's prefixes is a
+  # prefix of it: the ACL says "10.3.0.0/16" and the VLAN lives in "10.3.1.0/24",
   # which is the same fact nginx answers with an `allow` line.  The ACL is passed
   # as the network writes it (common/config.nix's nginx lines) and converted here
   # — one conversion, one relation, so the check and the firewall ask the same
   # question of the same table.
-  coveredByAcl = v: acl: builtins.any (b: has (blockPrefix b) (blockPrefix v.net)) (TABLES.aclBlocks acl);
+  #
+  # Takes the *block* rather than the VLAN record because two kinds of thing ask
+  # this question: a VLAN's own block, and a bare prefix out of
+  # TABLES.localPrefixes.  Two callers, one relation.
+  #
+  # IPv4 only, and not because IPv6 does not matter: `blockPrefix` counts dotted
+  # quads, so asking it about `fd7a:115c:a1e0::/48` dies in `elemAt`.  Filtering
+  # here is what makes a *failing* check report the block that failed — before it,
+  # this held together only because every VLAN block matched one of the ACL's IPv4
+  # entries first and `any` stopped before reaching the IPv6 ones, so any block
+  # that was genuinely uncovered crashed the evaluation instead of naming itself.
+  # The same split ./firewall.nix makes with `ipv4AclBlocks`, for the same reason.
+  blockCoveredByAcl = net: acl:
+    builtins.any (b: has (blockPrefix b) (blockPrefix net)) (TABLES.ipv4AclBlocks acl);
+  coveredByAcl = v: acl: blockCoveredByAcl v.net acl;
 
   recordValues = builtins.attrValues RECORDS;
 
@@ -180,6 +199,41 @@ in
     need
     (builtins.all (v: coveredByAcl v CONFIG.LOCAL_NETWORK) VLANS)
     ''a VLAN whose block is not in the network's ACL: ${builtins.toJSON (map (v: v.net) VLANS)}''
+  );
+  # --- the connection table's idea of "ours" --------------------------------
+  # `TABLES.localPrefixes` is what ../network-status.nix hands to `--local-prefix`,
+  # and the whole answer to "who is downloading, and is that one of ours" is
+  # decided by it.  Checked with the same containment relation as every other
+  # assertion here, for the same reason the firewall uses it: a prefix the
+  # network's own ACL refuses must not be labelled internal on the page either,
+  # or the dashboard would be showing a stranger's traffic as one of ours.
+  #
+  # Only the IPv4 half is checked, and that is the *relation's* limit rather than
+  # a choice: `blockPrefix` counts dotted quads, so an IPv6 block has no prefix in
+  # this sense (see `blockCoveredByAcl`).  Doing the IPv6 half needs an IPv6
+  # containment helper that nothing else on this box asks for yet —
+  # `docs/follow-ups.md` has it as an open item.
+  assert (
+    need
+    (builtins.all (net: blockCoveredByAcl net CONFIG.LOCAL_NETWORK) localPrefixesV4)
+    ''a --local-prefix the network's own ACL does not allow: ${builtins.toJSON (builtins.filter (net: !blockCoveredByAcl net CONFIG.LOCAL_NETWORK) localPrefixesV4)}''
+  );
+  # Every VLAN's own block, and only blocks: a VLAN that silently drops out of the
+  # derivation would label its devices' traffic as external, which the page shows
+  # as "neither end is ours" — a wrong answer that looks like a network fact.
+  assert (
+    need
+    (builtins.all (v: builtins.elem v.net localPrefixes) VLANS)
+    ''a VLAN missing from the connection table's local prefixes: ${
+        builtins.toJSON (map (v: v.net) (builtins.filter (v: !builtins.elem v.net localPrefixes) VLANS))
+      }''
+  );
+  # A prefix handed to the same flag twice is a fact written twice; the derivation
+  # deduplicates, and this is what says so if it stops doing it.
+  assert (
+    need
+    (builtins.length localPrefixes == builtins.length (TABLES.uniq localPrefixes))
+    ''a duplicated local prefix: ${builtins.toJSON localPrefixes}''
   );
   # --- the records table -----------------------------------------------------
   # Every record's VLAN exists in the VLAN table.  A record naming a VLAN that

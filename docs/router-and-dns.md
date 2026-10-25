@@ -32,11 +32,12 @@ What still spoke the retired OPNsense box's language, and when it stopped:
 
 - **network-status** (`crates/network-status/`) was the last tool doing it — ssh as
   `root` and OPNsense commands (`netstat`, `pfctl`, `ifconfig`, `top -b`). It was
-  ported on 2026-10-21 alongside dns-sync, and then moved: it now runs **on gw** as
-  a DynamicUser (`machines/gw/network-status.nix`), reads the local `/proc` and
-  `/sys` (no ssh, no sudo, no key), and services1's nginx proxies
+  ported on 2026-10-21 alongside dns-sync, and then moved: it now runs **on gw** as its
+  own system account (`machines/gw/network-status.nix`), reads the local `/proc` and
+  `/sys` (no ssh, no sudo, no key — the one group-readable file, the conntrack table, is
+  granted by `machines/gw/conntrack-reader.nix`), and gw's own nginx proxies
   `network-info.int.leighhack.org` to it at `http://10.3.1.1:8091`. It charts gw's
-  interfaces, conntrack table, CPU, memory, load and TCP retransmits.
+  interfaces, its per-connection table, CPU, memory, load and TCP retransmits.
 - **dns-sync** edited `gw`'s `/var/lib/dnsmasq/names.hosts` over `leigh-admin` +
   `sudo -n`, which is how a new `*.int` vhost got DNS. Deleted on 2026-10-22: the same
   names are `common/int-dns.nix`, rendered into

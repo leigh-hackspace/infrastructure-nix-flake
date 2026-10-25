@@ -74,6 +74,11 @@
     ./http.nix
     ./networking.nix
     ./network-status.nix
+    # The two things its `/api/connections` table needs from the machine itself:
+    # the conntrack accounting sysctl, and group read access to
+    # /proc/net/nf_conntrack for a DynamicUser.  Deployed with it, not inside it,
+    # because both have to hold before the service's first probe.
+    ./conntrack-reader.nix
     ./openvpn.nix
     ./sops.nix
     ./uplink.nix

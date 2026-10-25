@@ -449,8 +449,49 @@ check-eval:
     # must be a vhost services1 serves.  Worth naming here because the guard now
     # lives on a different machine from gatus itself, so it is easy to forget which
     # eval catches a drift.
+    # AGENTS.md rule 26.  Eval-only — one `wc -l` over the tracked tree — so it is in
+    # this half rather than left for `check`, which the router cannot finish: a file
+    # is not allowed to grow past 1000 lines on the way past the router.
+    echo "=== source file sizes (AGENTS.md rule 26)"
+    just check-source-size
     echo "=== alejandra --check"
     just fmt-check
+
+check-source-size:
+    #!/usr/bin/env bash
+    # AGENTS.md rule 26: no source file over 1000 lines unless it can be helped.
+    # Four files are already over and are named here rather than hidden — a new one
+    # fails, and if one of these gets shorter the guard says so, because a baseline
+    # nobody prunes is a baseline nobody trusts.  Generated and machine-owned trees
+    # are skipped: `*/dist/*` is a minified bundle.  Prose is not source, and a Nix
+    # data table is NOT exempt — `monitoring-dashboards.nix` is on the baseline.
+    set -euo pipefail
+    baseline="crates/switch-gui/src/switch.rs crates/switch-gui/src/shadow.rs crates/filestore/src/server.rs machines/services1/services/monitoring-dashboards.nix"
+    over=$(git ls-files '*.rs' '*.nix' '*.ts' '*.tsx' '*.sh' '*.cjs' '*.py' '*.js' '*.css' \
+        | grep -v '/dist/' \
+        | xargs -r wc -l 2>/dev/null \
+        | grep -v ' total$' \
+        | awk '$1 > 1000 { print $2 }' | sort)
+    offenders=""
+    for f in $over; do
+        case " $baseline " in
+            *" $f "*) ;;
+            *) offenders="$offenders $f" ;;
+        esac
+    done
+    for f in $baseline; do
+        if [ ! -f "$f" ]; then
+            echo "  gone from the tree, drop it from the baseline: $f" >&2
+        elif [ "$(wc -l < "$f")" -le 1000 ]; then
+            echo "  under 1000 now, drop it from the baseline: $f ($(wc -l < "$f"))" >&2
+        fi
+    done
+    if [ -n "$offenders" ]; then
+        echo "over 1000 lines and not on the baseline — split it (AGENTS.md rule 26):" >&2
+        for f in $offenders; do echo "  $(wc -l < "$f") $f" >&2; done
+        exit 1
+    fi
+    echo "source sizes ok: $(echo "$over" | grep -c . || true) file(s) over 1000, all on the baseline"
 
 # Deploy-readiness: build every machine's system derivation without touching the
 # running system.  `nix flake check` only *evaluates*, so a module that evaluates

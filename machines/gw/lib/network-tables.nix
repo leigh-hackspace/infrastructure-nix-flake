@@ -410,4 +410,45 @@ in rec {
   # check and the firewall must not have two ideas about containment.  It is a
   # string test because the notation is what dnsmasq and nftables are handed.
   inBlock = addr: net: has (blockPrefix net) addr;
+
+  # --- the one consumer that needs the answer as CIDR ------------------------
+
+  # An IPv6 address's own /64, as CIDR: `2001:8b0:1d14:225::1` ->
+  # `2001:8b0:1d14:225::/64`.  Four groups because that is a /64, and the
+  # addresses in common/vlans.nix are written in full.  An abbreviated address
+  # (`fd99::1`) has too few groups to take a /64 from, which is refused loudly
+  # rather than guessed at: a prefix quietly derived wrong is a VLAN the router
+  # then classifies as external, and nothing else will say so.
+  v6Block64 = addr: let
+    # `builtins.split` (not `builtins.splitString`, which is a `lib` helper and
+    # this file is pure builtins on purpose — it is evaluated on its own by
+    # `just check-eval`): it returns the separators as lists, and the empty string
+    # where two colons were adjacent, so both are filtered out.
+    groups = builtins.filter (s: s != "") (builtins.filter builtins.isString (builtins.split ":" addr));
+  in
+    if builtins.length groups >= 4
+    then "${builtins.elemAt groups 0}:${builtins.elemAt groups 1}:${builtins.elemAt groups 2}:${builtins.elemAt groups 3}::/64"
+    else builtins.throw "network-tables: cannot take a /64 from ${addr}; write the address in common/vlans.nix in full";
+
+  # The prefixes that count as "inside the network", as CIDR strings — the one
+  # form `../network-status.nix`'s `--local-prefix` takes, for the connection
+  # table that has to say which end of a flow is a device and which end is the
+  # internet.  Everything else in this file renders the same tables as dnsmasq
+  # tags or nft sets; this is the same fact in the third syntax, which is why it
+  # is derived here rather than written out per machine.
+  #
+  # Every VLAN's own block, plus the /64 of each address the VLAN answers on or
+  # advertises.  The whole /64 rather than the advertised `ra` *range*, because a
+  # client's address is in the same /64 as the router's `::1` and a
+  # hand-configured box on the VLAN is still a box on the VLAN.  The tailnet is
+  # not in here: a tailnet peer has no VLAN and no lease, and showing its tailnet
+  # address unlabelled is the honest answer, not "internal".
+  localPrefixes = vlans: uniq (map (v: v.net) vlans ++ builtins.concatLists (map (v: map v6Block64 (v.ipv6 ++ map (r: r.from) v.ra)) vlans));
+
+  # Order-preserving dedup: VLAN 225's `ipv6` and its `ra` ranges are in the same
+  # /64, and a prefix handed to the same flag twice is a fact written twice.
+  uniq = builtins.foldl' (seen: x:
+    if builtins.elem x seen
+    then seen
+    else seen ++ [x]) [];
 }

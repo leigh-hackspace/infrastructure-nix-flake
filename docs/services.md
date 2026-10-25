@@ -103,10 +103,10 @@ you touch it, keep both halves: poll, and surface the failure.
 ## `crates/network-status/` — the router network dashboard
 
 Served at `network-info.int.leighhack.org`, and **hosted on `gw` (10.3.1.1)** since
-2026-10-21. The Rust binary (`src/`, **zero external crates**) runs as a
-`DynamicUser` with `--local`, reads the kernel's own statistics every 5 s, keeps a
-rolling history and serves the JSON API (`/api/snapshot`, `/api/history`,
-`/api/config`), `/metrics` and the static SPA (`--static-dir`).
+2026-10-21. The Rust binary (`src/`, **zero external crates**) runs as its own system
+account with `--local`, reads the kernel's own statistics every 5 s, keeps a rolling
+history and serves the JSON API (`/api/snapshot`, `/api/history`, `/api/config`,
+`/api/connections`), `/metrics` and the static SPA (`--static-dir`).
 
 It ran against the retired OPNsense box until 2026-10-21 and spoke its language:
 `root`, `netstat -ibn`, `pfctl`, `ifconfig -a`, `top -b`, `sysctl`. The probe is now
@@ -121,11 +121,84 @@ tunnel does, so its absence is the WAN-down signal. (The binary still has the ol
 `--router user@host --ssh-key … --known-hosts …` mode for probing another box; the
 unit does not use it.)
 
-It listens on **10.3.1.1:8091**, not `0.0.0.0`: its only clients are on services1 —
-Prometheus, which scrapes `/metrics` (`machines/services1/services/observability.nix`)
-— and `gw`'s own nginx, which serves `network-info.int.leighhack.org` from loopback.
-`machines/gw/firewall.nix` opens the port to `services1` alone. The JSON API is
-unauthenticated by design; the vhost ACL is the access control.
+It listens on **10.3.1.1:8091**, not `0.0.0.0`: its only clients are the router's own
+nginx, which serves `network-info.int.leighhack.org` from loopback since the front-door
+cutover (`common/front-door.nix`, `docs/router-front-door-migration.md`), and Prometheus
+on services1, which scrapes `/metrics`
+(`machines/services1/services/observability.nix`) — and `machines/gw/firewall.nix`
+opens the port to `services1` alone. The JSON API is unauthenticated by design; the
+vhost ACL is the access control, which is the sentence that carries weight now: see the
+connection table below for what an unauthenticated read of this box's `/proc` exposes.
+
+### The connection table (`/api/connections`)
+
+Added 2026-10-25 because "what is downloading, from where, how fast, for how long" was
+not answerable from the byte counters: those are per-second totals, and a 2 GB pull and
+a 2 MB page look the same for the four seconds they are visible. It is a table of
+**flows**, not sessions, because one large transfer is one tuple and that is the unit
+the question is asked in.
+
+- **Source: `/proc/net/nf_conntrack`, read locally, no root.** Each row already carries
+  its own byte and packet totals, both directions, which nothing else in this design
+  does: nft counters are per rule and the wire bytes are per second. Accounting must be
+  on (`net.netfilter.nf_conntrack_acct=1`) and the kernel hands the file to exactly one
+  group, so `machines/gw/conntrack-reader.nix` creates `conntrack-readers`, turns
+  accounting on, gives the file that group in a root `ExecStartPre=+`, and defines the
+  dashboard's service account with that group as its **primary** group.
+  **Read that module before changing any of it.** Its header carries four measurements
+  made against the live file, and one of them is the reason the service is not a
+  `DynamicUser`: `DynamicUser=yes` with `SupplementaryGroups=` is *denied* here (systemd
+  261 gives a dynamic uid no supplementary groups), so the table reads empty and nothing
+  says so — which is what the first version of this shipped, along with a comment
+  claiming it had been tested. It had not.
+- **Age is age, not kernel age.** Conntrack records "seen", not "started", and does not
+  say when. A flow's `first_seen_us` is the first table in which *this service* saw the
+  tuple, so the default filter — "older than 5 s" — means "this tuple has been in the
+  kernel's table across at least two of our samples". It cannot date a connection that
+  began between two samples, and a flow that ages out and is seen again is a new flow.
+- **One tuple in, one row out.** `key` is the tuple, canonicalised so an origin and a
+  reply tuple are the same flow; the counters go into *directions* (as/at the original
+  tuple = the request side, as/at the reply tuple = the response side), which is what
+  lets one row say "180 MB down, 40 kB up" for a download.
+- **Internal/external comes from `common/vlans.nix`.** `--local-prefix` is derived from
+  the VLAN table (`machines/gw/lib/network-tables.nix`'s `localPrefixes`: every VLAN's
+  block, plus the /64 of every address the VLAN answers on or advertises), so a device
+  on VLAN 226 cannot be labelled "external" because someone added a VLAN and not a
+  flag. `machines/gw/lib/check-network-tables.nix` checks the derived list against the
+  network's own ACL, with the same containment relation the firewall uses. Names come
+  from `/etc/dnsmasq-records.hosts` (static records, world-readable; the leases file is
+  root-only and the service does not read it, so a DHCP client is an address).
+- **Counters are 32-bit and wrap**, and the total is reported once it has wrapped — a
+  5 GB flow reads 4.3 GB smaller. Rates are measured over a *flow's own* interval, not
+  the global sample interval, because a flow seen every third sample has not been
+  transferring at its average over the last five seconds.
+- **A row whose `accounted` is false is invisible to rate and byte filters**, because
+  there is nothing to compare — the alternative is that turning on accounting silently
+  changes which rows the threshold shows. `totals.unaccounted` counts them and the SPA
+  says so in the header line.
+- **Query contract** (all of it optional, all defaults from the CLI flags):
+  `min_age`/`min_bytes`/`min_bps` (thresholds), `q` (a substring of an address, name,
+  or `:port`), `kind` (`any|internal|out|in|external`), `sort`
+  (`down|up|total|age|rate|host`), `limit`. `totals` describes the **matched** flows,
+  not the whole table, so the page's footer is the sum of what it shows. Host totals
+  roll up every flow a host is one end of — *before* the `limit` is applied, because a
+  host with twelve small flows is the point of the column. `down` is always
+  peer→host, so an `in` row reads its bytes out of the original direction; that
+  inversion is the single easiest thing to get backwards here (`flows/tests.rs` keeps it
+  true).
+
+The SPA's "Active connections" card is one 5 s poll of this endpoint with the filters
+in the query string, same race-control as the history poll
+(`crates/network-status/frontend/README.md`). `/metrics` carries four gauges of the
+same table — `router_connections_tracked` (seen now or within `--conn-stale`),
+`_active` (in the kernel's table at the last sample), `_long_running` (the
+`--conn-min-age` subset, i.e. what the page shows by default: the series that
+distinguishes "nothing this old" from "nothing at all") and `_unaccounted` (active
+flows with no kernel counters, which is the number that decays to zero after the acct
+sysctl goes on) — all under the binary's existing `router_` prefix rather than a
+`network_status_` one, because gw also runs node_exporter and its conntrack collector
+is scraped by the same Prometheus: two series answering nearly the same question with
+different units on one dashboard is a finding nobody notices.
 
 It lives in `machines/gw/network-status.nix`. That does mean the router's system
 contains a Rust crate, but nothing compiles on gw for it: the box delegates to aibox

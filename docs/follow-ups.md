@@ -538,6 +538,58 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
 
 ## Router (gw)
 
+- **The connection table's "ours" is asserted for IPv4 only** (found 2026-10-25 while
+  adding `TABLES.localPrefixes`, the `--local-prefix` list `../machines/gw/network-status.nix`
+  derives from `common/vlans.nix`). `machines/gw/lib/check-network-tables.nix` now checks
+  every derived prefix against the network's own ACL — the same containment relation the
+  firewall and the `coveredByAcl` assertion use — and that relation is `blockPrefix`,
+  which counts dotted quads: handed `fd7a:115c:a1e0::/48` it dies in `builtins.elemAt`.
+  That is why the helper filters to `TABLES.ipv4AclBlocks` and the IPv6 /64s a VLAN
+  advertises go unchecked, so a `common/vlans.nix` edit could put a prefix the ACL does
+  not allow on the page's "internal" side. (Before the filter, the failure mode was worse
+  than silence: a genuinely uncovered prefix walked the ACL list to its IPv6 entries and
+  crashed the whole evaluation instead of naming the block.) **Blocks:** nothing today —
+  every IPv6 prefix in the derived list is inside one of the ACL's four /48s. **Needs:**
+  an IPv6 containment helper in `machines/gw/lib/network-tables.nix` (the mask is a group
+  count on this network, so 16-bit groups and a `mask mod 16 == 0` refusal are enough and
+  no bignum arithmetic is wanted), then one line adding it to the same assertion block.
+- **The leases file is still root-only, so a DHCP client is a number on the page**
+  (opened 2026-10-25 with the connection table). `/etc/dnsmasq-records.hosts` is
+  world-readable and gives every *static* record a name; `/var/lib/dnsmasq/dnsmasq.leases`
+  is `0640 root:root` and holds the names of everything that got its address from the
+  dynamic ranges — which is most phones, laptops and the VLAN 226 cameras' own clients.
+  `machines/gw/conntrack-reader.nix` says where the two lines go. **Blocks:** nothing, and
+  it should stay blocked until someone decides it: the leases file is a list of which
+  MAC was seen on which VLAN when, and handing it to `conntrack-readers` means handing it
+  to whatever else is in that group. **Needs:** an explicit yes or no, written into that
+  module either way.
+- **`ExecStartPre=+` and not a timer is a decision, and it is open to being wrong**
+  (2026-10-25, `machines/gw/conntrack-reader.nix`). The group on
+  `/proc/net/nf_conntrack` is re-applied when network-status starts and not otherwise,
+  so reloading `nf_conntrack` mid-run leaves the dashboard blind until it restarts — it
+  logs that state rather than showing an empty router. The first version of the module
+  had a oneshot plus a timer to re-apply it, like `common/nixbld.nix`; the timer went
+  because a oneshot that fails to start fails `nixos-rebuild switch` on the network's
+  router, and the box had already eaten one deploy that way. **Blocks:** nothing; NAT
+  goes with that module, so a mid-run reload is not a thing that happens quietly.
+  **Needs:** if it ever does, the timer comes back with
+  `jobConfig.JobTimeoutStartSec` and `serviceConfig.SuccessExitStatus=` argued out loud,
+  not copied from `nixbld-guard`.
+
+- **A flow that moves more than 4 GiB resets its own age** (found and pinned by test on
+  2026-10-25, `crates/network-status/src/flows/tests.rs::a_counter_that_goes_backwards_rebaselines_instead_of_going_negative`).
+  The kernel's per-connection byte counters are 32-bit, and the tracker cannot tell a
+  wrap from a tuple handed to a new connection — both are the same tuple reporting a
+  smaller number — so it starts the flow over: `samples` back to 1, `first_seen` to now,
+  no rate for that sample. On a gigabit link that is one 5-second disappearance every
+  ~35 s of a very large download, and its byte total reads 4 GiB light afterwards.
+  The rates stay right and nothing goes negative, which is why this was documented
+  rather than papered over. **Blocks:** nothing; it is a wart on transfers over 4 GiB.
+  **Needs:** either accumulate `u64` deltas and accept that a reused tuple inherits its
+  predecessor's bytes, or read the counters over `netlink` with `CTA_TIMESTAMP` (which
+  also fixes the "age is age-as-we-saw-it" caveat for good), and say which in the module
+  header of `crates/network-status/src/flows.rs` either way.
+
 - **`firewall.int.leighhack.org` proxies a port nothing listens on** (found 2026-10-24).
   Its row in `common/front-door.nix` sends it to `https://10.3.1.1:60443`;
   `ss -lntp` on gw answers 53, 22, 8091 and tailscaled, and `60443` appears in the

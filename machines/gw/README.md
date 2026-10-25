@@ -137,6 +137,8 @@ evaluation of this machine succeeds with tables that disagree, and standalone vi
 | `lib/network-tables.nix` | the renderers: tables → dnsmasq lines, nft set literals, device names |
 | `lib/check-network-tables.nix` | the assertions over those tables (standalone, prints findings) |
 | `lib/assert-network-tables.nix` | the three-line module wrapper that runs them at eval time |
+| `network-status.nix` | the router's own dashboard (`network-info.int.leighhack.org`, :8091) — including the per-connection table, whose *permission* half is not here |
+| `conntrack-reader.nix` | the half of that dashboard that has to be true before its process starts: the `conntrack-readers` group, the service account whose primary group it is, `nf_conntrack_acct`, and the root `ExecStartPre` that `chgrp`s `/proc/net/nf_conntrack`. **Read its header before touching either file** — it records the four measurements that decided the design, including the one that killed the version before it |
 
 ## DNS: three generated files, nothing mutable
 

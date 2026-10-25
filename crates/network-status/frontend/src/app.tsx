@@ -2,6 +2,7 @@ import { createEffect } from "solid-js";
 import { useStore } from "./store";
 import { Header, Banner, IfaceCards, Issues, interestingIfaces } from "./panels";
 import { BwCard, ConnChart, LoadChart } from "./charts";
+import { ConnectionsPanel } from "./connections";
 
 export function App() {
   const store = useStore();
@@ -37,6 +38,10 @@ export function App() {
           <h2>Load average</h2>
           <LoadChart store={store} />
         </div>
+      </section>
+
+      <section class="card" style="margin-bottom:16px">
+        <ConnectionsPanel store={store} />
       </section>
 
       <section class="card" style="margin-bottom:16px">

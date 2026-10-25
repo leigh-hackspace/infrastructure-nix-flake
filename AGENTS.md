@@ -136,6 +136,19 @@ X first", X has already cost someone a day.
     ssh, root's included, reads; `just known-hosts` regenerates it the day a box is
     reinstalled, and a hand-written root `known_hosts` on one box is what this replaces.
     Receipts: `docs/nix-dev-workflow.md`, "The hop itself was broken, separately".
+26. **No source file over 1000 lines, if it can be helped.** `just check-source-size`
+    (part of `just check` and `just check-eval`, so it runs on the router too) refuses a
+    new one; the four already over are a named baseline, not a licence
+    (`switch-gui`'s `switch.rs`/`shadow.rs`, `filestore`'s `server.rs`,
+    `monitoring-dashboards.nix`). Split by *job*, not by line count, and a file that is
+    already a collection of jobs is the one to split first: `main.rs` in
+    `crates/network-status` was 1,308 lines of argument parsing, probing, rendering and
+    serving before the connection table, and the crate is now twelve files totalling 3,962
+    lines with the largest at 640 — nobody has to guess which half of `main.rs` a change
+    belongs in any more. Machine output (`*/dist/*`) and prose are out; a Nix data table
+    is in, and `monitoring-dashboards.nix` is on the baseline rather than exempt to prove
+    it. If you add to a file that is already over, say so in the commit message instead of
+    quietly making it longer.
 
 ---
 
@@ -414,7 +427,10 @@ invariant, its assertion and its self-healing timer live in **`common/nixbld.nix
   a sops setting (`extra-sandbox-paths` is). Detail: `docs/nix-dev-workflow.md`,
   "Remote building".
 - `network-status.service` no longer runs as `User=leigh-admin`: it moved to gw on
-  2026-10-21 and is a `DynamicUser` reading local `/proc` (`machines/gw/network-status.nix`).
+  2026-10-21 and runs as its own `network-status` system account reading local `/proc`
+  (`machines/gw/network-status.nix`) — not a `DynamicUser`, because the per-connection
+  table it serves is `/proc/net/nf_conntrack` and that is group-readable to one group
+  (`machines/gw/conntrack-reader.nix`, whose header has the measurements).
   The follow-up that tracked it is closed in `docs/follow-ups.md`.
 
 ## Nix commands
