@@ -144,7 +144,7 @@ offline rebuild, keep the 12 MB `.wasm` vendored and move only the models: 10.4 
 
 ---
 
-## 2. One crane shape for four SPAs — **half done 2026-10-25 (`3b1ec44`); the read that remains is a decision**
+## 2. One crane shape for four SPAs — **done 2026-10-25 (`3b1ec44`); the read that remains is a decision, and §9 records it taken**
 
 **Landed.** `CRANE.spaApp` in `common/crane.nix` writes the shape once and derives the paths,
 the wasm package name and the `DIST` variable from an app's name; `CRANE.withSharedCrates`
@@ -181,6 +181,20 @@ about the mechanism: `aibox` is not a box where the check is safe, it is a box t
 warm. That is the sibling follow-up item ("`just check` is machine-dependent") seen from the
 same side as this one, and it is the reason §2's remaining decision is worth making properly
 rather than papering over with a per-box recipe.
+
+**Decided, 2026-10-25: the per-box recipe, deliberately, because the wiring was the expensive
+half and the class is bigger than this door.** `just check` split into `check-eval` (the
+assertion evals + `fmt-check` — evaluates no machine, so it is safe on the router by
+construction and is now the router's gate) and `check`, which depends on it and adds
+`nix flake check --no-build`; on `gw` that step is skipped *with the reason printed*, so the
+router has a gate it can run instead of one that dies halfway. The concession is explicit: a
+green `just check` on `gw` covers less than a green one on aibox, and the recipe says so on the
+box that has to hear it. The wiring was declined because a change to what invalidates the four
+SPAs' dependency trees has to be measured (a timed one-line edit in `common-rs/preview`, before
+and after) and because the door behind this one — `builtins.readFile (config.sopsSecretText …)`,
+which compiles a decrypted secret during evaluation — means the SPA half buys no router gate on
+its own. Whoever closes the class closes both doors in one change and verifies with the
+detector; until then this document should stop describing that as cheap.
 
 The rest of this section is the finding as written on 2026-10-24, kept because the shape it
 describes is what landed and because the eight-sentence list is still open.
@@ -420,6 +434,27 @@ They are correctly marked (rule 23) and the marking is load-bearing, so the ques
   migration it did — the only two files that go together) and the doc's story go together.
   and the doc keeps the whole story. **Verdict: decide with the human who owns the IdP.**
 
+### A guard worth writing, and the shape it must not have (2026-10-25)
+
+§7's whole risk is symmetric to the one it describes: a module that is imported can be deleted
+by accident, and a package that no machine installs can be deleted on purpose by someone who
+grepped the wrong thing. So the tempting check — "every package this flake's overlays define is
+installed by at least one machine, and every `# PARKED` module is absent from every import list"
+— would have documented itself out of my way today. **Do not write it as a NixOS module
+assertion over an evaluated config.** The version I wrote first was silently vacuous: it asked
+`cfg.config.boot.specialisation` and `cfg.config.boot.extraModuleFiles` for the module list, and
+*both options exist*, so `… or []` returned `[]`, the `any` went over the empty set, and it
+printed a serene `false` for `services1`, which is imported four times over. An assertion that
+reads the config cannot see the import list, because by the time the config exists the list has
+already been applied and folded into it.
+
+The shape that works is the one every other checker in `common/` uses: read
+`machines/<m>/default.nix` (and `services/default.nix`, which is a second list those files do not
+see) as **text**, take the lines that start a relative import — ignoring commented-out ones, or
+the parked four reappear as false positives — and assert over names. Pure, eval-cheap, safe on
+`gw`, and it fails in the direction you want. Prove it by deleting an `./affine.nix`-shaped line
+before believing a green run; if it stays green, it is the `or []` bug again.
+
 ### A correction to rule 23's mechanism, found measuring this section (2026-10-25)
 
 `# PARKED` covers **two different shapes**, and only one of them is invisible to evaluation.
@@ -486,18 +521,26 @@ proved it. The commits are `git log --oneline` forward from `d78a6d5` (which lan
    MB, the fetched tree byte-identical to the committed one (`diff -r` on aibox), and
    `nix build .#whisper-ws` succeeds there. Three plan corrections in §1, the load-bearing one
    being that `fetchurl` wants `nix hash file`, not `nix hash path`.
-- [~] 3. **The SPA helper + the `cargoLockContents` pairing** (§2) — **half done 2026-10-25
-   (`3b1ec44`)**. `CRANE.spaApp` + `lockArgs` landed; the pairing closed read 1, proved the way
-   the follow-up prescribes (`services2`/`gw` toplevel drvPaths bit-identical, measured on
-   services1), and `just check` on gw moved to the predicted next read — `…-filestore-web-src.drv`
-   — so it is **still not uniform**. What is left is a decision about where a SPA's path
-   dependencies live (§2's "not landed"), and §8 says the read behind it is the sops one. The
-   four `dist`/`target`-shaped runCommands are gone; the two crate lists stayed two.
+- [x] 3. **The SPA helper + the `cargoLockContents` pairing** (§2) — **helper and pairing done
+   (`3b1ec44`); the read they could not close is decided, not fixed (the commit after it)**. `CRANE.spaApp`
+   + `lockArgs` landed; the pairing closed read 1, proved the way the follow-up prescribes
+   (`services2`/`gw` toplevel drvPaths bit-identical, measured in one checkout on services1), and
+   `just check` moved to the predicted next read — `…-filestore-web-src.drv`. That read is a
+   shape choice about where a SPA's path dependencies live (§2's "not landed", both alternatives
+   recorded there), and §8 says a second door of the same class — the sops `builtins.readFile` —
+   sits behind it, so the two should close together or not at all. Decided: **name the gate**
+   (`just check-eval` = the eval-only half and the router's gate; `just check` skips the flake
+   step on `gw` and prints why) rather than change what invalidates four SPAs' dependency trees
+   to buy half a fix. The four `dist`/`target`-shaped runCommands are gone; the two crate lists
+   stayed two.
 
 Two more measurements this pass owes the reader, both from 2026-10-25: `nix flake check
 --no-build` passing is **not** the proof §2 wants (a warm store hides every one of these reads —
 the detector is `--option builders '' --option max-jobs 0` on a box that has never seen the
-source, i.e. `gw`); and the `# PARKED` grep in §7 is not the list of what is not *evaluated*.
+source, and even that only proves it once, because a passing detector on a box that has already
+evaluated the source is the warm store again: it read "ok" on all four machines minutes after
+failing on `gw` for the same tree); and the `# PARKED` grep in §7 is not the list of what is not
+*evaluated*.
 - [ ] 4. **The small, obviously-safe nits**: `reboot.sh` (§5), `just switch-gw` reading
    `common/hosts.nix`, `just switch-netboot` deriving its client list from
    `common/dns-records.nix`, `pxe-client-uefi`'s firmware into `/tmp`, the stale sentences in
@@ -507,11 +550,15 @@ source, i.e. `gw`); and the `# PARKED` grep in §7 is not the list of what is no
 - [ ] 7. **Nothing else.** The DATA tables, the guards, the narrative comments in nix, `pi-room-sys`
    (§3) are the shape; leaving them is not laziness, it is the design.
 
-Gate for all of it: `just check` (on aibox, not on gw, until 3 is done), `just check-build`
-for anything that builds, the drv-path proof for anything touching `common/crane.nix`
-(`docs/nix-dev-workflow.md`: compare the three toplevel `drvPath`s before/after),
+Gate for all of it: `just check` — but read the gate before quoting it: its flake step is not
+eval-only, is skipped on `gw` with the reason printed, and fails on any box whose store has not
+evaluated the source yet, so `just check-eval` is what the router actually runs (decision
+recorded in §2, mechanism in `docs/nix-dev-workflow.md`); `just check-build` for anything that
+builds; the drv-path proof for anything touching `common/crane.nix`
+(`docs/nix-dev-workflow.md`: compare the toplevel `drvPath`s before/after **in one checkout** —
+across two checkouts the paths differ for unrelated reasons and the comparison means nothing);
 `nix eval --impure --raw -f common/check-doc-pointers.nix` after any change to
-`AGENTS.md`/`README.md`/`justfile`/`docs/`, and rule 5 (`git add` new files — untracked is
+`AGENTS.md`/`README.md`/`justfile`/`docs/`; and rule 5 (`git add` new files — untracked is
 invisible to the flake).
 
 ---

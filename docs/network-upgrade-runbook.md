@@ -299,7 +299,9 @@ co-existence mode beside the live router and `machines/gw/README.md` owns when i
 may be switched over.
 
 ```bash
-just check          # nix flake check + the assertion evals + alejandra --check
+just check          # nix flake check + the assertion evals + alejandra --check; on gw the
+                    # flake step is skipped out loud (rule 22), so `just check-eval` is the
+                    # router's gate and a green `just check` here covers less than there
 just check-build    # all four machines, nothing activated
 ```
 

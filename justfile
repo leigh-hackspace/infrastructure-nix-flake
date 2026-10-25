@@ -32,10 +32,12 @@ switch:
 #
 # The guard stays anyway, and the reason is not compilation: **evaluation still happens on
 # the box you are standing on**, and a 4-core router is also the network's resolver.
-# `check` and `fmt` are eval/format only and stay allowed there; every build-shaped recipe
-# below depends on this guard.  What it replaced — the devShell that *was* a build, and the
-# split toolchain that closed it — the full allowed/refused table, and what to read if rustc
-# ever appears on the router again: docs/nix-dev-workflow.md, "Never build on the router".
+# `check-eval` and `fmt` are eval/format only and stay allowed there; `check` is allowed too
+# but skips its flake step here, with the reason printed (see that recipe).  Every
+# build-shaped recipe below depends on this guard.  What it replaced — the devShell that *was*
+# a build, and the split toolchain that closed it — the full allowed/refused table, and what to
+# read if rustc ever appears on the router again: docs/nix-dev-workflow.md,
+# "Never build on the router".
 #
 # Build on aibox (the network's builder) or services1.  If you genuinely need to
 # build on the router, say so explicitly.
@@ -352,29 +354,46 @@ pxe-client-uefi:
 update-pkgs:
     nix flake update nixpkgs
 
-# --- filestore headless-browser test suite ---
+# --- checks and the test surface ---
 
-# Nix-level checks: the flake evaluates, the machines' option assertions hold,
-# the hand-rolled config serializers and the generated printer-state tables match
-# their expectations, and every tracked .nix file is alejandra-clean.  Fast
-# (evaluation only, no compilation).  The rest of the test surface: `just test`
-# (cargo tests), `just clippy` (lints), `just filestore-test` (headless-browser
-# suite) and `just check-build` (the deploy-readiness build).
-check:
+# Nix-level checks: the flake evaluates, the machines' option assertions hold, the
+# hand-rolled config serializers and the generated printer-state tables match their
+# expectations, and every tracked .nix file is alejandra-clean.  Fast (no compilation) —
+# except that its `nix flake check` step is not eval-only in practice and is skipped on `gw`
+# with the reason printed, so read that recipe before assuming what a green `just check` on
+# the router covered.  The rest of the test surface: `just test` (cargo tests),
+# `just clippy` (lints), `just filestore-test` (headless-browser suite) and
+# `just check-build` (the deploy-readiness build).
+check: check-eval
     #!/usr/bin/env bash
     set -euo pipefail
+    if [ "$(hostname)" = "gw" ]; then
+        echo "=== nix flake check: SKIPPED on gw"
+        echo "    It cannot pass here and pretending otherwise costs a confusing failure:"
+        echo "    evaluating the machines reads a derivation (crane stubs each SPA's source tree"
+        echo "    at eval time, because a SPA's path dependencies live outside its directory), so"
+        echo "    the line needs one trivial source copy and --no-build refuses to do it —"
+        echo "    directly or over the hop to aibox.  The router's gate is 'just check-eval',"
+        echo "    which just ran; run the full 'just check' on aibox or services1."
+        echo "    The class, the two doors still open, and the honest detector:"
+        echo "    docs/nix-dev-workflow.md, 'Closed 2026-10-25, one read at a time'."
+        exit 0
+    fi
     echo "=== nix flake check"
-    # Known-broken *on gw*, and not by anything you just changed: this line dies with
-    # `error: path '…-filestore-web-src.drv' is not valid` because evaluating the machines
-    # reads a derivation — crane stubs each SPA's source tree at eval time, and those
-    # sources are derivations because a SPA's path dependencies live outside its directory
-    # (docs/nix-dev-workflow.md, "Closed 2026-10-25"). The lock file's half of it is fixed.
-    # On a flake source nothing has evaluated yet this fails on *every* box, not just here —
-    # `--no-build` refuses to realise the stub even though aibox would happily build it — and
-    # one full evaluation (or any deploy) writes those .drv files and it passes again, which is
-    # the only thing "run it on aibox" was ever resting on. The four evals below and
-    # `just fmt-check` are what still work here, since none of them evaluates a machine.
+    # Not eval-only in practice: on a flake source nothing has evaluated yet it needs the stub
+    # described above, so a fresh worktree or clone fails this line on *any* box, warm store or
+    # not, and one full evaluation (or any deploy) writes them and it passes. Which is why
+    # `check-eval` exists as the half you can always trust.
     nix flake check --no-build
+
+# The eval-only half of `just check`, and the whole gate on `gw`: the assertion evals and the
+# formatter check.  None of it evaluates a *machine*, so none of it can be made to build
+# something by a crane helper that reads sources at eval time — the property that makes this
+# the honest thing to run on the router, where evaluation is paid for by the box that answers
+# DNS for the network (AGENTS.md, "Don't build on the router").
+check-eval:
+    #!/usr/bin/env bash
+    set -euo pipefail
     echo "=== config-to-gitlab assertions"
     nix eval --impure --raw -f machines/services1/lib/check-config-to-gitlab.nix
     echo "=== printer-state tables (exporter <-> dashboards/alerts)"
@@ -383,8 +402,8 @@ check:
     # generate dnsmasq's conf, nftables' rules and the VLAN devices, so a VLAN id
     # that is not in the first table or an address claimed twice is a client that
     # gets the wrong address rather than a build failure.  The same assertions run
-    # as a module (machines/gw/lib/assert-network-tables.nix) and so in the `nix
-    # flake check` above; this is the version that prints which record is wrong.
+    # as a module (machines/gw/lib/assert-network-tables.nix) and so inside `check`'s
+    # `nix flake check` step; this is the version that prints which record is wrong.
     echo "=== router network tables (vlans <-> dns-records <-> ACL)"
     nix eval --impure --raw -f machines/gw/lib/check-network-tables.nix
     # The instructions themselves: every `just <name>` in AGENTS.md/README.md/justfile is
@@ -395,7 +414,7 @@ check:
     echo "=== doc pointers (recipes, paths, docs, the router's own status)"
     nix eval --impure --raw -f common/check-doc-pointers.nix
     # The gatus endpoint guard is a module assertion in
-    # machines/services1/services/monitoring.nix, so the `nix flake check` above
+    # machines/services1/services/monitoring.nix, so `check`'s `nix flake check` step
     # already runs it: every https *.int endpoint in common/monitoring-endpoints.nix
     # must be a vhost services1 serves.  Worth naming here because the guard now
     # lives on a different machine from gatus itself, so it is easy to forget which

@@ -223,12 +223,14 @@ shared dependency wiring costs every crate on the fleet a rebuild. Whoever finis
 does it on aibox, with the before/after `drvPath` comparison this section has always
 insisted on, and the *second* read is the real work.
 
-**What still works on the router, and what does not.** The four assertion evals
-(`nix eval --impure --raw -f <file>`) and `just fmt` / `just fmt-check` do not evaluate
-the machines, so they run on gw exactly as before. `nix flake check --no-build`, and so
-`just check`, do not. Until this is fixed, run `just check` on aibox — and treat that as
-a workaround for a broken check, not as a licence to skip it: rule 22's reason for
-refusing builds on gw is untouched, and this failure is rule 22 *working*.
+**What still works on the router, and what does not.** The assertion evals
+(`nix eval --impure --raw -f <file>`) and `just fmt` / `just fmt-check` do not evaluate the
+machines, so they run on gw exactly as before; together they are `just check-eval`, which is
+the router's gate. `nix flake check --no-build` — and so the flake half of `just check` — does
+evaluate them, and is skipped on gw with the reason printed. Treat that skip as a workaround
+for an open bug, not as a licence to skip the check: rule 22's reason for refusing builds on
+gw is untouched, and the skip is rule 22 *working*. See the next section for the decision and
+for why "run it on aibox" is a warm store rather than an answer.
 
 ### The hop itself was broken, separately — and it is not the operator's ssh
 
@@ -367,6 +369,45 @@ gocardless-dashboard) and so have to be copied around it. Two ways out were trie
 The probe that finds it in a tree you inherited: set the SPA's crate list to `[]` and
 re-run the detector. Plain directory, nothing to add, detector passes — which is how this
 was localised on 2026-10-25 without reading crane first.
+
+**And it is not router-specific, which the repo had wrong.** The read is keyed to the *flake
+source*, not to the box: in a fresh `git worktree` on aibox — the network's builder — the
+detector failed with the same `jfv7x3pz…-filestore-web-src.drv` gw reports, and `--no-build`
+refuses the stub whether or not aibox would build it in seconds. One
+`nix eval .#nixosConfigurations.services1.config.system.build.toplevel.drvPath` in that same
+worktree, and `nix flake check --no-build` printed `all checks passed!`. So every sentence in
+this repo that said "broken on gw, run it on aibox" was describing a warm store, and the check
+has been reading as intermittent for that same reason.
+
+### The decision taken 2026-10-25: name the gate, do not buy the wiring
+
+`just check` now splits. `check-eval` is the assertion evals plus `fmt-check` — nothing in it
+evaluates a machine, so it is honest about being safe on the router and it is what `gw` runs.
+`check` depends on it and adds `nix flake check --no-build`, and on `gw` that step is **skipped
+with the reason printed** instead of dying halfway through the gate. The router therefore has an
+explicit gate rather than a broken one, and no dependency wiring changed to get it.
+
+What was declined, and why it is a decision rather than an oversight:
+
+- **Accept the read** (a `check-eval`/`check` split alone): landed, above. Costs the router a
+  flake-level gate, which the 2026-10-22 audit had already concluded it does not have.
+- **Copy the path dependencies in a build phase**: kills the read, but moves `common-rs/preview`
+  and the two `dto` crates into the SPAs' *dependency* derivations, so editing a shared crate
+  can invalidate the cached dep tree of every SPA that reads it. Probably the honest graph; a
+  change to what invalidates what on the four apps the build farm exists for, so it has to be
+  measured (drvPaths and a timed one-line edit in `common-rs/preview`), not reasoned in.
+- **Track per-app copies in git**: deletes the symlink machinery and writes rule 2's "never a
+  second copy" into four manifests — and is not even available for `filestore`, whose
+  `common-rs/preview` is shared with non-SPA crates, which is the whole reason `common-rs/`
+  exists.
+
+**The ordering argument is what settles it.** Behind this door is another of the same class:
+`common/nginx/front-door.nix:80` and `common/nginx-sso-config.nix:27` do
+`builtins.readFile (config.sopsSecretText name)`, which builds a *decrypted secret* during
+evaluation. Fix only the SPA source read and `just check` still cannot run on `gw`, so the
+class fix has to be one deliberate change covering both doors — verified with the detector
+above — rather than half of it as a side effect of a cleanup. Until then, `check-eval` is the
+gate, and `check`'s skip message says so on the box that has to hear it.
 
 ## Inspect the generated output (the reliable way to know what a service runs)
 

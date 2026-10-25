@@ -64,6 +64,20 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   The read itself needs the decision written up in `docs/flake-simplification-pass-2026-10-24.md`
   §2 (where a SPA's path dependencies live), not a pairing.
 
+  **Decided 2026-10-25: name the gate instead of buying the wiring.** `just check` split into
+  `check-eval` (the assertion evals + `fmt-check`, no machine evaluated — safe on `gw` by
+  construction, and the router's real gate) and `check`, which depends on it and adds
+  `nix flake check --no-build`; on `gw` that step is **skipped with the reason printed** rather
+  than dying halfway through the gate. So the router now has a gate it can actually run, and the
+  bug is written down where it runs instead of being papered over with a per-box recipe. The two
+  shapes that would remove the read are recorded in `docs/nix-dev-workflow.md` ("The decision
+  taken 2026-10-25"): a build-phase copy, which moves the SPAs' path dependencies into their
+  dependency derivations and needs a cache-cost measurement to justify, and per-app tracked
+  copies, which rule 2 forbids and cannot express `filestore`'s `preview` at all. They were
+  declined because the read behind this one — `builtins.readFile (config.sopsSecretText …)`, the
+  item at the end of this section — means fixing the SPA half buys no gate at all: whoever closes
+  the class closes both doors in one change, verified with the detector, or neither.
+
   **Its sibling is the item at the end of this section** — "`just check` is
   machine-dependent", where the read is `builtins.readFile (config.sopsSecretText …)` and
   what gets compiled is a *decrypted secret*. Same class, two doors, and they fail in a fixed

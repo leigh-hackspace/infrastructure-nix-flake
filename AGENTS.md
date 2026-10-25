@@ -91,15 +91,16 @@ X first", X has already cost someone a day.
     fallback to fall back to; the guard stays anyway because **evaluation is still paid on
     the box that answers DNS for the whole network**. So: every build-shaped recipe refuses
     on gw (`_build-host-guard`), a routine deploy of this box is `just switch-gw` *from
-    services1 or aibox*, and `just check` — eval/format only, so safe here in principle — is
-    **broken *on* gw** by an eval-time read of a derivation — crane stubbing the SPA source
-    trees, whose lock-file half closed 2026-10-25 — and **store-dependent everywhere else**:
-    the read is keyed to the flake source, so on any source hash nothing has evaluated yet the
-    check needs a build and fails on every box (measured 2026-10-25: same hash, aibox and gw).
-    One full evaluation — `nix eval .#nixosConfigurations.<m>.config.system.build.toplevel.drvPath`,
-    or any deploy — writes the stubs and the check passes again, which is why this reads as
-    intermittent. It is permanent on gw, which cannot build; the four assertion evals and
-    `just fmt-check` still run here.
+    services1 or aibox*, and `just check` is **not eval-only here and cannot be made so**:
+    evaluating the machines reads a derivation (crane stubbing each SPA's source tree — the
+    lock-file half closed 2026-10-25), so `nix flake check --no-build` needs one trivial source
+    copy and refuses it, locally or over the hop. `just check` therefore **skips that step on gw
+    and prints why**; the router's real gate is `just check-eval` — the assertion evals and
+    `fmt-check`, which touch no machine. The same read is keyed to the flake source, so the
+    flake step also fails on *any* box whose store has not evaluated this source yet (measured
+    2026-10-25: one hash, aibox and gw alike) until a deploy or one full evaluation writes the
+    stubs — which is why it read as intermittent for a year, and why "run it on aibox" was a
+    warm store and not a workaround.
     After any switch here, `sudo systemctl start front-door-cert-check.service`: reading the
     *issuer* is the only check that can tell an issued certificate from minica's fallback.
     Mechanism, receipts, the split devShells and the exact allowed/refused list:
@@ -241,24 +242,21 @@ X first", X has already cost someone a day.
 
 - Deploy with the justfile: `just switch` / `just boot` (`sudo nixos-rebuild
   switch --flake .` + `sudo nixos-confirm`, chained).
-- **Check before you deploy:** `just check` (`nix flake check --no-build`, four
-  assertion evals —
-  `machines/services1/lib/check-config-to-gitlab.nix`,
+- **Check before you deploy:** `just check` — `nix flake check --no-build`, the four
+  assertion evals (`machines/services1/lib/check-config-to-gitlab.nix`,
   `common/check-printer-states.nix`, `machines/gw/lib/check-network-tables.nix` and
-  `common/check-doc-pointers.nix` (the recipe names, repo paths and doc links these
-  instructions promise) —
-  and `nix fmt -- --check` over every tracked
-  `.nix`; the gatus endpoint guard is a module assertion in
-  `machines/services1/services/monitoring.nix`, so `nix flake check` is what catches that
-  drift). It evaluates and formats only, which is what makes it safe *in principle* on
-  gw — as of 2026-10-22 its `nix flake check --no-build` step fails there on an eval-time
-  read (rule 22), so run `just check` on aibox until that is fixed; the
-  build-shaped recipes are not (`just check-build`, `just test`, `just clippy`,
-  `just build-frontend`, `just filestore-*`, `just switch-gui-test`, `just
-  build-remote`) and now refuse on gw via `_build-host-guard`. Then, when anything is built rather
-  than just evaluated, `just check-build` (`nix build` of all four deployable machines'
-  system toplevels — compiles everything, activates nothing, writes no boot entry;
-  it is **not** `nixos-rebuild dry-build`, which builds nothing). Budget ~75 min for
+  `common/check-doc-pointers.nix`, the last one checking the recipe names, repo paths and doc
+  links these instructions promise), and `nix fmt -- --check` over every tracked `.nix`. The
+  gatus endpoint guard is a module assertion in `machines/services1/services/monitoring.nix`,
+  so it is the *flake* step that catches that drift — and that step is not eval-only (rule 22:
+  an eval-time read of a derivation makes it need one trivial source copy), which is why on gw
+  `just check` runs the evals, skips the flake step out loud, and why `just check-eval` is the
+  router's gate. The build-shaped recipes (`just check-build`, `just test`, `just clippy`,
+  `just build-frontend`, `just filestore-*`, `just switch-gui-test`, `just build-remote`) are
+  not safe anywhere near the router and refuse on gw via `_build-host-guard`. Then, when
+  anything is built rather than just evaluated, `just check-build` (`nix build` of all four
+  deployable machines' system toplevels — compiles everything, activates nothing, writes no boot
+  entry; it is **not** `nixos-rebuild dry-build`, which builds nothing). Budget ~75 min for
   a nixpkgs bump. `just test` runs the cargo
   tests, `just clippy` the lints, `just filestore-test` and `just switch-gui-test` the
   headless-browser suites (the latter drives a fake ProCurve console —

@@ -77,15 +77,17 @@ Two things bite, and both are load-bearing:
 - **`just check`, not `nix flake check`.** The bare flake idiom *builds* — the
   devShells, `packages.strata`, `strata-cuda` and `whisper-ws`, ~10 minutes on a lock
   bump — and a build on `gw` is a compile on the box that answers DNS for the network.
-  `just check` passes `--no-build`, runs the four standalone assertion evals and
-  `nix fmt -- --check`, and is built to be safe anywhere — **but its `nix flake check` step
-  reads a derivation at eval time (the crane SPA source stubs; the lock-file half closed
-  2026-10-25), so on a flake source nothing has evaluated yet it needs a build and fails on
-  every box**: permanently on `gw`, which refuses builds by design, and until one full
-  evaluation (`nix eval .#nixosConfigurations.<m>.config.system.build.toplevel.drvPath`, or any
-  deploy) writes the stubs everywhere else — which is what "run it on `aibox`" was leaning on.
-  `docs/nix-dev-workflow.md`, "Closed 2026-10-25". The four evals and `just fmt-check` still run
-  on the router, because none of them evaluates a machine. The build-shaped recipes
+  `just check` runs the standalone assertion evals, `nix fmt -- --check`, and
+  `nix flake check --no-build`. **That last step is not eval-only in practice**: evaluating
+  the machines reads a derivation (the crane SPA source stubs — the lock-file half closed
+  2026-10-25), so on a flake source nothing has evaluated yet it needs one trivial source
+  copy, and `--no-build` refuses to do it. Which means it fails on *any* box with a cold
+  store for that source, and permanently on `gw`, which refuses builds by design — so `just
+  check` **skips it on `gw` and prints why**, and `just check-eval` (the evals + format, no
+  machine evaluated) is the router's real gate. A green `just check` on `gw` therefore covers
+  less than a green one on aibox; say so when you quote one. `docs/nix-dev-workflow.md`,
+  "Closed 2026-10-25", has the class, the honest detector, and the decision not to buy the
+  dependency wiring that would close it. The build-shaped recipes
   (`just check-build`, `just test`, `just clippy`, `just build-frontend`,
   `just filestore-*`, `just switch-gui-test`, `just build-remote`) refuse to run on
   `gw` via `_build-host-guard`. `nix develop` itself now builds nothing — the pinned
