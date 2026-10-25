@@ -91,8 +91,9 @@ X first", X has already cost someone a day.
     the box that answers DNS for the whole network**. So: every build-shaped recipe refuses
     on gw (`_build-host-guard`), a routine deploy of this box is `just switch-gw` *from
     services1 or aibox*, and `just check` — eval/format only, so safe here in principle — is
-    **broken *on* gw as of 2026-10-22** by an eval-time read of a derivation and is run on
-    aibox until that is fixed (the four assertion evals and `just fmt-check` still run here).
+    **broken *on* gw** by an eval-time read of a derivation — crane stubbing the SPA source
+    trees, whose lock-file half closed 2026-10-25 — and so is run on aibox until the rest
+    does (the four assertion evals and `just fmt-check` still run here).
     After any switch here, `sudo systemctl start front-door-cert-check.service`: reading the
     *issuer* is the only check that can tell an issued certificate from minica's fallback.
     Mechanism, receipts, the split devShells and the exact allowed/refused list:

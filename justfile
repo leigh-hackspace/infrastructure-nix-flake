@@ -365,13 +365,14 @@ check:
     #!/usr/bin/env bash
     set -euo pipefail
     echo "=== nix flake check"
-    # Known-broken *on gw* as of 2026-10-22, and not by anything you just changed: this
-    # line dies with `Cannot build '…-Cargo.lock.drv'` because evaluating the machines
-    # reads a derivation (crane's content-keyed lock, handed over as `cargoLock` without
-    # `cargoLockContents`) and the router refuses builds by design. Run `just check` on
-    # aibox until `docs/nix-dev-workflow.md`, "Reopened 2026-10-22", is fixed; the four
-    # evals below and `just fmt-check` are what still work here, since none of them
-    # evaluates a machine.
+    # Known-broken *on gw*, and not by anything you just changed: this line dies with
+    # `error: path '…-filestore-web-src.drv' is not valid` because evaluating the machines
+    # reads a derivation — crane stubs each SPA's source tree at eval time, and those
+    # sources are derivations because a SPA's path dependencies live outside its directory
+    # (docs/nix-dev-workflow.md, "Closed 2026-10-25"). The lock file's half of it is fixed;
+    # the router refuses builds by design, so run `just check` on aibox until the rest is.
+    # The four evals below and `just fmt-check` are what still work here, since none of
+    # them evaluates a machine.
     nix flake check --no-build
     echo "=== config-to-gitlab assertions"
     nix eval --impure --raw -f machines/services1/lib/check-config-to-gitlab.nix

@@ -313,6 +313,61 @@ system — that blank line is the module, running). Then, tracked, the call died
 the filestore read above. Both halves of this section are now measurements, not
 predictions.
 
+### Closed 2026-10-25, one read at a time: the pairing shipped, the source read is a decision
+
+The `cargoLock`/`cargoLockContents` pairing landed on 2026-10-25 in `common/crane.nix` as
+**`lockArgs`**, applied to the three places that hand crane a lock file (`crate`,
+`wasmSpa`, `workspaceArtifacts`), and `just check` on gw died **one read later** — at
+`…-filestore-web-src.drv`, the store path this section predicted before anybody ran it.
+So the lock is no longer read; what remains is the second of the two reads, and it is not
+a pairing.
+
+It had landed *partly* before that: `vendorDirFor` (2026-10-22, from the work above)
+pairs internally and `crate`'s member branch already stated a vendor dir, which is why the
+read survived at all — `workspaceArtifacts` had neither half, and a crate handed `cargoLock`
+bare is read by crane whichever way round it is stated, because `vendorCargoDeps` does a
+`pathExists`/`readFile` on it. Hence the rule `lockArgs` encodes: **a crate may state both
+halves or neither**, and `cargoVendorDir` is what lets the contents be stated without the
+lock being read back. The value is the one crane would have computed — no crate keeps a
+`.cargo/config.toml`, so `cargoConfigs` is empty either way — which is why this is
+drv-neutral: the toplevel drvPaths of the two machines that install **no** SPA, `services2`
+and `gw`, are **bit-identical** across the change, measured on services1 with a warm store
+(`yqs5l3n6…`, `hjnirr2d2…`, before and after). `services1` and `aibox` do move, and only
+because the builder text of the four hand-written SPA source derivations moved into
+`withSharedCrates` — same files, same copies, different whitespace, so a different hash. Prove it for
+yourself on a box that has never seen the source:
+
+```bash
+# the honest detector: --no-build alone still lets an evaluation *realise* a source path,
+# and a warm store hides the bug entirely, so take away its ability to build first
+nix flake check --no-build --option builders '' --option max-jobs 0
+```
+
+**What the remaining read is.** `craneLib.mkDummySrc` — which every crate's dependency
+build goes through — walks `src` with `builtins.readDir` *while evaluating*, to find the
+manifests to stub; its own comment calls this "laundering the data at evaluation time".
+Any `src` that is a derivation is therefore **realised by an evaluation**, and four SPA
+sources are derivations because a SPA's manifest reads path dependencies that live outside
+its directory (`common-rs/preview` for filestore, a sibling `dto` for switch-gui and
+gocardless-dashboard) and so have to be copied around it. Two ways out were tried:
+
+- **An attrset source.** `builtins.readDir` reads an attrset as a file tree, and an attrset
+  is realised by the store rather than by a builder, so it is the same bytes with nothing
+  to build. It does not work: `src` is stringified into the build environment, so stdenv
+  answers `cannot coerce a set to a string: { "Cargo.lock" = «thunk»; … }`. Measured, so
+  the next person does not spend an hour on it.
+- **Copy in a build phase** (`postPatch`) instead of assembling a source tree. Not landed,
+  for a reason worth writing down rather than a result: `buildDepsOnly` runs cargo on the
+  same arguments as the crate build, and cargo cannot resolve a path dependency that is
+  not in the tree it is pointed at — so the path dependencies would move *into* the
+  dependency derivation, which changes what invalidates what. That is a decision about the
+  shared wiring, not a simplification, and `common/crane.nix`'s comment on
+  `withSharedCrates` says so where the code is.
+
+The probe that finds it in a tree you inherited: set the SPA's crate list to `[]` and
+re-run the detector. Plain directory, nothing to add, detector passes — which is how this
+was localised on 2026-10-25 without reading crane first.
+
 ## Inspect the generated output (the reliable way to know what a service runs)
 
 Once you have a system path `$SYS`:

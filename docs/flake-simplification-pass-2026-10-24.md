@@ -32,6 +32,7 @@ for a reader who will otherwise delete the right-looking things.
 | What | How much | How to see it |
 | --- | --- | --- |
 | Tracked files, working tree | **24.7 MB**, of which `crates/whisper-ws/web/openwakeword/` is **22.3 MB** (36 files) | `du -sh --exclude=.git .`; `du -sh crates/whisper-ws/web/openwakeword` |
+| **Re-measured 2026-10-25, after §1: tracked content is 3.5 MB, working tree 13 MB.** The 22 MB left both the index and the disk; the directory it lived in is `.gitignore`d so a regeneration cannot re-pollute the tree. The **518 MB `.git` did not move**: that is history, and no amount of deleting tracked files shrinks it (`git ls-tree -r -l HEAD \| awk '{s+=$4} END {print s/1024/1024 " MB"}` is the honest command for "what does the flake read", and `du --exclude=.git` is a different question — conflating the two is what let this row read "91 % of the repo is binaries", which was true of the *working tree* before §1 and is now true of neither the tree nor the index) |
 | Nix source | **17,690 lines / 116 files** — `flake.nix` 477, `common/` 4,677 (30 files), `machines/` 12,460 (84), `crates/*.nix` 76 | `git ls-files '*.nix' \| xargs wc -l \| tail -1` |
 | `docs/` | **8,143 lines / 26 files** | `git ls-files 'docs/*.md' \| xargs wc -l` |
 | Entry text an agent reads every call | **`AGENTS.md` 780**, `README.md` 157, `justfile` 494 | `wc -l AGENTS.md README.md justfile` |
@@ -49,7 +50,29 @@ rules file are.**
 
 ---
 
-## 1. The 22 MB of vendored browser assets — **do this first**
+## 1. The 22 MB of vendored browser assets — **done 2026-10-25 (`eef77b9`)**, with one finding that changes the plan
+
+**Landed.** `web/openwakeword/{ort,models}` are `fetchurl`s pinned by `sha256` in
+`crates/whisper-ws/package.nix` — the nine `.onnx` from `dnavarrom/openwakeword_wasm` at commit
+`42b2a2b` (pinned by **commit**, since that repo's default branch is where they live and it
+moves), the four ORT files from `onnxruntime-web@1.23.2` out of the npm registry, and the
+tracked half is the `WakeWordEngine.js` glue that is patched for this repo (so upstream has no
+copy) plus the README. Tracked content 26 MB → 3.5 MB, working tree 24.7 → 13 MB; the assembled
+asset tree is **byte-identical** to the old committed one (`diff -r` on aibox) and
+`nix build .#whisper-ws` succeeds there. Three things the plan above did not know:
+
+- **`nix hash path` is the wrong command for a `fetchurl`.** It hashes the NAR of the path, not
+  the file's bytes, so the pin it writes down fails as `hash mismatch in fixed-output
+  derivation` — with the *correct* digest in the `got:` field, which reads like a corrupted
+  download. `nix hash file` / `sha256sum` are what `fetchurl` verifies against. The one-line
+  version and the misleading failure are in `docs/nix-dev-workflow.md`.
+- **Nothing had to be done about `src/assets.rs` or a whisper.cpp asset tree.** The plan
+  guessed at one; `package.nix` assembles `owwAssets` from the fetches plus the two tracked
+  files, and `gen_assets.sh` is fed `$out/dist` — no copy of whisper.cpp lives in this repo.
+- **The upstream-rot risk is smaller than §1's "Upstream rot" paragraph thought**, because the
+  ORT half comes from the npm registry, not a personal repo, and the recovery path for the
+  models half is `git log -- crates/whisper-ws/web/openwakeword` + the hashes in
+  `package.nix` — which is what the directory's own README now says out loud.
 
 ### What it is
 
@@ -121,7 +144,37 @@ offline rebuild, keep the 12 MB `.wasm` vendored and move only the models: 10.4 
 
 ---
 
-## 2. One crane shape for four SPAs — **do now, it is also the prerequisite for everything else**
+## 2. One crane shape for four SPAs — **half done 2026-10-25 (`3b1ec44`); the read that remains is a decision**
+
+**Landed.** `CRANE.spaApp` in `common/crane.nix` writes the shape once and derives the paths,
+the wasm package name and the `DIST` variable from an app's name; `CRANE.withSharedCrates`
+absorbs the fourth hand-written source derivation (including the `dto` copies two of the
+modules wrote out by hand); all four modules are call sites — 188 lines of the four became
+132, and the two copies of the shape comment and the four of the wasm-bindgen sentence went
+with the shape. `lockArgs` pairs `cargoLock` with `cargoLockContents` at all three sites
+that hand crane a lock, and `cargoVendorDir` is stated wherever `lockArgs` is, because a
+crate given one half gets the lock read back — **that pairing was the entire cause of the
+`Cannot build '…-Cargo.lock.drv'` failure**, and it is closed: on gw, on a fresh source,
+with nothing able to build, the call now dies one read later, at
+`…-filestore-web-src.drv`, exactly as §6 of the 2026-10-22 audit predicted. Drv-neutral where
+it matters: `services2` and `gw` — the two machines that install no SPA — have bit-identical
+toplevel drvPaths across the change; `services1`/`aibox` move only because the builder text of
+the moved source derivations moved (same files). Measured, and written up with the detector
+command, in `docs/nix-dev-workflow.md`, "Closed 2026-10-25".
+
+**Not landed: the second read, and it is not a bug to fix but a shape to choose.**
+`craneLib.mkDummySrc` walks a crate's `src` with `builtins.readDir` *while evaluating*, and a
+SPA's source tree is a derivation because its path dependencies live outside its directory —
+so an evaluation builds it. Two ways out were tried: an **attrset** source (same bytes, no
+derivation) fails because stdenv stringifies `src` — `cannot coerce a set to a string` — and a
+**build-phase** copy moves the path dependencies into the dependency derivation, changing what
+invalidates what. The second is probably right and is exactly the "shared dependency wiring"
+decision this document said not to make casually; `common/crane.nix`'s comment on
+`withSharedCrates` carries the receipts. Until then the eight sentences quoted below are
+still true, with one correction: the read is the SPA source tree, not the lock file.
+
+The rest of this section is the finding as written on 2026-10-24, kept because the shape it
+describes is what landed and because the eight-sentence list is still open.
 
 Four service modules build a Dioxus SPA and a native binary that embeds it. All four write
 the same eleven-line shape, and **the same comment twice each**: the block starting
@@ -358,6 +411,24 @@ They are correctly marked (rule 23) and the marking is load-bearing, so the ques
   migration it did — the only two files that go together) and the doc's story go together.
   and the doc keeps the whole story. **Verdict: decide with the human who owns the IdP.**
 
+### A correction to rule 23's mechanism, found measuring this section (2026-10-25)
+
+`# PARKED` covers **two different shapes**, and only one of them is invisible to evaluation.
+`services1`'s four (authentik, gitlab, affine, samba) are commented out of an import list, so
+they are never evaluated — rule 23's case. `machines/aibox/nvidia.nix` and
+`machines/aibox/strata.nix` are **imported anyway** (`machines/aibox/default.nix` lists both)
+and park themselves with `enable = false`-style flags, so their option declarations and
+`imports` *are* evaluated and only their units are absent. `grep -rl '^# PARKED' machines/`
+finds all six either way, which is why the difference is invisible from the command this repo
+trusts: for aibox's two, "parked" means "no service", not "no evaluation", and a syntax error
+in one of them would still be caught while a *wrong default* in a truly-parked module would
+not. (The same measurement killed a mistake of mine worth recording: `machines/aibox/whisper.nix`
+exists, is imported at `default.nix:30`, and `whisper-ws.service` is `enabled` and `active` on
+aibox listening on 10.3.1.32:8083. It appeared nowhere in my first three attempts to enumerate
+the import lists. **Nothing in §7 is a licence to delete a package because a grep missed its
+module** — read `machines/<m>/default.nix`, then ask the box: `systemctl list-unit-files | grep
+-i <name>`.)
+
 Related: `machines/services1/lib/gitlab-config-example.nix` (49 lines, 2,138 bytes) exists precisely
 so the parked gitlab's assertions still have something to assert over. If gitlab is parked,
 those four files (`services/gitlab.nix`, `lib/config-to-gitlab.nix`,
@@ -378,7 +449,14 @@ Do not "fix" either from this document — they are the two open items in
   `runProcess`, so it **builds a derivation during evaluation** — the same class as §2's
   crane reads, "they fail in a fixed order: gw dies on `Cargo.lock.drv` before the secret one
   is reached". The two should be fixed by whoever fixes the class: no `builtins.readFile` on a
-  derivation in a module.
+  derivation in a module. **The queue is now ordered, and measured**: read 1, the lock file,
+  closed 2026-10-25 (§2); read 2, the four SPA source trees, open and needing a shape decision
+  (§2); read 3, this one — `common/nginx/front-door.nix:80` and `common/nginx-sso-config.nix:27`
+  both do `builtins.readFile (sopsSecretText name)`, so the sops decryption is built by an
+  evaluation. It is read 3 only because read 2 stops the call first; fixing 2 will surface it,
+  and `common/sops.nix`'s `secretText` already carries the *comment* claiming it is "a plain
+  file, not a derivation" — that sentence is the thing to re-verify, not to trust. Verify with
+  the detector in `docs/nix-dev-workflow.md`, not with `--no-build`.
 * `common/nginx-sso-config.nix` no longer puts the *whole* config in a store path (the audit's
   §4 finding 1 as written is gone); only two named secrets go through it, each with its
   sentence. Follow-ups' item still says `nginx_sso_config` — that name is now nowhere in the
@@ -395,11 +473,22 @@ proved it. The commits are `git log --oneline` forward from `d78a6d5` (which lan
 - [x] 1. **`AGENTS.md` rules 22/24/25 → 2 lines each** (§4). Docs-only, zero risk, biggest
    "feels smaller" effect. Same commit: the justfile's guard narrative. — **done**; see §4
    for the measured result and the one fact that had to move into a doc rather than be cut.
-- [ ] 2. **The asset move** (§1). Largest real lever. Prove it with `du -sh` before/after and one
-   `nix flake check` on aibox.
-- [ ] 3. **The SPA helper + the `cargoLockContents` pairing** (§2). This is the prerequisite for
-   making `just check` uniform; do the class fix (no eval-time `readFile` on a derivation,
-   §8) in the same change, and run the drv-path proof the follow-up prescribes, on aibox.
+- [x] 2. **The asset move** (§1) — **done 2026-10-25 (`eef77b9`)**. Tracked content 26 MB → 3.5
+   MB, the fetched tree byte-identical to the committed one (`diff -r` on aibox), and
+   `nix build .#whisper-ws` succeeds there. Three plan corrections in §1, the load-bearing one
+   being that `fetchurl` wants `nix hash file`, not `nix hash path`.
+- [~] 3. **The SPA helper + the `cargoLockContents` pairing** (§2) — **half done 2026-10-25
+   (`3b1ec44`)**. `CRANE.spaApp` + `lockArgs` landed; the pairing closed read 1, proved the way
+   the follow-up prescribes (`services2`/`gw` toplevel drvPaths bit-identical, measured on
+   services1), and `just check` on gw moved to the predicted next read — `…-filestore-web-src.drv`
+   — so it is **still not uniform**. What is left is a decision about where a SPA's path
+   dependencies live (§2's "not landed"), and §8 says the read behind it is the sops one. The
+   four `dist`/`target`-shaped runCommands are gone; the two crate lists stayed two.
+
+Two more measurements this pass owes the reader, both from 2026-10-25: `nix flake check
+--no-build` passing is **not** the proof §2 wants (a warm store hides every one of these reads —
+the detector is `--option builders '' --option max-jobs 0` on a box that has never seen the
+source, i.e. `gw`); and the `# PARKED` grep in §7 is not the list of what is not *evaluated*.
 - [ ] 4. **The small, obviously-safe nits**: `reboot.sh` (§5), `just switch-gw` reading
    `common/hosts.nix`, `just switch-netboot` deriving its client list from
    `common/dns-records.nix`, `pxe-client-uefi`'s firmware into `/tmp`, the stale sentences in
