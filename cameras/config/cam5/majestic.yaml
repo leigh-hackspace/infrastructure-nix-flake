@@ -1,0 +1,76 @@
+system:
+  webAdmin: enabled
+  buffer: 1024
+  staticDir: /var/www/majestic
+image:
+  mirror: false
+  flip: false
+  rotate: none
+  contrast: 50
+  hue: 50
+  saturation: 50
+  luminance: 50
+osd:
+  enabled: false
+  template: "%a %e %B %Y %H:%M:%S %Z"
+nightMode:
+  enabled: true
+  irCutPin1: 78
+  backlightPin: 14
+  nightAPI: true
+  irSensorPinInvert: false
+  irCutPin2: 79
+  colorToGray: true
+records:
+  enabled: false
+  path: /mnt/mmcblk0p1/%F/%H.mp4
+  maxUsage: 95
+video0:
+  enabled: true
+  codec: h264
+  rcMode: vbr
+  gopSize: 1.0
+  fps: 5
+  size: 1280x720
+  bitrate: 4096
+  profile: main
+  sliceUnits: 0
+video1:
+  enabled: false
+  fps: 5
+  rcMode: avbr
+  gopSize: 5
+  codec: h264
+  size: 704x576
+jpeg:
+  enabled: true
+mjpeg:
+  size: 640x360
+  fps: 5
+  bitrate: 1024
+audio:
+  enabled: false
+  volume: auto
+  srate: 8000
+  speakerPin: 61
+  speakerPinInvert: false
+  outputEnabled: true
+rtsp:
+  enabled: true
+  port: 554
+hls:
+  enabled: false
+youtube:
+  enabled: false
+motionDetect:
+  enabled: false
+  visualize: false
+  debug: false
+ipeye:
+  enabled: false
+watchdog:
+  enabled: true
+  timeout: 10
+isp:
+  antiFlicker: 50
+  sensorConfig: /etc/sensors/sc3338.bin

@@ -24,6 +24,7 @@ X first", X has already cost someone a day.
 | touch the UniFi controller, its backups, or UniFi OS Server | `docs/unifi-os-server.md` — the appliance is a *downgrade* of the running controller, and `.unf` backups are encrypted with a key that is not on disk |
 | touch a Proxmox VM on monster1 | `docs/monster-proxmox.md` (+ `docs/monster-powercut-runbook.md` if anything is stopped) |
 | touch the 3D print servers | `docs/printer-servers.md` |
+| touch the OpenIPC cameras (`cam5`/`cam7`/`cam9`, 10.3.2.10/.12/.17), their feeds into frigate, or one camera's config | `cameras/README.md` (+ `cameras/c110.md` — the Tapo C110 hardware and reflash story behind them) |
 | touch the netboot image the Pi Room boots, or aibox's tftp/ipxe/NFS export of it | `machines/pi-room-sys/README.md` (the image is built by aibox, not deployed) |
 | touch a Dioxus SPA (any of the four) or its headless-browser suite | `docs/filestore-gotchas-2026-10-05.md` (the dioxus 0.7 + wasm traps apply to all of them) + `crates/filestore/tests/README.md`, `crates/switch-gui/tests/README.md` |
 | create or debug an OIDC app / authentik anything | `docs/authentik-oidc-notes.md` — **every part of it has bitten once** |
@@ -532,6 +533,7 @@ listed here is in the doc named for it.
   `leigh-admin@10.3.1.1` (root is not keyed); DO token is `DO_AUTH_TOKEN` in the shared
   env-file secret (`CONFIG.ENV_FILE`) — **never print it or copy it off services1.**
   → `docs/router-and-dns.md`, and the open items are in `docs/follow-ups.md`.
+- **OpenIPC cameras** `cam5`/`cam7`/`cam9` (10.3.2.10/.12/.17) and `cam1` (10.3.2.6) are Buildroot boxes on VLAN 226: **no NixOS, no systemd, no flake module** — their whole state is `/etc` on a **704 KB tmpfs root with ~452 KB free**, re-read by busybox init on boot and **overwritten by a reflash**, so a camera is managed by whole-file replace + md5 verify + `/etc/init.d/S95majestic restart`, never by a deploy, and `autoRollback`/GOLDEN RULE mean nothing there. services1's frigate pulls their RTSP through its own go2rtc, whose feed-name→camera table is **inside the container** (`/dev/shm/go2rtc.yaml`, generated from `/srv/frigate/config/config.yaml`, a runtime bind mount the flake only mounts), so both ends of the pipe are off-flake. The verbs are `just cam-probe/cam-check/cam-pull/cam-diff/cam-push/cam-init/cam-key`; `cameras/inventory.sh` is busybox-ash POSIX only, and `/var/log` is a symlink to `/tmp` so **a reboot wipes the log ring that recorded why it rebooted** (majestic's `watchdog` reboots a hung one — an unexplained boot on a camera is a sensor fault). Table, proven-vs-guess, and the faults found 2026-10-25 → `cameras/README.md`.
 - **3D print servers** `3d-blue` (10.3.14.62) / `3d-lime` (10.3.14.61), Klipper +
   Moonraker, user `hackspace`, polled by `moonraker-exporter` at **fixed IPv4 on purpose**
   (the two Pis were cloned from one SD card, so their DNS names used to advertise each

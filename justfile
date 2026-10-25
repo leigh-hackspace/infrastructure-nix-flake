@@ -1,7 +1,7 @@
 # https://just.systems
 
 default:
-    @ {{just_executable()}} --list --justfile {{justfile()}} --unsorted
+    @ {{ just_executable() }} --list --justfile {{ justfile() }} --unsorted
 
 SOPS_KEY_FILE := "{{env_var_or_error('HOME')}}/.config/sops/age/keys.txt"
 
@@ -99,17 +99,17 @@ sync-gw:
       --exclude='target/' --exclude='node_modules/' --exclude='/result' --exclude='/result-*' \
       --exclude='/.git/config' \
       -i -e "ssh -i ~/.ssh/agent-hop-key -o BatchMode=yes -o ConnectTimeout=5" \
-      ./ leigh-admin@{{GW_HOST}}:/home/leigh-admin/Projects/infrastructure-nix-flake/
+      ./ leigh-admin@{{ GW_HOST }}:/home/leigh-admin/Projects/infrastructure-nix-flake/
 
 switch-gw: _build-host-guard sync-gw
     #!/usr/bin/env bash
     set -euo pipefail
     NIX_SSHOPTS="-i $HOME/.ssh/agent-hop-key -o BatchMode=yes -o ConnectTimeout=5" \
       nixos-rebuild switch --flake .#gw \
-        --target-host leigh-admin@{{GW_HOST}} \
+        --target-host leigh-admin@{{ GW_HOST }} \
         --elevate=sudo \
       && ssh -i ~/.ssh/agent-hop-key -o BatchMode=yes -o ConnectTimeout=5 \
-           leigh-admin@{{GW_HOST}} 'sudo nixos-confirm'
+           leigh-admin@{{ GW_HOST }} 'sudo nixos-confirm'
 
 # --- Nix formatting ---
 
@@ -179,9 +179,9 @@ build-frontend crate="all": _build-host-guard
     set -euo pipefail
     # The parameter arrives through just's quote() — shell-quoted, and the case
     # below is a whitelist anyway.
-    case {{quote(crate)}} in
+    case {{ quote(crate) }} in
         all) crates="frigate-monitor filestore gocardless-dashboard switch-gui" ;;
-        *) crates={{quote(crate)}} ;;
+        *) crates={{ quote(crate) }} ;;
     esac
     for c in $crates; do
         if [ ! -f "crates/$c/frontend/build.sh" ]; then
@@ -223,7 +223,6 @@ network-status-dist-check:
         exit 1
     fi
     echo "network-status dist/ matches a fresh build"
-
 
 # --- the router's ssh host keys
 
@@ -448,7 +447,7 @@ check-build: _build-host-guard
 build-remote machine="services1": _build-host-guard
     #!/usr/bin/env bash
     set -euo pipefail
-    nixos-rebuild build --flake ".#{{machine}}" --max-jobs 0
+    nixos-rebuild build --flake ".#{{ machine }}" --max-jobs 0
 
 # Start an unauthenticated filestore on 127.0.0.1 for poking at the API/UI by
 # hand. --no-auth is only honoured on a loopback bind, so this can never expose
@@ -486,7 +485,192 @@ install-sops-key:
     set -euo pipefail
 
     sudo install -d -m 550 -g nixbld /var/lib/sops-nix
-    sudo install -m 440 -g nixbld "{{SOPS_KEY_FILE}}" /var/lib/sops-nix/key.txt
+    sudo install -m 440 -g nixbld "{{ SOPS_KEY_FILE }}" /var/lib/sops-nix/key.txt
 
 edit-secrets:
     sops edit secrets/secrets.yaml
+
+# --- the cameras (OpenIPC on the WiFi VLAN) ---------------------------------
+#
+# `cam5` `cam7` `cam9` are Buildroot/OpenIPC boxes on VLAN 226 (10.3.2.10/.12/.17,
+# pinned by MAC in `common/dns-records.nix`, which is the table these recipes read —
+# there is no second copy of the addresses to drift).  They run no NixOS and no
+# systemd: their whole state is files under `/etc` in a tmpfs overlay (704 KB,
+# ~450 KB free) that a reboot re-reads and a firmware reflash overwrites, so
+# nothing in the flake sees them and a fault on one is invisible from the box
+# they are consumed on (services1's frigate pulls their RTSP through its go2rtc).
+# Read `cameras/README.md` before changing anything on one; the device-side
+# story (how an OpenIPC camera is opened up at all) is `cameras/c110.md`.
+# `cameras/inventory.sh` is the busybox-ash report; `cameras/config/` holds the
+# pulled /etc files.  The fleet is bootstrapped by `cam-key`, which is the one
+# recipe that asks for the device password (once, interactively): the devices
+# speak the operator hop key afterwards and every other recipe is key-only
+# (`BatchMode=yes`, so an unkeyed device fails in seconds rather than hanging
+# a call).  Same shape as the printer Pis (docs/printer-servers.md).
+cam-list:
+    @grep -A5 -E '^  cam[0-9] = \{' common/dns-records.nix
+    @echo "--- feeds (the names services1's frigate calls them by live on the box:"
+    @echo "    /srv/frigate/config/config.yaml + the container's go2rtc stream table)"
+
+cam-addr name:
+    @grep -A4 "^  {{ name }} = {" common/dns-records.nix | grep -oE '10\.3\.[0-9]+\.[0-9]+' | head -1
+
+# Is a camera alive, without any credentials?  Three interfaces, three answers,
+# and each one is a different fact: RTSP :554 answers `401 Authentication
+# required` when majestic is up and gated (a 200 here is a finding, not a win —
+# an ungated feed is one any LAN client can pull); HTTP :80 answers its
+# redirect page when the web admin is up; and the `*.int` name resolving at all
+# is the router's half of the story (`just dns-sync-*` no longer exists — the
+# router renders `common/dns-records.nix`, and a name missing there is a name
+# nothing but the hub can answer).
+cam-probe name:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    a=$(grep -A4 "^  {{ name }} = {" common/dns-records.nix | grep -oE '10\.3\.[0-9]+\.[0-9]+' | head -1)
+    [ -n "$a" ] || { echo "no {{ name }} row in common/dns-records.nix" >&2; exit 1; }
+    echo "rtsp ${a}:554   -> $(curl -s -m 6 -o /dev/null -w '%{http_code}' "rtsp://${a}:554/stream=0" || echo down)  (401 = up and gated)"
+    echo "http {{ name }}.int   -> $(curl -s -m 6 -o /dev/null -w '%{http_code}' "http://{{ name }}.int.leighhack.org/" || echo no-dns)  (401 = the web admin is up; 000/no-dns = the router is not answering this name)"
+    echo "rtsp {{ name }}.int   -> $(curl -s -m 6 -o /dev/null -w '%{http_code}' "rtsp://{{ name }}.int.leighhack.org:554/stream=0" || echo down)"
+    if [ -n "${CAM_FEED:-}" ]; then
+        echo "go2rtc feed ${CAM_FEED} (:8554) -> $(curl -s -m 6 -o /dev/null -w '%{http_code}' "rtsp://127.0.0.1:8554/${CAM_FEED}" || echo down)  (200 = the restream end of the pipe is alive; only true when run on services1, where go2rtc lives)"
+    else
+        echo "go2rtc feed end not checked: set CAM_FEED to the name in services1's go2rtc stream table (see cameras/README.md: cam5 -> main_space, cam7 -> pi_room, cam9 -> woodwork)"
+    fi
+
+# One ssh pass, one report: versions, board, sensor, uptime, load, memory,
+# overlay usage, what the log ring holds (majestic rejects, RTSP stalls, night
+# flips, sensor reinits), the feed geometry, and the md5s of every /etc file.
+# It cats no credential and no binary (the WiFi PSK and ~115 KB of sensor
+# calibration both live in the directories it lists).  Key-only: run
+# `just cam-key <cam>` first if the device has never been keyed.
+cam-check name:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    a=$(grep -A4 "^  {{ name }} = {" common/dns-records.nix | grep -oE '10\.3\.[0-9]+\.[0-9]+' | head -1)
+    [ -n "$a" ] || { echo "no {{ name }} row in common/dns-records.nix" >&2; exit 1; }
+    if ! ssh -i "{{ env_var('HOME') }}/.ssh/agent-hop-key" -oBatchMode=yes -oConnectTimeout=6 \
+        -oStrictHostKeyChecking=accept-new root@"${a}" sh -s < cameras/inventory.sh; then
+        echo "cannot ssh key-only into {{ name }}: run just cam-key {{ name }} first (this is the bootstrap, and it is the one recipe that asks for the device password), or the device is down — try just cam-probe {{ name }}" >&2
+        exit 1
+    fi
+
+cam-check-all:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for c in cam5 cam7 cam9; do echo "===== $c"; just cam-check "$c"; done
+
+# Pull a camera's /etc files into cameras/config/<cam>/ and print what changed.
+# These are the files the fleet is meaningless without; they are **not**
+# deployed by anything, they are the record of what a device is running, so a
+# reflash (which wipes /etc) can be survived by pushing them back.  `/etc/`
+# files that hold credentials are pulled by md5 in `cam-check` instead of cat'd
+# here: the WiFi PSK (`/etc/wlanpass`, `/etc/wpa_supplicant.conf`) and the
+# vendor crontab comment on cam7 that carries a Telegram bot API key.
+cam-pull name:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    a=$(grep -A4 "^  {{ name }} = {" common/dns-records.nix | grep -oE '10\.3\.[0-9]+\.[0-9]+' | head -1)
+    [ -n "$a" ] || { echo "no {{ name }} row in common/dns-records.nix" >&2; exit 1; }
+    mkdir -p "cameras/config/{{ name }}"
+    key="{{ env_var('HOME') }}/.ssh/agent-hop-key"
+    for f in /etc/majestic.yaml /etc/httpd.conf /etc/crontabs/root /etc/resolv.conf \
+             /etc/init.d/S95majestic /etc/init.d/S96autonight /etc/init.d/S99sdconf.sh; do
+        out=$(ssh -i "$key" -oBatchMode=yes -oConnectTimeout=6 root@"${a}" "cat $f 2>/dev/null" || true)
+        [ -n "$out" ] || { echo "-- missing on device: $f"; continue; }
+        printf '%s\n' "$out" > "cameras/config/{{ name }}/$(basename "$f")"
+        echo "-- wrote cameras/config/{{ name }}/$(basename "$f") ($(wc -c < "cameras/config/{{ name }}/$(basename "$f")") bytes)"
+    done
+
+# md5 the repo copy against the device for every file we hold.  Run this before
+# `cam-push`: the only honest operation on a camera's config is to read the
+# diff and then replace the whole file, because the file the vendor's build
+# wrote is not a file this repo generates.
+cam-diff name:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    a=$(grep -A4 "^  {{ name }} = {" common/dns-records.nix | grep -oE '10\.3\.[0-9]+\.[0-9]+' | head -1)
+    [ -n "$a" ] || { echo "no {{ name }} row in common/dns-records.nix" >&2; exit 1; }
+    for f in cameras/config/{{ name }}/*; do
+        [ -f "$f" ] || continue
+        case "$(basename "$f")" in
+        root) dev=/etc/crontabs/root ;;
+        S9*) dev=/etc/init.d/$(basename "$f") ;;
+        *) dev=/etc/$(basename "$f") ;;
+        esac
+        remote=$(ssh -i "{{ env_var('HOME') }}/.ssh/agent-hop-key" -oBatchMode=yes -oConnectTimeout=6 \
+            root@"${a}" "md5sum $dev 2>/dev/null" | cut -d' ' -f1 || echo gone)
+        local=$(md5sum "$f" | cut -d' ' -f1)
+        if [ "$remote" = "gone" ]; then echo "ABSENT on device   $dev (we hold it: $local)"
+        elif [ "$remote" = "$local" ]; then echo "same             $dev"
+        else echo "DRIFT            $dev  device=$remote repo=$local"
+        fi
+    done
+
+# Replace one whole file on a camera, then prove it landed by md5 on both sides
+# before touching the daemon: a write that did not land must not be followed by
+# a restart (the restart is what makes the config live, and majestic keeps
+# running from a deleted-but-open binary).  `file` is a path under
+# cameras/config/<cam>/, i.e. you review the diff first.  Nothing here reflashes.
+cam-push name file:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [ -f "{{ file }}" ] || { echo "no such repo file: {{ file }}" >&2; exit 1; }
+    a=$(grep -A4 "^  {{ name }} = {" common/dns-records.nix | grep -oE '10\.3\.[0-9]+\.[0-9]+' | head -1)
+    [ -n "$a" ] || { echo "no {{ name }} row in common/dns-records.nix" >&2; exit 1; }
+    case "$(basename {{ file }})" in
+    root) dev=/etc/crontabs/root ;;
+    S9*) dev=/etc/init.d/$(basename {{ file }}) ;;
+    *) dev=/etc/$(basename {{ file }}) ;;
+    esac
+    echo "pushing {{ file }} -> {{ name }}:$dev"
+    ssh -i "{{ env_var('HOME') }}/.ssh/agent-hop-key" root@"${a}" "cat > $dev" < "{{ file }}"
+    now=$(ssh -i "{{ env_var('HOME') }}/.ssh/agent-hop-key" -oBatchMode=yes root@"${a}" "md5sum $dev" | cut -d' ' -f1 || echo gone)
+    want=$(md5sum "{{ file }}" | cut -d' ' -f1)
+    if [ "$now" != "$want" ]; then
+        echo "REFUSED to restart: device md5=$now repo md5=$want — the write did not land" >&2
+        exit 1
+    fi
+    echo "landed (md5 $want); majestic restart is what makes it live:"
+    echo "  just cam-init {{ name }} S95majestic restart"
+
+# Run an init.d script on a camera.  These boxes have busybox init, no systemd,
+# and no service manager: S95majestic is the stream server, S96autonight the
+# day/night flipper, S99sdconf.sh the SD hook, and `restart` (not `stop
+# && start`) is what a camera understands.
+cam-init name script action:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    a=$(grep -A4 "^  {{ name }} = {" common/dns-records.nix | grep -oE '10\.3\.[0-9]+\.[0-9]+' | head -1)
+    ssh -i "{{ env_var('HOME') }}/.ssh/agent-hop-key" root@"${a}" "/etc/init.d/{{ script }} {{ action }}"; echo "restarting majestic remounts the overlay and reinits the sensor: expect a ~30 s window where the feed is down (frigate retries, retry_interval: 120)"
+
+# The bootstrap: put the operator hop key in the device's authorized_keys, so
+# every recipe above can be run without a password and a wedged ssh cannot
+# happen.  This is the ONE recipe expected to need the device password, typed
+# by the operator on their own tty (ssh reads it there; this file never has it,
+# never prints it, and must never learn it — rule 13).  dropbear (2022.82 on
+# these boxes) reads the same authorized_keys OpenSSH does; `/root/.ssh` is a
+# symlink to /etc/dropbear on these devices.  The key line is the fleet's, not
+# a secret to this repo: AGENTS.md, "SSH between machines".
+cam-key name:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    a=$(grep -A4 "^  {{ name }} = {" common/dns-records.nix | grep -oE '10\.3\.[0-9]+\.[0-9]+' | head -1)
+    key="{{ env_var('HOME') }}/.ssh/agent-hop-key"
+    [ -f "$key" ] || { echo "no hop key at $key" >&2; exit 1; }
+    ssh -i "$key" -oConnectTimeout=6 root@"${a}" "mkdir -p /root/.ssh; cat >> /root/.ssh/authorized_keys" < "$key".pub
+    echo "appended.  it may already be there (a duplicate line is harmless); if the line below is not a clean pubkey, fix it before trusting the login:"
+    ssh -i "$key" -oConnectTimeout=6 root@"${a}" "tail -1 /root/.ssh/authorized_keys | cut -c1-60"
+
+# Does key-only ssh work?  This is the health check the other recipes assume:
+# a BatchMode ssh that returns is keyed; one that asks is not, and the fix is
+# `just cam-key <cam>`.  Nothing here prompts: BatchMode makes it fail fast.
+cam-keytest name:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    a=$(grep -A4 "^  {{ name }} = {" common/dns-records.nix | grep -oE '10\.3\.[0-9]+\.[0-9]+' | head -1)
+    if ssh -i "{{ env_var('HOME') }}/.ssh/agent-hop-key" -oBatchMode=yes -oConnectTimeout=6 \
+        -oStrictHostKeyChecking=accept-new root@"${a}" 'echo keyed'; then
+        echo "keyed"
+    else
+        echo "NOT keyed (or unreachable): run just cam-key {{ name }}"
+    fi

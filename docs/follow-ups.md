@@ -907,3 +907,90 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   copy of the live database would only confuse a restore). The unit itself is
   tested; it turns on with the flag. `machines/services1/services/authentik.nix`.
 
+
+---
+
+## Cameras (OpenIPC, VLAN 226) — opened 2026-10-25, `cameras/README.md` owns the fleet
+
+Filed the same day the fleet was first looked at; everything measured is in
+`cameras/README.md` ("Faults found on 2026-10-25") — these are the five things
+that **need an owner or a decision** rather than another measurement.
+
+- **A Telegram bot API key is in a comment in cam7's `/etc/crontabs/root`**
+  (line 20 of the vendor's own example block; the command it comments out would
+  post a snapshot of the camera to that bot). **The value is deliberately not in
+  this repo**: `cameras/config/cam7/root` has the line replaced by a redaction
+  note, and `cameras/inventory.sh` reports that file's md5 and line count rather
+  than cat'ing it, because `cam-pull` puts these files into a store path and a
+  future transcript (rule 13). **Blocks:** nothing — it is a commented line, so
+  nothing runs, and crond reads `/etc/crontabs/root` (0 active lines today).
+  **Needs:** whoever owns that bot to rotate the token, and the line deleted on
+  the device (it is the vendor's, not ours). Do not "just delete it from the
+  repo copy": the device still has it.
+- **frigate's camera config is not in the repo and is deciding to do nothing.**
+  `/srv/frigate/config/config.yaml` is a **runtime bind mount**
+  (`machines/services1/services/frigate.nix` mounts it, nothing generates it),
+  and its go2rtc table (`/dev/shm/go2rtc.yaml`, in-container, regenerated at
+  start) is the thing that maps a feed name to a camera. Today it **disables**
+  `3d_1`/`3d_2`/`3d_3`/`voron` and comments out `rack_corridor`'s
+  `cam1.int.leighhack.org:554/0/av0` line while leaving an `ffmpeg:`
+  transcode line in play. **Blocks:** a camera fault that looks like "frigate
+  is fine but the picture is old" cannot be told from "the config stopped
+  meaning what the flake says". **Needs:** that file tracked (a root-owned file
+  under `/srv`, or generated into the mount the way `strace-launcher.sh`
+  generates `go2rtc.ini` into `/data`) **and** the mapping
+  device→stream→camera-name in one table `cam-*/frigate` can read, since the
+  three names for one feed (the DNS name, the go2rtc stream key, the frigate
+  camera) are what `common/monitoring-endpoints.nix`'s gatus rows and
+  `just cam-probe` both depend on today being right by hand.
+- **`cam1`/`cam5`/`cam7`/`cam9` are `*.int` names that answer with a LAN device
+  rather than the front door, and no guard describes that path.**
+  `curl http://cam5.int.leighhack.org/` answers **from cam5's own busybox
+  `httpd`** (401, realm `Authentication`) — the name resolves to the device, not
+  to `gw` — yet none of those four names is a row in `common/int-dns.nix`, the
+  table rule 14 says every `*.int` name belongs to, and `machines/gw/int-dns.nix`
+  (gw's vhosts must equal that table) and `machines/services1/int-dns.nix`
+  (the origin's must equal the `upstream = "origin"` rows) both pass with the
+  names absent. **Blocks:** the decision, not a build: adding rows on a guess is
+  how a second front door gets built for a name whose real answer is a camera.
+  **Needs:** read `docs/router-and-dns.md` + `docs/router-front-door-migration.md`
+  first and decide whether a device's own `*.int` name belongs in `int-dns.nix`
+  at all (it is a *different* kind of row: "serves, must not answer with the
+  door's address", i.e. the `exempt` half of that table) or whether these names
+  stay outside the table and the gatus rows that use them stay hand-written.
+- **The fleet's tooling is shell today; the house rule wants Rust** (rule 1:
+  no new services/CLIs in other languages, `crates/status-dashboard/` is the
+  pattern). The justfile's `cam-*` recipes **work** and were validated against
+  the devices on 2026-10-25, which is why they are the shipped thing. **A
+  `crates/camera-monitor/` attempt was started the same day and deleted**: its
+  `src/main.rs` was 10 lines of not-Rust (`[const string]`, `?(bool, string)`
+  — a code-shape mix-up that no compiler error had taught yet), and it was never
+  a workspace member, so it was a trap for the next agent rather than a start.
+  **Do not "fix" that stub: write the crate from a clean slate against
+  `cameras/README.md`.** What the pass learned for whoever does:
+  `crates/common-rs/http-client` has **no auth support at all**, so the tool needs
+  its own RTSP `DESCRIBE` client (the `401 / realm WallyWorld` receipts in that
+  doc are the evidence the feed is gated), the write path must be
+  md5-then-replace-then-restart, and `just check`/`just check-build` must stay
+  gw-safe via `_build-host-guard` (the justfile recipe, `hostname`-based) —
+  nothing about these devices is a nix build, so the crate stays off the deploy
+  sets. **Blocks:** nothing.- **`cam5`'s pulled `S99sdconf.sh` is not cam5's** (device md5 `ae29e67d…`,
+  `cameras/config/cam5/S99sdconf.sh` md5 `1b4ac291…`, which is cam9's copy).  Every
+  other pulled file's md5 matched its device byte-for-byte on 2026-10-25 (the
+  report's `etc_md5s` line vs `cameras/config/`), and cam7's crontab disagrees
+  **by design** (the repo copy is the redacted one, see fault 1). **Blocks:**
+  nothing — no recipe deploys `S99sdconf.sh`, and the SD hook can never fire on
+  these boxes anyway (no `/dev/mmc*` node). **Needs:** `just cam-diff cam5`, then
+  `just cam-pull cam5` to replace the copy, then re-check the md5s; do not
+  hand-copy cam9's file over it and do not trust the record for that one file
+  until the md5s agree.
+- **These three cameras are a fleet of three different hand-configured sets**
+  (cam5's `/etc/overlay/upper` has 15 files, cam7's 25, cam9's 21; cam9 has no
+  `isp:` section in `majestic.yaml` while cam5 and cam7 have one; cam7 has no
+  `bitrate`/`profile` lines while cam5 does; cam5 has no `S96autonight` while
+  cam9 does). **Needs a decision:** unify them by pushing one reviewed file to
+  all three and re-`cam-diff`ing, or keep them per-device and let
+  `just cam-diff` be the record. Unifying means picking the sensor pad per
+  device (they are **not** all the same sensor: cam5/cam7 are `sc3338`-based
+  SSC009A, cam9 is `sc401ai` SSC33X), so it is a decision with a hardware
+  consequence, not a config tidy-up.
