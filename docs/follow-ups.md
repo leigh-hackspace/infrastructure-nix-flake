@@ -49,6 +49,21 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   `machines/services1/services/filestore.nix:82`: `docs/nix-dev-workflow.md`, "Reopened
   2026-10-22".
 
+  **Closed 2026-10-25, half of it — and the other half is wider than this item says.**
+  `lockArgs` pairs `cargoLock` with `cargoLockContents` at all three sites that hand crane a
+  lock (`3b1ec44`), and the call moved to the predicted next read, `…-filestore-web-src.drv`.
+  What the move exposed: that read is keyed to the **flake source**, not to the box, so on any
+  source hash nothing has evaluated `nix flake check --no-build` fails *everywhere* — measured
+  on aibox in a fresh worktree with the same hash gw reported (`jfv7x3pz…`), and `--no-build`
+  refuses it there even though aibox is one trivial `runCommand` away from having it. One full
+  evaluation writes those `.drv` files and the check passes again (`nix eval
+  .#nixosConfigurations.services1.config.system.build.toplevel.drvPath`, then
+  `nix flake check --no-build` → `all checks passed!`, aibox 2026-10-25). So "run it on aibox"
+  is not a workaround, it is a warm store, and this item's sibling — "`just check` is
+  machine-dependent" — is the same read seen from the other side rather than a second door.
+  The read itself needs the decision written up in `docs/flake-simplification-pass-2026-10-24.md`
+  §2 (where a SPA's path dependencies live), not a pairing.
+
   **Its sibling is the item at the end of this section** — "`just check` is
   machine-dependent", where the read is `builtins.readFile (config.sopsSecretText …)` and
   what gets compiled is a *decrypted secret*. Same class, two doors, and they fail in a fixed

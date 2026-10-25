@@ -92,8 +92,13 @@ X first", X has already cost someone a day.
     on gw (`_build-host-guard`), a routine deploy of this box is `just switch-gw` *from
     services1 or aibox*, and `just check` — eval/format only, so safe here in principle — is
     **broken *on* gw** by an eval-time read of a derivation — crane stubbing the SPA source
-    trees, whose lock-file half closed 2026-10-25 — and so is run on aibox until the rest
-    does (the four assertion evals and `just fmt-check` still run here).
+    trees, whose lock-file half closed 2026-10-25 — and **store-dependent everywhere else**:
+    the read is keyed to the flake source, so on any source hash nothing has evaluated yet the
+    check needs a build and fails on every box (measured 2026-10-25: same hash, aibox and gw).
+    One full evaluation — `nix eval .#nixosConfigurations.<m>.config.system.build.toplevel.drvPath`,
+    or any deploy — writes the stubs and the check passes again, which is why this reads as
+    intermittent. It is permanent on gw, which cannot build; the four assertion evals and
+    `just fmt-check` still run here.
     After any switch here, `sudo systemctl start front-door-cert-check.service`: reading the
     *issuer* is the only check that can tell an issued certificate from minica's fallback.
     Mechanism, receipts, the split devShells and the exact allowed/refused list:

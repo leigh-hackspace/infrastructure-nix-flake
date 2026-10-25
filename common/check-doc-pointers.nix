@@ -30,7 +30,12 @@
 #   1. every `` `just <name>` `` in the instruction files is a recipe in the justfile.
 #      `just dns-sync-sync` sat in AGENTS.md rule 14 for months after the recipe was
 #      deleted on 2026-10-22, and rule 14 is the half of the file an agent obeys without
-#      reading the rest of it;
+#      reading the rest of it. **The backticks are the syntax, and every line of the three
+#      files is scanned — recipe docstrings and comments included** (measured 2026-10-25: a
+#      justfile comment reading `` `just no-such-recipe-xyz` `` fails at its own line number,
+#      the same words without backticks pass). So a recipe may be documented in its own
+#      docstring rather than duplicated in a table, and a prose mention written without
+#      backticks is invisible here, which is the one way this check can be lied to.
 #   2. every repo path with a file extension in those files exists — `secrets/.env.sample`
 #      is really machines/services1/secrets/.env.sample, `machines/constants.nix` is
 #      machines/gw/constants.nix, and the note a justfile comment sent readers to

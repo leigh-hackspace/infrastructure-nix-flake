@@ -369,10 +369,12 @@ check:
     # `error: path '…-filestore-web-src.drv' is not valid` because evaluating the machines
     # reads a derivation — crane stubs each SPA's source tree at eval time, and those
     # sources are derivations because a SPA's path dependencies live outside its directory
-    # (docs/nix-dev-workflow.md, "Closed 2026-10-25"). The lock file's half of it is fixed;
-    # the router refuses builds by design, so run `just check` on aibox until the rest is.
-    # The four evals below and `just fmt-check` are what still work here, since none of
-    # them evaluates a machine.
+    # (docs/nix-dev-workflow.md, "Closed 2026-10-25"). The lock file's half of it is fixed.
+    # On a flake source nothing has evaluated yet this fails on *every* box, not just here —
+    # `--no-build` refuses to realise the stub even though aibox would happily build it — and
+    # one full evaluation (or any deploy) writes those .drv files and it passes again, which is
+    # the only thing "run it on aibox" was ever resting on. The four evals below and
+    # `just fmt-check` are what still work here, since none of them evaluates a machine.
     nix flake check --no-build
     echo "=== config-to-gitlab assertions"
     nix eval --impure --raw -f machines/services1/lib/check-config-to-gitlab.nix

@@ -171,7 +171,16 @@ derivation) fails because stdenv stringifies `src` — `cannot coerce a set to a
 invalidates what. The second is probably right and is exactly the "shared dependency wiring"
 decision this document said not to make casually; `common/crane.nix`'s comment on
 `withSharedCrates` carries the receipts. Until then the eight sentences quoted below are
-still true, with one correction: the read is the SPA source tree, not the lock file.
+still true, with one correction: the read is the SPA source tree, not the lock file — and one
+**correction of this document**: the read is not router-specific either. It is keyed to the
+flake source, so `nix flake check --no-build` fails on *any* box whose store has not already
+evaluated the source it is pointed at (measured 2026-10-25: aibox, a fresh `git worktree`, same
+`jfv7x3pz…` hash gw reports; and after one `nix eval …toplevel.drvPath` in that same worktree,
+`all checks passed!`). The eight sentences are therefore not merely redundant, they are wrong
+about the mechanism: `aibox` is not a box where the check is safe, it is a box that is usually
+warm. That is the sibling follow-up item ("`just check` is machine-dependent") seen from the
+same side as this one, and it is the reason §2's remaining decision is worth making properly
+rather than papering over with a per-box recipe.
 
 The rest of this section is the finding as written on 2026-10-24, kept because the shape it
 describes is what landed and because the eight-sentence list is still open.
