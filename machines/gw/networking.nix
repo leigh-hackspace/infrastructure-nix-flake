@@ -82,7 +82,7 @@ in {
 
   # The router's own name resolution: it answers for the network, and it also has
   # to *reach* it (the box's own boot wants to resolve the names it serves, and
-  # services1 sshes here for `just switch-gw`'s confirm).  Same shape as
+  # `just deploy gw` arrives over ssh from whichever box ran it).  Same shape as
   # machines/services1/networking.nix's extraHosts, one line shorter: the router is
   # the thing the names point at, and its own address must not come from the
   # dnsmasq that is being started.

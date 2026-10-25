@@ -463,8 +463,8 @@ in {
             type filter hook input priority 0; policy drop;
 
             # The box talking to itself, and the replies to connections it
-            # started (its own DNS upstream, ntp, and the ssh that `just switch-gw`
-            # and every debugging session from services1 arrive over).
+            # started (its own DNS upstream, ntp, and the ssh that `just deploy gw`
+            # and every debugging session arrive over).
             iifname "lo" accept
             ct state established,related accept
             ct state invalid drop

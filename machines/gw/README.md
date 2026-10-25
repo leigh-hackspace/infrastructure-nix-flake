@@ -465,17 +465,25 @@ exposes.
 
 ## How this box is deployed, and what the box itself is still for
 
-`just switch-gw` from services1 (or aibox) does the whole loop: rsync this tree to the
-router (the mirror), build gw's system **on the build host**, push it with
-`nixos-rebuild switch --flake .#gw --target-host leigh-admin@10.3.1.1 --elevate=sudo`,
-then `sudo nixos-confirm` over ssh in the same shell invocation (AGENTS.md's GOLDEN
-RULE — `nixos-confirm` on services1 confirms nothing, because it confirms the local
-system).
+**It deploys itself**, like every other box: `just deploy gw` from anywhere (or `just
+switch` here) fetches the commit into this checkout, runs `nixos-rebuild switch --flake
+.#gw` **on this box** and `sudo nixos-confirm` on this box in the same shell invocation
+(AGENTS.md's GOLDEN RULE — a confirm on another machine confirms nothing, because it
+confirms the local system).
 
-That is the primary path because the router hosts a Rust crate since 2026-10-21
-(`./network-status.nix`), and a build started here is aibox's work rather than this
-box's — `just switch-gw` is still the form that keeps the evaluation off the router
-too, so it stays build-shaped and refuses to run on gw itself.
+That works because the compiling is not this box's: it delegates to aibox and runs
+`nix.settings.max-jobs = 0` (`./default.nix`), so the Rust crate this box hosts
+(`./network-status.nix`) is built on aibox and the closure is copied back, exactly as it is
+for services1. What this box pays is the **evaluation** — seconds of the network's resolver
+per deploy — which is the honest price of not making another machine the fleet's deploy
+host.
+
+Until 2026-10-25 the routine path was the opposite: `just switch-gw` **from services1**
+rsynced this tree over the checkout (`sync-gw`) and pushed the closure with
+`nixos-rebuild --target-host`. That made services1 the centre of the fleet, kept this
+checkout as an rsync *mirror* — which silently ate its own `.git/config` once — and needed
+`--elevate=sudo` plus `NIX_SSHOPTS` to work at all. Both recipes are gone; `switch-gw` is
+now a one-line alias for `just deploy gw`, and this checkout is a normal one.
 
 The box still keeps the checkout at `~/Projects/infrastructure-nix-flake`, with
 `git`/`just`/`jq` in its own `environment.systemPackages` (not from
@@ -501,12 +509,14 @@ the flake. Three were set during the install; the fourth is a habit:
    the box can `git fetch infra`, a remote named for services1's checkout and the only
    one it can reach without a GitHub key of its own (`origin` still points at GitHub,
    like everywhere else).
-4. The tree is a **mirror of the admin's working tree**, kept with `just sync-gw`
-   (`rsync -a --delete`, excluding `target/` and `node_modules/`). It is not a clone to
-   edit on the box: edit here, sync there. Discovering a divergence at the cutover is
-   the failure this rule exists to prevent.
+4. The tree is a **normal checkout** at the deployed commit: `just deploy gw` (or `just
+   switch`) fetches the commit into it — from GitHub where the box has a key, otherwise
+   from whichever box ran the recipe over the hop. It is no longer an rsync mirror of the
+   admin's working tree, so a divergence from what was deployed cannot go unnoticed:
+   `git log -1` here is the commit that built the running system.
 
-The push path has its own two gotchas, both hit for real:
+The push path (`--target-host`, retired 2026-10-25) had two gotchas worth keeping if it is
+ever reintroduced, both hit for real:
 
 * **`--elevate=sudo` is not the default.** This nixpkgs ships `nixos-rebuild-ng`, which
   does not elevate remotely where the old shell script did, so without the flag the
@@ -700,7 +710,7 @@ to skip and one reboot away from an unbootable machine:
    confirm creates the safety net rather than checking it, and it has to be in the same
    invocation as the switch that needed it.
 9. Then the four imperative facts from the section above, after which
-   `just switch-gw` is the way forward.
+   `just switch` here (or `just deploy gw` from anywhere) is the way forward.
 
 ## Do not build on this box
 
@@ -714,8 +724,8 @@ off for this box (`infra.buildFarm.gc = false`) — a router should not be rewri
 own store on a timer, and `system-good` is the rollback profile's own GC root.
 
 That makes the *accident* harmless; it does not make building here correct. Evaluation
-still costs this box CPU, and the deliberate path is still build-there-and-push (see
-the next paragraph).
+still costs this box CPU, which is why the build-shaped recipes stay guarded and why a
+local `just switch` is the *deploy* and not a build host.
 
 `nix develop` used to be a build: the one devShell this box had pinned
 `CRANE.wasmBindgenCli`, which is compiled with cargo, so entering it here compiled on the
@@ -725,17 +735,13 @@ develop` and put four `rustc` processes on the gateway. Two changes keep them of
 nothing on this box has a reason to enter), and the justfile keeps the recipes apart —
 `just check` and `just fmt` evaluate/format only (`nix flake check --no-build`,
 `nix fmt`), and the build-shaped recipes (`test`, `clippy`, `check-build`,
-`build-frontend`, `filestore-*`, `switch-gui-test`, `build-remote`, **and
-`switch-gw`**) refuse here via `_build-host-guard`. Run those from aibox or services1.
-`just switch` still exists here, and after this generation it can no longer compile
-anything without aibox: the box hosts a Rust crate (`./network-status.nix`), that crate
-is built on aibox whether the switch was started here or on services1, and the closure
-is copied back. `just switch-gw` from services1/aibox remains the way — it is the same
-build with the *evaluation* off the router too, and `sync-gw` keeps this checkout as a
-mirror rather than as the source. If aibox is genuinely down and the push path is
-unavailable, the escape hatch is a per-command `--option max-jobs N` on a box where
-that is exactly the risk you have chosen; nobody has tested that it is honoured for a
-trusted client, so do not discover that during an outage. Mechanism and the incident:
+`build-frontend`, `filestore-*`, `switch-gui-test`, `build-remote`) refuse here via
+`_build-host-guard`. Run those from aibox or services1.
+`just switch` is not one of them: with the delegate-and-no-fallback settings above it
+compiles nothing here — the box hosts a Rust crate (`./network-status.nix`), that crate is
+built on aibox, and the closure is copied back — so it deploys the box it is run on, which
+is what `just deploy gw` from elsewhere does too. If aibox is genuinely down the switch
+fails instead of quietly compiling here, which is the point. Mechanism and the incident:
 `docs/nix-dev-workflow.md`, "Never build on the router".
 
 

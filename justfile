@@ -34,13 +34,16 @@ switch:
 # the box you are standing on**, and a 4-core router is also the network's resolver.
 # `check-eval` and `fmt` are eval/format only and stay allowed there; `check` is allowed too
 # but skips its flake step here, with the reason printed (see that recipe).  Every
-# build-shaped recipe below depends on this guard.  What it replaced — the devShell that *was*
+# build-shaped recipe below depends on this guard — `deploy`/`switch` deliberately do not:
+# they are how a machine installs itself, and the build is aibox's either way.  What it replaced — the devShell that *was*
 # a build, and the split toolchain that closed it — the full allowed/refused table, and what to
 # read if rustc ever appears on the router again: docs/nix-dev-workflow.md,
 # "Never build on the router".
 #
-# Build on aibox (the network's builder) or services1.  If you genuinely need to
-# build on the router, say so explicitly.
+# Build on aibox (the network's builder).  If you genuinely need to build on the
+# router, say so explicitly.  Deploying the router is *not* a build on the router and is
+# not guarded: `just switch` here, or `just deploy gw` from anywhere, evaluates on gw and
+# compiles on aibox — which is also what every other box does for itself (`just deploy`).
 _build-host-guard:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -52,66 +55,78 @@ _build-host-guard:
         exit 1
     fi
 
-# --- the router (gw)
+# --- deploying a machine: from that machine ------------------------------------
 #
-# It is the network's router as of 2026-10-21, so it answers on `10.3.1.1` —
-# `machines/gw/coexist.nix` and the whole co-existence mode were deleted on 2026-10-22.
-# `10.3.1.254` was the co-existence address: it belongs to generations built before the
-# cutover, so pass `GW_HOST=10.3.1.254` only if you are working on one of those.
-GW_HOST := "10.3.1.1"
+# `just switch` is this box.  `just deploy <machine>` is any box: it sshs to the target,
+# brings *the target's own checkout* to the commit this box is on, and runs
+# `nixos-rebuild switch` **there** — so the machine that evaluates, activates and confirms is
+# the machine being deployed.  The compilation is still aibox's (the target's daemon delegates
+# to it, `common/build-farm.nix`); the point is that no box is the fleet's deploy host.
 #
-# Deployed by building *here* and pushing to the router.  It used to build on the
-# router itself ("it has the checkout, git, the sops key"), but since 2026-10-21 the
-# router's system contains a Rust crate (machines/gw/network-status.nix), and
-# building Rust on the box that answers DNS/DHCP for the network is exactly what
-# AGENTS.md's "Never build on the router" forbids.  So this recipe is build-shaped
-# and refuses to run on gw, like the rest; run it from services1 (where the tree
-# is edited) or aibox.  Nixos-rebuild builds locally — on services1 that delegates
-# to aibox — then copies the closure to the target and runs activation there.
+# This replaces the pair that made services1 the centre of the fleet: `switch-gw` built *here*
+# and pushed the closure to the router with `--target-host`, and `sync-gw` rsynced this whole
+# working tree over the router's checkout with `--delete`.  Both were written when gw had no
+# builder and no GitHub key.  Neither is true any more: gw delegates to aibox and holds
+# `max-jobs = 0` (2026-10-21), so it builds its own toplevel without compiling anything, and
+# the commit travels as a git fetch from whichever box ran the recipe rather than as an rsync
+# of a working tree — which is also why `sync-gw`'s `.git/config`-eating bug
+# (`docs/follow-ups.md`) is closed by deleting the recipe instead of by another exclusion.
 #
-# `sync-gw` still runs first: the router keeps a checkout as a mirror for reading
-# and for the emergency fallback, and it must not drift from the tree being
-# deployed.
+# What it costs: the target evaluates its own configuration, and the target pays for it.  On
+# gw that is seconds of the network's resolver per deploy, which is the honest price of not
+# making another machine the deploy host; nothing compiles there either way (`max-jobs = 0`).
 #
-# The switch and the confirm are chained with &&: AGENTS.md's GOLDEN RULE, and
-# `nixos-confirm` has to run on the machine that was switched (in the same shell
-# invocation), so a failed activation is never confirmed.  NIX_SSHOPTS carries the
-# machine-hop key: the default ssh identity is not authorised on gw, and
-# nixos-rebuild-ng uses plain ssh to reach --target-host.
-#
-# `--flake .#gw` names the machine explicitly; it cannot pick the local hostname
-# by accident the way `--flake .` could if this ever ran somewhere else.
-
-# Mirror this checkout onto the router.  The excludes are the build trees: 6.7 GB
-# of crates/target and node_modules that the flake rebuilds itself (and that
-# `lib.cleanSourceFilter` does not read .gitignore, so carrying them over is how a
-# stray 3 GB directory ends up next to a router's config — see
-# docs/nix-dev-workflow.md).  `--delete` so a file removed here is gone there too:
-# the router's checkout is a mirror, not a second place to edit.
-#
-# `.git/config` is the one file that is *not* mirrored, because it is the only part
-# of `.git` that is per-box rather than per-commit: the router's own remotes (it has
-# an `infra` remote pointing at services1's checkout, because it has no GitHub key of
-# its own) are wiped by a mirror of services1's config, which is how the first
-# version of this recipe silently deleted it.
-sync-gw:
+# Run from any box that has the commit.  On the target itself the recipe degenerates to
+# `just switch`, so `just deploy gw` does the right thing wherever it is typed.
+deploy machine:
     #!/usr/bin/env bash
     set -euo pipefail
-    rsync -a --delete \
-      --exclude='target/' --exclude='node_modules/' --exclude='/result' --exclude='/result-*' \
-      --exclude='/.git/config' \
-      -i -e "ssh -i ~/.ssh/agent-hop-key -o BatchMode=yes -o ConnectTimeout=5" \
-      ./ leigh-admin@{{ GW_HOST }}:/home/leigh-admin/Projects/infrastructure-nix-flake/
-
-switch-gw: _build-host-guard sync-gw
-    #!/usr/bin/env bash
+    machine={{ quote(machine) }}
+    case "$machine" in
+        services1|services2|aibox|gw) ;;
+        *) echo "unknown machine: $machine — expected services1, services2, aibox or gw" >&2; exit 2 ;;
+    esac
+    # The address is `common/hosts.nix`, not a second copy of it — one table of addresses,
+    # which is also what `just known-hosts` reads for the same job.  `gw` is the hostname and
+    # `router` is the table's key for it (the box has been `gw` since it replaced the OPNsense
+    # appliance, and `common/hosts.nix` calls its address after its job).
+    case "$machine" in gw) hkey=router ;; *) hkey=$machine ;; esac
+    addr=$(nix eval --impure --raw --expr "let h = import ./common/hosts.nix; in h.$hkey")
+    me=$(hostname)
+    if [ "$me" = "$machine" ]; then
+        echo "=== $machine is this box: switching here"
+        sudo nixos-rebuild switch --flake ".#$machine" && sudo nixos-confirm
+        exit $?
+    fi
+    # Where the commit comes from when the target cannot reach GitHub itself (only the
+    # operator's key can, and a box without one has no business holding a copy of it).
+    # `here` is empty on a machine that is not in hosts.nix — then the target's own fetch has
+    # to work, and if it cannot the recipe says so instead of syncing a tree over the top.
+    case "$me" in gw) mkey=router ;; *) mkey=$me ;; esac
+    here=$(nix eval --impure --raw --expr "let h = import ./common/hosts.nix; in if builtins.hasAttr \"$mkey\" h then h.$mkey else \"\"" 2>/dev/null || echo "")
+    repo=$(git rev-parse --show-toplevel)
+    echo "=== $machine ($addr): fetch, switch and confirm on the box"
+    ssh -i "$HOME/.ssh/agent-hop-key" -o BatchMode=yes -o ConnectTimeout=5 \
+        "leigh-admin@$addr" bash -s -- "$machine" "$here" "$repo" <<'REMOTE'
     set -euo pipefail
-    NIX_SSHOPTS="-i $HOME/.ssh/agent-hop-key -o BatchMode=yes -o ConnectTimeout=5" \
-      nixos-rebuild switch --flake .#gw \
-        --target-host leigh-admin@{{ GW_HOST }} \
-        --elevate=sudo \
-      && ssh -i ~/.ssh/agent-hop-key -o BatchMode=yes -o ConnectTimeout=5 \
-           leigh-admin@{{ GW_HOST }} 'sudo nixos-confirm'
+    machine=$1 here=$2 repo=$3
+    cd ~/Projects/infrastructure-nix-flake
+    if git fetch -q origin 2>/dev/null; then
+        git merge -q --ff-only origin/main
+    else
+        [ -n "$here" ] || { echo "cannot fetch origin, and no peer address to fetch from" >&2; exit 1; }
+        git fetch -q "ssh://leigh-admin@$here$repo" main
+        git merge -q --ff-only FETCH_HEAD
+    fi
+    echo "=== $machine now at $(git log --oneline -1)"
+    sudo nixos-rebuild switch --flake ".#$machine"
+    sudo nixos-confirm
+    REMOTE
+
+# Kept because the docs and the router's own README name it: deploying the router is
+# deploying gw like any other box — the difference is only that gw cannot compile, and it
+# never could since it delegates to aibox (`machines/gw/default.nix`).
+switch-gw: (deploy "gw")
 
 # --- Nix formatting ---
 

@@ -128,9 +128,9 @@ Prometheus, which scrapes `/metrics` (`machines/services1/services/observability
 unauthenticated by design; the vhost ACL is the access control.
 
 It lives in `machines/gw/network-status.nix`. That does mean the router's system
-contains a Rust crate, so **deploy it by pushing from services1/aibox**
-(`just switch-gw`) rather than building on gw — AGENTS.md, "Never build on the
-router".
+contains a Rust crate, but nothing compiles on gw for it: the box delegates to aibox
+with `max-jobs = 0`, so `just deploy gw` (or `just switch` on the box) builds the crate
+on aibox and copies it back — AGENTS.md, "Never build on the router".
 
 The frontend is **SolidJS + TypeScript** (`frontend/`, esbuild +
 `esbuild-plugin-solid`, no router/state/chart libraries) and is the **one SPA

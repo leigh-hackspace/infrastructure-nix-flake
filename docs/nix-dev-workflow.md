@@ -661,15 +661,15 @@ The split is now explicit:
 | --- | --- |
 | `just check` (`nix flake check --no-build`, `nix eval`, `nix fmt -- --check`) | `just test`, `just clippy` (cargo, over the workspace) |
 | `just fmt` (`nix fmt`, formatter from the flake's pinned nixpkgs) | `just check-build` (builds all four toplevels) |
-| reading rendered files, `nixos-rebuild dry-run` | `just build-frontend`, `just filestore-dev`, `just filestore-test`, `just switch-gui-test` |
-| `just switch` (evaluation here, build on aibox, closure copied back) | `just build-remote` (it refuses on gw by design: reach for it from services1), **`just switch-gw`** |
+| reading rendered files, `nixos-rebuild dry-run`, `just switch` / `just deploy <box>` (the box evaluates and activates itself, aibox compiles) | `just build-frontend`, `just filestore-dev`, `just filestore-test`, `just switch-gui-test` |
+| | `just build-remote` (no local fallback by design) |
 
-`just switch-gw` is refused on gw too, because the recipe is "build on the invoking
-box and push with `--target-host`" — running it *on* the router would be the mirror
-write plus an evaluation here for no benefit. `just switch` on gw still works: with the
-delegate-and-no-fallback settings above it compiles nothing locally, which is exactly
-the property the emergency path needed. Prefer `just switch-gw` from services1/aibox for
-anything routine, because it keeps the evaluation off the router as well.
+**Deploying a box is not on the refusal list, and that is the shape of the fleet now:**
+`just switch` deploys the machine it runs on, `just deploy <machine>` sshs there and does the
+same thing, and in both cases the evaluation is on the target while the compilation is
+aibox's. That is what replaced the old `just switch-gw`-from-services1 push path, which made
+one box the deploy host for another (see `machines/gw/README.md`, "How this box is
+deployed").
 
 `just fmt`/`fmt-check` used to run `nix develop` for alejandra. They now use
 `nix fmt`, which takes the formatter from the flake's `formatter` output — a

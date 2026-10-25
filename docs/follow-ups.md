@@ -144,10 +144,10 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   only makes nix *prefer* the external builder and falls back to local silently — a
   builder alone leaves the failure mode in place, just rarer. With zero local jobs there
   is nothing to fall back to, and substitution is unaffected (copying a path in is not
-  building one), so `just switch-gw`, the closure a switch needs, and every auto-rollback
-  keep working with aibox unreachable. `_build-host-guard` still refuses the build-shaped
-  recipes on gw: **evaluation is still paid on the box that answers DNS for the network**,
-  and a guard is cheaper than an explanation afterwards.
+  building one), so a switch on gw — its own, via `just deploy gw` — and every
+  auto-rollback keep working with aibox unreachable. `_build-host-guard` still refuses the
+  build-shaped recipes on gw: **evaluation is still paid on the box that answers DNS for the
+  network**, and a guard is cheaper than an explanation afterwards.
 
   Three things to do or decide once it is deployed:
   1. **Prove the delegation, and prove the failure.** From gw, build something
@@ -549,17 +549,20 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   router's admin panel" is exactly what its firewall audit concluded it should not
   have — or the row and the `firewall` label go.
 
-- **`just switch-gw`'s `sync-gw` rsyncs the router's `.git` as well, and `--delete`
-  means it.** Seen on the deploy above: 29 deletions, every one of them gw-only git
-  metadata — a local branch and the records of three stale worktrees. The excludes are
-  `target/`, `node_modules/`, `/result*` and `/.git/config`, so the rest of `.git` is
-  reconciled against services1's copy. Two consequences: **a commit or branch made in
-  gw's checkout is not merely unsynced, it is on a collision course**, and the router's
-  repo can be left referencing objects a later sync deleted. Nobody has hit the
-  corruption; the branch it ate was this audit's and the commits were safe on services1,
-  which is the only reason this is a paragraph and not an incident. Treat the mirror as
-  files (`--exclude /.git`, and fetch on the rare occasion the router needs to be a repo)
-  or stop describing it as a checkout.
+- ~~**`just switch-gw`'s `sync-gw` rsyncs the router's `.git` as well, and `--delete`
+  means it.**~~ **Closed 2026-10-25 by deleting the recipes.** Seen on the 2026-10-24 deploy:
+  29 deletions, every one of them gw-only git metadata — a local branch and the records of
+  three stale worktrees. The excludes were `target/`, `node_modules/`, `/result*` and
+  `/.git/config`, so the rest of `.git` was reconciled against services1's copy: **a commit
+  or branch made in gw's checkout was not merely unsynced, it was on a collision course**,
+  and the router's repo could be left referencing objects a later sync deleted. Nobody hit
+  the corruption; the branch it ate was the audit's and the commits were safe on services1,
+  which is why it was a paragraph and not an incident. Rather than add `--exclude /.git` and
+  keep a half-mirror, `sync-gw` and the push-based `switch-gw` are gone: every box deploys
+  itself (`just deploy <machine>` — ssh in, `git fetch` the commit, `switch` and
+  `nixos-confirm` there), so gw's checkout is a normal one and the local-network transfer is
+  a git fetch rather than an rsync of a working tree. `justfile`, `machines/gw/README.md`
+  ("How this box is deployed"), `AGENTS.md` rule 22 and `docs/nix-dev-workflow.md` say so.
 
 - **Public IPv6 inbound still owes a probe from outside the ACL** (opened 2026-10-24,
   after the front door moved). `nginx.leighhack.org`'s AAAA now points at the router

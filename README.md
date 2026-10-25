@@ -69,7 +69,7 @@ matter.
 just check      # the gate: evaluates everything, formats, builds NOTHING
 just fmt        # alejandra over every tracked .nix (the only formatter)
 just switch     # build + apply + sudo nixos-confirm, chained, on this machine
-just switch-gw  # build off the router, push the closure to 10.3.1.1, confirm there
+just deploy m   # the same, on machine `m`: ssh in, fetch the commit, build and confirm THERE
 ```
 
 Two things bite, and both are load-bearing:
@@ -113,7 +113,7 @@ The rest of the recipes, beyond the four above:
 ```bash
 just boot               # Build for next reboot (chains sudo nixos-confirm)
 just switch-netboot     # Rebuild/switch the netboot setup and restart clients
-just sync-gw            # Mirror this checkout onto the router (rsync --delete)
+just deploy gw          # Any machine deploys itself: ssh in, fetch, switch, confirm there
 just hard-reboot        # sysrq hard reboot — no orderly shutdown
 
 sudo nixos-confirm      # Mark this generation as good so we don't get rolled back

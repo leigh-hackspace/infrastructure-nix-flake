@@ -32,8 +32,9 @@
   # the router keeps answering DNS. `common/build-farm.nix`'s note on `--max-jobs 0`
   # says as much ("it removes the local fallback"; with `distributedBuilds` off the
   # same setting fails with "local builds are disabled").  Substitution is unaffected
-  # — copying a path in is not building one — so `just switch-gw`'s push, the closure
-  # the switch needs and every rollback continue to work with aibox unreachable.
+  # — copying a path in is not building one — so a switch on this box (its own, or
+  # `just deploy gw` from elsewhere) and every rollback continue to work with aibox
+  # unreachable.
   #
   # Garbage collection is the other half of the module and it stays off here: a router
   # that walks and rewrites its own store on a timer is an unasked-for second opinion
@@ -42,10 +43,10 @@
   # must not be busy at 04:00).  The build-user invariant still applies, from
   # common/base.nix's own import of common/nixbld.nix.
   #
-  # None of this makes building here *correct* — `just switch-gw` (build there, push
-  # here) is still the way, and `_build-host-guard` still refuses the build-shaped
+  # None of this makes building here *correct* — `just switch` here (or `just deploy gw`
+  # from another box) is the way, and `_build-host-guard` still refuses the build-shaped
   # recipes on this host, because evaluation is still paid on this box and a guard is
-  # cheaper than an explanation afterwards. What it buys is that the accident — a stray
+  # cheaper than an explanation afterwards.  What it buys is that the accident — a stray
   # `nix build`, an agent reaching for `nix develop` — is now aibox's problem and not
   # the network's.
   infra.buildFarm.builderHost = (import ../../common/hosts.nix).aibox;

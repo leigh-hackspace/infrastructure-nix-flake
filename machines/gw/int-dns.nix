@@ -9,7 +9,7 @@
 # is a comparison against `services.nginx.virtualHosts`, and those only exist inside
 # a machine's config.  So: ./lib/check-network-tables.nix checks the *tables* (and
 # is the one `just check` can run on the router), and this file checks the *config*
-# and runs wherever this machine is evaluated — every `just switch-gw`,
+# and runs wherever this machine is evaluated — every `just deploy gw`,
 # `nixos-rebuild dry-run` and `just check-build`, plus `nix flake check`, which
 # evaluates all five configurations.  Neither replaces the other, and the argument
 # for the pair is the same one that file makes: this is the check that **cannot be

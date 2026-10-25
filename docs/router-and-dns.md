@@ -233,7 +233,8 @@ deploy record.
 
 Nothing in this list is a command that edits a running box. `nix eval --impure --raw -f
 machines/gw/lib/check-network-tables.nix` (run by `just check`) proves the tables agree
-with each other, and `just switch-gw` is the whole "sync".
+with each other, and `just deploy gw` is the whole "sync" (the box fetches the commit,
+renders dnsmasq's table and restarts it in the same activation).
 
 ### Reading what the router answers
 

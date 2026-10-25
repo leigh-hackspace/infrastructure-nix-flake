@@ -90,8 +90,11 @@ X first", X has already cost someone a day.
     runs `nix.settings.max-jobs = 0`, so nothing compiles here and there is no silent local
     fallback to fall back to; the guard stays anyway because **evaluation is still paid on
     the box that answers DNS for the whole network**. So: every build-shaped recipe refuses
-    on gw (`_build-host-guard`), a routine deploy of this box is `just switch-gw` *from
-    services1 or aibox*, and `just check` is **not eval-only here and cannot be made so**:
+    on gw (`_build-host-guard`), and a routine deploy of this box is `just switch` **here**
+    (or `just deploy gw` from another box) — the machine deploys itself, evaluates itself and
+    compiles on aibox, like every other box (`just deploy <machine>` is the general form:
+    ssh in, fetch the commit, switch and confirm there). `just check` is **not eval-only here
+    and cannot be made so**:
     evaluating the machines reads a derivation (crane stubbing each SPA's source tree — the
     lock-file half closed 2026-10-25), so `nix flake check --no-build` needs one trivial source
     copy and refuses it, locally or over the hop. `just check` therefore **skips that step on gw
@@ -212,9 +215,10 @@ X first", X has already cost someone a day.
   nftables from `common/config.nix`, and the AAISP tunnel and tailnet client are in
   `machines/gw/`. `machines/gw/README.md` is mandatory before any change here — it
   separates what was read off the old box from what is still a guess, names the four
-  checks that prove the router is doing its job, and lists what is open. Its checkout is
-  a **mirror** for reading and the emergency fallback (`just sync-gw` rsyncs over it with
-  `--delete`), not a second place to edit. `machines/gw/lib/check-network-tables.nix`
+  checks that prove the router is doing its job, and lists what is open. Its checkout is a
+  normal checkout at the deployed commit — it fetches the commit itself (`just deploy gw`,
+  or `just switch` on the box), so it is no longer an rsync mirror of somebody else's working
+  tree. `machines/gw/lib/check-network-tables.nix`
   runs from `just check` and as a module assertion, and it is what refuses a VLAN or
   address the two tables disagree about.
 - `machines/pi-room-sys/` — the image the Pi Room computers **netboot**: a real

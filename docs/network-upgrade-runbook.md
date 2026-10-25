@@ -52,7 +52,7 @@ statement about *that day*; re-probe it, do not inherit it.
 | services1 | 10.3.1.20 | `leigh-admin` + hop key | full `switch`. An **origin** now: nginx on plain HTTP :80 behind `ROUTER_ONLY`, with the app-shaped vhosts; postgres serves five DBs | a reboot that takes postgres or an origin app down without knowing who is up; putting a certificate or the gate back on this box |
 | services2 | 10.3.1.21 | `leigh-admin` + hop key | full `switch`. The RTX 3060 / Strata **Coder** engine, its own status dashboard, a 16 GiB swap file | being switched while its 30 GiB is the engine's; being mistaken for the builder or monitor it no longer is |
 | aibox | 10.3.1.32 | `leigh-admin` + hop key | full `switch`. Hosts immich, frigate, whisper, the netboot server, a status dashboard — and, since 2026-10-17, the **builder** | deploying from its **dirty** tree (see Phase 0) |
-| gw (the router) | 10.3.1.1 is the **flake's own box** (cut over from the OPNsense appliance on 2026-10-21; the appliance is retired) | `leigh-admin` + hop key, root not keyed — like every other machine here | `just switch-gw`, built **off** the router (builds delegate to aibox and `nix.settings.max-jobs = 0`, so nothing compiles here) and confirmed on the box. It answers DNS, hands out leases, and is the network's **front door**: nginx, the one certificate, `nginx-sso`, `anubis`, `headscale`/`headplane` | anything that takes the router down, including a failed switch (rollback here is a reboot); a build on the box itself (`_build-host-guard`) |
+| gw (the router) | 10.3.1.1 is the **flake's own box** (cut over from the OPNsense appliance on 2026-10-21; the appliance is retired) | `leigh-admin` + hop key, root not keyed — like every other machine here | `just deploy gw` (or `just switch` on the box): it evaluates itself, builds on aibox, activates and confirms on itself (`nix.settings.max-jobs = 0`, so nothing compiles here). It answers DNS, hands out leases, and is the network's **front door**: nginx, the one certificate, `nginx-sso`, `anubis`, `headscale`/`headplane` | anything that takes the router down, including a failed switch (rollback here is a reboot); a build on the box itself (`_build-host-guard`) |
 | NAS | 10.3.1.6 | `leigh-admin` + hop key (root is **not** keyed) | nothing declarative. It must stay online: services1 and aibox NFS-mount it, borg runs on it | editing `/etc/sudoers` (middleware regenerates it); blaming a mount failure on the flake |
 | monster1 | 10.3.1.11 | `root` + hop key | nothing declarative. Its VMs' disks live on the NAS | `qm start` on an HA-managed VM; treating `storage 'nas2-nfs' is not online` as a VM fault |
 | authentik appliance | 10.3.1.36 | **not reachable** — the hop key was refused (`Permission denied (publickey,password)`) | nothing. It is the live IdP every app and every switch login goes through | un-parking `machines/services1/services/authentik.nix` (the shadow is **parked** for a reason) |
@@ -465,7 +465,7 @@ git diff <old-commit>..<new-commit> -- common/hosts.nix common/exporters.nix \
 
 If a port moved on services2, services2 goes before services1's nginx change. If an
 address moved, the table that holds it (`common/dns-records.nix` for a device,
-`common/int-dns.nix` for a `*.int` name) and `just switch-gw` go first too, or every
+`common/int-dns.nix` for a `*.int` name) and `just deploy gw` go first too, or every
 client resolves the old address while the box answers the new one
 (`docs/router-and-dns.md`).
 
@@ -571,7 +571,7 @@ Then the things this network specifically needs:
 - **New/renamed vhosts need the table** (rule 14): a `*.int` vhost is its `server_name`
   in `machines/services1/services/…` **and** its label in `common/int-dns.nix`; the
   second is checked against the first at eval (`machines/services1/int-dns.nix`), and
-  the router gets it from `just switch-gw`. Public `*.leighhack.org` names are
+  the router gets it from `just deploy gw`. Public `*.leighhack.org` names are
   hand-added in the DigitalOcean zone, which is outside every gate this repo has.
   Without a record the vhost is NXDOMAIN, not 404 — a different failure.
 - **Postgres**: if the bump moved a **major** version, the existing DBs are on
@@ -617,7 +617,7 @@ These are not part of the three switches, and skipping them is what makes the
 run "finished but not upgraded":
 
 - **DNS**: nothing to run. A `*.int` name exists because
-  `common/int-dns.nix` says so and `just switch-gw` deployed it, and you verify against
+  `common/int-dns.nix` says so and `just deploy gw` deployed it, and you verify against
   what the router answers rather than against the file:
 
   ```bash

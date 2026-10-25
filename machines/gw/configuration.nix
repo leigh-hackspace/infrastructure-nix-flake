@@ -18,8 +18,8 @@
   # The router is a single-purpose box: one process group (dnsmasq, pppd,
   # openvpn, nft, network-status) and no operator on a console.  It still gets
   # `leigh-admin` from common/users.nix — the inter-machine ssh key is what
-  # `just switch-gw` (run from services1, against this box) and every debugging
-  # session reach it with, and that is the whole reason the login exists. Root
+  # `just deploy gw` and every debugging session reach it with, and that is the
+  # whole reason the login exists. Root
   # is not keyed here: connect as `leigh-admin` and `sudo`. network-status used
   # to need the key too; it now runs here and reads /proc as a DynamicUser.  Nothing here needs a GUI, so common/base.nix's
   # xserver keyboard settings are inert.
@@ -32,40 +32,29 @@
   # thing the network's DNS depends on and a NAS that is still importing after a
   # power cut must not be able to stop it answering.
 
-  # The deploy path, and the one setting that makes it work.
+  # The deploy path, and the settings that make it work.
   #
-  # The router is deployed by building *elsewhere* and pushing: `just switch-gw`
-  # from services1 (or aibox) runs `nixos-rebuild switch --flake .#gw
-  # --target-host leigh-admin@10.3.1.1 --elevate=sudo`, which builds there, copies
-  # the closure over and activates over ssh. That is still the way, and it is no longer
-  # the only safe way: this box now delegates to aibox and runs its daemon with
-  # `nix.settings.max-jobs = 0` (./default.nix), so a local `nixos-rebuild` cannot compile the
-  # crate ./network-status.nix adds here — that crate is built on aibox and copied back.
-  # What a local switch still costs is the **evaluation**, on the box that answers DNS
-  # and DHCP for every VLAN, which is why the checkout, `git` and `just` here stay for
-  # reading the tree and for the case where services1 is the thing that is broken, not
-  # for routine deploys.
+  # **This box deploys itself**, like every other machine in the fleet: `just deploy gw`
+  # from anywhere (or `just switch` here) fetches the commit into this checkout, runs
+  # `nixos-rebuild switch --flake .#gw` *here* and `sudo nixos-confirm` here, in one shell
+  # invocation.  What makes that possible without compiling anything is ./default.nix's
+  # `infra.buildFarm.builderHost` + `nix.settings.max-jobs = 0`: the crate
+  # ./network-status.nix adds is built on aibox and copied back, and a build aibox cannot
+  # take fails instead of falling back to a local compile.  What a switch here costs is the
+  # **evaluation**, on the box that answers DNS and DHCP for every VLAN.
   #
-  # The push path needs daemon *trust*, not daemon *access*: `allowed-users = *`
-  # already admits the client, but with `require-sigs` on (the default) the daemon
-  # refuses paths built elsewhere and the copy dies with
-  #
-  #   cannot add path '…' because it lacks a signature by a trusted key
-  #
-  # which is exactly what it did, on the first deploy after install. It is the same
-  # answer common/build-farm.nix gives on services1 and services2, for the same
-  # reason.  Without this line `just switch-gw` cannot work at all.
-  #
-  # What it costs is nothing that sudo does not already cost: `leigh-admin` has
-  # passwordless sudo on every machine in this network (common/users.nix), so a
-  # client holding the hop key is already root here. Trusted-user rights — adding
-  # unsigned paths, setting nix.conf at build time — are a weaker grant than the one
-  # it already has. What it must never be confused with is `nixbld`: this is not
-  # build-user membership, and common/nixbld.nix still refuses that. Since this box got
-  # a builder, common/build-farm.nix adds the same string for its own reason, so the
-  # rendered list names `leigh-admin` twice — left doubled on purpose: the grant belongs
-  # here, because the push path needs it whether or not the builder half is configured.
-  nix.settings.trusted-users = ["leigh-admin"];
+  # Until 2026-10-25 the routine path was the opposite direction — build on services1, push
+  # with `nixos-rebuild --target-host --elevate=sudo`, then `nixos-confirm` over ssh.  That
+  # is what this file's hand-set `nix.settings.trusted-users` existed for: a *push* needs
+  # daemon **trust**, not daemon access (`allowed-users = *` admits the client, but with
+  # `require-sigs` on, the daemon refuses a path built elsewhere — `cannot add path '…'
+  # because it lacks a signature by a trusted key`, which is what the first deploy after
+  # install did).  Nothing pushes to this box any more, so the line is gone and the grant
+  # comes from `common/build-farm.nix`, which adds `leigh-admin` on any box that has a
+  # builder — this one included.  What it must never be confused with is `nixbld`: this is
+  # not build-user membership, and common/nixbld.nix still refuses that.  The checkout,
+  # `git` and `just` here stay for reading the tree and for the case where another box is
+  # the thing that is broken.
 
   # The old box ran OPNsense's pkg-config stack; nothing else here is a package
   # the other machines build, and the crate toolchain in the devshell is not
@@ -81,11 +70,10 @@
   # git/just/jq are not diagnostics either, and they are here rather than in
   # common/tools.nix because that file is the one this machine must not import (its
   # wait-for-network unit reads the NAS host, so tools.nix and nas.nix come as a
-  # pair — see flake.nix's comment on the gw system).  They are no longer the
-  # deploy path — `just switch-gw` builds on services1/aibox and pushes — but the
-  # box still carries a checkout as a mirror, and reading the tree or the tailnet
-  # from the box itself is how a problem is diagnosed when the admin's laptop is
-  # the thing that cannot reach it:
+  # pair — see flake.nix's comment on the gw system).  They are not a build toolchain:
+  # the box deploys itself now (`just deploy gw` / `just switch` here — evaluation on this
+  # box, compilation on aibox), and reading the tree or the tailnet from the box itself is
+  # how a problem is diagnosed when the admin's laptop is the thing that cannot reach it:
   #
   #   * `git` — `--flake .` needs a git tree; without it this box cannot evaluate
   #     the flake it is running (not even the emergency local build).

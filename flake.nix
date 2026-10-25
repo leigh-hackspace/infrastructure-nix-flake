@@ -143,8 +143,8 @@
         its own store on a timer is a second opinion about the rollback profile
         nobody asked for.
       * `./common/crane-args.nix` is here because that dashboard is a Rust crate; the
-        crate is built on aibox either way — by `just switch-gw`, or by a delegated
-        local build.
+        crate is built on aibox either way — by `just deploy gw`, or by a `just switch`
+        on the box, which is the same thing.
 
     Module *order* is merge order, so these lists are behaviour and not formatting:
     each machine's list is in the order the five copies used to spell it out, and the

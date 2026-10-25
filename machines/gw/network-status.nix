@@ -15,8 +15,10 @@
 # (TLS and the ACL stay there) while Prometheus on services1 scrapes `/metrics`.
 #
 # Consequence for deploying this box: its system now contains a Rust crate, so
-# it must be built elsewhere.  `just switch-gw` builds on services1/aibox and
-# pushes; do not build it here (AGENTS.md, "Never build on the router").
+# nothing compiles here.  The crate is built on aibox and copied back — gw holds
+# `max-jobs = 0`, so a switch started on the box delegates and has no local fallback
+# (`machines/gw/default.nix`); `just deploy gw` from anywhere does the same thing over
+# ssh.  Do not build it here (AGENTS.md, "Never build on the router").
 {
   config,
   lib,
