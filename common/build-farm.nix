@@ -138,6 +138,30 @@ in {
     # delegated build and a `--max-jobs 0` build, both clean.
     nix.distributedBuilds = cfg.builderHost != null;
 
+    # Let the *builder* fetch its own inputs from the cache, instead of the delegating box
+    # copying every one of them over the hop.  This is not a preference, it is the
+    # difference between a delegated build being fast and slow, and nobody had ever chosen
+    # it: `builders-use-substitutes` defaults to `false`, so from the day remote building
+    # went on, every input of every delegated build was substituted *here* and then uploaded
+    # to aibox (`nix.conf(5)`: with it on, remote hosts "fetch as many dependencies as
+    # possible from their own substituters (e.g, from `cache.nixos.org`) instead of waiting
+    # for the local machine to upload them all.  This can drastically reduce build times").
+    #
+    # A nixpkgs bump is the case that shows it: hundreds of derivations that are already on
+    # cache.nixos.org, every one of them downloaded by services1 and shipped to aibox before
+    # aibox can start on the first one, with aibox's job slots idle while they arrive.  On
+    # the hop, `true` lets aibox pull them itself, in parallel with its own builds; inputs it
+    # cannot substitute (a local `runCommand`, a crane dep tree, a sops secret) are uploaded
+    # exactly as before, because the ssh-ng builder asks for whatever it is missing.
+    #
+    # Per-client, not per-builder: it is the delegating box's setting, and it changes no
+    # output — only who fetches an input.  It is on whenever this box has a builder at all
+    # (`nix.distributedBuilds`' condition), and off on aibox, which delegates nothing.
+    # Verify it by delegating a build of something with a large input closure and watching
+    # aibox's journal for `substituting`/`copying path … from https://cache.nixos.org` rather
+    # than a stream of paths pushed from here.
+    nix.settings.builders-use-substitutes = cfg.builderHost != null;
+
     # Every box that takes part in the hop pins the network's own host keys, in
     # the store, rather than trusting whichever root `known_hosts` happens to
     # exist: when a delegated build fails with `Host key verification failed`

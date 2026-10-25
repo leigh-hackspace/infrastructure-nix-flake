@@ -588,6 +588,22 @@ regeneration, and the receipts for why an empty `/etc/ssh/ssh_known_hosts` break
 `nix build` while `ssh -i ~/.ssh/agent-hop-key …` works are below, at "The hop
 itself was broken, separately".
 
+**The delegating half that is easy to miss: the builder substitutes its own inputs.**
+`common/build-farm.nix` sets `nix.settings.builders-use-substitutes = true` wherever it
+sets a `builderHost`, and until 2026-10-25 it did not — so from the day remote building went
+on, every input of every delegated build was substituted by *the client* and then uploaded
+to aibox.  That is nix's default (`false`), not a decision anybody made here, and it has the
+shape of "the build farm is slower than it should be": a nixpkgs bump is hundreds of paths
+that are already on cache.nixos.org, and with the setting off services1 downloads all of
+them and ships them over the hop before aibox can start, with aibox's job slots idle.  With
+it on, `nix.conf(5)`'s own words are that remote hosts "fetch as many dependencies as
+possible from their own substituters (e.g, from `cache.nixos.org`) instead of waiting for the
+local machine to upload them all".  Nothing aibox cannot substitute changes: that is what
+the ssh-ng builder asks the client for.  To see the difference, delegate a build of
+something with a large input closure and read aibox's journal for `substituting '…'` rather
+than a stream of `copying path` from here.  It is a **client-side** setting, so a box that
+adds a builder gets it from the module and a box that serves builds needs nothing.
+
 Verified working 2026-10-12 (delegated build and a `--max-jobs 0` build both
 completed on services2 and copied back, with no SIGKILL sweep on either box) — the
 fix that made that true is `common/nixbld.nix`, and the incident behind it is

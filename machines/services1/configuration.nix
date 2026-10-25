@@ -9,8 +9,27 @@
 }: {
   imports = [../../common/base.nix];
 
-  # This box builds packages that need to reach the network/NAS at build time
-  # (see common/sops.nix for the build-time secret decryption).
+  # `relaxed` rather than the default `true` for exactly **one** derivation in this box's
+  # build closure: `door-entry-management-system`, whose `installPhase` runs `deno i` and
+  # `deno cache` and therefore needs the network, so the package sets `__noChroot` — and nix
+  # refuses a `__noChroot` derivation outright when `sandbox = "true"` (the refusal, and why
+  # the builder cannot take this package, is `docs/follow-ups.md`).  `relaxed` is `true`
+  # plus that one exemption, so this is the narrowest setting that lets the box build its own
+  # system; it is *not* "no sandbox".
+  #
+  # It used to say this was for sops' build-time secret decryption, which is not true: that
+  # path needs `/var/lib/sops-nix` to be *visible inside* the sandbox, which
+  # `common/sops.nix` already arranges with `extra-sandbox-paths` (it shows up in
+  # `nix config show`'s `sandbox-paths` on every box, aibox's strict one included).
+  #
+  # The one-line recipe that answers "does this box still need it" — and gives a different
+  # answer the day the package stops setting `__noChroot`:
+  #
+  #   sudo nix-store -qR $(sudo nix-store -qd /run/current-system) | grep '\.drv$' \
+  #     | xargs -r grep -l __noChroot
+  #
+  # (measured 2026-10-25: one hit here, none on services2 — which is why services2 is back
+  # on the default; see machines/services2/configuration.nix.)
   nix.settings.sandbox = "relaxed";
 
   # GPU diagnostics for this box's GPU only (services1 is Intel/i915 — see

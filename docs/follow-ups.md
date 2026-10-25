@@ -96,10 +96,10 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   `door-entry-management-system` sets **`__noChroot`**, so aibox's daemon — whose
   `sandbox` is `true` — refuses the derivation outright:
   `error: derivation '…-door-entry-management-system-1.1.9.drv' has '__noChroot' set,
-  but that's not allowed when 'sandbox' is 'true'`. services1 and services2 run
-  `nix.settings.sandbox = "relaxed"` (`machines/<m>/configuration.nix`) and so build it
-  locally, which is why it has always worked and why `just check-build` **on aibox**
-  stops on it: that failure is this item, not your change. Reproduce it with
+  but that's not allowed when 'sandbox' is 'true'`. services1 runs
+  `nix.settings.sandbox = "relaxed"` (`machines/services1/configuration.nix`) and so
+  builds it locally, which is why it has always worked and why `just check-build` **on
+  aibox** stops on it: that failure is this item, not your change. Reproduce it with
   `nix build --no-link ".#nixosConfigurations.services1.pkgs.door-entry-management-system"`
   (it needs no system build) and prove it builds with `--option sandbox relaxed` — that
   succeeded in 37 s at the current lock. Second fact: `--rebuild` on the already-valid
@@ -108,6 +108,28 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   that includes it. Two options, neither taken here: find the non-determinism upstream
   and fix it, or stop `just check-build` from promising more on aibox than aibox can
   build (and say so in the recipe's own comment).
+
+  **Why it sets `__noChroot`, found 2026-10-25 — and it is the same fact as the
+  non-determinism.** Its `installPhase` is `deno i` followed by two `deno cache` calls
+  before the two `deno compile`s: it resolves its dependencies **from the network during the
+  build**. `__noChroot` is how a package asks for network access, `sandbox = "relaxed"` is
+  the only way a box may grant it, and a build that fetches from the registry on every run is
+  why the output path moves on `--rebuild`. So there is a third option, and it fixes both
+  halves at once: **vendor the deno dependencies** into a fixed-output derivation and build
+  with `deno install --frozen --cached-only`, i.e. the same shape as every other nix package
+  with a lock file. The input already carries `deno.lock`, so the lock exists; what is
+  missing is a `denoDeps` fetch (a provenance hashing `deno.lock` plus a fixed-output
+  `deno fetch`) and a `--frozen --cached-only` install phase. That is a patch to a *third-party*
+  flake input, so it belongs there (or as an `overrideAttrs` here with a stated reason) — and
+  it cannot be tried on aibox until it has, because aibox is the box that refuses it.
+  **The consequence to keep in mind:** services1's `nix.settings.sandbox = "relaxed"` is
+  this one package's, not a property of the box — measured, one `__noChroot` derivation in
+  services1's 7,547-derivation build closure and none in services2's 7,840 (2026-10-25,
+  recipe in `machines/services1/configuration.nix`). services2 has therefore gone back to
+  the default `true`: it had been carrying the same relaxation "so the first service that
+  needs a build-time secret does not have to remember to turn it on", which sops does not
+  need in the first place (`extra-sandbox-paths` puts `/var/lib/sops-nix` inside the
+  sandbox).
 
 - **gw now delegates its builds to aibox and has no local fallback (added
   2026-10-21, deployed to gw the same evening).** Until today gw was the one machine

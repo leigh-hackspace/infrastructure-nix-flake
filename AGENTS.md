@@ -400,7 +400,14 @@ invariant, its assertion and its self-healing timer live in **`common/nixbld.nix
   available — `--max-jobs 0` does not enable delegation, it removes the local fallback.
   So a plain `nix build` / `just switch` on services1 builds on aibox and copies the
   result back. Flip `nix.distributedBuilds = false` in `common/build-farm.nix` to go back
-  to local-only.
+  to local-only. Two settings beside it were unexamined until 2026-10-25 and both matter:
+  `builders-use-substitutes = true` (off by default in nix, so until then the *delegating*
+  box substituted every input and uploaded the closure over the hop with aibox's job slots
+  idle — the shape of "the build farm is slow"), and `sandbox = "relaxed"` on **services1
+  only**, for the one package whose build wants the network; the one-line recipe that says
+  whether a box needs it is in `machines/services1/configuration.nix`, and `sandbox` is not
+  a sops setting (`extra-sandbox-paths` is). Detail: `docs/nix-dev-workflow.md`,
+  "Remote building".
 - `network-status.service` no longer runs as `User=leigh-admin`: it moved to gw on
   2026-10-21 and is a `DynamicUser` reading local `/proc` (`machines/gw/network-status.nix`).
   The follow-up that tracked it is closed in `docs/follow-ups.md`.
@@ -661,8 +668,10 @@ there is declarative. **Root SSH is keyed here** (unlike the flake machines):
 - **What build-time decryption costs, in one place.** The secret boundary is *not*
   `root:secrets`; it is **any code that runs during a build, on any machine that takes a
   build**: the age key sits at `0440 root:nixbld`, `/var/lib/sops-nix` is in
-  `extra-sandbox-paths`, services1/services2 build with `sandbox = "relaxed"`, and all
-  three delegate builds to aibox, which holds the same key. Those tmpfiles rules are a
+  `extra-sandbox-paths`, and all three delegate builds to aibox, which holds the same key.
+  (`sandbox` is **not** part of this: services1 runs `relaxed` for one package whose build
+  wants the network — `door-entry-management-system`'s `deno i` — and services2 is on the
+  default again, measured rather than mirrored.) Those tmpfiles rules are a
   **repair, not an install** — a `z` rule does nothing when the path is absent (verified
   against an `f` rule on gw), so `just install-sops-key` is the mechanism and skipping it
   fails much later as a sops error inside an unrelated build. And each name is its own

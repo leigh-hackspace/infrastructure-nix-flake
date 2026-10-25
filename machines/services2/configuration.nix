@@ -17,11 +17,27 @@
 }: {
   imports = [../../common/base.nix];
 
-  # services1 builds packages that reach the network/NAS at build time
-  # (common/sops.nix decrypts build-time secrets).  Kept identical here so the
-  # first service that needs a build-time secret does not have to remember to
-  # turn it on.
-  nix.settings.sandbox = "relaxed";
+  # The sandbox is the default `true`, deliberately, and this comment is here to stop the
+  # setting coming back by symmetry: services1 runs `relaxed` for exactly one package of its
+  # own (machines/services1/configuration.nix), and this file used to copy it "so the first
+  # service that needs a build-time secret does not have to remember to turn it on" — a
+  # weakening of every future build on this box for a need nobody had.  sops' build-time
+  # decryption does not need it at all (`extra-sandbox-paths` in common/sops.nix is what puts
+  # `/var/lib/sops-nix` inside the sandbox), and the only thing `relaxed` buys anywhere is a
+  # derivation that sets `__noChroot` — measured 2026-10-25 over this box's whole build
+  # closure (7,840 derivations) with
+  #
+  #   sudo nix-store -qR $(sudo nix-store -qd /run/current-system) | grep '\.drv$' \
+  #     | xargs -r grep -l __noChroot
+  #
+  # which printed nothing; services1's closure has exactly one hit.  If a future package here
+  # does set it, the build fails loudly with `has '__noChroot' set, but that's not allowed
+  # when 'sandbox' is 'true'` — put the setting back then, naming that package, rather than
+  # in advance.  (Un-parking strata is the likely candidate: re-run the command above.)
+  #
+  # Safety margin on "nothing changes": aibox has `sandbox = true` and has been building this
+  # box's entire toplevel all along, so every derivation in the closure above is already
+  # proven to build strict — this only removes the *local fallback*'s exemption.
 
   # GPU diagnostics for this box's GPU only.  The box is AMD (Ryzen 5700G /
   # Cezanne Radeon iGPU), so it gets the AMD tool rather than services1's
