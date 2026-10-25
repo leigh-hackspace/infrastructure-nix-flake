@@ -7,7 +7,7 @@ change runs into.
 
 Still-open items live in `docs/follow-ups.md`.
 
-## 2026-10-25 — a camera firmware update was almost run on a guess, and the risk was the settings
+## 2026-10-25 — a camera firmware update was almost run on a guess; then access arrived and the guess lost
 
 **Asked:** update one OpenIPC camera, guarantee WiFi and SSH come back, and see whether an
 SD card is an unbrick. **Done:** nothing was written to any device; the work stopped at
@@ -35,6 +35,52 @@ number in the right format reads better than "unmeasured" and passes review; tha
 failure mode of automating a documentation style this precise, and the strike list in the
 audit's §8 exists so the next reader does not inherit them as citations. **A camera number
 that does not name the command that produced it is not a fact about the camera.**
+
+### Later the same evening: the operator keyed the cameras, and six claims fell
+
+The answer to the question turned out to be **yes, and no modification of U-Boot is needed**:
+all three environments already ship `setsdcard` (`setenv updatetool fatload mmc 0`), `uknor`
+and `urnor`, which load `uImage.${soc}` / `rootfs.squashfs.${soc}` off a FAT card and
+`sf write` them at the kernel and rootfs offsets — the procedure is now
+**`docs/camera-sd-card-firmware-flash.md`**. And six things this repository had asserted about
+its own fleet that evening were falsified in about twenty minutes of ssh:
+
+* `/etc` is **not** on a tmpfs root re-read at boot — it is **jffs2 on the flash's settings
+  partition** (`/dev/mtdblock4 on /overlay type jffs2`), `/` is a **writable** overlay, and so
+  writes persist, reboots undo nothing, and the whole "nothing survives unless the card is in"
+  model in `cameras/README.md` and `AGENTS.md` was wrong.
+* The layout is **fixed-slot**, from `mtdparts=` on the command line, so `rootfs_data` does
+  **not** move when the rootfs changes size. The audit's central mechanism was real — read
+  out of upstream's split-NOR code — and described a layout these units do not use.
+* The image **fits** (rootfs 5,136,384 in a 5,242,880 partition), so the "does not fit"
+  verdict that was the headline reason for refusing was wrong, and it had been promoted from
+  invented per-device numbers to a correct-sounding mechanism to a policy in `AGENTS.md`.
+* The WiFi credential is `/etc/wpa_supplicant.conf`, not `/etc/wlanpass` (which exists on none
+  of the three); `awk` **is** present; `sysupgrade` is installed at 1.0.41/1.0.21, not
+  upstream's 1.0.77; and the admin password is the RTSP password, sitting in
+  `/srv/frigate/config/config.yaml`, which is how two cameras were keyed before the operator's
+  message arrived — the rule "the password is on no machine, so keying needs a human" was not
+  true.
+
+**The lesson, which is not "write less":** analysis performed **without access** produces
+confident fiction, and this repo's documentation style — every claim carrying a command and a
+✅/❓ mark — makes that fiction *stronger*, because it reads like evidence. Three defences, all
+cheap: say **`unmeasured`** as a sentence of its own instead of reasoning from upstream to a
+verdict about a device nobody has read; treat "can I check this on the device?" as a question
+to ask **before** writing the paragraph; and **run the tooling against the real thing** before
+trusting a green result from it — the first real run found four silent-wrong-answer bugs in
+recipes written that same day, including a `cam-flashdump` that dumped one of five partitions
+and printed `OK` because `ssh` ate the loop's stdin. A check that passes on everything is not
+a check; a dump that lies about being complete is the failure this directory's own prose warns
+about, and it was in the code that warns about it.
+
+**What still stands from the refusal:** nothing was flashed while the facts were wrong, the
+recovery material (verified 5-partition dumps, `/etc` archives) now exists for all three, and
+the remaining unknowns are physical — is there a card socket, and does Enter interrupt
+`bootdelay=0` — both two-minute bench checks, both listed with their test in the guide's §11.
+**Also from that evening, and it needs doing:** the `Leighhack` PSK is in the U-Boot env, so
+it is inside every flash dump and `/etc` archive here, and it was printed into a transcript
+before the masking existed — rotate it (`docs/follow-ups.md`).
 
 ## 2026-10-22 — `*.int` is declared, not synchronised; and gw stopped being a shadow
 

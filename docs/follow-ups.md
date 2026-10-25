@@ -1033,63 +1033,86 @@ that **need an owner or a decision** rather than another measurement.
   device (they are **not** all the same sensor: cam5/cam7 are `sc3338`-based
   SSC009A, cam9 is `sc401ai` SSC33X), so it is a decision with a hardware
   consequence, not a config tidy-up.
-- **A firmware update on this fleet is blocked on measurements we have never taken, not
-  on access** (audited 2026-10-25 from current upstream; **no device was touched, nothing
-  was flashed**). What is known: all three are `8 MB nor flash` and run OpenIPC 2.4.08.22 /
-  2.4.08.22 / 2.3.11.22 from 2024, and the current build for their SoC is 7,137,552 B of
-  kernel+rootfs (5,136,384 B of it rootfs), which leaves **1,251,056 B** of the chip for
-  the boot region, the env and the settings — where the donor board's boot region alone is
-  524,288 B and its settings partition is 3,839 KB-class. So it fits only in the reading
-  where the env costs nothing, and the reading is the donor's, not ours: **this repo
-  contains not one partition size for cam5, cam7 or cam9**, and the fit check that should
-  catch a mis-fit is commented as failing **OPEN** by design (upstream #2426: before it, a
-  run that wrote nothing printed "RootFS updated to <what you asked for>" and rebooted).
-  Full argument, including why the settings and not the boot chain are what an update
-  threatens, and the upstream comment recording that **every NOR upgrade lost its settings
-  for a while (#2648)**: **`docs/camera-firmware-audit-2026-10-25.md`**. **Blocks:** every
-  update of every one of the three, and any promise that WiFi and SSH survive one.
-  **Needs, in order:** (1) `just cam-preflight <cam>` — the gates, including the one that
-  asks whether `/etc` is on flash at all, because `cameras/README.md` currently describes it
-  as tmpfs while `sysupgrade` mounts it `jffs2` on an `mtdblock`; (2) `just cam-flashdump` +
-  `just cam-backup`, which together are what make "the undo needs a clip" untrue — these
-  three arrived already flashed, with **their own** calibration, and only `cam7`'s pads were
-  ever pulled into the repo; (3) read `sysupgrade`'s two `nor_write_at` calls and the blob's
-  write ordering as deployed code, not as comments; (4) decide the sensor question for cam9
-  (`sc401ai` per this file, `sc3338` in cam9's own sysinfo line — unresolved, and cam9 has
-  no `isp:` pin). A re-partition is the only fix for "it does not fit", and a re-partition
-  is the bench route: so the first decision is whether we own a bench path at all —
-  `c110.md` §8.3 proves serial on this silicon (3.3 V, 115200), §2 says the pads may sit
-  under a shield, and OpenIPC's `failsafe-rescue` (network + SSH on repeated boot failure)
-  is **gk7205-only**, so a crash-looping ssc33x here has no rescue at all.
-- **cam7's web admin answers `200` with no authentication** (measured 2026-10-25 from
-  services1: `:80` and `:85`, identical 228-byte body by IP and by `cam7.int`,
-  `Access-Control-Allow-Origin: *`), while cam5 and cam9 still answer `401` — which
-  contradicts `cameras/README.md`, where 401-on-all-three is listed under *proven*.
-  `/etc/httpd.conf` is byte-identical across the fleet (`6f9c8c6e…`, and it contains
-  `A:*`), so the gate is majestic's own credential file and cam7 — the 2.3.11.22 one, the
-  oldest firmware of the three — appears not to be honouring it. Either the record was
-  wrong about cam7, or cam7 reverted something today (`/etc` is an overlay re-read from
-  flash on boot on a box whose root overlay is RAM-tiny). **Blocks:** updating cam7, which
-  is otherwise the right first device, and any claim that the fleet's admin plane is
-  closed. **Needs:** `just cam-key cam7` (operator, at a terminal: the vendor password is
-  stored nowhere on this network), then `just cam-check cam7`, then restore parity with
-  cam5/cam9's 401 and re-probe; and re-read the 401 claim on the other two while keyed.
-- **`/etc/custom.ok` on cam9 is recorded twice and the records disagree** — the pull
-  table gives it size 0, fault 9 says it is absent. That file is the marker a new rootfs
-  *deletes* to stop the SDK re-running, so "which is it" is a fact about whether cam9's
-  install took at all. **Blocks:** nothing until someone is keyed in. **Needs:** one
-  `[ -e /etc/custom.ok ]` on cam9 at the first `just cam-check cam9`, and the README
-  corrected to whatever it says.
-- **On 2026-10-25 nothing was staged onto a device and nothing was flashed** — the work
-  stopped at the first gate: no camera is keyed, and keying needs a human at a terminal
-  because the vendor password is on no machine by design. What exists: four new recipes
-  (`just cam-preflight`, `cam-flashdump`, `cam-backup`, `cam-image`), two device-side
-  scripts (`cameras/preupdate-check.sh`, `cameras/backup-etc.sh`, both busybox-ash and
-  `sh -n` clean, no awk), and one build staged and md5-verified on services1 at
-  `~/camera-images/nightly-20261024-856f22e-ssc337_lite.tgz`
-  (`sha256 56b98abe…`, verified against the `.md5sum` members *inside* the tarball, the
-  only check that means anything here) and the matching `ssc333_lite` build for cam7
-  (`sha256 c2437ef0…`). Both are **outside** the flake source on purpose: a tarball in
-  the repo is a copy cost on every evaluation, so `just cam-image` stages in
-  `~/camera-images` and the repo-local `camera-images/` entry in `.gitignore` is only a
-  guard against staging in the wrong place.
+- **Camera firmware: the blockers are now physical, not informational** (re-measured
+  2026-10-25 with the cameras keyed; **nothing has been flashed**). The open questions that
+  stopped an update have all been answered except two, and both need hands on a board:
+  **is there a card socket** (the board file describes a removable slot with power and
+  card-detect GPIOs, which is a claim about a PCB, not evidence of a connector — `just
+  cam-card <cam>` with a FAT32 card in answers it in two minutes) and **does Enter interrupt
+  `bootdelay=0`** on this specific `U-Boot 2015.01 (Nov 05 2023)` build (the family's
+  defconfig has `ZERO_BOOTDELAY_CHECK` + `AUTOBOOT_KEYED` with `\x0d`, which says yes, and
+  our U-Boot is not provably that build). **Blocks:** flashing anything. **Needs:** one bench
+  session with a USB-serial at 3.3 V and a card, following
+  **`docs/camera-sd-card-firmware-flash.md`** §5–§6; that document is the procedure and its
+  §11 is this list. Everything else it needs is already taken: verified flash dumps and `/etc`
+  archives for all three, the staged builds, and a pre-flight that passes 9/1/0 on cam7.
+- **cam7's web admin answers `200` with no authentication** (measured 2026-10-25, from
+  services1 **and from the device**: `:80` and `:85`, a 228-byte body, by IP and by
+  `cam7.int`, `Access-Control-Allow-Origin: *`), while cam5 and cam9 answer `401`.
+  `/etc/httpd.conf` is byte-identical across the three and there is **no
+  `/etc/httpd-htpasswd.user` on any of them**, so nobody has yet found what makes cam5 and
+  cam9 gate — which is the actual blocker: the fix is "make cam7 look like cam5" and the
+  mechanism is unread. Now reachable from the inside (keyed), so this is a diagnosis task,
+  not an access task. **Blocks:** using cam7 as the first flash target, and any claim that
+  the fleet's admin plane is closed. **Needs:** find where the `401` credentials come from,
+  restore parity, re-probe, and re-read cam5/cam9 while keyed.
+- **The WiFi PSK for `Leighhack` is in the repository in cleartext, and was also printed
+  into a working transcript; rotate it.** Found while checking this commit for leaks:
+  `machines/pi-room-sys/configuration.nix` builds a CIFS `mount` line with
+  `user=hackspacer,pass=<the same PSK>` **in the source of a netboot image** — so the
+  credential is in git history, in a store path on every box that builds or substitutes
+  `pi-room-sys`, in the squashfs the Pi Room clients boot over NFS, in the cameras' U-Boot
+  env, and (as of today) in the flash dumps under `$HOME/camera-backups`. It is not a
+  camera-only secret and never was: it is the network key and a file-server login. The
+  transcript half happened because `fw_printenv` dumps the env, which holds `wlanpass`, and
+  the call predated the masking; both masks exist now (`just cam-env` masks by key name in a
+  single `sed -E` pass; `cameras/sd-card-check.sh` and `cameras/preupdate-check.sh` never
+  print env values). **Blocks:** nothing, and it predates this pass — which is the point of
+  writing it down. **Needs:** (1) a rotation window; (2) the pi-room mount moved to a sops
+  secret or an `EnvironmentFile`, the pattern every other service here uses
+  (`AGENTS.md` §Secrets — the rule that says reference paths, not values); (3) a decision on
+  whether one string should be the WiFi key, a CIFS login and the camera admin baseline
+  simultaneously, because it currently is three credentials in one rotation. `fw_printenv` on these boards dumps the environment, and the environment holds
+  `wlanssid` and `wlanpass`; an ad-hoc call made before the masking existed put the value on
+  screen. Both masks are in place now (`just cam-env` masks by key name with a single
+  `sed -E` pass; `cameras/sd-boot-probe.sh` masks in pure shell), and `cam-flashdump`
+  directories are mode 700 — but the dump of the `env` partition **contains the PSK in
+  cleartext**, as does every `/etc` archive (`/etc/wpa_supplicant.conf`), so this is a
+  rotate-the-key item and not a delete-the-file item. **Blocks:** nothing. **Needs:** a
+  rotation window (it moves every client on the network, the cameras included — their copy
+  lives in the jffs2 overlay *and* the U-Boot env, so a camera needs `cam-init`-style
+  re-provisioning or an env write, and §12 of the flash guide says do not `fw_setenv`).
+- **The camera admin password is not the secret this directory believed it was** (found the
+  evening the cameras were keyed). It is the RTSP password, and the RTSP passwords are in
+  `/srv/frigate/config/config.yaml` because frigate must authenticate — so
+  camera password = RTSP password = a string in a runtime bind-mounted YAML, and the rule
+  that shaped every `cam-*` recipe ("the password is on no machine, so keying needs a human
+  at a tty") was false. **Blocks:** nothing; it retires a threat model. **Needs:** a decision
+  on whether camera RTSP credentials move into a secret-rendered env file like every other
+  service's, and — separately — whether three cameras should share one password at all,
+  since they also share the `wlanpass`.
+- **`/etc/custom.ok` is settled, and the answer is about cam7** (measured with `[ -e ]`):
+  present, size 0, on cam5 and cam9; **absent on cam7**, which is the marker `c110.md` §8.5
+  says a fresh rootfs *deletes*. So the device with the open admin plane is also the device
+  whose install never reported completion — consistent with it being two firmware versions
+  behind. **Blocks:** nothing. **Needs:** nothing, unless cam7 is reflashed, in which case
+  its absence is the baseline and not a symptom.
+- **cam5 runs a boot-time script that executes `/sstar_mmc_upgrade.sh` from the root of any
+  mounted FAT volume, as root** (`/etc/S99sdconf.sh`, md5 `1b4ac291…`, which the repo
+  already holds and marks "delete this"). It also `mount -o remount,rw rootfs /`, and `/`
+  turned out to be a **writable jffs2-backed overlay**, not the tmpfs this fleet's docs
+  described — so the write it performs persists. cam7 and cam9 do not carry the file.
+  **Blocks:** any claim that cam5's `/etc` is unreachable to someone with physical access
+  and a card (which is exactly the access a firmware flash needs). **Needs:** execute the
+  already-recorded decision (`just cam-init cam5 delete etc/S99sdconf.sh`) or write down why
+  the file stays.
+- **Tooling state after the first real run**: `just cam-preflight` / `cam-flashdump` /
+  `cam-backup` / `cam-image` / `cam-env` / `cam-card` all run against real devices, and the
+  first run found four silent-wrong-answer bugs in them (a dump that stopped after one
+  partition and printed `OK`; the `mtdNro` siblings; `ssh -n` eating a piped script; a
+  `case`-in-`while-read` mask collapsing a 34-line env to one line). All four are fixed and
+  listed in `cameras/README.md` *How this was verified*. **What is still unverified** is the
+  write path: no recipe in this directory has ever written a camera's flash, and the dumps
+  and archives are the only rollback anyone has. **Blocks:** nothing until someone flashes.
+  **Needs:** re-run `cam-flashdump` + `cam-backup` on the day of any flash, since the dumps
+  in `$HOME/camera-backups` are the undo and they are a snapshot of *today's* config.

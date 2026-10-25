@@ -4,20 +4,50 @@
 afterwards (because restoring firmware was believed to need soldering), and see whether an
 SD card is a viable unbrick.
 
+> ## ⚠️ Superseded in part the same evening — read this before the body
+>
+> The body of this audit was written from **upstream source and documentation**, and then the
+> cameras were keyed and measured.  Four of its load-bearing claims were wrong **for these
+> three devices**, and the procedure that replaces them is
+> **[`camera-sd-card-firmware-flash.md`](./camera-sd-card-firmware-flash.md)**.  What was
+> believed, and what the devices said:
+>
+> | This audit said | Measured on cam5/cam7/cam9 |
+> | --- | --- |
+> | (1) The update threatens **the settings partition**, because on a split-NOR box `rootfs_data` starts where the new squashfs ends | **These are not split-NOR.** `/proc/cmdline` carries an explicit `mtdparts=` — `256k(boot),64k(env),2048k(kernel),5120k(rootfs),-(rootfs_data)`, fixed slots, identical on all three. `rootfs_data` is at 0x750000 whatever the squashfs size is, and `uknor`/`urnor` erase exactly mtd2 and mtd3. **The settings do not move.** The mechanism I reasoned from is real, and it is a different layout from the one these units run |
+> | (2) The current build **probably does not fit** — "within ~109 KB of fitting" | **It fits**: rootfs 5,136,384 ≤ 5,242,880 (106,496 B spare) and kernel 2,003,872 ≤ 2,097,152. `just cam-preflight` gate 2, both SoCs |
+> | (4) The SD question is **unanswerable from a running camera** | Half true. Whether the **IPL** will boot from SD is unanswerable from Linux — and **irrelevant**, because the flash does not need it: U-Boot boots from NOR and the env ships `setsdcard = setenv updatetool fatload mmc 0`, so the reader is proven by the firmware's own recovery commands. Separately the SD host probes (`mmc0`, `ms_sdmmc_probe`, DTB `status="ok"` with `slot-removable`/`slot-cdzs-gpios`/`slot-pwr-gpios`); only the physical socket is unproven, and `just cam-card` tests it in two minutes |
+> | "restoring needs a bench visit" as the practical risk | Understated in one direction, overstated in another: there is **no rescue userspace** (still true, `failsafe` is gk7205-only) **and** `flashcp` from Linux restores any partition from a dump with no console at all, which covers every failure short of a dead kernel |
+>
+> Still standing, and the reason the audit was worth writing: the layout-and-size question is
+> the right question to ask before flashing; `sysupgrade`'s per-partition pre-check fails
+> **open** by design and `-f` disables everything (the arithmetic that matters is therefore
+> ours: `sf write` writes `${filesize}` and never consults `rootsize`); no rescue userspace on
+> this family; the firmware-identity mess in §5 (cam9's sensor is disputed **three** ways,
+> now including `env sensor=sc3338`); and §8's strike list — three of whose entries were
+> themselves superseded by measurement rather than by sourcing, which is noted there.
+>
+> Also corrected here, from the same measurement: the fleet's `/etc` is **jffs2 on flash, not
+> tmpfs** (so nothing in this audit's risk model about "the config lives in RAM" applies);
+> `awk` is present (the "no awk" reason given in §7's gate list is false); the admin password
+> is in services1's frigate config (so "a human must type it" was not a fact about the fleet);
+> and the installed `sysupgrade` is **1.0.41/1.0.21**, not the 1.0.77 whose flags §2 lists.
+> **What this audit got right by luck deserves naming too:** it said no, in writing, before
+> anything was flashed, while its own reasons were partly wrong.  A rejected action is
+> recoverable; a bad flash on a WiFi camera is not.  The failure to fix is not "the analysis
+> was incomplete" — it is that the analysis was **written down as fact** in three files before
+> a `ssh` key existed to check it against.
 **Answer, in short:** no update was attempted, and the reason is not that access was
-missing. (1) The thing that update threatens is **the settings partition, not the boot
-chain** — and on a split-NOR OpenIPC box the settings move *because* the rootfs changed
-size, and upstream's own comments record a bug that lost them on **every** NOR upgrade for
-a while. (2) The current build **probably does not fit the chip**, and the arithmetic lands
-within ~109 KB of fitting, on a partition layout **this repo has never recorded for any of
-the three**. (3) There is **no rescue userspace on this SoC family**: OpenIPC's `failsafe`
+missing. (1) ~~The thing that update threatens is the settings partition~~ — **wrong for these units**, see the block above: they are fixed-slot and the settings do not move. It remains true of the split-NOR layout, which is what upstream's comments describe. (2) ~~The current build probably does not fit~~ — **it fits**; measured in §above. (3) There is **no rescue userspace on this SoC family**: OpenIPC's `failsafe`
 (guest OS + network + SSH after repeated boot failures) is built for Goke gk7205 only, so a
 crash-looping ssc33x is a bench visit — no cable, and a console that may be under a shield.
-(4) The SD question is **unanswerable from a running camera** and cheaply answerable from
-the dump, which is now one command.
+(4) ~~The SD question is unanswerable~~ — the *boot-device* half is, the *can-the-CPU-read-a-card* half is answered by the env itself.
 
-Nothing on a device was written. Everything below is either measured today (the command is
-named) or already in this repo (the file is named), and §9 lists the claims the audit
+Nothing was flashed, on any device. The writes were three `/etc/dropbear/authorized_keys`
+files (the hop keys, which is what made the corrections possible) and, on services1, flash
+dumps and `/etc` archives under `$HOME/camera-backups`. Everything else below is either
+measured (the command is named) or already in this repo (the file is named); §8 lists the
+claims the audit
 **struck** because they could not be sourced — including numbers this session had written
 into three files an hour earlier.
 
