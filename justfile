@@ -723,3 +723,172 @@ cam-keytest name:
     else
         echo "NOT keyed (or unreachable): run just cam-key {{ name }}"
     fi
+
+# ------------------------------------------------------------------- firmware
+# A firmware update on these boxes is a ceremony, not a command, and the four
+# recipes below are the ceremony in order.  `cameras/c110.md` §8 still describes
+# the 2024 route — an 8 MB full-chip image written from U-Boot with `sf erase` /
+# `sf write` — and that is *not* what upstream ships now: a current nightly tgz
+# holds `uImage.<soc>` + `rootfs.squashfs.<soc>` and nothing else, and the tool is
+# `/usr/sbin/sysupgrade`, which writes **only the kernel and rootfs MTD partitions**
+# and carries the settings overlay over by itself.  That is why every gate below is
+# about the overlay and not about the image: on a WiFi-only camera with no cable,
+# no serial console proven, and no clip on the bench, the settings partition is the
+# whole difference between "it came back" and "someone solders".
+#
+#   1. just cam-preflight <cam>   read-only; every gate PASS, or argued with a
+#                                 measurement and never with hope
+#   2. just cam-flashdump <cam>   the chip, partition by partition, to a root-only
+#                                 directory: the only undo this fleet has
+#   3. just cam-backup    <cam>   /etc + /root as a tar: what WiFi and SSH are made of
+#   4. just cam-image <soc>       stage the exact build on services1, md5-verified
+#
+# There is deliberately **no update recipe**.  A recipe that reboots a camera
+# cannot guarantee the WiFi association and the ssh authorisation come back with
+# it, and a tool that pretends otherwise is how the fleet loses a device.  The
+# update itself stays a human decision, taken in a window, with `cam-probe` before
+# and after, once 1–4 are green and read.
+cam-preflight name:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    a=$(grep -A4 "^  {{ name }} = {" common/dns-records.nix | grep -oE '10\.3\.[0-9]+\.[0-9]+' | head -1)
+    [ -n "$a" ] || { echo "no {{ name }} row in common/dns-records.nix" >&2; exit 1; }
+    # The image sizes come from `just cam-image <soc>`; the defaults are the
+    # 2026-10-24 ssc337_lite nightly, i.e. cam5's and cam9's SoC and build config.
+    k="${IMG_KERNEL:-2003872}" r="${IMG_ROOTFS:-5136384}"
+    if ! ssh -i "{{ env_var('HOME') }}/.ssh/agent-hop-key" -oBatchMode=yes -oConnectTimeout=6 \
+        -oStrictHostKeyChecking=accept-new root@"${a}" \
+        "export IMG_KERNEL=${k} IMG_ROOTFS=${r}; sh -s" < cameras/preupdate-check.sh; then
+        echo "cannot ssh key-only into {{ name }}: just cam-key {{ name }} first, or the device is down (just cam-probe {{ name }})" >&2
+        exit 1
+    fi
+
+# Every MTD partition, dumped raw, plus the layout that makes the chip
+# reconstructible.  This is the answer to "restoring the firmware needs
+# soldering": with a verified dump of every partition there is no need to read the
+# chip again ever, and a restore is a `flashcp` (or a U-Boot `sf write` over TFTP)
+# rather than a clip.  Run it before the first update of each device and keep the
+# directory; it is ~8 MB and it is the cheapest insurance on this fleet.
+cam-flashdump name:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    a=$(grep -A4 "^  {{ name }} = {" common/dns-records.nix | grep -oE '10\.3\.[0-9]+\.[0-9]+' | head -1)
+    [ -n "$a" ] || { echo "no {{ name }} row in common/dns-records.nix" >&2; exit 1; }
+    key="{{ env_var('HOME') }}/.ssh/agent-hop-key"
+    dir="$HOME/camera-backups/{{ name }}-flash-$(date -u +%Y%m%dT%H%M%SZ)"
+    mkdir -p "$dir"; chmod 700 "$dir"
+    # A *partial* flash dump is worse than none, because it looks like one. The only
+    # thing that makes this directory trustworthy is mtd-verified.txt, so a run that
+    # died before writing it takes the bytes with it, and one that died after it says
+    # so loudly instead of quietly.
+    trap 'rc=$?; if [ "$rc" -ne 0 ]; then if [ -s "$dir/mtd-verified.txt" ]; then echo "FAILED with $rc: $dir holds a PARTIALLY verified dump — read mtd-verified.txt before trusting any of it" >&2; else rm -rf "$dir"; echo "FAILED with $rc: removed the unverified partial dump" >&2; fi; fi' EXIT
+    ssh -i "$key" -oBatchMode=yes -oConnectTimeout=6 root@"${a}" \
+        'for d in /sys/class/mtd/mtd*; do printf "%s %s %s %s\n" "$(basename "$d")" "$(cat "$d/name" 2>/dev/null)" "$(cat "$d/offset" 2>/dev/null || echo 0)" "$(cat "$d/size" 2>/dev/null)"; done' \
+        > "$dir/mtd-layout.txt"
+    echo "layout (dev name offset size):" >&2; cat "$dir/mtd-layout.txt" >&2
+    while read -r dev name offset size; do
+        [ -n "$dev" ] || continue
+        safe=$(printf '%s' "$name" | tr -c 'A-Za-z0-9._-' '_')
+        out="$dir/${dev}-${safe}.bin"
+        echo "dumping /dev/$dev ($name, $size bytes) -> $out" >&2
+        ssh -i "$key" -oBatchMode=yes -oConnectTimeout=6 root@"${a}" \
+            "dd if=/dev/${dev} bs=4096 2>/dev/null" > "$out"
+        got=$(wc -c < "$out" | tr -d ' ')
+        want="$size"
+        rmd5=$(ssh -i "$key" -oBatchMode=yes root@"${a}" "md5sum /dev/${dev} 2>/dev/null" | cut -d' ' -f1 || echo none)
+        ltd=$(md5sum "$out" | cut -d' ' -f1)
+        chmod 600 "$out"
+        if [ "$got" != "$want" ]; then
+            echo "TRUNCATED: /dev/$dev read $got bytes, sysfs says $want — this dump is not usable" >&2; exit 1
+        fi
+        if [ "$rmd5" != "$ltd" ]; then
+            echo "MD5 MISMATCH on /dev/$dev (device=$rmd5 local=$ltd) — do not trust this dump" >&2; exit 1
+        fi
+        printf '%s %s %s %s device_md5=%s local_md5=%s\n' "$dev" "$name" "$offset" "$size" "$rmd5" "$ltd" >> "$dir/mtd-verified.txt"
+    done < "$dir/mtd-layout.txt"
+    {
+        echo "Whole-chip reconstruction from this directory (offsets are bytes, from mtd-layout.txt):"
+        echo "  dd if=/dev/zero bs=1 count=0 seek=8388608 of=chip.bin   # sparse 8 MiB"
+        while read -r dev name offset size _; do
+            [ -n "$dev" ] || continue
+            safe=$(printf '%s' "$name" | tr -c 'A-Za-z0-9._-' '_')
+            echo "  dd conv=notrunc bs=1 seek=${offset} if=${dev}-${safe}.bin of=chip.bin"
+        done < "$dir/mtd-layout.txt"
+        echo "A restore writes back with flashcp per partition, or from U-Boot over TFTP with sf write at the same offsets."
+    } > "$dir/RECONSTRUCT.txt"
+    ( cd "$dir" && find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%P\n' | sort | xargs -r sha256sum > SHA256SUMS )
+    echo "OK: {{ name }} flash dump in $dir (mode 700)" >&2
+    ls -l "$dir" >&2
+
+# The archive that carries WiFi and SSH: all of /etc plus /root, streamed to a
+# root-only directory, never into this repo (`cam-pull` puts files in a nix store
+# path; the WiFi PSK and the host keys must not go there — AGENTS.md rule 13).
+# This prints sizes and hashes only: read them, and do not cat the files.
+cam-backup name:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    a=$(grep -A4 "^  {{ name }} = {" common/dns-records.nix | grep -oE '10\.3\.[0-9]+\.[0-9]+' | head -1)
+    [ -n "$a" ] || { echo "no {{ name }} row in common/dns-records.nix" >&2; exit 1; }
+    key="{{ env_var('HOME') }}/.ssh/agent-hop-key"
+    dir="$HOME/camera-backups/{{ name }}-etc-$(date -u +%Y%m%dT%H%M%SZ)"
+    mkdir -p "$dir"; chmod 700 "$dir"
+    # Drop the directory when nothing was archived (unkeyed device, dead camera) so the
+    # backups tree cannot fill with empty mode-700 shrines to failed runs; keep it when a
+    # *suspect* archive exists, because that archive and its .err are the artefact to read.
+    trap 'rc=$?; if [ "$rc" -ne 0 ] && [ ! -s "$dir/etc.tar" ]; then rm -rf "$dir"; fi' EXIT
+    ssh -i "$key" -oBatchMode=yes -oConnectTimeout=6 root@"${a}" 'cat /proc/mtd'      > "$dir/proc-mtd.txt"
+    ssh -i "$key" -oBatchMode=yes root@"${a}" 'cat /proc/cmdline'                     > "$dir/proc-cmdline.txt"
+    ssh -i "$key" -oBatchMode=yes root@"${a}" 'cat /etc/version /etc/os-release 2>/dev/null' > "$dir/versions.txt"
+    ssh -i "$key" -oBatchMode=yes root@"${a}" 'dmesg'                                 > "$dir/dmesg.txt" || true
+    ssh -i "$key" -oBatchMode=yes root@"${a}" 'fw_printenv 2>/dev/null'               > "$dir/uboot-env.txt" || echo "fw_printenv failed" > "$dir/uboot-env.txt"
+    chmod 600 "$dir/uboot-env.txt"
+    ssh -i "$key" -oBatchMode=yes root@"${a}" 'sh -s' < cameras/backup-etc.sh > "$dir/etc.tar" 2> "$dir/etc-tar.err"
+    n=$(tar tf "$dir/etc.tar" 2>/dev/null | wc -l | tr -d ' ')
+    bytes=$(wc -c < "$dir/etc.tar" | tr -d ' ')
+    if [ "$bytes" -lt 10000 ] || [ "$n" -lt 10 ]; then
+        echo "SUSPICIOUS archive: ${bytes} bytes, ${n} entries. Read $dir/etc-tar.err before believing this backup." >&2
+        exit 1
+    fi
+    chmod 600 "$dir/etc.tar"
+    ( cd "$dir" && find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%P\n' | sort | xargs -r sha256sum > SHA256SUMS )
+    echo "OK: {{ name }} /etc archive = ${bytes} bytes, ${n} entries, sha256 $(sha256sum "$dir/etc.tar" | cut -c1-16)…" >&2
+    echo "    in $dir (mode 700). It holds the WiFi PSK, the root hash and the host keys:" >&2
+    echo "    never move it into the repo, never cat it, never paste a member of it." >&2
+
+# Stage one OpenIPC build for a SoC on services1 and prove it by its own md5s.
+# <soc> is a manifest platform, i.e. ssc333_lite / ssc337_lite / ssc337de_ultimate
+# — cam5 and cam9 are ssc337 (their signature lines say so), cam7 is ssc333.
+# It then prints the exact `cam-preflight` line to run, because the fit gate has
+# to measure the build that is actually staged and not a remembered size.
+cam-image soc:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    base="{{ env_var('HOME') }}/camera-images"
+    mkdir -p "$base"
+    curl -sS -m 60 -o "$base/manifest.flat" https://openipc.github.io/firmware/manifest.flat
+    line=$(grep -E " {{ soc }} nor " "$base/manifest.flat" | sort | tail -1)
+    [ -n "$line" ] || { echo "no '{{ soc }}' rows in the manifest. Platforms present:"; awk '{print $2}' "$base/manifest.flat" | sort -u | head -30; exit 1; }
+    build=$(printf '%s' "$line" | cut -d' ' -f1)
+    url=$(printf '%s' "$line" | cut -d' ' -f5)
+    tgz="$base/${build}-{{ soc }}.tgz"
+    echo "build $build"
+    echo "url   $url"
+    if [ ! -f "$tgz" ]; then
+        curl -sSL -m 600 -o "$tgz" "$url"
+    fi
+    d="$base/${build}-{{ soc }}"
+    mkdir -p "$d"; tar xzf "$tgz" -C "$d"
+    ( cd "$d" && md5sum -c *.md5sum )
+    # The tgz carries a .md5sum beside each member, so the member is found by
+    # excluding those, not by a glob that matches both.
+    kfile=$(find "$d" -maxdepth 1 -name 'uImage*' ! -name '*.md5sum' | head -1)
+    rfile=$(find "$d" -maxdepth 1 -name 'rootfs.squashfs*' ! -name '*.md5sum' | head -1)
+    [ -n "$kfile" ] && [ -n "$rfile" ] || { echo "staged tgz held no uImage and rootfs.squashfs: what is in $d?" >&2; ls -l "$d" >&2; exit 1; }
+    ksz=$(wc -c < "$kfile" | tr -d ' ')
+    rsz=$(wc -c < "$rfile" | tr -d ' ')
+    echo "staged: $tgz"
+    echo "  sha256  $(sha256sum "$tgz" | cut -d' ' -f1)"
+    echo "  uImage  ${ksz} bytes"
+    echo "  rootfs  ${rsz} bytes"
+    echo "next, the fit gate for the build you just staged:"
+    echo "  IMG_KERNEL=${ksz} IMG_ROOTFS=${rsz} just cam-preflight <cam>"

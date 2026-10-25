@@ -36,3 +36,9 @@ config.xml
 # stays vendored next to the engine.
 /crates/whisper-ws/web/openwakeword/ort/
 /crates/whisper-ws/web/openwakeword/models/
+
+# A guard, not a workflow: `just cam-image` stages camera firmware in ~/camera-images,
+# *outside* this tree, because a tarball in the flake source is copied into the store by
+# every evaluation (docs/flake-simplification-pass-2026-10-24.md §1). This entry only
+# makes a mistaken repo-local staging invisible instead of expensive.
+/camera-images/
