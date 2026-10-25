@@ -99,7 +99,10 @@ grep rootfs_data /proc/mounts 2>/dev/null | cut -c1-200
 
 # ------------------------------------------------- what has to survive the flash
 echo "--- survival set (path / size / md5, never contents)"
-for f in /etc/wlanpass /etc/wpa_supplicant.conf /etc/httpd-htpasswd.user \
+# /etc/wlanpass is kept in the list because the older notes in this directory name it; on
+# the three production units it does not exist and /etc/wpa_supplicant.conf is the file
+# that matters (measured 2026-10-25). A missing entry here is a note, not a failure.
+for f in /etc/wlanpass /etc/wpa_supplicant.conf /etc/wireless /etc/httpd-htpasswd.user \
 	/etc/majestic.yaml /etc/shadow /etc/dropbear/dropbear_ed25519_host_key \
 	/etc/dropbear/authorized_keys /etc/fw_env.config /etc/os-release /etc/version \
 	/etc/custom.ok /etc/init.d/S50dropbear /etc/init.d/S95majestic; do
@@ -126,9 +129,15 @@ fact "busybox awk applet" "$(busybox --list 2>/dev/null | grep -c '^awk$')"
 echo "--- can this box fetch the image itself?"
 net=""
 if have curl; then
-	code=$(curl -s -m 10 -o /dev/null -w '%{http_code}' \
+	# Any non-empty code is NOT success: curl prints 000 when the connection never
+	# completed, and a fetch gate that passes on 000 is how an update plan gets built
+	# on a route that does not exist.  Require a real 2xx/3xx.
+	code=$(curl -sS -m 15 -o /dev/null -w '%{http_code}' \
 		https://openipc.github.io/firmware/manifest.flat 2>/dev/null)
-	[ -n "$code" ] && net="curl http_code=$code"
+	case "$code" in
+	2?? | 3??) net="curl http_code=$code" ;;
+	*) net="" ; netfail="curl returned ${code:-no code} (000 = no route or no TLS trust)" ;;
+	esac
 elif have wget; then
 	net="wget only: $(wget --version 2>&1 | head -1)"
 fi
@@ -171,17 +180,18 @@ else
 	gate 4 UNKNOWN "/tmp does not say tmpfs. If it is the 704 KB overlay of this firmware, no archive fits there and only a streamed update can work"
 fi
 flashback=0
-mount 2>/dev/null | grep -i overlay | grep -q -E "mtdblock|/dev/mtd" && flashback=1
-grep -q rootfs_data /proc/mounts 2>/dev/null && flashback=1
+mount 2>/dev/null | grep -i -E "overlay" | grep -q -E "mtdblock|/dev/mtd" && flashback=1
+mount 2>/dev/null | grep -q -E "^/dev/mtdblock[0-9]+ on /overlay type jffs2" && flashback=1
+grep -q -E "rootfs_data|mtdblock" /proc/mounts 2>/dev/null && flashback=1
 if [ "$flashback" = 1 ]; then
-	gate 5 PASS "the settings overlay is backed by flash: /etc survives the flash and the reboot that follows"
+	gate 5 PASS "the settings are on flash (jffs2 on an mtdblock under the / overlay): /etc survives the flash and the reboot"
 else
-	gate 5 FAIL "no flash-backed settings partition visible. If the overlay is RAM, /etc — the WiFi credentials and authorized_keys — is gone at the next boot and this camera is unreachable by design"
+	gate 5 FAIL "no flash-backed settings mount visible. On these units the answer is '\"/dev/mtdblock4 on /overlay type jffs2'\"; if that is absent, /etc is RAM and it is gone at the next boot — and this camera is unreachable by design"
 fi
-if [ -s /etc/wlanpass ] || [ -s /etc/wpa_supplicant.conf ]; then
-	gate 6 PASS "WiFi credentials are on the box to be carried over ($(fsize /etc/wlanpass) + $(fsize /etc/wpa_supplicant.conf) bytes)"
+if [ -s /etc/wpa_supplicant.conf ] || [ -s /etc/wlanpass ]; then
+	gate 6 PASS "WiFi credentials are on the box to be carried over (wpa_supplicant.conf $(fsize /etc/wpa_supplicant.conf) B, wlanpass $(fsize /etc/wlanpass) B)"
 else
-	gate 6 FAIL "no WiFi credential file found. A camera that cannot rejoin VLAN 226 is a bench visit, not a retry"
+	gate 6 FAIL "no WiFi credential file found. NOTE: on these three the credential is /etc/wpa_supplicant.conf — /etc/wlanpass is the SD-customizer's filename and does not exist in the running config, whatever the older notes in this directory say. A camera that cannot rejoin VLAN 226 is a bench visit, not a retry"
 fi
 if [ -f /etc/dropbear/dropbear_ed25519_host_key ] && [ -s /etc/dropbear/authorized_keys ]; then
 	gate 7 PASS "SSH comes back by itself: host key present, authorized_keys $(fsize /etc/dropbear/authorized_keys) bytes / $(grep -c . /etc/dropbear/authorized_keys 2>/dev/null) lines"
@@ -189,19 +199,19 @@ else
 	gate 7 FAIL "no host key or no authorized_keys: a reset dropbear leaves a camera that answers on the WiFi and admits nobody, over a link you cannot cable around"
 fi
 if have awk; then
-	gate 8 PASS "awk present — the current sysupgrade (v1.0.77) uses it 32 times, in validation and sizing"
+	gate 8 PASS "awk present — the current sysupgrade uses it heavily, and it was believed absent here (it is not: /usr/bin/awk on all three). Older notes in this directory say otherwise; trust this measurement"
 else
-	gate 8 FAIL "no awk here (cameras/README.md: absent on all three). The current sysupgrade cannot validate or size anything on this firmware, so either the updater already installed here handles this image, or this fleet goes to the bench route once, on purpose, with serial — never by accident mid-update"
+	gate 8 FAIL "no awk here. The current sysupgrade uses awk in its validation and sizing paths, so an in-place update cannot self-validate on this device"
 fi
 if have sysupgrade || have fw; then
-	gate 9 UNKNOWN "an updater is installed (version above). Read which image names it fetches by default before letting it fetch: the 2024 builds predate the per-SoC openipc.<soc>-nor-lite.tgz naming"
+	gate 9 UNKNOWN "an updater is installed. Read ITS OWN usage (sysupgrade -h): the versions on this fleet are older than upstream's, and flags like --archive/--build/--list-builds are NOT all present. Never script an update against the upstream flag list"
 else
 	gate 9 FAIL "no updater on the running system. Writing MTD partitions by hand from a RAM root has no pre-flight and no settings carry-over: that is how a camera needs a clip"
 fi
 if [ -n "$net" ]; then
 	gate 10 PASS "the camera can reach the image host ($net). A LAN mirror is still preferred so the flash does not depend on WAN at flash time"
 else
-	gate 10 FAIL "the camera cannot fetch the manifest. Use --archive from a build staged on services1 (just cam-image <soc>), which also avoids trusting camera-side TLS"
+	gate 10 FAIL "the camera cannot fetch the manifest (${netfail:-no curl and no wget}). Stage the build on services1 and push it to /tmp, or serve it on the LAN: an update path that depends on a route this gate could not prove is not a plan"
 fi
 echo "$gates"
 echo "================================================================"

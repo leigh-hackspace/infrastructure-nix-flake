@@ -783,7 +783,7 @@ cam-flashdump name:
     # so loudly instead of quietly.
     trap 'rc=$?; if [ "$rc" -ne 0 ]; then if [ -s "$dir/mtd-verified.txt" ]; then echo "FAILED with $rc: $dir holds a PARTIALLY verified dump — read mtd-verified.txt before trusting any of it" >&2; else rm -rf "$dir"; echo "FAILED with $rc: removed the unverified partial dump" >&2; fi; fi' EXIT
     ssh -i "$key" -oBatchMode=yes -oConnectTimeout=6 root@"${a}" \
-        'for d in /sys/class/mtd/mtd*; do printf "%s %s %s %s\n" "$(basename "$d")" "$(cat "$d/name" 2>/dev/null)" "$(cat "$d/offset" 2>/dev/null || echo 0)" "$(cat "$d/size" 2>/dev/null)"; done' \
+        'for d in /sys/class/mtd/mtd[0-9]*; do case "$(basename "$d")" in *ro) continue ;; esac; printf "%s %s %s %s\n" "$(basename "$d")" "$(cat "$d/name" 2>/dev/null)" "$(cat "$d/offset" 2>/dev/null || echo 0)" "$(cat "$d/size" 2>/dev/null)"; done' \
         > "$dir/mtd-layout.txt"
     echo "layout (dev name offset size):" >&2; cat "$dir/mtd-layout.txt" >&2
     while read -r dev name offset size; do
@@ -791,11 +791,13 @@ cam-flashdump name:
         safe=$(printf '%s' "$name" | tr -c 'A-Za-z0-9._-' '_')
         out="$dir/${dev}-${safe}.bin"
         echo "dumping /dev/$dev ($name, $size bytes) -> $out" >&2
-        ssh -i "$key" -oBatchMode=yes -oConnectTimeout=6 root@"${a}" \
+        # `-n` is load-bearing: without it this ssh swallows the rest of the layout
+        # file, which is the loop's stdin, and the dump silently stops after mtd0.
+        ssh -n -i "$key" -oBatchMode=yes -oConnectTimeout=6 root@"${a}" \
             "dd if=/dev/${dev} bs=4096 2>/dev/null" > "$out"
         got=$(wc -c < "$out" | tr -d ' ')
         want="$size"
-        rmd5=$(ssh -i "$key" -oBatchMode=yes root@"${a}" "md5sum /dev/${dev} 2>/dev/null" | cut -d' ' -f1 || echo none)
+        rmd5=$(ssh -n -i "$key" -oBatchMode=yes root@"${a}" "md5sum /dev/${dev} 2>/dev/null" | cut -d' ' -f1 || echo none)
         ltd=$(md5sum "$out" | cut -d' ' -f1)
         chmod 600 "$out"
         if [ "$got" != "$want" ]; then
@@ -806,6 +808,12 @@ cam-flashdump name:
         fi
         printf '%s %s %s %s device_md5=%s local_md5=%s\n' "$dev" "$name" "$offset" "$size" "$rmd5" "$ltd" >> "$dir/mtd-verified.txt"
     done < "$dir/mtd-layout.txt"
+    want=$(grep -c "^mtd" "$dir/mtd-layout.txt")
+    got=$(grep -c "" "$dir/mtd-verified.txt" 2>/dev/null || echo 0)
+    if [ "$got" != "$want" ]; then
+        echo "INCOMPLETE: $got of $want partitions verified in $dir — this dump is NOT a backup" >&2
+        exit 1
+    fi
     {
         echo "Whole-chip reconstruction from this directory (offsets are bytes, from mtd-layout.txt):"
         echo "  dd if=/dev/zero bs=1 count=0 seek=8388608 of=chip.bin   # sparse 8 MiB"
@@ -836,11 +844,16 @@ cam-backup name:
     # backups tree cannot fill with empty mode-700 shrines to failed runs; keep it when a
     # *suspect* archive exists, because that archive and its .err are the artefact to read.
     trap 'rc=$?; if [ "$rc" -ne 0 ] && [ ! -s "$dir/etc.tar" ]; then rm -rf "$dir"; fi' EXIT
-    ssh -i "$key" -oBatchMode=yes -oConnectTimeout=6 root@"${a}" 'cat /proc/mtd'      > "$dir/proc-mtd.txt"
-    ssh -i "$key" -oBatchMode=yes root@"${a}" 'cat /proc/cmdline'                     > "$dir/proc-cmdline.txt"
-    ssh -i "$key" -oBatchMode=yes root@"${a}" 'cat /etc/version /etc/os-release 2>/dev/null' > "$dir/versions.txt"
-    ssh -i "$key" -oBatchMode=yes root@"${a}" 'dmesg'                                 > "$dir/dmesg.txt" || true
-    ssh -i "$key" -oBatchMode=yes root@"${a}" 'fw_printenv 2>/dev/null'               > "$dir/uboot-env.txt" || echo "fw_printenv failed" > "$dir/uboot-env.txt"
+    # Every informational capture ends in `|| true`: with `set -e`, a remote command that
+    # legitimately exits non-zero on one build (2.3.11.22 has no /etc/version) aborted the
+    # whole backup before the tar was ever taken, and the trap then deleted the directory,
+    # so the failure looked like a device problem rather than a recipe bug.
+    ssh -i "$key" -oBatchMode=yes -oConnectTimeout=6 root@"${a}" 'cat /proc/mtd' > "$dir/proc-mtd.txt" || true
+    ssh -i "$key" -oBatchMode=yes root@"${a}" 'cat /proc/cmdline' > "$dir/proc-cmdline.txt" || true
+    ssh -i "$key" -oBatchMode=yes root@"${a}" 'cat /etc/version /etc/os-release 2>/dev/null' > "$dir/versions.txt" || true
+    ssh -i "$key" -oBatchMode=yes root@"${a}" 'dmesg' > "$dir/dmesg.txt" || true
+    # The env holds the WiFi PSK: capture it to a 600 file, never to a terminal.
+    ssh -n -i "$key" -oBatchMode=yes root@"${a}" 'fw_printenv 2>/dev/null' > "$dir/uboot-env.txt" || echo "fw_printenv failed" > "$dir/uboot-env.txt"
     chmod 600 "$dir/uboot-env.txt"
     ssh -i "$key" -oBatchMode=yes root@"${a}" 'sh -s' < cameras/backup-etc.sh > "$dir/etc.tar" 2> "$dir/etc-tar.err"
     n=$(tar tf "$dir/etc.tar" 2>/dev/null | wc -l | tr -d ' ')
@@ -892,3 +905,44 @@ cam-image soc:
     echo "  rootfs  ${rsz} bytes"
     echo "next, the fit gate for the build you just staged:"
     echo "  IMG_KERNEL=${ksz} IMG_ROOTFS=${rsz} just cam-preflight <cam>"
+# The U-Boot env, which on these boards is where the whole recovery story lives
+# (`setsdcard`, `uknor`, `urnor`, `ubnor`, `kernaddr`, `rootaddr`) — and also where the
+# WiFi PSK lives (`wlanpass`).  Values of credential-shaped keys are masked *here*, in
+# the recipe, by key name: an early version of this work ran a bare `fw_printenv` and put
+# the network's PSK into a transcript, which is the incident this masking exists to
+# prevent (AGENTS.md rule 13).  Read-only: this never runs fw_setenv.
+cam-env name:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    a=$(grep -A4 "^  {{ name }} = {" common/dns-records.nix | grep -oE '10\.3\.[0-9]+\.[0-9]+' | head -1)
+    [ -n "$a" ] || { echo "no {{ name }} row in common/dns-records.nix" >&2; exit 1; }
+    # One sed pass over the stream, deliberately not a read loop: a `case`-in-`while read`
+    # loop here silently swallowed all but one of the 34 env lines on bash 5.3, which is
+    # the worst possible failure for a mask (it looks like a short env, not a broken loop).
+    ssh -n -i "{{ env_var('HOME') }}/.ssh/agent-hop-key" -oBatchMode=yes -oConnectTimeout=6 \
+        root@"${a}" 'fw_printenv 2>/dev/null' |
+        sed -E 's/^([A-Za-z0-9_]*([Pp]ass|[Pp]sk|[Kk]ey|[Ss]ecret|[Tt]oken)[A-Za-z0-9_]*)=.*/\1=<MASKED>/' 
+
+# Does a card slot actually exist on this board?  Not answerable from the file system —
+# the host driver probes with no card and there is no block device until one is inserted.
+# Does a card slot actually exist on this board?  Not answerable from the file system: the
+# host driver probes whether or not a card is present, and there is no block device until a
+# card answers.  So: put a FAT32 card in, run this, read the verdict, take it out.
+#
+# `cameras/sd-card-check.sh` writes one thing — `1` to a sysfs `rescan` attribute, which
+# re-enumerates the MMC bus.  Nothing is written to flash or to /etc, and no read-write
+# root is needed.  That is worth stating plainly on this fleet, because `/` here is an
+# overlay whose upper half is jffs2 on the settings partition: a stray write *persists*
+# (which is the opposite of what this directory claimed until 2026-10-25).
+#
+# Separate recipe rather than part of `cam-check`, because it makes the kernel poke a bus
+# and the answer only matters while someone is holding a card.
+cam-card name:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    a=$(grep -A4 "^  {{ name }} = {" common/dns-records.nix | grep -oE '10\.3\.[0-9]+\.[0-9]+' | head -1)
+    [ -n "$a" ] || { echo "no {{ name }} row in common/dns-records.nix" >&2; exit 1; }
+    # No -n here, unlike the flashdump loop: this recipe's whole payload arrives on stdin,
+    # and `ssh -n` replaces it with /dev/null, which runs an empty script and prints nothing.
+    ssh -i "{{ env_var('HOME') }}/.ssh/agent-hop-key" -oBatchMode=yes -oConnectTimeout=6 \
+        root@"${a}" 'sh -s' < cameras/sd-card-check.sh
