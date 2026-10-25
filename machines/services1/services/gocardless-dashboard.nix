@@ -24,43 +24,19 @@
   CONFIG = import ../../../common/config.nix;
   mkOriginVhost = import ../../../common/nginx/origin-vhost.nix {inherit lib;};
 
-  # The Dioxus SPA compiled to wasm (pinned wasm-bindgen-cli and the wasm build
-  # recipe live in common/crane.nix).  Its gdash-dto path dependency is a
-  # symlink in the source tree, so materialise a real copy for the sandbox.
-  frontendSrc = pkgs.runCommand "gocardless-dashboard-frontend-src" {} ''
-    cp -r ${../../../crates/gocardless-dashboard/frontend} $out
-    # Store paths are read-only and cp -r preserves the mode, so make the
-    # copy writable before adding the dto crate (the gdash-dto path
-    # dependency; a symlink in the working tree, materialised here).
-    chmod -R u+rwX $out
-    rm -rf $out/dto
-    cp -r ${../../../crates/gocardless-dashboard/dto} $out/dto
-  '';
-  frontendDist = CRANE.wasmSpa {
-    pname = "gocardless-dashboard-web";
-    version = "0.1.0";
-    src = frontendSrc;
-    cargoLockPath = ../../../crates/gocardless-dashboard/frontend/Cargo.lock;
-    wasmName = "gocardless_dashboard_web";
-  };
-
-  # The binary.  Its build.rs embeds the SPA, which makes the SPA a build-hook
-  # input rather than a cargo dependency — no problem, because the dependency
-  # derivation is the workspace-wide one and never sees these hooks (see `crate`
-  # in common/crane.nix), so a SPA-only change still does not rebuild the
-  # binary's dependency tree.
-  dashboard = CRANE.crate {
-    pname = "gocardless-dashboard";
-    version = "0.1.0";
-    member = "gocardless-dashboard";
-    # `common-oidc` + `common-build-spa` + `common-pg` path dependencies (see
-    # crates/common-rs/ and common/crane.nix).  `dto` is a real directory inside
-    # the crate, so it needs no entry.
-    sharedCrates = ["oidc" "service" "build-spa" "pg"];
-    # Point build.rs at the nix-built bundle instead of the (uncommitted)
-    # frontend/dist in the source tree.
-    preBuild = "export GOCARDLESS_DASHBOARD_DIST=${frontendDist}";
-  };
+  # The SPA and the binary that embeds it — `CRANE.spaApp`, the one recipe (see
+  # common/crane.nix for the shape and for why the bundle is a build-hook input rather
+  # than a cargo dependency).  What is specific to this app: `gdash-dto` is a real
+  # directory inside the crate which the SPA reaches through a git-ignored symlink, so it
+  # is named as a local crate; the binary reads `common-oidc`, `common-service`,
+  # `common-build-spa` and `common-pg` (crates/common-rs/), and needs no entry for `dto`.
+  dashboard =
+    (CRANE.spaApp {
+      name = "gocardless-dashboard";
+      version = "0.1.0";
+      localCrates = ["dto"];
+      sharedCrates = ["oidc" "service" "build-spa" "pg"];
+    }).binary;
 in {
   # Runs as root (like the other CONFIG.ENV_FILE consumers): /run/secrets is
   # root:keys 0710, so only root can reach the secret files inside it.

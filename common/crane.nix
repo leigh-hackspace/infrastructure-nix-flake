@@ -63,6 +63,25 @@
   # dependency change forces a rebuild.
   lockFile = p: pkgs.writeText "Cargo.lock" (builtins.readFile p);
 
+  # A `Cargo.lock` handed to crane the way crane wants one: the file **and** its
+  # contents, always as a pair.  Crane reads `cargoLock` during *evaluation*
+  # (`vendorCargoDeps` does a `pathExists`/`readFile` on it), and `lockFile` returns a
+  # derivation, so the read is a build — the failure this repo keeps paying for, and
+  # the reason `just check` died on the router on 2026-10-22 with
+  # `Cannot build '…-Cargo.lock.drv'`, on the one box that is right to refuse
+  # (`nix.settings.max-jobs = 0`).  `cargoLockContents` is that same value pre-read, so
+  # nothing has to realise anything.  Passing both is drv-neutral: `mkCargoDerivation`
+  # prefers `cargoLock` when it is present, and `writeText "Cargo.lock" contents` is
+  # precisely the path `lockFile` already made.
+  #
+  # Every site that gives crane a lock file goes through here, because a lock handed
+  # over on its own is a build hiding in an evaluation, and only one of the three sites
+  # was ever observed to fail.
+  lockArgs = p: {
+    cargoLock = lockFile p;
+    cargoLockContents = builtins.readFile p;
+  };
+
   # A vendored-dependency tree for a lock file that lives outside its source tree.
   #
   # Crane reads the lock file *at evaluation time* (`builtins.readFile cargoLock`)
@@ -125,8 +144,6 @@
     in
       !lib.any (d: rel == d || lib.hasPrefix (d + "/") rel) (spaMembers ++ nonMemberPrograms);
   };
-
-  workspaceLock = lockFile workspaceLockPath;
   workspaceVendorDir = vendorDirFor {
     src = workspaceSrc;
     lockPath = workspaceLockPath;
@@ -134,30 +151,35 @@
 
   # The one dependency derivation every native crate builds against.
   #
-  # `buildDepsOnly` replaces every member's sources with stubs, so this is keyed on
-  # the workspace's manifests and lock file alone: no .rs edit reaches it.  Because
-  # the lock file is shared there is exactly one store path here for the whole
-  # fleet, which is the point — it is what stops each program recompiling its own
-  # copy of the dependency tree.
+  # `buildDepsOnly` replaces every member's sources with stubs, so this is keyed on the
+  # workspace's manifests and lock file alone: no .rs edit reaches it.  Because the lock
+  # file is shared there is exactly one store path here for the whole fleet, which is the
+  # point — it is what stops each program recompiling its own copy of the dependency tree.
   #
-  # The flip side of one lock file: changing a dependency *anywhere* invalidates it
-  # for everyone. That is the price of a workspace and it is the same price cargo
-  # charges locally.
+  # `cargoVendorDir` is stated rather than left to crane for the reason given on
+  # `lockArgs`: asked for neither a vendor dir nor the lock's contents, the dependency
+  # build finds its own vendor tree by *reading* `cargoLock`, and this lock file is a
+  # derivation.  `workspaceVendorDir` is that same tree, computed from the plain source
+  # directory and the lock's contents (`vendorDirFor`), which is why stating it is free.
+  #
+  # The flip side of one lock file: changing a dependency *anywhere* invalidates it for
+  # everyone. That is the price of a workspace and it is the same price cargo charges
+  # locally.
   # `pname`/`version` are stated rather than discovered.  The workspace root is a
-  # *virtual* manifest — `[workspace]` with members, no `[package]`, so no name and
-  # no version to read — and crane, asked for neither, reads `src/Cargo.toml`, finds
-  # nothing, and warns on every single evaluation that it is using a placeholder
-  # value.  They are only labels for the dependency derivation, which is the same
-  # stubbed-deps tree for every member regardless of what any of them version
-  # themselves (the members are 0.1.0 except frigate-monitor at 0.2.0, and neither
-  # number reaches it).
-  workspaceArtifacts = craneLib.buildDepsOnly {
-    pname = "crates-workspace";
-    version = "0.1.0";
-    src = workspaceSrc;
-    cargoLock = workspaceLock;
-    doCheck = false;
-  };
+  # *virtual* manifest — `[workspace]` with members, no `[package]`, so no name and no
+  # version to read — and crane, asked for neither, reads `src/Cargo.toml`, finds
+  # nothing, and warns on every single evaluation that it is using a placeholder value.
+  # They are only labels for the dependency derivation, which is the same stubbed-deps
+  # tree for every member regardless of what any of them version themselves (the members
+  # are 0.1.0 except frigate-monitor at 0.2.0, and neither number reaches it).
+  workspaceArtifacts = craneLib.buildDepsOnly (lockArgs workspaceLockPath
+    // {
+      pname = "crates-workspace";
+      version = "0.1.0";
+      src = workspaceSrc;
+      cargoVendorDir = workspaceVendorDir;
+      doCheck = false;
+    });
 
   # The source tree one member is built from: the workspace with stub sources
   # everywhere except `member` (and the shared crates it reads).
@@ -228,27 +250,51 @@
         src = memberSrc {
           inherit pname member sharedCrates;
         };
-        cargoLock = workspaceLock;
         cargoVendorDir = workspaceVendorDir;
         cargoBuildCommand = "cargoWithProfile build -p ${pname}";
         doCheck = false;
-      });
+      }
+      // lockArgs workspaceLockPath);
 
-  # --- the wasm SPAs ------------------------------------------------------------
+  # The source tree one SPA is built from: its own `frontend/` directory, plus the
+  # crates its manifest reads as path dependencies — the `common-rs/` ones named in
+  # `names`, and whatever `extra` maps by destination (a `dto` living inside the app's own
+  # directory, which a developer reaches through a git-ignored symlink and a flake source
+  # cannot carry at all — see common/shared-rs-links.sh).
   #
-  # A SPA is its own cargo workspace with its own lock file, so it gets its own
-  # dependency derivation, and its shared path dependencies have to be copied into
-  # its source tree: the git-ignored symlink a developer has locally
-  # (`frontend/dto -> ../dto`, see common/shared-rs-links.sh) cannot travel in a
-  # flake source, and a symlink outside the tree could not be copied into the store
-  # either way.
+  # A derivation, and that is a cost rather than a choice, so it is written down. Crane
+  # reads a crate's `src` while *evaluating* — `mkDummySrc` walks it with
+  # `builtins.readDir` to find the manifests to stub, and its own comment calls this
+  # "laundering the data at evaluation time" — so a derivation-shaped source is **built**
+  # by anyone who merely evaluates a machine that installs the binary. Measured 2026-10-25
+  # on a fresh flake source with nothing able to build (`--option builders '' --option
+  # max-jobs 0`, which is the state `gw` keeps itself in), where the trace runs from a
+  # unit's `ExecStart` straight into a build:
   #
-  # `sharedCrates` here names crates under `common-rs/`; a crate that lives inside
-  # the app's own tree (a `dto`) is copied by the module that builds it, as before.
+  #     error: path '…-filestore-web-src.drv' is not valid
+  #       … while evaluating attribute 'preBuild' of derivation 'filestore-0.1.0'
+  #       … while evaluating attribute 'cargoArtifacts' of 'filestore-web-0.1.0'
+  #       … while evaluating attribute 'src' of 'filestore-web-deps-0.1.0'
+  #       … while adding path '…-filestore-web-src'
+  #
+  # and the same evaluation with `sharedCrates = []` — so the source is a plain directory
+  # and there is nothing to add — passes. It is the third door into
+  # docs/nix-dev-workflow.md's "Evaluation must not build", after the crate source stubs
+  # and (now closed by `lockArgs`, which is why the error above names a `-src` and not a
+  # `Cargo.lock`) the lock file — and, unlike those two, closing it is a decision rather
+  # than a pairing: the path dependencies would have to stop being a copied tree, either
+  # by moving them into the dependency derivation or by giving the SPA a source with no
+  # workspace of its own. Both change what invalidates what, so neither belongs in a
+  # simplification pass. What was tried and did not work: an **attrset** source is the
+  # same bytes with no derivation behind them, but stdenv stringifies `src` — `cannot
+  # coerce a set to a string: { "Cargo.lock" = «thunk»; … }` — so there is no third shape
+  # to reach for. Measuring it is two flags on a box that has never seen the source
+  # (`gw` keeps itself in that state); the recipe is in docs/nix-dev-workflow.md.
   withSharedCrates = {
     pname,
     src,
-    names,
+    names ? [],
+    extra ? {},
   }: let
     copies =
       lib.concatMapStringsSep "\n" (n: ''
@@ -256,15 +302,23 @@
         cp -a ${workspaceRoot}/common-rs/${n} $out/common-rs/${n}
       '')
       names;
+    locals =
+      lib.concatMapStringsSep "\n" (d: ''
+        mkdir -p $out/${builtins.dirOf d.name}
+        rm -rf $out/${d.name}
+        cp -a ${d.value} $out/${d.name}
+      '')
+      (lib.attrsToList extra);
   in
     pkgs.runCommand "${pname}-src" {} ''
       mkdir -p $out
       cp -a ${src}/. $out/
-      # Store paths are read-only and cp -a preserves the mode, so make the
-      # copy writable before adding anything to it.
+      # Store paths are read-only and cp -a preserves the mode, so make the copy writable
+      # before replacing anything in it.
       chmod -R u+w $out
       rm -rf $out/common-rs
       ${copies}
+      ${locals}
     '';
 
   # wasm-bindgen-cli pinned to 0.2.128 — the exact wasm-bindgen version every SPA
@@ -296,52 +350,110 @@
   # no wasm linker, so wasm-ld comes from pkgs.lld) and the output is
   # post-processed by wasm-bindgen. Both the cached deps and the crate are built
   # for the wasm target, otherwise the cache would be for the wrong target.
+  #
+  # Nothing should call this directly: `spaApp` is the recipe, and it derives the
+  # paths, the wasm package name and the DIST variable from an app's name.
   wasmSpa = {
     pname,
     version,
     src,
-    # the lock file's path in the tree, NOT a store path: `lockFile` turns it into
-    # the content-keyed derivation crane wants, and `vendorDirFor` needs to read it
-    # at eval time without building anything (see `vendorDirFor`).
+    # the lock file's path in the tree, NOT a store path: `lockArgs` turns it into the
+    # content-keyed pair crane wants, including the contents so that nothing has to read
+    # the derivation to get them (see `lockArgs`, `vendorDirFor`)
     cargoLockPath,
     # cargo's underscored package name, i.e. the .wasm file cargo emits
     wasmName,
     sharedCrates ? [],
+    extraSources ? {},
   }: let
-    names = sharedCrates;
     resolved =
-      if names == []
+      if sharedCrates == [] && extraSources == {}
       then src
       else
         withSharedCrates {
-          inherit pname src names;
+          inherit pname src;
+          extra = extraSources;
+          names = sharedCrates;
         };
   in
-    craneLib.buildPackage {
-      inherit pname version;
-      cargoLock = lockFile cargoLockPath;
-      # computed from `src`, not from `resolved`: `resolved` is a derivation, and
-      # reading a derivation at eval time builds it
-      cargoVendorDir = vendorDirFor {
-        inherit src;
-        lockPath = cargoLockPath;
-      };
-      src = resolved;
-      doCheck = false;
-      nativeBuildInputs = [wasmBindgenCli pkgs.lld];
-      cargoBuildCommand = "cargoWithProfile build --target wasm32-unknown-unknown";
-      preBuild = "export CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_LINKER=wasm-ld";
-      installPhaseCommand = ''
-        wasm-bindgen --target web --out-dir $out --no-typescript \
-          target/wasm32-unknown-unknown/release/${wasmName}.wasm
-        cp index.html $out/index.html
-      '';
+    craneLib.buildPackage (lockArgs cargoLockPath
+      // {
+        inherit pname version;
+        # computed from `src`, and not from `resolved`: the vendor tree is a function of
+        # the lock file and the crate's own `.cargo` config, and must not be invalidated
+        # by the path dependencies assembled around it
+        cargoVendorDir = vendorDirFor {
+          inherit src;
+          lockPath = cargoLockPath;
+        };
+        src = resolved;
+        doCheck = false;
+        nativeBuildInputs = [wasmBindgenCli pkgs.lld];
+        cargoBuildCommand = "cargoWithProfile build --target wasm32-unknown-unknown";
+        preBuild = "export CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_LINKER=wasm-ld";
+        installPhaseCommand = ''
+          wasm-bindgen --target web --out-dir $out --no-typescript \
+            target/wasm32-unknown-unknown/release/${wasmName}.wasm
+          cp index.html $out/index.html
+        '';
+      });
+
+  # --- one SPA and the binary that embeds it ---------------------------------------
+  #
+  # The shape every browser-served app in this fleet shares, so that adding one is a
+  # name, a version and its crate lists.  `name` is the directory under `crates/`, the
+  # cargo package name and the workspace member — the same string for all four — and the
+  # SPA's directory, its lock file, its underscored wasm target and the environment
+  # variable its `build.rs` reads are all derived from it.
+  #
+  # Two crate lists, because an SPA and its binary do not read the same shared crates:
+  # `spaSharedCrates` are copied into the *frontend's* source tree (a manifest path
+  # dependency), `sharedCrates` are the ones the *binary's* manifest reads (see `crate`).
+  # `localCrates` are the crates that live inside the app's own directory — a `dto` of
+  # its own — which a developer reaches through a git-ignored symlink and a flake source
+  # cannot carry at all.
+  #
+  # Why the bundle is threaded through `preBuild` rather than being a cargo dependency:
+  # `build.rs` embeds it, so the SPA is a *build-hook* input, and the dependency
+  # derivation is the workspace-wide one, which never sees these hooks. That is what
+  # keeps a SPA-only change from rebuilding everybody's dependency tree.
+  spaApp = {
+    name,
+    version,
+    sharedCrates ? [],
+    spaSharedCrates ? [],
+    localCrates ? [],
+    distVar ? lib.toUpper (builtins.replaceStrings ["-"] ["_"] name) + "_DIST",
+  }: let
+    underscored = builtins.replaceStrings ["-"] ["_"] name;
+    dist = wasmSpa {
+      pname = "${name}-web";
+      inherit version;
+      src = workspaceRoot + "/${name}/frontend";
+      cargoLockPath = workspaceRoot + "/${name}/frontend/Cargo.lock";
+      wasmName = "${underscored}_web";
+      sharedCrates = spaSharedCrates;
+      extraSources = lib.genAttrs localCrates (c: workspaceRoot + "/${name}/${c}");
     };
+    binary = crate {
+      pname = name;
+      inherit version;
+      member = name;
+      inherit sharedCrates;
+      # Point build.rs at the nix-built bundle instead of the (uncommitted, and in a
+      # Nix build nonexistent) frontend/dist in the source tree.
+      preBuild = "export ${distVar}=${dist}";
+    };
+  in {
+    inherit binary dist;
+  };
 in {
   inherit
     craneLib
     crate
+    lockArgs
     lockFile
+    spaApp
     spaMembers
     vendorDirFor
     wasmBindgenCli

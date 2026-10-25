@@ -39,34 +39,19 @@
   thumbMaxSide = 128;
   thumbCacheMaxBytes = 256 * 1024 * 1024; # 256M
 
-  # The Dioxus SPA compiled to wasm (pinned wasm-bindgen-cli and the wasm build
-  # recipe live in common/crane.nix).  It reads the preview table through the
-  # shared crate, so that crate has to be copied into its source tree.
-  frontendDist = CRANE.wasmSpa {
-    pname = "filestore-web";
-    version = "0.1.0";
-    src = ../../../crates/filestore/frontend;
-    cargoLockPath = ../../../crates/filestore/frontend/Cargo.lock;
-    wasmName = "filestore_web";
-    sharedCrates = ["preview"];
-  };
-
-  # The binary.  Its build.rs embeds the SPA, which makes the SPA a build-hook
-  # input rather than a cargo dependency — no problem, because the dependency
-  # derivation is the workspace-wide one and never sees these hooks (see `crate`
-  # in common/crane.nix), so a SPA-only change still does not rebuild the
-  # binary's dependency tree.
-  filestore = CRANE.crate {
-    pname = "filestore";
-    version = "0.1.0";
-    member = "filestore";
-    # `common-oidc`, `common-build-spa` and `common-preview` path dependencies
-    # (see crates/common-rs/ and common/crane.nix).
-    sharedCrates = ["oidc" "service" "build-spa" "preview"];
-    # Point build.rs at the nix-built bundle instead of the (uncommitted)
-    # frontend/dist in the source tree.
-    preBuild = "export FILESTORE_DIST=${frontendDist}";
-  };
+  # The Dioxus SPA and the binary that embeds it — one call to `CRANE.spaApp`, whose
+  # comments are the story of the shape (pinned wasm-bindgen-cli, the wasm recipe, the
+  # DIST variable `build.rs` reads, and why the bundle is a build-hook input rather than
+  # a cargo dependency).  `preview` is in the SPA's tree because its manifest renders the
+  # preview table through that shared crate; the binary reads `common-oidc`,
+  # `common-service`, `common-build-spa` and `common-preview` (crates/common-rs/).
+  filestore =
+    (CRANE.spaApp {
+      name = "filestore";
+      version = "0.1.0";
+      spaSharedCrates = ["preview"];
+      sharedCrates = ["oidc" "service" "build-spa" "preview"];
+    }).binary;
 in {
   # The backing store is the /mnt/filestore NFS share on the NAS, so the
   # service must wait for the NAS (common/nas.nix) and keep restarting forever

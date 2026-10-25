@@ -113,47 +113,23 @@
     "switch3=${HOSTS.switch3}"
   ];
 
-  # The Dioxus SPA compiled to wasm (the pinned wasm-bindgen-cli and the wasm
-  # build recipe live in common/crane.nix, and common/frontend-build-spa.sh is
-  # the one recipe all four SPAs call).  Its `dto` path dependency is a symlink
-  # in the working tree, so materialise a real copy for the sandbox — and drop
-  # `dist/`, which is git-ignored build output that would otherwise be copied
-  # into the store as an input.
-  frontendSrc = pkgs.runCommand "switch-gui-frontend-src" {} ''
-    cp -r ${../../../crates/switch-gui/frontend} $out
-    # Store paths are read-only and cp -r preserves the mode, so make the copy
-    # writable before adding the dto crate (a symlink in the working tree,
-    # materialised here; the flake source cannot carry it).
-    chmod -R u+rwX $out
-    rm -rf $out/dist $out/target $out/dto
-    cp -r ${../../../crates/switch-gui/dto} $out/dto
-  '';
-  frontendDist = CRANE.wasmSpa {
-    pname = "switch-gui-web";
-    version = "0.1.0";
-    src = frontendSrc;
-    cargoLockPath = ../../../crates/switch-gui/frontend/Cargo.lock;
-    wasmName = "switch_gui_web";
-  };
-
-  # The binary.  Its build.rs embeds the SPA, which makes the bundle a build-hook
-  # input rather than a cargo dependency — no problem, because the dependency
-  # derivation is the workspace-wide one and never sees these hooks (see `crate`
-  # in common/crane.nix), so a SPA-only change does not rebuild the binary's
-  # dependency tree.
-  switchGui = CRANE.crate {
-    pname = "switch-gui";
-    version = "0.1.0";
-    member = "switch-gui";
-    # `common-json` (the `show` table readers), `common-web` (the HTTP plumbing),
-    # `common-oidc` (authentik login + the Infra gate), `common-pg` (the pool and
-    # the sea-query→sqlx glue) and `common-build-spa` (build.rs).  `dto` is a real
-    # directory inside the crate, so it needs no entry.
-    sharedCrates = ["json" "web" "oidc" "pg" "service" "build-spa"];
-    # Point build.rs at the nix-built bundle instead of the (uncommitted)
-    # frontend/dist in the source tree.
-    preBuild = "export SWITCH_GUI_DIST=${frontendDist}";
-  };
+  # The SPA and the binary that embeds it — `CRANE.spaApp`, the one shape all four
+  # browser-served apps share (common/crane.nix has the recipe, the pinned
+  # wasm-bindgen-cli and why the bundle is a build-hook input rather than a cargo
+  # dependency; common/frontend-build-spa.sh is the one recipe the flake and
+  # `just build-frontend` both run).  What is specific to this app: `dto` is a real
+  # directory inside the crate which the SPA reaches through a git-ignored symlink, so it
+  # is named as a local crate; and the binary reads `common-json` (the `show` table
+  # readers), `common-web` (the HTTP plumbing), `common-oidc` (authentik login and the
+  # Infra gate), `common-pg` (the pool and the sea-query→sqlx glue) and
+  # `common-build-spa` (build.rs) — with no entry needed for `dto`.
+  switchGui =
+    (CRANE.spaApp {
+      name = "switch-gui";
+      version = "0.1.0";
+      localCrates = ["dto"];
+      sharedCrates = ["json" "web" "oidc" "pg" "service" "build-spa"];
+    }).binary;
 in {
   systemd.services.switch-gui = INFRA.mkNeverGiveUp {
     description = "switch-gui: port and VLAN management for the ProCurve switches";

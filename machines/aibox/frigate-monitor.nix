@@ -27,33 +27,18 @@
 }: let
   cfg = config.services.frigate-monitor;
 
-  # The Dioxus SPA compiled to wasm (this replaces the frontend/dist that used to
-  # be committed to the git tree).  The pinned wasm-bindgen-cli and the wasm build
-  # recipe live in common/crane.nix.
-  frontendSrc = ../../crates/frigate-monitor/frontend;
-  frontendDist = CRANE.wasmSpa {
-    pname = "frigate-monitor-web";
-    version = "0.1.0";
-    src = frontendSrc;
-    cargoLockPath = ../../crates/frigate-monitor/frontend/Cargo.lock;
-    wasmName = "frigate_monitor_web";
-  };
-
-  # The binary.  Its build.rs embeds the SPA, which makes the SPA a build-hook
-  # input rather than a cargo dependency — no problem, because the dependency
-  # derivation is the workspace-wide one and never sees these hooks (see
-  # `crate` in common/crane.nix), so a SPA-only change still does not rebuild the
-  # binary's dependency tree.
-  frigateMonitor = CRANE.crate {
-    pname = "frigate-monitor";
-    version = "0.2.0";
-    member = "frigate-monitor";
-    # `common-build-spa` path dependency (see crates/common-rs/ and common/crane.nix).
-    sharedCrates = ["build-spa" "json"];
-    # Point build.rs at the nix-built bundle instead of the (uncommitted)
-    # frontend/dist in the source tree.
-    preBuild = "export FRIGATE_MONITOR_DIST=${frontendDist}";
-  };
+  # The SPA and the binary that embeds it — `CRANE.spaApp`, the one shape all four
+  # browser-served apps share (common/crane.nix has the recipe, the pinned
+  # wasm-bindgen-cli and the reason the bundle is a build-hook input rather than a cargo
+  # dependency).  What is specific to this app: the binary reads `common-build-spa`
+  # (build.rs) and `common-json` (crates/common-rs/), and this is the one SPA at a
+  # version of its own.
+  frigateMonitor =
+    (CRANE.spaApp {
+      name = "frigate-monitor";
+      version = "0.2.0";
+      sharedCrates = ["build-spa" "json"];
+    }).binary;
 in {
   options.services.frigate-monitor = {
     enable = lib.mkEnableOption "the main_space scene-change monitor";
