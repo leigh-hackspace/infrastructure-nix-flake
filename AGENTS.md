@@ -724,6 +724,12 @@ there is declarative. **Root SSH is keyed here** (unlike the flake machines):
   fifty rows, or only in the journal, is indistinguishable from a dead button — and the
   form should not offer a state the server will refuse.
   `crates/switch-gui/README.md`.
+- **Strata's 3060 pays a half-precision tensor cap the *driver* imposes, and the third-party
+  kmod that opens it is prefill-only and boot-critical**: it has to load in the initrd before
+  `nvidia` binds, its blobs come out of NVIDIA's proprietary package (not a flake input, and
+  never one), and it leaves decode untouched — which is where this box's time actually goes.
+  Upstream's own numbers make it a 1.2-1.3x prefill ceiling here, and one cuBLAS GEMM on the
+  card decides it without touching boot: `machines/services2/STRATA.md` + `docs/follow-ups.md`.
 - **Proving a component end to end is not proving the system**: the switch write-path fix
   was verified by driving the console directly, which is why it passed while the queue
   swallowed every change for a day. Test through the path users take.

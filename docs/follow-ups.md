@@ -391,6 +391,27 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   about the card so far is `amdgpu: ATOM BIOS: 13-CEZANNE-019`, i.e. the display path, and the
   engine's device probe on this box answers `device 0: NVIDIA GeForce RTX 3060` (`11.6 GiB`) alone.
 
+- **`gpu-unlock` (the NVIDIA driver's own half-precision tensor cap) is a prefill-only win on
+  this card, and it costs a boot-critical kmod: nothing was tried, and the deciding measurement
+  has never been run** (found 2026-10-25 answering "can `git@github.com:Zagitta/gpu-unlock.git`
+  speed up strata?" — `github.com/Zagitta/gpu-unlock`, issues #13/#31/#75/#78/#21 read at its
+  `main` that day). **Nothing deployed, nothing in tree:** no module, no flag, no blob; the
+  finding is that the mechanism exists, works on our exact PCI ID, and does not pay where this
+  box spends its time. Full receipt — the selector numbers (`SS0`/`SS1`, the 1 FMA2/clock/SM of
+  FP2048 against FP64's 2 and DP4A's 4), the upstream measurements on this card family (26 ->
+  48 TFLOPS GEMM but **1.20-1.32x** on real inference at the same 170 W default; issue #31,
+  the one Strata report: "4x RTX 3060 12GB running Qwen3.8 Flash Next IQ4_XS on **Strata**.
+  Prefill increased from 450 to 600, but decode performance barely changed"; issue #75's
+  decode-0%-bandwidth-bound half; issue #78's NixOS + `595.99.02` **open kernel modules** report
+  against our `595.104.02`) and the four things it would cost — **`machines/services2/STRATA.md`**, "The card's half-precision tensor ceiling is a *driver* limit".
+  **What blocks it, in order:** an out-of-tree module built against our kernel and loaded *in
+  the initrd* before `nvidia` binds (neither half is in our initrd today — grep the
+  `/boot/EFI/nixos/c2zwr…-initrd-linux-6.18.56-initrd.efi`, an uncompressed newc cpio, for
+  `gpu_unlock` and for `lib/firmware`: both 0 — and `hardware-configuration.nix:26` is `boot.initrd.kernelModules = []`; the ordering holds today only because `nvidia` is *also* absent, which is exactly what upstream's issues #11/#76 break); a kernel command line naming our bus id (`gpu_unlock.targets=0000:01:00.0`, the list at `hardware-configuration.nix:35`); and its blobs, which `make firmware` extracts from **CachyOS's proprietary `nvidia-x86_64-610.43.03` package** with `firmware/NOTICE.md` saying NVIDIA's redistribution is not approved — so it is *not* a flake input and cannot be one, and this flake's every-input-is-a-network-source property is what breaks first. A failed unlock that already holds the card's BAR leaves `nvidia.ko` failing `request_mem_region` — no driver, no GPU for `strata.service` — and a bad module in the initrd is an unbootable box.
+  **Blocks:** nothing today; an experiment, if someone wants it, must budget as a real deploy — reboot with the module + flag, read back in the *same* shell invocation (`journalctl -k -b | grep gpu_unlock` must print `unlocked`, and `nvidia` must bind after it), keep an older generation to boot into, and note upstream's own GA106 LHR failure at an older commit (`-110`, two 3060 LHRs) versus the merged PR #13 that carries the two relaxed checks a 3060 needs.
+  **What to do instead, cheapest first:** one dense BF16/FP16 cuBLAS GEMM on the card with the CUDA toolchain `packages.strata-cuda` already puts on this box — stock ~26 TFLOPS means the cap is live and the only remaining question is strata's GPU share of prefill (the engine's own `prefill plan inputs` line answers that); stock ~48 means the card is not paying it and there is nothing to win. Nobody has run either number here. **Do not reach for `nvidia-smi dmon -s c` to see the selectors** — upstream's own "check what you have" line: this box's `nvidia-smi` (595.104.02) prints only `mclk`/`pclk` for `-s c`.
+  **The free half:** the cap covers *only* half-precision tensor math — FP32 FFMA and integer DP4A never pay it, which is why llama.cpp (upstream's own null there: pp512 1460.5 -> 1467.1) sees nothing and Strata does not. An upstream integer/DP4A prefill path would therefore buy the same thing with **zero boot risk**; nothing in `engineArgs` gives it today, and if it ever appears this item is the way back.
+
 ## Machines / access
 
 - **services2 cannot hop out.** `machines/services2/README.md` used to claim the
