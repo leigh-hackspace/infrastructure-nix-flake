@@ -1,4 +1,9 @@
-{
+let
+  # The device table the router renders its DNS from.  Read, not copied: the
+  # addresses below are the ones `aibox.int.leighhack.org` answers with, and a
+  # second spelling of them here is how the two drift apart.
+  RECORDS = import ../../common/dns-records.nix;
+in {
   boot.kernel.sysctl = {
     # enable IPv4 and IPv6 forwarding on all interfaces
     "net.ipv4.conf.all.forwarding" = true;
@@ -76,6 +81,41 @@
         matchConfig.Name = "vlan225";
         networkConfig = {
           DHCP = true;
+
+          # The IPv6 addresses this box is *named* by, configured here because
+          # nothing else on the network hands them out.
+          #
+          # `common/dns-records.nix` is what `machines/gw/dns.nix` renders into
+          # dnsmasq's hosts file, so `aibox.int.leighhack.org` answers with these
+          # two addresses whether or not any interface holds them — and since the
+          # 2026-10-21 cutover nothing assigns them: the retired appliance ran a
+          # stateful DHCPv6 server and `machines/gw/dns.nix` deliberately does not
+          # (`option6:23,[::]`), so the network advertises IPv6 and leases nothing.
+          # What SLAAC would give this box instead is its EUI-64 address
+          # (`2001:8b0:1d14:225:8647:9ff:fe40:d225`), which is in no table and
+          # answers no name.
+          #
+          # For most clients a dead AAAA is a shrug — a Happy-Eyeballs browser
+          # falls back to the A record after one failed connect.  For a PXE client
+          # it is a hang: iPXE on the Pi Room boards SLAACs, prefers the AAAA, and
+          # sits retransmitting a SYN to an address nobody owns until it times the
+          # transfer out (`Connection timed out`, https://ipxe.org/4c0a6092) and the
+          # boot dies before it has shown a menu.  That was the whole of the
+          # "netboot stopped working when the router moved" report of 2026-10-26:
+          # nginx on this box was serving every byte, and the last successful boot
+          # in its access log is 2026-10-21 18:45 — the evening the appliance was
+          # retired, with this box still holding the address the old DHCPv6 server
+          # had given it.  Nothing has handed it out since (this box next rebooted
+          # on 2026-10-23), and nothing reclaims it either: the address simply
+          # stopped existing.  `machines/pi-room-sys/README.md` has the
+          # reproduction.
+          #
+          # Both families are kept: the SLAAC address stays (it is what the box has
+          # been reachable at since the cutover) and these become the named ones.
+          # The /64 is the VLAN's own prefix length, the same one
+          # `machines/gw/networking.nix` puts on the router address.
+          Address = map (a: "${a}/64") RECORDS.aibox.ipv6;
+
           IPv6AcceptRA = true;
         };
       };

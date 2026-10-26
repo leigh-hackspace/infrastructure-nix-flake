@@ -117,6 +117,22 @@ IPv6 is offered by RA on the VLANs that own addressing: 225, 226 and 227 each ad
 public `/64` (225 and 227 also a ULA). VLAN 222 has no range at all and VLAN 1337 is the
 CS network's block, IPv4-only on purpose — `common/vlans.nix` is the table.
 
+**RA only: the network advertises IPv6 and leases none of it, so a record's `ipv6` list is
+an advertisement and not an assignment.** `machines/gw/dns.nix` sends `option6:23,[::]` —
+"there is no DHCPv6 server here" — and its IPv6 ranges are `ra-only`, so a device gets a
+prefix and an SLAAC address and *not* the address written against its name. The retired
+appliance did run stateful DHCPv6, and every compressed address in
+`common/dns-records.nix` (`::20`, `::32`, `::30`, `227d::10NN`) is what it handed out then.
+Nothing does now, so such a record answers a name at an address no interface holds unless
+the device configures it itself — which the flake machines have to do in their own
+`networking.nix` (`machines/services1/networking.nix` has always listed `::20`; `machines/aibox/networking.nix`
+gained `::32` on 2026-10-26 because its absence was the netboot outage below) and which no
+camera, board or VM does. The failure is not a wrong answer but a hang, and only for the
+clients with no fallback: a Happy-Eyeballs application tries the AAAA, fails and uses the A
+record, while a PXE client that SLAACed and prefers IPv6 sits until its transfer times out —
+`machines/pi-room-sys/README.md` has the receipt and the reproduction, and
+`docs/follow-ups.md` has the audit of the records still in this state.
+
 What proves it, rather than the comments:
 
 ```bash

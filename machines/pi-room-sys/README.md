@@ -47,6 +47,60 @@ URLs in `machines/aibox/netboot.nix`.  That split is inherited and deliberate: t
 comment that came with the tree says *"DNS is too slow so use IP address"*, and it
 applies to the store mount, which is on the boot path, not to the menu.
 
+**A name on the boot path is a promise about *both* address families, and that promise
+broke the netboot for five days.**  The client resolves `aibox.int.leighhack.org`
+itself, through the router, and dnsmasq answers it with `common/dns-records.nix`'s
+whole `ipv6` list along with the A record.  Since the 2026-10-21 cutover nothing
+*assigns* those addresses — the retired appliance ran a stateful DHCPv6 server and
+`machines/gw/dns.nix` deliberately does not (`option6:23,[::]`), so aibox SLAACed into
+its EUI-64 address and kept answering nothing on `2001:8b0:1d14:225::32`.  iPXE SLAACs
+too, prefers the AAAA, and has no fallback to try: it retransmits a SYN into a /64
+nobody answers until the transfer times out (`Connection timed out`,
+https://ipxe.org/4c0a6092) and the boot dies with no menu on screen.  A browser shrugs
+and goes back to IPv4; a PXE ROM does not.  The last line in aibox's nginx access log
+is 2026-10-21 18:45 and the first of the fix is
+`machines/aibox/networking.nix` configuring the two addresses the record advertises —
+a fact about the box that used to be true only of the DHCP server that is gone.  The
+network-wide version of the same lie (every `::N` in the table that no interface now
+holds) is an open item in `docs/follow-ups.md`.
+
+## Testing a boot without a board
+
+`just pxe-client-bios` / `just pxe-client-uefi` do not run: `qemu-bridge-helper` is not
+in aibox's system, so `helper=$(type -p qemu-bridge-helper)` expands to nothing and
+qemu refuses the netdev (open item in `docs/follow-ups.md`).  What works is a tap
+slaved into `br227` — the bridge aibox already has on VLAN 227, which is why the
+clients' DHCP, TFTP and HTTP all cross the router for real — plus the `OVMF.fd`
+`FV/OVMF_CODE.fd` + `FV/OVMF_VARS.fd` pflash pair for the EFI path.  Run it on aibox, headless, and read the serial log and aibox's
+nginx access log:
+
+```bash
+sudo ip tuntap add dev tap-pxe mode tap
+sudo ip link set tap-pxe master br227
+sudo ip link set tap-pxe type bridge_slave state forwarding   # it is `disabled` until you say so
+sudo ip link set tap-pxe up
+sudo timeout 130 qemu-system-x86_64 -m 2048 -cpu host -accel kvm -smp 2 \
+  -machine q35,smm=on -global driver=cfi.pflash01,property=secure,value=on \
+  -netdev tap,id=net0,ifname=tap-pxe,script=no,downscript=no \
+  -device virtio-net-pci,netdev=net0,mac=52:54:00:aa:bb:dd \
+  -drive file=$OVMF/FV/OVMF_CODE.fd,if=pflash,format=raw,unit=0,readonly=on \
+  -drive file=$OVMF/FV/OVMF_VARS.fd,if=pflash,format=raw,unit=1 \
+  -boot n -nographic -no-reboot
+sudo ip link del tap-pxe
+```
+
+A BIOS client (`-boot n` with no OVMF, which uses SeaBIOS's own iPXE and has no IPv6)
+walks straight past a broken AAAA, so **the BIOS VM passing is not evidence**: boot the
+EFI one, because the boards are UEFI and it is the one that resolves the name over
+IPv6.  A run that gets as far as the menu prints `Filename:
+http://aibox.int.leighhack.org/boot/netboot.ipxe` and then goes quiet, because the menu
+script's own `console --picture` moves the console off the serial port — finish the
+judgement from `/var/log/nginx/access.log`, which should then show `netboot.ipxe`,
+`logo.png`, `bzImage` and `initrd` from the client's address.  The client gets its lease
+from the *dynamic* pool (`10.3.14.150-.253`), so the test costs a lease and nothing else;
+capture on `gw`'s `vlan227` rather than on `br227` if you want the server's replies too,
+because the switch only floods the broadcasts to aibox's port.
+
 ## Files
 
 | File | What it is |

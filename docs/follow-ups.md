@@ -450,6 +450,72 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
 
 ## Machines / access
 
+- **`just pxe-client-bios` and `just pxe-client-uefi` cannot run, so there was no way to
+  test the netboot without a board** (found 2026-10-26 while chasing "the PXE clients are
+  not booting"). Both end in `-netdev tap,id=net0,br=br227,helper=$(type -p
+  qemu-bridge-helper)`, and `qemu-bridge-helper` is in no package aibox installs —
+  `virtualisation.libvirtd.allowedBridges = ["br227"]` is libvirt's own allow-list and does
+  not put the helper in the system — so the substitution is empty and qemu refuses the
+  netdev (`bridge helper failed`). `-display vnc=:0` also assumes a consumer for :0.
+  **Blocks:** nothing that is not the next netboot regression, which is exactly what it cost
+  this one five days: the server half was healthy, the boards were failing, and nothing in
+  the repo could show a boot from the VLAN without someone walking into the room.
+  **Needs:** replace both recipes with the form that is proven to work — a `tap` device
+  slaved into `br227` with `ip link set … type bridge_slave state forwarding` (the port is
+  `disabled` until you say so), `-netdev tap,ifname=…,script=no,downscript=no`, the
+  `OVMF.fd` `FV/*.fd` pflash pair for the EFI case, and `-nographic` so the pre-menu output
+  lands on the serial log; the working command, why the BIOS VM's success proves nothing, and
+  where to capture the replies are in `machines/pi-room-sys/README.md`, "Testing a boot
+  without a board". `qemu` and `OVMF` are already in aibox's `systemPackages`
+  (`machines/aibox/netboot.nix`).
+
+- **The boot path resolves a name, and it does not have to** (2026-10-26, the same
+  investigation). Every URL in
+  `machines/aibox/netboot.nix`'s iPXE menu — `bzImage`, `initrd`, `logo.png` — and the
+  `dhcp-boot=` URL `machines/gw/lib/network-tables.nix` hands the client are built from
+  `aibox.int.leighhack.org`, so a PXE client cannot start without the router's DNS being
+  right about both address families. The store mount already uses the IPv4 literal for the
+  documented reason ("DNS is too slow so use IP address", `machines/pi-room-sys/README.md`),
+  and the address is already in `common/hosts.nix`, which both files could read: the whole
+  change is `nfsServer` becoming that address and the boot URL interpolating the same
+  `tftpServer` `netbootLines` already takes. **Blocks:** nothing today — the addresses are
+  true as of this fix. **Needs:** a decision about defence-in-depth versus one more reader
+  of the table. It is what stands between the next wrong AAAA and a dead room: the SeaBIOS-shaped
+  test client — whose iPXE has no IPv6, so it never tried the dead address — booted from this
+  same VLAN on this same afternoon while the UEFI boards could not. Do not do it by editing a
+  literal in two files.
+
+- **aibox's `tftpd` loses the race with its own address at boot** (measured 2026-10-23
+  19:23:39: `in.tftpd: cannot bind to local IPv4 socket: Cannot assign requested address`,
+  exit 71, restart counter 3, running by 19:23:44). `ExecStart` binds
+  `-a 10.3.1.32:69`, the address comes from DHCP on `vlan225`, and `networking.nix` sets
+  `systemd.network.wait-online.enable = false`, so nothing orders the unit after the address
+  exists. **Blocks:** nothing at the moment — `INFRA.mkNeverGiveUp` is why it recovered in
+  five seconds — but a PXE attempt inside that window gets no answer at all, and on a box
+  that reboots after a power cut the window is the length of a DHCP handshake. **Needs:**
+  `after = [ "sys-subsystem-net-devices-vlan225.device" ]` (or `network-online.target` with
+  `wants`) plus `requires` on `systemd.services.tftpd`, and a `RestartSec` long enough that
+  the retry lands after networkd wins. Note the unit is *not* missing a retry today; this is
+  about a few seconds of dead TFTP per boot, not an outage.
+
+- **Whether the boards ever load the NBPs aibox serves is unknown** (found 2026-10-26 with a
+  raw TFTP client and a UEFI VM). The server half is right and should not be "fixed":
+  `in.tftpd … /etc/tftp` accepts `RRQ "/etc/tftp/ipxe.efi"` and refuses `RRQ "ipxe.efi"`
+  with `ERROR 2: Only absolute filenames allowed`, so the absolute path in
+  `machines/gw/lib/network-tables.nix`'s `netbootVariants` is what this server requires and
+  `machines/gw/README.md`'s "the path belongs to aibox" is correct. What was seen on the
+  wire is an EFI client asking `/etc/tftp/ipxe.efi` twice with options
+  (`tsize`, `blksize 1468`, `windowsize 4`) and then falling back to
+  `/etc/tftp/autoexec.ipxe` — the blank file, which it fetched and ran, and whose emptiness
+  is the only reason iPXE does not error there (the comment on `environment.etc` in
+  `machines/aibox/netboot.nix` says "Blank file to stop error message on boot", and that is
+  load-bearing, not cosmetic). So either the option negotiation with `in.tftpd 5.2` is what
+  sends a client to the fallback, or something else is serving iPXE to the boards and
+  `ipxe.efi`/`undionly.kpxe` are never executed. **Blocks:** nothing that works; it costs
+  knowing what the boards are actually running. **Needs:** one capture of a real board's PXE
+  attempt (`tcpdump -i vlan227 -s0 port 69`, then read the OACK/DATA/error sequence) before
+  changing `netbootVariants`, `in.tftpd`'s flags, or either binary.
+
 - **services2 cannot hop out.** `machines/services2/README.md` used to claim the
   shared machine-hop key was installed there; it is not. Only `authorized_keys` is
   (by `common/users.nix`), so you can hop *in* to 10.3.1.21 but it cannot ssh to
@@ -537,6 +603,33 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   catch a hung nginx, and it was removed on 2026-10-17 for that reason.
 
 ## Router (gw)
+
+- **Most of `common/dns-records.nix`'s `ipv6` lists name addresses nothing holds**
+  (found 2026-10-26 debugging "the PXE clients stopped booting":
+  `aibox.int.leighhack.org` answered AAAA `2001:8b0:1d14:225::32`/`fd99:dead:beef:225d::32`
+  and no interface had either, so a UEFI Pi Room board — which SLAACs, prefers the AAAA and
+  has no fallback — hung on `Connection timed out` instead of showing a boot menu. The fix
+  for *that* one is `machines/aibox/networking.nix` configuring the two addresses from the
+  record, because aibox is a flake machine and can. **The cause is one level up:** the
+  retired appliance ran stateful DHCPv6 and every compressed address in the table
+  (`::30` apps1, `::15` yunohost, `2001:8b0:1d14:227d::10NN` for the PI-ROOM/CAD boards, and
+  the bracketed IPv6 in the `dhcp-host` lines) is what it handed out; `machines/gw/dns.nix`
+  sends `option6:23,[::]` and `ra-only` ranges, so since 2026-10-21 the network advertises
+  prefixes and assigns no addresses, and a device that does not configure its own keeps its
+  SLAAC EUI-64 address while DNS answers with the dead one. **Blocks:** any IPv6 client of
+  those names, for as long as the client has no fallback — a browser shrugs, iPXE does not.
+  It is also worse than the PARTIAL fault `docs/router-and-dns.md` warns about: a name with
+  an A and no AAAA costs one refused connect, a name with an AAAA nobody owns costs a
+  timeout. **Needs:** (1) for each record still carrying one, either say so on the device or
+  empty the `ipv6` list — `host <name> 10.3.1.1` against `ip -6 addr` on the box is the whole
+  test, and `ndp -a` on the router says whether anything answers the address at all; (2) the
+  `dhcp-host` lines' bracketed IPv6, which dnsmasq can only honour with a stateful DHCPv6
+  server this router does not run; (3) then a sentence in
+  `machines/gw/lib/check-network-tables.nix` if there is a checkable rule left — "a record's
+  IPv6 must be in a range this box could advertise it from" is not it, so the honest
+  conclusion may be that the table needs a comment saying an `ipv6` entry is an
+  advertisement the device must confirm. Full narrative: `docs/router-and-dns.md`, "RA only",
+  and `machines/pi-room-sys/README.md`.
 
 - **The connection table's "ours" is asserted for IPv4 only** (found 2026-10-25 while
   adding `TABLES.localPrefixes`, the `--local-prefix` list `../machines/gw/network-status.nix`
