@@ -466,27 +466,51 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   same VLAN on this same afternoon while the UEFI boards could not. Do not do it by editing a
   literal in two files.
 
-- **Whether the boards ever load the NBPs aibox serves is unknown** (found 2026-10-26 with a
-  raw TFTP client and a UEFI VM). The server half is right and should not be "fixed":
-  `in.tftpd … /etc/tftp` accepts `RRQ "/etc/tftp/ipxe.efi"` and refuses `RRQ "ipxe.efi"`
-  with `ERROR 2: Only absolute filenames allowed`, so the absolute path in
+- **The boards never load the NBPs aibox serves — and the boot survives only because of
+  the blank `autoexec.ipxe`** (found 2026-10-26 with a raw TFTP client; answered the same
+  afternoon by `just pxe-client-uefi`, which is the thing that finally made it
+  observable). The server half is right and should not be "fixed": `in.tftpd … /etc/tftp`
+  accepts `RRQ "/etc/tftp/ipxe.efi"` and refuses `RRQ "ipxe.efi"` with `ERROR 2: Only
+  absolute filenames allowed`, so the absolute path in
   `machines/gw/lib/network-tables.nix`'s `netbootVariants` is what this server requires and
-  `machines/gw/README.md`'s "the path belongs to aibox" is correct. What was seen on the
-  wire is an EFI client asking `/etc/tftp/ipxe.efi` twice with options
-  (`tsize`, `blksize 1468`, `windowsize 4`) and then falling back to
-  `/etc/tftp/autoexec.ipxe` — the blank file, which it fetched and ran, and whose emptiness
-  is the only reason iPXE does not error there (the comment on `environment.etc` in
-  `machines/aibox/netboot.nix` says "Blank file to stop error message on boot", and that is
-  load-bearing, not cosmetic). So either the option negotiation with `in.tftpd 5.2` is what
-  sends a client to the fallback, or something else is serving iPXE to the boards and
-  `ipxe.efi`/`undionly.kpxe` are never executed. **Blocks:** nothing that works; it costs
-  knowing what the boards are actually running.
-  **Partly handled 2026-10-26:** `in.tftpd` runs with `-v` now, so the next board's boot
-  answers this from `journalctl -u tftpd` — the negotiation, the fallback, everything —
-  without anyone having to hold a capture open at the right moment. **Still needs:** that
-  boot (or `just pxe-client-uefi`, which produces one on aibox) read once, and a decision
-  taken afterwards rather than before: changing `netbootVariants`, `in.tftpd`'s flags, or
-  either binary on the strength of an inference is how a working netboot gets broken.
+  `machines/gw/README.md`'s "the path belongs to aibox" is correct.
+
+  What one UEFI boot actually does, read off `journalctl -t in.tftpd` — **that** filter,
+  because the lines carry the syslog identity `in.tftpd` and `journalctl -u tftpd` shows
+  none of them, which is the trap in reading `in.tftpd -v` for the first time:
+
+  ```
+  RRQ from 10.3.14.208 filename /etc/tftp/ipxe.efi
+  tftp: client does not accept options
+  RRQ from 10.3.14.208 filename /etc/tftp/ipxe.efi
+  RRQ from 10.3.14.208 filename /etc/tftp/autoexec.ipxe
+  ```
+
+  and, from the guest's own console:
+
+  ```
+  >>Start PXE over IPv4.    NBP filename is /etc/tftp/ipxe.efi
+  iPXE initialising devices...
+  autoexec.ipxe... ok
+  iPXE 2.0.0 -- Open Source Network Boot Firmware
+  Filename: http://aibox.int.leighhack.org/boot/netboot.ipxe
+  ```
+
+  So the firmware's PXE stack asks for the NBP, **its TFTP client refuses `in.tftpd`'s
+  OACK**, it retries the same name, then takes the blank `autoexec.ipxe` — and the iPXE
+  that goes on to run is the one **built into the firmware**, not the 309 KB `ipxe.efi`,
+  which was never executed. Three consequences worth writing down. (1) `ipxe.efi`,
+  `undionly.kpxe` and the vendor-matching in `common/ipxe.nix` are decorative, which is
+  why the "we build for the wrong NIC vendor" problem never once mattered. (2) The blank
+  `autoexec.ipxe` is what converts a failed NBP transfer into a working boot: deleting it
+  breaks the netboot, and its comment is a fact about behaviour, not cosmetics. (3) The
+  option negotiation is the actual defect, and its only observed cost is one wasted
+  retry and a log line.
+  **Blocks:** nothing that works. **Needs:** nothing urgent — and if it is ever chased,
+  chase it with `just pxe-client-uefi` watching `journalctl -t in.tftpd`, not on a board,
+  because there is no way to test it here that does not end with the boards as the test
+  group. Changing `netbootVariants`, `in.tftpd`'s flags or either binary on the strength
+  of this note alone is how a working netboot gets broken.
 
 - **services2 cannot hop out.** `machines/services2/README.md` used to claim the
   shared machine-hop key was installed there; it is not. Only `authorized_keys` is

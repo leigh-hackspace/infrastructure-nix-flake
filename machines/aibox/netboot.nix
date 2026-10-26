@@ -96,13 +96,13 @@ in {
   # fourth.  45 s, deliberately under systemd's default start timeout, and it fails
   # loudly rather than binding something else.
   #
-  # `-v` is there to answer an open question, not to decorate the journal: whether a
-  # client ever fetches `/etc/tftp/ipxe.efi` or falls back to the blank
-  # `autoexec.ipxe` because `in.tftpd 5.2` refuses its option negotiation (a UEFI client
-  # was seen retrying `tsize`/`blksize`/`windowsize` then taking the fallback on
-  # 2026-10-26, and that fallback is why the empty file is load-bearing).
-  # `docs/follow-ups.md` owns the question; this is what lets the next board's boot
-  # answer it from the journal instead of needing a capture at exactly the right moment.
+  # `-v` is there to answer a question, not to decorate the journal, and it has answered
+  # one: a UEFI client asks for `/etc/tftp/ipxe.efi`, refuses the OACK
+  # (`tftp: client does not accept options`), retries, and takes the blank
+  # `autoexec.ipxe` — so the iPXE that boots is the firmware's own and the fetched NBP is
+  # never executed.  Read it with `journalctl -t in.tftpd`; the lines carry that syslog
+  # identity and `-u tftpd` shows none of them.  `docs/follow-ups.md` holds the finding
+  # and what must not be "simplified" because of it.
   systemd.services = {
     tftpd = INFRA.mkNeverGiveUp {
       after = [

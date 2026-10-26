@@ -95,6 +95,40 @@ from the *dynamic* pool (`10.3.14.150-.253`), so the test costs a lease and noth
 capture on `gw`'s `vlan227` rather than on `br227` if you want the server's replies too,
 because the switch only floods the broadcasts to aibox's port.
 
+## Three facts about the boot path, measured 2026-10-26
+
+- **The bootfile URL has to be absolute, and its scheme is not decoration.**
+  `machines/gw/lib/network-tables.nix` hands the client
+  `http://aibox.int.leighhack.org/boot/netboot.ipxe` and `machines/gw/dns.nix` refuses to
+  render anything else, because dnsmasq's own `dhcp-boot=` parser treats a colon as the
+  start of the *address* field — so the literal `aibox.int.leighhack.org` in that option
+  is read as a port, `dhcp-boot` is dropped **with no error**, and the client silently
+  falls back to the `tag:efi64` name `ipxe.pxe`, which aibox does not serve. The
+  `dhcp-boot=` value is therefore checked by a guard in
+  `machines/gw/lib/check-network-tables.nix` rather than left to the next dead board, and
+  the reason the file cannot spell `://` is in `machines/gw/dns.nix`'s own header.
+- **A UEFI client never runs the NBP aibox serves, and the boot works because of a file
+  whose whole content is nothing.** `just pxe-client-uefi`, watched with `journalctl -t
+  in.tftpd` (**not** `-u tftpd`: the lines carry the syslog identity `in.tftpd`), shows
+  the firmware's PXE stack ask for `/etc/tftp/ipxe.efi`, refuse `in.tftpd`'s OACK
+  (`tftp: client does not accept options`), retry, and fall back to the blank
+  `autoexec.ipxe` — and the guest's console then says `autoexec.ipxe... ok`, and the iPXE
+  that goes on to fetch the menu is **the firmware's own**, not the 309 KB binary that was
+  never executed. So `ipxe.efi`, `undionly.kpxe`, `ipxe.pxe` (an unused fourth variant the
+  router table still defines) and `common/ipxe.nix`'s matching against the NIC vendor are
+  all decorative — which is why "we build for Realtek and the boards have a Broadcom NIC"
+  never once mattered — and the empty `autoexec.ipxe` is what turns a failed NBP transfer
+  into a working boot, so deleting it would break the netboot. The reasoning, and what
+  must not be simplified away because of it, is the NBP item in `docs/follow-ups.md`.
+- **A QEMU client is a proxy for a board, not a board.** The two boards are still
+  unplugged, so nothing here has been observed on the hardware. The caveat is not
+  "QEMU vs. hardware": it is that the failure this whole investigation chased was
+  iPXE resolving `aibox.int.leighhack.org` over IPv6 and taking whatever AAAA comes back,
+  and `just pxe-client-uefi` exercises that path exactly — same iPXE 2.0.x, same DHCPv6
+  and RA, same `/etc/hosts` entries, same front-door DNS, and it proved both halves by
+  booting on the fix and refusing to boot on a deliberately stale record. The BIOS client
+  proves less again, for the old reason: SeaBIOS's iPXE has no IPv6.
+
 ## Files
 
 | File | What it is |
