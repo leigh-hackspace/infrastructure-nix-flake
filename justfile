@@ -403,10 +403,21 @@ _pxe-client kind:
     ip link set "$tap" master br227
     ip link set "$tap" up
     cleanup() {
+        # Kill the VM before taking its tap away, and take signals as well as exit.
+        # With `trap cleanup EXIT` alone bash does not run the trap when an untrapped
+        # signal kills it, so an interrupted run left qemu alive behind a tap that no
+        # longer existed — three orphaned VMs by the end of one afternoon, which is how I
+        # learned it.  The five-second poll is so the chardev log is closed before the
+        # caller tails it.
+        if [ -n "${qemu_pid:-}" ] && kill -0 "$qemu_pid" 2>/dev/null; then
+            kill "$qemu_pid" 2>/dev/null || true
+            for _ in 1 2 3 4 5; do kill -0 "$qemu_pid" 2>/dev/null || break; sleep 1; done
+            kill -9 "$qemu_pid" 2>/dev/null || true
+        fi
         ip link del "$tap" 2>/dev/null || true
         rm -f /tmp/pxe-OVMF_CODE.fd /tmp/pxe-OVMF_VARS.fd
     }
-    trap cleanup EXIT
+    trap cleanup EXIT INT TERM HUP
 
     args=( -m 2048 -accel kvm -smp 2 -cpu host
            -netdev "tap,id=net0,ifname=$tap,script=no,downscript=no"
@@ -429,7 +440,9 @@ _pxe-client kind:
     fi
 
     echo "== $kind client, mac $mac, on br227 (VLAN 227).  Ctrl-A d to leave."
-    qemu-system-x86_64 "${args[@]}"
+    qemu_pid=""
+    qemu-system-x86_64 "${args[@]}" & qemu_pid=$!
+    wait "$qemu_pid"
     GUEST
     if [ -t 0 ]; then
         sudo env TAP="$tap" MAC="$mac" KIND="$kind" bash "$guest"
