@@ -604,32 +604,40 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
 
 ## Router (gw)
 
-- **Most of `common/dns-records.nix`'s `ipv6` lists name addresses nothing holds**
-  (found 2026-10-26 debugging "the PXE clients stopped booting":
-  `aibox.int.leighhack.org` answered AAAA `2001:8b0:1d14:225::32`/`fd99:dead:beef:225d::32`
-  and no interface had either, so a UEFI Pi Room board — which SLAACs, prefers the AAAA and
-  has no fallback — hung on `Connection timed out` instead of showing a boot menu. The fix
-  for *that* one is `machines/aibox/networking.nix` configuring the two addresses from the
-  record, because aibox is a flake machine and can. **The cause is one level up:** the
-  retired appliance ran stateful DHCPv6 and every compressed address in the table
-  (`::30` apps1, `::15` yunohost, `2001:8b0:1d14:227d::10NN` for the PI-ROOM/CAD boards, and
-  the bracketed IPv6 in the `dhcp-host` lines) is what it handed out; `machines/gw/dns.nix`
-  sends `option6:23,[::]` and `ra-only` ranges, so since 2026-10-21 the network advertises
-  prefixes and assigns no addresses, and a device that does not configure its own keeps its
-  SLAAC EUI-64 address while DNS answers with the dead one. **Blocks:** any IPv6 client of
-  those names, for as long as the client has no fallback — a browser shrugs, iPXE does not.
-  It is also worse than the PARTIAL fault `docs/router-and-dns.md` warns about: a name with
-  an A and no AAAA costs one refused connect, a name with an AAAA nobody owns costs a
-  timeout. **Needs:** (1) for each record still carrying one, either say so on the device or
-  empty the `ipv6` list — `host <name> 10.3.1.1` against `ip -6 addr` on the box is the whole
-  test, and `ndp -a` on the router says whether anything answers the address at all; (2) the
-  `dhcp-host` lines' bracketed IPv6, which dnsmasq can only honour with a stateful DHCPv6
-  server this router does not run; (3) then a sentence in
-  `machines/gw/lib/check-network-tables.nix` if there is a checkable rule left — "a record's
-  IPv6 must be in a range this box could advertise it from" is not it, so the honest
-  conclusion may be that the table needs a comment saying an `ipv6` entry is an
-  advertisement the device must confirm. Full narrative: `docs/router-and-dns.md`, "RA only",
-  and `machines/pi-room-sys/README.md`.
+- **The IPv6 half of the reservation table has no mechanism behind it** (found
+  2026-10-26 debugging "the PXE clients stopped booting", and **the twelve records
+  that were provably unreachable are now emptied** — see `docs/router-and-dns.md`,
+  "And the IPv6 half, which is the half that was lost", for the mechanism and
+  `common/dns-records.nix`'s `ipv6` field for the rule).
+
+  What the old `config.xml` settled, against what this file first guessed: the
+  appliance never ran a DHCPv6 *server* in the sense of a pool — `<dhcpdv6>` has no
+  `range6` — it held fourteen per-host static bindings, and it NPT66'd
+  `fd99:dead:beef:225d::/64` → `2001:8b0:1d14:225d::/64` and the same for `227d`. So
+  the ten PI-ROOM `2001:8b0:1d14:227d::10NN` were never host addresses at all: they
+  were created by translation on the way out of `opt3`, and with no NPT66 on `gw`
+  they are unreachable in both directions (`ip -6 route get` on the router sends them
+  out `dev ppp0`). Emptied, with the reason at each record; `apps1` (`::30`) and
+  `yunohost` (`::15`) were in a real prefix but unowned — both boxes answer on IPv4
+  while `ip -6 neigh show` here says `INCOMPLETE` — so those two went too, and re-adding
+  either is a decision to configure the device, not to edit this table.
+
+  **What is left, and it is deliberately small.** (1) `machines/gw/lib/check-network-
+  tables.nix` now refuses a record whose IPv6 is outside every /64 the network
+  advertises; the residual class — in-prefix, unowned — is invisible at eval time and
+  can only be measured (`ip -6 neigh show`, `INCOMPLETE`), which is why the table's own
+  comment carries the rule rather than a fifth assertion pretending to know. (2) While
+  writing that assertion: four of this file's failure messages interpolated `r.name`
+  over `builtins.attrValues RECORDS`, where `name` is the attrset *key* and not a field,
+  so those messages crashed with `attribute 'name' missing` instead of naming the record
+  — and two then crashed again on `${r.vlan}` coercing an integer to a string. Fixed
+  (verified by making a record misbehave on purpose, once per class); any *new* message
+  in that file has the same trap available, since nothing but a failing assertion
+  exercises one. (3) Two records keep IPv6 because those boxes configure it:
+  `services1` `::20` and `aibox` `::32`. If anything else in the network ever wants
+  named IPv6, the choice is a static address on the device or an actual DHCPv6 server
+  with a `range6` on `gw` — the old box had neither of those, which is the reason this
+  is a decision and not a restoration.
 
 - **The connection table's "ours" is asserted for IPv4 only** (found 2026-10-25 while
   adding `TABLES.localPrefixes`, the `--local-prefix` list `../machines/gw/network-status.nix`

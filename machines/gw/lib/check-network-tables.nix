@@ -53,6 +53,18 @@ let
   hasPrefix = prefix: s: builtins.substring 0 (builtins.stringLength prefix) s == prefix;
 
   vlanIds = map (v: v.id) VLANS;
+
+  # The /64s the network advertises, in the CIDR form `TABLES.localPrefixes`
+  # produces, and the same question for one address: is it inside one of them?
+  # `tryEval` because `v6Block64` throws on an address it cannot read as being in
+  # a /64, and in an assertion a malformed address must name its record rather
+  # than kill the evaluation.
+  advertisedV6Prefixes = builtins.filter (p: has ":" p) localPrefixes;
+  inAdvertisedV6 = addr: let
+    block = builtins.tryEval (TABLES.v6Block64 addr);
+  in
+    block.success && builtins.elem block.value advertisedV6Prefixes;
+
   vlanById = builtins.listToAttrs (map (v: {
       name = toString v.id;
       value = v;
@@ -105,7 +117,27 @@ let
     builtins.any (b: has (blockPrefix b) (blockPrefix net)) (TABLES.ipv4AclBlocks acl);
   coveredByAcl = v: acl: blockCoveredByAcl v.net acl;
 
-  recordValues = builtins.attrValues RECORDS;
+  # Records with their key as a `name` field, which is what most of the failure
+  # messages below interpolate.  This used to be `builtins.attrValues RECORDS`,
+  # and `name` is not a field of a record — it is the key — so four of this file's
+  # messages ("a record naming a VLAN that does not exist", "…whose address is not
+  # inside its VLAN's block", "…IPv4 address does not appear on exactly one
+  # dhcp-host line", and the AAAA one added 2026-10-26) died with `attribute 'name'
+  # missing` instead of naming the record that triggered them, which is the whole
+  # reason they exist. Two of them then died a second time on `${r.vlan}`
+  # coercing an integer to a string, which is why those two now say `toString`.
+  # Measured 2026-10-26 by making records misbehave on purpose: the AAAA refusal
+  # names `services2 -> 2001:8b0:1d14:227d::1001` and the VLAN refusal names its
+  # record, where before both produced an evaluator error about this file.
+  # `TABLES.named` is the same map, but it is a `let` binding inside
+  # ./network-tables.nix rather than an exported attribute, so it is spelled out
+  # here.
+  recordValues = builtins.attrValues (builtins.mapAttrs (name: r:
+    r
+    // {
+      inherit name;
+    })
+  RECORDS);
 
   # The rendered hosts file, checked as text rather than as a table: the shape of
   # the line is the fact dnsmasq cares about, and both assertions below are about
@@ -244,7 +276,7 @@ in
   assert (
     need
     (builtins.all (r: r.vlan == null || builtins.elem r.vlan vlanIds) recordValues)
-    ''a record naming a VLAN that does not exist: ${builtins.toJSON (map (r: "${r.name} ${r.vlan}") (builtins.filter (r: r.vlan != null && !builtins.elem r.vlan vlanIds) recordValues))}''
+    ''a record naming a VLAN that does not exist: ${builtins.toJSON (map (r: "${r.name} ${toString r.vlan}") (builtins.filter (r: r.vlan != null && !builtins.elem r.vlan vlanIds) recordValues))}''
   );
   # Every record's address is inside its VLAN's block.  A record outside its own
   # VLAN's block is a device whose address ./firewall.nix will drop traffic to,
@@ -261,7 +293,7 @@ in
       )
       recordValues
     )
-    ''a record whose address is not inside its VLAN's block: ${builtins.toJSON (map (r: "${r.name} ${r.ipv4} ${r.vlan}") (builtins.filter (r: r.vlan != null && !inside r.ipv4 vlanById.${toString r.vlan}) recordValues))}''
+    ''a record whose address is not inside its VLAN's block: ${builtins.toJSON (map (r: "${r.name} ${r.ipv4} ${toString r.vlan}") (builtins.filter (r: r.vlan != null && !inside r.ipv4 vlanById.${toString r.vlan}) recordValues))}''
   );
   # Every record has an identifier: a reservation needs something to match on,
   # and a record with none produces no dhcp-host line at all.  That is not a
@@ -488,6 +520,46 @@ in
       } lines for ${
         toString (builtins.foldl' (n: r: n + 1 + builtins.length r.ipv6) 0 recordValues)
       } addresses''
+  );
+  # A record's IPv6 must be inside a /64 the network advertises.
+  #
+  # WHY: this table's `ipv6` field is a promise about the *device*, and since the
+  # 2026-10-21 cutover the network assigns no IPv6 to anything (`ra-only` ranges
+  # and `option6:23,[::]` in ../dns.nix, and no NPT66 — the two `*d::/64` mappings
+  # the retired appliance ran are in `machines/pi-room-sys`'s and `common/`
+  # history, not on this box). So an address here that is not even in a prefix the
+  # router has can never be answered by anyone: the name serves an AAAA whose
+  # packets go out the uplink (`ip -6 route get 2001:8b0:1d14:227d::1001` on this
+  # box says `dev ppp0`), and a client that prefers IPv6 hangs instead of falling
+  # back — the fault that stopped the Pi Room boards netbooting for five days
+  # (`machines/pi-room-sys/README.md`). Ten PI-ROOM records and the `apps1`/
+  # `yunohost` ones were emptied on 2026-10-26; this is what refuses them back.
+  #
+  # WHAT IT CANNOT CATCH, and the reason the field's comment in
+  # `common/dns-records.nix` is load-bearing rather than this assertion: an
+  # address in a *real* prefix that no host owns is indistinguishable at eval
+  # time from one that is configured — `2001:8b0:1d14:225::30` passed this check
+  # right up to the moment `ip -6 neigh show` called it `INCOMPLETE`. The eval-time
+  # rule is containment, nothing more; ownership is a measurement on the box.
+  #
+  # `/64` is the only prefix length this network advertises (v6Block64 throws on
+  # an address it cannot read as one, which `tryEval` turns into a refusal naming
+  # the record rather than a crash of the whole evaluation).
+  assert (
+    need
+    (
+      builtins.all
+      (r: builtins.all inAdvertisedV6 r.ipv6)
+      recordValues
+    )
+    ''a record answers AAAA outside every /64 the network advertises, i.e. with an address nothing in this network can be reached at: ${
+        builtins.toJSON
+        (
+          map
+          (r: "${r.name} -> ${builtins.concatStringsSep ", " r.ipv6}")
+          (builtins.filter (r: !builtins.all inAdvertisedV6 r.ipv6) recordValues)
+        )
+      }; the advertised /64s are ${builtins.concatStringsSep ", " advertisedV6Prefixes}''
   );
   # --- the router's own addresses against the two tables ----------------------
   #

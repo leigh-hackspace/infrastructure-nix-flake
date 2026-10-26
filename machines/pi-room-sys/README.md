@@ -51,8 +51,10 @@ applies to the store mount, which is on the boot path, not to the menu.
 broke the netboot for five days.**  The client resolves `aibox.int.leighhack.org`
 itself, through the router, and dnsmasq answers it with `common/dns-records.nix`'s
 whole `ipv6` list along with the A record.  Since the 2026-10-21 cutover nothing
-*assigns* those addresses — the retired appliance ran a stateful DHCPv6 server and
-`machines/gw/dns.nix` deliberately does not (`option6:23,[::]`), so aibox SLAACed into
+*assigns* those addresses — the retired appliance honoured them as per-host static
+DHCPv6 bindings (fourteen in all, no `range6`, so never a pool) and
+`machines/gw/dns.nix` runs neither that nor the NPT66 the `*d::/64` ones depended on
+(`option6:23,[::]`), so aibox SLAACed into
 its EUI-64 address and kept answering nothing on `2001:8b0:1d14:225::32`.  iPXE SLAACs
 too, prefers the AAAA, and has no fallback to try: it retransmits a SYN into a /64
 nobody answers until the transfer times out (`Connection timed out`,

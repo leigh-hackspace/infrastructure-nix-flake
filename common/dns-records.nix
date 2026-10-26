@@ -22,8 +22,36 @@
 #             no VLAN, i.e. the old router answered with just an address and
 #             nothing on it is routed by VLAN
 #   ipv4      the address the device keeps
-#   ipv6      the /64 addresses it keeps (dnsmasq wants them in [brackets];
-#             machines/gw/dns.nix adds those)
+#   ipv6      the /64 addresses the *device itself* holds, and so the only
+#             addresses its name may answer with (dnsmasq wants them in
+#             [brackets]; machines/gw/dns.nix adds those).
+#
+#             **This field is a promise about the device, not about the
+#             network, and since 2026-10-21 the network keeps none of it for
+#             you.** The retired appliance honoured these as per-host static
+#             DHCPv6 bindings — `dhcp-host=…,10.3.1.32,[2001:8b0:1d14:225::32],
+#             [fd99:dead:beef:225d::32],aibox`, read out of its generated
+#             dnsmasq.conf — with no `range6` behind them, and it additionally
+#             NPT66'd `fd99:dead:beef:225d::/64` → `2001:8b0:1d14:225d::/64` and
+#             `fd99:dead:beef:227d::/64` → `2001:8b0:1d14:227d::/64`, which is
+#             why ten of these records name a `*d::/64` at all. `machines/gw`
+#             renders the same `dhcp-host=` lines and implements *neither*
+#             mechanism: its IPv6 ranges are `ra-only`, `option6:23,[::]` tells
+#             clients there is no DHCPv6 server, and `nft list table ip6 nat`
+#             on it holds nothing but tailscale's masquerade. So an entry here
+#             is live only if the device configures the address itself —
+#             `machines/services1/networking.nix` and
+#             `machines/aibox/networking.nix` are the two that do — and every
+#             other entry is a name answering with an address nobody owns, which
+#             is a *hang* for a client that prefers IPv6 and has no fallback (a
+#             PXE client: `machines/pi-room-sys/README.md`). `./lib/check-network-
+#             tables.nix` refuses an address outside any /64 the network
+#             advertises, which is the half of this it can prove at eval time;
+#             "inside the prefix but owned by nobody" it cannot, and the test
+#             for that is `ip -6 neigh show` on the router: `INCOMPLETE` means
+#             the address is unowned. 2026-10-26: 12 records were emptied this
+#             way (the ten PI-ROOM boards, `apps1`, `yunohost`), each saying so
+#             at its own entry.
 #   macs      hardware addresses, as they appear on the wire
 #   clientIds DHCP client IDs, without the `id:` prefix
 #
@@ -84,13 +112,15 @@
     macs = ["aa:29:e1:d0:14:35"];
     clientIds = [];
   };
+  # No IPv6: `2001:8b0:1d14:225::30`/`fd99:dead:beef:225d::30` were the old
+  # appliance's static DHCPv6 binding for this VM, and apps1 does not configure
+  # them — answering on IPv4 (10.3.1.30) while the router's neighbour table
+  # reports both addresses `INCOMPLETE` (measured 2026-10-26). Re-add them only
+  # together with configuring them on the VM.
   apps1 = {
     vlan = 225;
     ipv4 = "10.3.1.30";
-    ipv6 = [
-      "2001:8b0:1d14:225::30"
-      "fd99:dead:beef:225d::30"
-    ];
+    ipv6 = [];
     macs = ["92:99:29:be:af:95"];
     clientIds = ["00:02:00:00:ab:11:28:de:e0:0f:f2:ac:dc:1e"];
   };
@@ -121,13 +151,16 @@
     macs = ["78:e3:6d:e4:05:fb"];
     clientIds = [];
   };
+  # No IPv6, same reason as `apps1` and with the same measurement
+  # (`2001:8b0:1d14:225::15`/`fd99:dead:beef:225d::15` `INCOMPLETE` on the
+  # router while the appliance answers on 10.3.1.15) — and it is consistent
+  # this way: `machines/gw/constants.nix` records that `yunohost.leighhack.org`
+  # has never had a AAAA either, so the appliance was only ever reachable over
+  # IPv6 to this one internal name, and nothing reached it there.
   yunohost = {
     vlan = 225;
     ipv4 = "10.3.1.15";
-    ipv6 = [
-      "2001:8b0:1d14:225::15"
-      "fd99:dead:beef:225d::15"
-    ];
+    ipv6 = [];
     macs = ["44:a8:42:3f:a1:ea"];
     clientIds = [
       "ff:42:3f:a1:ea:00:01:00:01:31:32:2a:a8:44:a8:42:3f:a1:ea"
@@ -310,19 +343,32 @@
   };
   # The Pi-room's ten devices, in the order their own boot menus list them:
   # the address number is the room number, so 10.3.14.101 is PI-ROOM-01.
-  # Each one also has an IPv6 address in the workshop's own range, which is
-  # what the network's IPv6 ACL (common/config.nix) lets through.
+  #
+  # None of them has an IPv6 address, and they never did in the sense this table
+  # means. The old box bound each board to `2001:8b0:1d14:227d::10NN`, which is
+  # not a prefix any interface of this network has ever had: `227d::/64` existed
+  # only as the *destination* of an NPT66 rule (`fd99:dead:beef:227d::0/64` →
+  # `2001:8b0:1d14:227d::0/64` on `opt3`, "Note the \"d\" prefix. Only map
+  # addresses within the \"d\" range.", read out of the old config.xml alongside
+  # the binding). With no NPT66 on gw the address exists nowhere and is not even
+  # routable in-house — `ip -6 route get 2001:8b0:1d14:227d::1001` on the router
+  # sends it out `dev ppp0`, i.e. a client dialling `PI-ROOM-01.int` over IPv6
+  # hands its packets to the internet uplink. The boards' real IPv6 is SLAAC in
+  # `2001:8b0:1d14:227::/64` and `fd99:dead:beef:227d::/64`, and nothing
+  # consults it by name; their IPv4 is what `just switch-netboot` and every
+  # monitor uses. `./lib/check-network-tables.nix` refuses these ten coming
+  # back, because they are outside every advertised /64.
   "PI-ROOM-01" = {
     vlan = 227;
     ipv4 = "10.3.14.101";
-    ipv6 = ["2001:8b0:1d14:227d::1001"];
+    ipv6 = [];
     macs = ["0c:9d:92:c6:61:d0"];
     clientIds = ["00:01:00:01:2f:b6:81:fe:0c:9d:92:c6:61:d0"];
   };
   "PI-ROOM-02" = {
     vlan = 227;
     ipv4 = "10.3.14.102";
-    ipv6 = ["2001:8b0:1d14:227d::1002"];
+    ipv6 = [];
     macs = [
       "2c:fd:a1:6f:bd:6b"
       "2c:fd:a1:6f:ce:9c"
@@ -332,56 +378,56 @@
   "PI-ROOM-03" = {
     vlan = 227;
     ipv4 = "10.3.14.103";
-    ipv6 = ["2001:8b0:1d14:227d::1003"];
+    ipv6 = [];
     macs = ["18:31:bf:2a:8b:5a"];
     clientIds = ["00:01:00:01:2f:b6:9b:08:18:31:bf:2a:8b:5a"];
   };
   "PI-ROOM-04" = {
     vlan = 227;
     ipv4 = "10.3.14.104";
-    ipv6 = ["2001:8b0:1d14:227d::1004"];
+    ipv6 = [];
     macs = ["2c:fd:a1:6f:d0:62"];
     clientIds = ["00:01:00:01:2f:df:63:11:2c:fd:a1:6f:d0:62"];
   };
   "PI-ROOM-05" = {
     vlan = 227;
     ipv4 = "10.3.14.105";
-    ipv6 = ["2001:8b0:1d14:227d::1005"];
+    ipv6 = [];
     macs = ["2c:fd:a1:6f:cf:9a"];
     clientIds = ["00:01:00:01:2f:e4:96:e3:2c:fd:a1:6f:cf:9a"];
   };
   "PI-ROOM-06" = {
     vlan = 227;
     ipv4 = "10.3.14.106";
-    ipv6 = ["2001:8b0:1d14:227d::1006"];
+    ipv6 = [];
     macs = ["2c:fd:a1:6f:d0:10"];
     clientIds = ["00:01:00:01:2f:e4:94:a8:2c:fd:a1:6f:d0:10"];
   };
   "PI-ROOM-07" = {
     vlan = 227;
     ipv4 = "10.3.14.107";
-    ipv6 = ["2001:8b0:1d14:227d::1007"];
+    ipv6 = [];
     macs = ["2c:fd:a1:6f:c9:48"];
     clientIds = ["00:01:00:01:2f:e4:9a:6d:2c:fd:a1:6f:c9:48"];
   };
   "PI-ROOM-08" = {
     vlan = 227;
     ipv4 = "10.3.14.108";
-    ipv6 = ["2001:8b0:1d14:227d::1008"];
+    ipv6 = [];
     macs = ["2c:fd:a1:6f:cf:7a"];
     clientIds = ["00:01:00:01:2f:df:75:b8:2c:fd:a1:6f:cf:7a"];
   };
   "PI-ROOM-09" = {
     vlan = 227;
     ipv4 = "10.3.14.109";
-    ipv6 = ["2001:8b0:1d14:227d::1009"];
+    ipv6 = [];
     macs = ["70:8b:cd:ba:2a:44"];
     clientIds = ["00:01:00:01:2f:e4:9e:db:70:8b:cd:ba:2a:44"];
   };
   "PI-ROOM-10" = {
     vlan = 227;
     ipv4 = "10.3.14.110";
-    ipv6 = ["2001:8b0:1d14:227d::1010"];
+    ipv6 = [];
     macs = ["2c:fd:a1:6f:cb:90"];
     clientIds = ["00:01:00:01:30:aa:5f:cb:2c:fd:a1:6f:cb:90"];
   };

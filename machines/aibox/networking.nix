@@ -88,10 +88,13 @@ in {
           # `common/dns-records.nix` is what `machines/gw/dns.nix` renders into
           # dnsmasq's hosts file, so `aibox.int.leighhack.org` answers with these
           # two addresses whether or not any interface holds them — and since the
-          # 2026-10-21 cutover nothing assigns them: the retired appliance ran a
-          # stateful DHCPv6 server and `machines/gw/dns.nix` deliberately does not
-          # (`option6:23,[::]`), so the network advertises IPv6 and leases nothing.
-          # What SLAAC would give this box instead is its EUI-64 address
+          # 2026-10-21 cutover nothing assigns them: the retired appliance honoured
+          # them as one of fourteen per-host static DHCPv6 bindings (no `range6`
+          # anywhere, so never a pool) and `machines/gw/dns.nix` does neither that
+          # nor the NPT66 the `*d::/64` addresses leaned on
+          # (`option6:23,[::]`, `ra-only` ranges), so the network advertises IPv6
+          # and leases nothing.  What SLAAC would give this box instead is its
+          # EUI-64 address
           # (`2001:8b0:1d14:225:8647:9ff:fe40:d225`), which is in no table and
           # answers no name.
           #

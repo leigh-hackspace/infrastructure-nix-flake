@@ -118,19 +118,35 @@ public `/64` (225 and 227 also a ULA). VLAN 222 has no range at all and VLAN 133
 CS network's block, IPv4-only on purpose — `common/vlans.nix` is the table.
 
 **RA only: the network advertises IPv6 and leases none of it, so a record's `ipv6` list is
-an advertisement and not an assignment.** `machines/gw/dns.nix` sends `option6:23,[::]` —
-"there is no DHCPv6 server here" — and its IPv6 ranges are `ra-only`, so a device gets a
-prefix and an SLAAC address and *not* the address written against its name. The retired
-appliance did run stateful DHCPv6, and every compressed address in
-`common/dns-records.nix` (`::20`, `::32`, `::30`, `227d::10NN`) is what it handed out then.
-Nothing does now, so such a record answers a name at an address no interface holds unless
-the device configures it itself — which the flake machines have to do in their own
-`networking.nix` (`machines/services1/networking.nix` has always listed `::20`; `machines/aibox/networking.nix`
-gained `::32` on 2026-10-26 because its absence was the netboot outage below) and which no
-camera, board or VM does. The failure is not a wrong answer but a hang, and only for the
-clients with no fallback: a Happy-Eyeballs application tries the AAAA, fails and uses the A
-record, while a PXE client that SLAACed and prefers IPv6 sits until its transfer times out —
-`machines/pi-room-sys/README.md` has the receipt and the reproduction, and
+a promise the *device* has to keep.** `machines/gw/dns.nix` sends `option6:23,[::]` —
+"there is no DHCPv6 server here" — and every IPv6 range it renders is `ra-only`, so a
+device gets a prefix and an SLAAC address and *not* the address written against its name.
+The retired appliance had two mechanisms for the addresses in `common/dns-records.nix` and
+**neither was carried over**: it honoured per-host static DHCPv6 bindings (`dhcp-host=…,
+10.3.1.32,[2001:8b0:1d14:225::32],[fd99:dead:beef:225d::32],aibox`, read out of its
+`/usr/local/etc/dnsmasq.conf`; its `<dhcpdv6>` section has **no `range6` at all**, so there
+was never a pool, only those fourteen bindings), and it NPT66'd two ULA /64s onto public
+ones (`fd99:dead:beef:225d::/64` → `2001:8b0:1d14:225d::/64` and the same for `227d`, on
+`opt3`, described in the config as "Note the \"d\" prefix. Only map addresses within the
+\"d\" range."). `gw` renders the same bracketed `dhcp-host=` addresses and runs neither
+half: `nft list table ip6 nat` on it holds nothing but tailscale's masquerade. So the ten
+PI-ROOM records naming `2001:8b0:1d14:227d::10NN` named an address that exists nowhere and
+cannot be routed in-house — `ip -6 route get 2001:8b0:1d14:227d::1001` on the router answers
+`dev ppp0`, i.e. a client dialling `PI-ROOM-01.int` over IPv6 hands its packets to the
+internet uplink — and `apps1`/`yunohost` named addresses in a real prefix that no host owns
+(`ip -6 neigh show` on the router: `INCOMPLETE`, while both boxes answer on IPv4). **Those
+twelve records were emptied on 2026-10-26**; the two that remain (`services1` `::20`,
+`aibox` `::32`) are live because those boxes configure them in their own `networking.nix`
+(`machines/services1/networking.nix` always listed `::20`; `machines/aibox/networking.nix`
+gained `::32` the day its absence turned out to be the netboot outage below), and
+`machines/gw/lib/check-network-tables.nix` now refuses any record whose IPv6 sits outside a
+/64 the network advertises — which is the half provable at eval time. It cannot prove
+ownership: `2001:8b0:1d14:225::30` passed the guard right up to the `ping6` that showed it
+was nobody's, so the field's rule is "the device holds this", written at the top of
+`common/dns-records.nix`. The failure a broken promise causes is not a wrong answer but a
+hang, and only for a client with no fallback: a Happy-Eyeballs application tries the AAAA,
+fails and uses the A record, while a PXE client that SLAACed and prefers IPv6 sits until its
+transfer times out — `machines/pi-room-sys/README.md` has the receipt and the reproduction, and
 `docs/follow-ups.md` has the audit of the records still in this state.
 
 What proves it, rather than the comments:
@@ -348,6 +364,26 @@ agree or it silently did nothing:
 
 Applying it was `pluginctl dns` (`plugins_configure('dns')`), **not** `pluginctl -s dns`
 — the latter is service mode, exits 0 and changes nothing.
+
+**And the IPv6 half, which is the half that was lost.** The old box wrote each static
+host's whole address list into one `<ip>` element — `<ip>10.3.1.32,2001:8b0:1d14:225::32,
+fd99:dead:beef:225d::32</ip>` for `aibox`, `<ip>10.3.14.101,2001:8b0:1d14:227d::1001</ip>`
+for `PI-ROOM-01` — fourteen hosts in all, and dnsmasq turned those into the bracketed IPv6
+addresses in its `dhcp-host=` lines and into the AAAA answers. Two things to know from the
+same read (the old `config.xml`, kept locally and gitignored, and its generated
+`dnsmasq.conf` archived at `~/tmp/opnsense-archive-20261017` on services1):
+
+- **there was never a DHCPv6 pool.** `<dhcpdv6><lan>` has an empty `<range>` and no
+  `range6` anywhere; the IPv6 addresses existed *only* as those per-host bindings, with
+  every IPv6 `dhcp-range` in `ra-only` mode. So "the old box handed these out" means
+  fourteen named bindings, not a server anyone could re-enable by flipping a switch.
+- **the `*d::/64` addresses were translated, not assigned.** Two NPT rules mapped
+  `fd99:dead:beef:225d::/64` → `2001:8b0:1d14:225d::/64` and
+  `fd99:dead:beef:227d::/64` → `2001:8b0:1d14:227d::/64` on `opt3`. That is why the ten
+  PI-ROOM bindings name a prefix no interface has ever had: on the old box the address was
+  created by the translation on the way out and undone on the way in. `gw` implements no
+  NPT66, so those AAAA answers became unreachable in both directions at the cutover, and
+  the records were only emptied on 2026-10-26 (above).
 ## DigitalOcean zone `leighhack.org`
 
 The public zone is **not** the network's DNS and nothing in this repo writes it any
