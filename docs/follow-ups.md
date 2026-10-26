@@ -450,25 +450,6 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
 
 ## Machines / access
 
-- **`just pxe-client-bios` and `just pxe-client-uefi` cannot run, so there was no way to
-  test the netboot without a board** (found 2026-10-26 while chasing "the PXE clients are
-  not booting"). Both end in `-netdev tap,id=net0,br=br227,helper=$(type -p
-  qemu-bridge-helper)`, and `qemu-bridge-helper` is in no package aibox installs —
-  `virtualisation.libvirtd.allowedBridges = ["br227"]` is libvirt's own allow-list and does
-  not put the helper in the system — so the substitution is empty and qemu refuses the
-  netdev (`bridge helper failed`). `-display vnc=:0` also assumes a consumer for :0.
-  **Blocks:** nothing that is not the next netboot regression, which is exactly what it cost
-  this one five days: the server half was healthy, the boards were failing, and nothing in
-  the repo could show a boot from the VLAN without someone walking into the room.
-  **Needs:** replace both recipes with the form that is proven to work — a `tap` device
-  slaved into `br227` with `ip link set … type bridge_slave state forwarding` (the port is
-  `disabled` until you say so), `-netdev tap,ifname=…,script=no,downscript=no`, the
-  `OVMF.fd` `FV/*.fd` pflash pair for the EFI case, and `-nographic` so the pre-menu output
-  lands on the serial log; the working command, why the BIOS VM's success proves nothing, and
-  where to capture the replies are in `machines/pi-room-sys/README.md`, "Testing a boot
-  without a board". `qemu` and `OVMF` are already in aibox's `systemPackages`
-  (`machines/aibox/netboot.nix`).
-
 - **The boot path resolves a name, and it does not have to** (2026-10-26, the same
   investigation). Every URL in
   `machines/aibox/netboot.nix`'s iPXE menu — `bzImage`, `initrd`, `logo.png` — and the
@@ -485,19 +466,6 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   same VLAN on this same afternoon while the UEFI boards could not. Do not do it by editing a
   literal in two files.
 
-- **aibox's `tftpd` loses the race with its own address at boot** (measured 2026-10-23
-  19:23:39: `in.tftpd: cannot bind to local IPv4 socket: Cannot assign requested address`,
-  exit 71, restart counter 3, running by 19:23:44). `ExecStart` binds
-  `-a 10.3.1.32:69`, the address comes from DHCP on `vlan225`, and `networking.nix` sets
-  `systemd.network.wait-online.enable = false`, so nothing orders the unit after the address
-  exists. **Blocks:** nothing at the moment — `INFRA.mkNeverGiveUp` is why it recovered in
-  five seconds — but a PXE attempt inside that window gets no answer at all, and on a box
-  that reboots after a power cut the window is the length of a DHCP handshake. **Needs:**
-  `after = [ "sys-subsystem-net-devices-vlan225.device" ]` (or `network-online.target` with
-  `wants`) plus `requires` on `systemd.services.tftpd`, and a `RestartSec` long enough that
-  the retry lands after networkd wins. Note the unit is *not* missing a retry today; this is
-  about a few seconds of dead TFTP per boot, not an outage.
-
 - **Whether the boards ever load the NBPs aibox serves is unknown** (found 2026-10-26 with a
   raw TFTP client and a UEFI VM). The server half is right and should not be "fixed":
   `in.tftpd … /etc/tftp` accepts `RRQ "/etc/tftp/ipxe.efi"` and refuses `RRQ "ipxe.efi"`
@@ -512,9 +480,13 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   load-bearing, not cosmetic). So either the option negotiation with `in.tftpd 5.2` is what
   sends a client to the fallback, or something else is serving iPXE to the boards and
   `ipxe.efi`/`undionly.kpxe` are never executed. **Blocks:** nothing that works; it costs
-  knowing what the boards are actually running. **Needs:** one capture of a real board's PXE
-  attempt (`tcpdump -i vlan227 -s0 port 69`, then read the OACK/DATA/error sequence) before
-  changing `netbootVariants`, `in.tftpd`'s flags, or either binary.
+  knowing what the boards are actually running.
+  **Partly handled 2026-10-26:** `in.tftpd` runs with `-v` now, so the next board's boot
+  answers this from `journalctl -u tftpd` — the negotiation, the fallback, everything —
+  without anyone having to hold a capture open at the right moment. **Still needs:** that
+  boot (or `just pxe-client-uefi`, which produces one on aibox) read once, and a decision
+  taken afterwards rather than before: changing `netbootVariants`, `in.tftpd`'s flags, or
+  either binary on the strength of an inference is how a working netboot gets broken.
 
 - **services2 cannot hop out.** `machines/services2/README.md` used to claim the
   shared machine-hop key was installed there; it is not. Only `authorized_keys` is

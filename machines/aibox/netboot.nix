@@ -11,6 +11,12 @@
   # sibling to its own member.
   sys = specialArgs.piRoomSys;
   build = sys.config.system.build;
+  # Read, not retyped: this box's own address, which is what the TFTP server binds and
+  # what the router's `dhcp-boot=` lines already name.  `common/hosts.nix` is the table
+  # both halves read — machines/gw/dns.nix: "the server address is read from the table
+  # rather than written in either place".
+  HOSTS = import ../../common/hosts.nix;
+  tftpAddr = HOSTS.aibox;
   nfsServer = "aibox.int.leighhack.org";
 in {
   environment = {
@@ -77,15 +83,47 @@ in {
     allowedBridges = ["br227"];
   };
 
+  # The TFTP server, on the address the router names in every `dhcp-boot=` line.
+  #
+  # The ordering and the bounded wait are both about one measured failure: at boot the
+  # address comes from DHCP on vlan225, `systemd.network.wait-online` is disabled on
+  # this box (machines/aibox/networking.nix), and `in.tftpd -a <addr>:69` exits 71 with
+  # `cannot bind to local IPv4 socket: Cannot assign requested address` when it wins the
+  # race.  Measured 2026-10-23 19:23:39 — three restarts, running by 19:23:44 — and the
+  # box only stayed up because `INFRA.mkNeverGiveUp` retries forever.  A PXE attempt
+  # inside that window got no answer at all, which is indistinguishable from a dead
+  # netboot server, so the point is to make the *first* start succeed rather than the
+  # fourth.  45 s, deliberately under systemd's default start timeout, and it fails
+  # loudly rather than binding something else.
+  #
+  # `-v` is there to answer an open question, not to decorate the journal: whether a
+  # client ever fetches `/etc/tftp/ipxe.efi` or falls back to the blank
+  # `autoexec.ipxe` because `in.tftpd 5.2` refuses its option negotiation (a UEFI client
+  # was seen retrying `tsize`/`blksize`/`windowsize` then taking the fallback on
+  # 2026-10-26, and that fallback is why the empty file is load-bearing).
+  # `docs/follow-ups.md` owns the question; this is what lets the next board's boot
+  # answer it from the journal instead of needing a capture at exactly the right moment.
   systemd.services = {
     tftpd = INFRA.mkNeverGiveUp {
-      after = ["nftables.service"];
+      after = [
+        "nftables.service"
+        "sys-subsystem-net-devices-vlan225.device"
+      ];
+      requires = ["sys-subsystem-net-devices-vlan225.device"];
       description = "TFTP server";
       serviceConfig = {
         User = "root";
         Group = "root";
         Type = "exec";
-        ExecStart = "${pkgs.tftp-hpa}/bin/in.tftpd -l -a 10.3.1.32:69 -P /run/tftpd.pid /etc/tftp";
+        # No double quotes inside: this is a Nix double-quoted string, and the whole
+        # argument to `bash -c` is single-quoted for systemd, so bash sees plain words.
+        # `ip` is spelled absolutely because a NixOS unit's PATH is the five packages
+        # named in `path=:` below — coreutils, findutils, gnugrep, gnused, systemd — and
+        # `ip` is not among them: with a bare `ip` this gate fails 45 times, exits 1, and
+        # TFTP never starts, which is a worse version of the bug it fixes. Read back from
+        # the rendered unit (AGENTS.md rule 10), not assumed.
+        ExecStartPre = "+${pkgs.bash}/bin/bash -c 'for i in $(seq 45); do ${pkgs.iproute2}/bin/ip -4 addr show dev vlan225 2>/dev/null | grep -q ${tftpAddr}/ && exit 0; sleep 1; done; echo tftpd: ${tftpAddr} never appeared on vlan225 1>&2; exit 1'";
+        ExecStart = "${pkgs.tftp-hpa}/bin/in.tftpd -l -v -a ${tftpAddr}:69 -P /run/tftpd.pid /etc/tftp";
         TimeoutStopSec = 20;
         PIDFile = "/run/tftpd.pid";
       };

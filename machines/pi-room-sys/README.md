@@ -68,28 +68,20 @@ holds) is an open item in `docs/follow-ups.md`.
 
 ## Testing a boot without a board
 
-`just pxe-client-bios` / `just pxe-client-uefi` do not run: `qemu-bridge-helper` is not
-in aibox's system, so `helper=$(type -p qemu-bridge-helper)` expands to nothing and
-qemu refuses the netdev (open item in `docs/follow-ups.md`).  What works is a tap
-slaved into `br227` — the bridge aibox already has on VLAN 227, which is why the
-clients' DHCP, TFTP and HTTP all cross the router for real — plus the `OVMF.fd`
-`FV/OVMF_CODE.fd` + `FV/OVMF_VARS.fd` pflash pair for the EFI path.  Run it on aibox, headless, and read the serial log and aibox's
-nginx access log:
+**`just pxe-client-uefi`** and **`just pxe-client-bios`**, on aibox, boot a guest on
+`br227` — aibox's own port in VLAN 227 — so the client's DHCP, TFTP and HTTP all cross
+the router exactly as a board's do.  Both were rewritten on 2026-10-26 (they had never
+been runnable since `qemu-bridge-helper` stopped being installed; the recipe's comment
+says what replaced it and why a tap port reading `disabled` means nothing until qemu
+has the tap open).  On a terminal you get the guest's serial console; with no tty it
+runs headless and writes `/tmp/pxe-client-<kind>-serial.log`.  The guest leases from
+the dynamic pool, so a run costs a lease, and it is left running until you quit it —
+`timeout 2m just pxe-client-uefi` is the bounded form an agent wants.
 
-```bash
-sudo ip tuntap add dev tap-pxe mode tap
-sudo ip link set tap-pxe master br227
-sudo ip link set tap-pxe type bridge_slave state forwarding   # it is `disabled` until you say so
-sudo ip link set tap-pxe up
-sudo timeout 130 qemu-system-x86_64 -m 2048 -cpu host -accel kvm -smp 2 \
-  -machine q35,smm=on -global driver=cfi.pflash01,property=secure,value=on \
-  -netdev tap,id=net0,ifname=tap-pxe,script=no,downscript=no \
-  -device virtio-net-pci,netdev=net0,mac=52:54:00:aa:bb:dd \
-  -drive file=$OVMF/FV/OVMF_CODE.fd,if=pflash,format=raw,unit=0,readonly=on \
-  -drive file=$OVMF/FV/OVMF_VARS.fd,if=pflash,format=raw,unit=1 \
-  -boot n -nographic -no-reboot
-sudo ip link del tap-pxe
-```
+Proved against the deployed config the day it was fixed: the UEFI guest reached
+`Filename: http://aibox.int.leighhack.org/boot/netboot.ipxe` and aibox's
+`/var/log/nginx/access.log` then logged menu, logo, `bzImage` and `initrd` — four 200s
+from `fd99:dead:beef:227d:5054:ff:fe…`, the same shape as the pre-outage lines.
 
 A BIOS client (`-boot n` with no OVMF, which uses SeaBIOS's own iPXE and has no IPv6)
 walks straight past a broken AAAA, so **the BIOS VM passing is not evidence**: boot the
