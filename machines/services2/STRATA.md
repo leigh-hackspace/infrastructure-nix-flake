@@ -145,6 +145,19 @@ do not copy it from `machines/aibox/strata-package.nix`.
 nothing anywhere pins a version, so the locked rev is the whole contract and the
 first thing it changes is behaviour nobody reviewed.
 
+**The one place the input *does* state its version is the CMake project line** —
+`CMakeLists.txt:11 project(strata VERSION 0.1.52 LANGUAGES CXX)` (0.1.48.1 at the
+previous input), which becomes the `STRATA_VERSION` macro (`add_compile_definitions`,
+line 23) and is what `strata --version` / `-V` prints (`src/program/generate.cpp:2873`,
+`std::printf("strata %s\n", STRATA_VERSION)`) before any GPU is touched. **So the
+installed binary names the rev it was built from: `$STRATA/bin/strata --version` is the
+cheap proof of which engine a switch landed**, and `--families` next to it prints the
+GGUF architectures the build runs (`qwen4exp qwen35moe` when `STRATA_HAVE_QWEN35` is
+compiled in, `CMakeLists.txt:873` `target_compile_definitions(strata PRIVATE STRATA_HAVE_QWEN35=1)`).
+What has no marker is the *app* layer — `setup.py` and the feed files carry no version
+strings, and the Python tree is copied rather than versioned — which is why the
+check below the ritual is `--version` and not a grep.
+
 **The Python layer is copied by hand, and that is where a bump bites.** The
 install phase of `strata-package.nix` copies `serve/`, the engine's helper
 packages, `tools/`, `data/` and the pinned `gguf-py` into `share/strata`, and
@@ -199,6 +212,142 @@ timer stopped (`systemctl show auto-rollback -p ExecStart` timestamps are the
 receipt). Fix forward instead: keep the tree dirty-but-good, re-switch, and confirm
 *that* (which is what happened here; the fixed engine came up 52 s after the new
 unit started).
+
+### Update: engine 0.1.52 (app 0.2.7) — 2026-10-27
+
+`nix flake update strata` moved the input `7ddc17a` (0.1.48.1 / app 0.2.6) →
+**`5e8a4cca7d690ac60ca37eb09e7d0e010099ad6d`** (Control and every engine package
+**0.1.52**, app **0.2.7**: `docs/release-notes-0.2.7.md:3` "Control and every
+engine package (Qwen and DeepSeek) are 0.1.52, because both engines changed"; the
+app's own marker is `apps/desktop/package.json:4` `"version": "0.2.7"`). **813
+commits in four days** (`gh api repos/Niko1221/Strata/compare/7ddc17a3…...5e8a4cca7…`:
+`total_commits` 813, base 2026-10-23, head 2026-10-27; GitHub's `files` list caps at
+300, so it is a floor, not a count). **This is the current lock**, and unlike the
+bump above it is *not* a hotfix release: 0.2.7 rewrote the Qwen engine and the
+DeepSeek engine, added a third engine (`src/dsv41`, DeepSeek-V4.1 from Project
+Maya), and grew the app layer. **Measured on the two input trees** (`diff -rq` old-vs-new:
+**384 files differ, 248 new files appear, 0 files are removed anywhere**) — the biggest
+new groups are `serve/web` (+9 files, the web chat page) and `strata_control` (the
+speed-switch table and the app's own settings), and the CUDA engine's own sources moved
+far less than that number suggests, but they moved, which is why this bump's engine build
+costs ~35 min on aibox and the 2026-10-23 bump cost 38 s. The app layer is not built by
+anything here (`strata-package.nix` compiles the CUDA engine and the install phase's
+Python layer only), so the app and the Terminal travel into the store and run on nothing.
+(`strata-package.nix` compiles the CUDA engine only), so the app and the Terminal
+travel into the store and run on nothing.
+
+**Two of 0.2.7's new defaults apply to this very card class, and both change answers.**
+Not adopted by a flag of ours — they turn on because the *rules* say so. The rules
+are pure functions in `include/strata/core/sm120_series.hpp` (gates read there),
+upstream's words in `docs/release-notes-0.2.7.md` and the switch table in
+`docs/DETAILS.md:1042`:
+
+| New default | Gate, as coded | What upstream measured |
+|---|---|---|
+| `STRATA_ROUTE_PRIOR=1.5` (`kRoutePriorSmallCard`) | **one discrete NVIDIA card ≤13 GiB** — ours is a 12 GB RTX 3060, so it is **on**. Larger NVIDIA, Radeon and Strix Halo are not changed | On an **RTX 3060 12 GB** (Qwen3.8-Flash-Next **IQ3_XXS**, five paired runs against the same build with it off): story 46.2 → 53.1 tok/s (+15%), **code 45.7 → 62.5 tok/s (+37%)**. It keeps the experts already on the card, so it page-ins less from RAM — and **picks a slightly different set of experts, so the wording of answers changes**. Quality was checked on that card with 80 tasks, no copy or code defects at 1.5 (a 2.0 setting *did* show defects, which is why the default is 1.5). **Agent loops may finish slightly less often: 4.5/10 at 1.5 over 4 runs against 5.6/7 with it off, and the off runs alone ranged 4–6** — inside the run-to-run spread |
+| `STRATA_PROMPT_ATTN_IMMA` | **every CUDA card of cc ≥ 80** — sm_86 is 86, so it is **on** (off for Turing/Volta/Pascal) | +1.1% to +1.8% prompt at 8K/16K on an RTX PRO 5000 and 2× RTX A4000; `=0` puts the 0.2.6 kernel back. **Another summation order**, so answers move at a near-tie |
+
+**Read the agent-loop column before calling the first one a free win.** Upstream
+measured both halves of that sentence on this card class: +37% on code, and fewer
+agent loops finishing — and this box *is* the one pi answers from
+(`PI_PROVIDER=strata-services2`). Their sample is 10 tasks over 4 runs on **IQ3_XXS**,
+ours is IQ1_M with 256 of 512 experts, so neither number transfers; but the *speed*
+win and the *task-completion* loss came from the same card, so if agent turns start
+failing more often, the dial is `STRATA_ROUTE_PRIOR=0` (in `extraEnv`, no rebuild —
+it costs the speed back), not a different flag. Nobody has run either number on this
+pack yet; the journal's own line is what says what resolved (below).
+
+**What 0.2.7 turns on that does *not* apply here**, so a later `STRATA_*` grep does
+not mistake these for ours, each gate read in the file that decides it: `STRATA_GR_V3`
+(stream-split hyper-connection read, another summation order — `sm120_series.hpp:70`
+`gr_v3_default`, **sm_120-class cards above 13 GiB**, and measured *worse* on sm_86 in
+its own A/B: −3.0%/−5.9% on 2× A4000 and +1.0%/−3.4% on an RTX 3060, "so not those");
+`STRATA_GR_UP_WIDE` (bitwise the old kernel, **sm_120-class only**); `STRATA_MMVQ_IL_89`
+(#3453's decode row tables, **`cc == 89` only** — an Ada card, not this one, and not yet
+measured on Ada by upstream); the two **sm_80-exactly** defaults of #3779 (`STRATA_DEQUANT_WIDE`
+and `STRATA_MMVQ_IL_SM80`, both bitwise the old output, gated `major==8 && minor==0` at
+`src/kernels/cuda/dequant_bf16.cu:301` and `cc[dev] == 80` at `native_mmvq.cu:3813` —
+sm_86 is 86, so they are off here, and measured only on a CMP 170HX); the gfx12 decode
+switches of the arch table; `STRATA_PLE_AUTO_RAM` (**the PLE-table residency policy is on
+by default as of 0.2.7**, `ple_residency.hpp:32`, and `src/program/generate.cpp:4674` only
+admits the 28.8 GB table through `ple_resident_admit` = `conversation_memory_admit(available,
+table + arena, 8 GiB)` — ours is 29.97 GiB of RAM with a ~23.4 GiB IQ1_M arena to fill, so
+it declines and keeps `--ple-io direct`. Upstream's own reason for the policy is one line
+above that block: on the 64 GB RTX 5070 PC the table + 8 GiB headroom *did* admit it, the
+table's lock took the lockable memory and the expert load then died with **error 1453
+(ERROR_WORKING_SET_QUOTA)** — this box is 29.97 GiB, further from the bar, but if that ever
+changes the engine prints its numbers (`--ple-io ram chosen by the residency policy`,
+`generate.cpp:4758`), which is the journal line to look for); every DeepSeek (DS4) change;
+the Metal and SYCL ports; and the Radeon / Strix Halo / gfx12 work. The **sm_86 exact-perf table** (`nv_defaults.hpp`,
+`STRATA_SM86_PERF`, the "4 exact speed switches on by default" line this box prints today)
+is **byte-identical between the two input trees** — that table is not new in this bump.
+`STRATA_SPEC_ADAPT_SM86` stays opt-in (upstream's own 3060 A/B was length-confounded).
+
+**`docs/DETAILS.md` carries 0.2.7's measurements in tables, and it says which card each
+figure was taken on** — "We have no sm_80 card and did not measure them" on the #3779 rows,
+"not yet measured on an Ada card by us" on `STRATA_MMVQ_IL_89` (`docs/DETAILS.md:1215`).
+Read those lines, not a summary, before turning on anything measured on a *different* card:
+the figures above are upstream's RTX 3060 rows, on their quant, and nobody has run this
+pack's numbers.
+
+**The one-step rollback for all of it, with no rebuild: `STRATA_DEFAULTS=026`**
+(`include/strata/core/defaults_026.hpp`, and the notes' "Qwen: 0.2.6 behaviour" row
+in the app). It puts back every Qwen default 0.2.7 changed — route prior, the wide
+hyper-connection read, the stream-split GR read, int8 prompt attention, the four
+gfx12 decode switches, the PLE residency policy, the gfx12 miss split — and a
+variable *we* set still wins over it. `DS4_DEFAULTS=026` is the DeepSeek engine's
+half (not ours). **KVA (`STRATA_KVA=1`) is off by default in 0.2.7 and stays off**:
+it reads the last 12 layers of a long prompt approximately, and upstream's own
+numbers were up to **−28% loss rate on agent prompts at 2048 tokens** — off, and to
+stay off here.
+
+**The contracts, re-checked against the new tree before deploying** (the two named
+above, both of which have moved once before, plus the two the install phase assumes):
+
+- **All 13 flag *pairs* in `engineArgs` still parse** at 0.1.52 in `src/program/generate.cpp`
+  (`a == "--pack"`, `"--native"`, `"--ple-gguf"`, `"--expert-profile"`, `"--expert-cache"`,
+  `"--prefill"`, `"--spec"`, `"--spec-min-p"`, `"--mtp"`, `"--max-context"`, `"--kv"`,
+  `"--conversation-cache-mib"`, `"--resident-experts"` — every one present; `--resident-experts`
+  is passed in `machines/aibox/strata.nix`, not in services2's, which is where its low-RAM
+  block is). **`--spec 4 --spec-min-p 0.5` is still the default depth** at 0.2.7
+  (`docs/DETAILS.md:1215` "`--spec 4 --spec-min-p 0.5` stays the default depth") — which is
+  exactly what `strata.nix` passes, so our `--spec` line is upstream's own current default,
+  not a pin.
+- **All `configFile` keys are still read** by `serve/server.py` (`exe args cwd tokenizer
+  model_name log allowed_hosts api_key backend lib_dirs env`).
+- **The install phase's copy list still covers upstream**: `serve/`, `strata_control`,
+  `strata_cli`, `tools/`, `data/` all exist as directories, and the build-time guard's
+  three modules (`serve/server.py`, `strata_control/procs.py`, `strata_cli/client.py`)
+  all exist — the guard is what would have failed the build if a rename had come again
+  (0.1.46's rename is the finding above).
+- **The install phase's binaries still exist**: `add_executable(strata …)` and
+  `add_executable(strata-device …)` are both still in `CMakeLists.txt`. The new
+  `STRATA_BUILD_DSV41`, **OFF by default** ("OFF by default: it changes no existing
+  target"), and we do not pass it — so the CUDA build does not start compiling `src/dsv41/*.cu`.
+  `add_executable(strata-gguf …)` and friends are built but not installed by us.
+- **The pinned `llama.cpp` is unchanged**: `setup.py:222 LLAMA_CPP_COMMIT = "3cf03257f219afbe7334045ff7c6a06ac68c627d"` at the new rev, same as the rev `strata-package.nix:44` pins and same as `third_party/ggml/VERSION.txt` in the new tree — so the **vendored ggml** side of this build is byte-for-byte what 0.1.46 built. **What is *not* unchanged is the engine's own sources** (384 files differ, above), so the engine derivation is dirtied and recompiles: this bump's engine build on aibox measured ~35 min where the 2026-10-23 bump (engine byte-identical, app-only change) took 38 s. The same is true of the *other* box: `machines/aibox/strata-package.nix` takes the same input, so aibox's HIP/gfx1030 engine recompiles on the next switch there too — read `machines/aibox/STRATA.md` before that one, since 0.2.7 also rewrote gfx12-class behaviour there.
+- **The data files the unit points at are unchanged**: `data/draft_vocab.bin` md5
+  `4135aad364e18d71caec866dc37d34e7` and `data/expert-profile-coder.bin` md5
+  `a7ea5acbdff82c1e73ee023c0e818c6b`, **equal between the two input trees** (and equal to
+  the values recorded at the 2026-10-23 bump), so the hand-prepared pack, the MTP runtime
+  and the `expert-profile-coder.bin` the engine reads inside the package still mean the
+  same thing. `diff -rq data/` between the two trees reports **one entry**: the new
+  `data/dsv41` (DeepSeek-V4.1's own routing profiles — not ours). The model files, the
+  feed index and `SHA256SUMS.txt` are not in this input at all (they are fetched into the
+  container at runtime, per the finding above), so nothing in this bump touches them.
+- **`--conversation-cache-mib 0` stays pinned, and its reason is now different.** 0.2.7
+  fixes the bug the pin was written against ("a conversation cache no longer reuses
+  another conversation's keys and values", #1503), so the pin is no longer "we have a
+  bug upstream" but "a feature this box has never run". It stays 0: the auto path would
+  park ~2 GiB of host RAM on a box already at 28.3 GiB RSS of 30 GiB, and the sizing
+  table above is the reason — re-read it before turning it on, as that comment says.
+
+What gated it: the four assertion evals, `just fmt-check` and `just check-source-size`
+pass; `nix flake check --no-build` dies as it does at this lock for every tree
+(`sops-secret-pg_pass.drv is not valid`, the eval-time secret read — verified against
+a clean HEAD, so it is not this change). **The bump was not measured on this pack**
+before deploying: the route prior's and the int8-attention numbers above are
+upstream's, on their quant, and this box's first numbers are the switch's own journal.
 
 ### Update: engine 0.1.48.1 — 2026-10-23
 
@@ -360,7 +509,10 @@ from plausibility. **Do not re-explore it from the flag list**: upstream closed 
 this request, and the reason is memory, not a missing flag.
 
 - **Every second-device role enumerates the backend's own device list, and this box has
-  one CUDA device.** The shipped binary (`strata --version` → `strata 0.1.48.1`) offers
+  one CUDA device.** The shipped binary (`strata --version` → `strata 0.1.48.1` as read
+  before the 2026-10-27 bump; the new rev's binary prints `strata 0.1.52` because that
+  number is `CMakeLists.txt:11`'s `project(strata VERSION 0.1.52)` — see the version-marker
+  note at the top of this file) offers
   `--expert-cache-device1/2/3` as *`fill CUDA1 with N experts`*, `--peer-device N` as
   *a second GPU as an adaptive expert-cache tier (rows over P2P; it also computes its
   experts' prompt rows)* and `--layer-split`; all three take indices into the backend's

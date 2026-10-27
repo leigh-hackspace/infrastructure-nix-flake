@@ -377,6 +377,27 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
 
 ## Strata (services2)
 
+- **The 2026-10-27 bump turned two switches on for this card class, and nobody has
+  measured them on our pack** (found while bumping; the whole finding is in
+  `machines/services2/STRATA.md`, "Update: engine 0.1.52 (app 0.2.7) — 2026-10-27").
+  `STRATA_ROUTE_PRIOR=1.5` (gate: one discrete NVIDIA card of ≤13 GiB — `kSmallCardGiB = 13.0`,
+  ours is the 12 GB RTX 3060) and `STRATA_PROMPT_ATTN_IMMA` (gate: CUDA `cc ≥ 80`, so sm_86).
+  Upstream's speed numbers on *their* RTX 3060 were +15% story / **+37% code** (IQ3_XXS), and
+  their own agent-loop sample said **fewer loops finish**: 4.5/10 at 1.5 over 4 runs against
+  5.6/7 with it off. Nobody has run either number on the **IQ1_M, 256-of-512-expert** pack this
+  box serves, which is the pack pi answers from (`PI_PROVIDER=strata-services2`). So the claim
+  is *"faster answers, possibly fewer completed loops"* and neither half is ours.
+  **To measure** (run it as a detached `systemd-run` unit writing to a log, then poll — AGENTS.md
+  rule 11): the same prompt through the served endpoint with `extraEnv` flipped,
+  `STRATA_ROUTE_PRIOR=0` / `STRATA_PROMPT_ATTN_IMMA=0` in `strata.nix`, no rebuild (both are
+  env vars read at start, `sm120_series.hpp`); `STRATA_DEFAULTS=026` is the one-step rollback
+  for the whole 0.2.7 default set. Do not judge the answer quality from a banner — for the
+  house rule see `crates/switch-gui/README.md`'s "A UI that refuses an edit must say so" and
+  keep the two runs' `md5` of the completion, which is how the 2026-10-19 findings compared
+  outputs. The journal says what resolved: the engine prints its sm_86 table line at start
+  (`strata: sm_86 (Ampere): … switches on by default`), and
+  `journalctl -u strata -n 50` after the switch is the receipt for which defaults landed.
+
 - **The Vega 8's one plausible seat has never been tried: the picture reader, not an
   expert tier** (found 2026-10-24 while answering "can the iGPU be a co-processor to the
   3060" — the answer to *that* is in `machines/services2/STRATA.md`, "The Vega 8 (Cezanne,

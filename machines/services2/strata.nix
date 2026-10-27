@@ -102,6 +102,14 @@ let
   context = 131072;
 
   engineArgs = [
+    # Two of 0.2.7's defaults turn on for this card with no flag of ours, as of the
+    # 2026-10-27 bump (engine 0.1.52): `STRATA_ROUTE_PRIOR=1.5` (gate: one discrete
+    # NVIDIA card of <=13 GiB - ours is the 12 GB RTX 3060) and `STRATA_PROMPT_ATTN_IMMA`
+    # (gate: CUDA cc >= 80, so sm_86).  Neither is set here; the *rules* decide, and both
+    # pick a different summation / expert set, so answers move.  The off switches are
+    # `extraEnv` entries on the unit (no rebuild), and `STRATA_DEFAULTS=026` puts every
+    # 0.2.7 Qwen default back in one step - see machines/services2/STRATA.md for the
+    # numbers, the agent-loop finding, and what the engine prints when it resolves them.
     "--pack"
     packDir
     "--native"
