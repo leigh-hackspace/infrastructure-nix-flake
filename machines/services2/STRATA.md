@@ -84,6 +84,51 @@ dedicated VRAM (aibox's iGPU warning — that `auto` reads GTT and fills the
 machine — does not apply). If the engine's log shows VRAM pressure, set an
 explicit smaller number, as aibox does.
 
+## The conversation cache cannot be bought with the swap file
+
+Asked on 2026-10-27 whether the 16 GiB swap file could be the cache's home, so
+`--conversation-cache-mib 0` could be lifted. It cannot — three mechanisms and a
+number, all of it read off the 0.1.52 tree and the running engine, not argued.
+
+- **The guard is RAM-only.** `available_host_bytes()` (`include/strata/core/conversation_memory.hpp:12-24`)
+  is the smallest of `MemAvailable`, the room under every visible cgroup limit, and `--memory-limit-mib`;
+  nothing swap-related is in it. The page file enters only the **Windows** commit check
+  (`generate.cpp:9296-9310`, `host_limits::commit_verdict(cs.ullAvailPageFile, …)` — Windows commit
+  accounting is virtual by construction). So `auto_conversation_cache_mib` answers 0 at this box's
+  numbers whatever the swap file is doing: `free -m` said 3,452 MiB available with the 0.1.52 engine
+  loaded, `3452 − 2560 = 892`, `892 × 2/5 = 356`, under the 1024 floor → 0.
+- **Parking itself is refused on the same floor, not only its sizing.** `docs/DETAILS.md` (the
+  `--conversation-cache-min-free-mib` row): "Parking and session files are skipped when less than the
+  snapshot plus the floor is available", against that same RAM figure. An explicit
+  `--conversation-cache-mib N` therefore parks nothing here until the **floor** is lowered too — and
+  lowering the floor is a different argument than "use swap": it spends the box's last GiB, the one
+  that keeps journald from its "Under memory pressure, flushing caches" state.
+- **Swapping the cache is a re-read on the prompt path.** The parked bytes are host segments of 16 MiB
+  (`include/strata/core/conversation_buffer.hpp:21`, pageable) and a restore reads them back per
+  resume. The box already pays swap for the *arena* — `src/core/pinned.cu:267` reserves it as
+  `MAP_PRIVATE | MAP_ANONYMOUS`, so on Linux "page-locked when possible" is Windows' wording: the
+  22.78 GiB resident expert copy is swappable, and 2,229 MiB of the swap file was in use at the 0.1.52
+  start while the log said `resident RAM: 22.78 GiB of experts in RAM … 0 blob reads from the file`.
+  Upstream's cure for the parking stall (`docs/DETAILS.md:398`) is "a smaller `--resident-budget-gib`,
+  a smaller `--conversation-cache-mib`, or the pagefile on an SSD" — ours already **is** that SSD file
+  (`/var/swap/services2`), so the only lever left in that list is size.
+- **The number that settles it: this workload already reuses 93 % of its prompt tokens without the
+  cache.** `/metrics` at the 0.1.52 start reads `conversation_cache/requests = 37`,
+  `requests_reused = 33`, `reused_tokens = 2,743,518` of `prompt_tokens = 2,945,937` (last request
+  69,578 of 69,761) — that is `--prompt-cache`, default 6 checkpoints (`generate.cpp:805`), already on.
+  VRAM cannot take the park either: `engine/vram_free_mib = 408` with the expert cache at 3,754 MiB,
+  and upstream's `LOW: requests may stall; add --vram-reserve-mib` line is 256 MiB.
+- **If it is ever wanted, open RAM rather than borrow it:** `--resident-budget-gib N` (`generate.cpp:621-623`,
+  "the N GiB of experts the GPU cache does not hold that the expert profile ranks hottest are copied
+  into RAM, the rest are read from the files in place") trades measurable file cost for headroom —
+  today the tier line reads `files 0 blobs 3939.5 MB read (the GGUF in place)` — then set
+  `--conversation-cache-mib` and a lower `--conversation-cache-min-free-mib` together, and read the
+  result off `/metrics`' `conversation_cache` card (`serve/server.py:834`, upstream `#596`: parks,
+  restores, evictions, bytes) and the engine's `conversation cache: (parked|skipped|restored)` lines.
+  Size the ask before setting it: a parked conversation is its K/V, ~1.8 GiB at 131072 with `--kv int8`
+  (the table above), so four full-length slots are ~7 GiB, against upstream's cap of 8192 MiB
+  ("four 100K-token agent conversations were parked in 8 GiB in the report", `conversation_memory.hpp:68`).
+
 ## One-time model preparation (outside the store)
 
 The GGUFs are already at

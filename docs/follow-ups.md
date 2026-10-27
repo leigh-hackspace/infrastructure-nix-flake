@@ -398,6 +398,16 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   (`strata: sm_86 (Ampere): … switches on by default`), and
   `journalctl -u strata -n 50` after the switch is the receipt for which defaults landed.
 
+- **The conversation cache: can it be bought with the swap file?** No, and the answer is
+  settled, not open (asked 2026-10-27, with the 0.1.52 engine running): the receipts and the
+  one lever that would open RAM honestly (`--resident-budget-gib`) are in
+  `machines/services2/STRATA.md`, "The conversation cache cannot be bought with the swap file".
+  What the same start measured: 33 of 37 requests already reuse 2.74 M of 2.95 M prompt tokens
+  on `--prompt-cache` alone, `engine/vram_free_mib = 408`, 2,229 MiB of the swap file already
+  spent on the arena, and `available_host_bytes()` never counts swap on Linux. **Open** half:
+  nobody has tried `--resident-budget-gib` here, so the file-read cost of opening headroom is
+  unmeasured — the tier line reads `files 0 blobs 3939.5 MB read (the GGUF in place)` today.
+
 - **The Vega 8's one plausible seat has never been tried: the picture reader, not an
   expert tier** (found 2026-10-24 while answering "can the iGPU be a co-processor to the
   3060" — the answer to *that* is in `machines/services2/STRATA.md`, "The Vega 8 (Cezanne,
