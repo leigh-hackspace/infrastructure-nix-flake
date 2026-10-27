@@ -104,6 +104,27 @@ to be in that list; they are on services1 now and bind loopback.
   `git merge-base --is-ancestor "$(git ls-remote origin refs/heads/main | cut -f1)" FETCH_HEAD`
   so it can only ever fast-forward. Until this box fetches, `git status -sb` here reports
   `ahead 1` forever — that is a stale `origin/main` ref, not an unpushed commit.
+- **The other relay, used on 2026-10-27: agent-forward the push back into this box.** One
+  command, run *on services1*, whose agent holds services1's GitHub key and whose `ssh -A`
+  carries it into a `git push` that runs **here** — cheaper than the `FETCH_HEAD` dance when
+  both trees already agree (they do, when this box was fetched from GitHub rather than rsynced):
+
+  ```bash
+  # on services1 only — the push itself runs on services2
+  ssh-agent -t 300 sh -c "ssh-add ~/.ssh/id_ed25519; \
+    ssh -A -i ~/.ssh/agent-hop-key -o BatchMode=yes leigh-admin@10.3.1.21 \
+    'cd ~/Projects/infrastructure-nix-flake && git push origin main'"
+  ```
+
+  The trap names its direction: services2 has an `id_ed25519` of its own, but it is not the
+  credential GitHub accepts (services1's is, as `cjdell`), so an agent started on **this** box
+  adds the wrong key and the push dies with the same `Permission denied (publickey)` a missing
+  key gives — start the agent on services1, and pass `-A` on the hop back.
+- **`git commit -S` fails on this box: there is no `gpg`** (`error: cannot run gpg: No such
+  file or directory`, then `fatal: failed to write commit object` — gnupg is not in this
+  system's package set, and `git log` here shows no `gpgsig` on any commit). Commit unsigned
+  here — that is what the history on this box already is; a signature is made at commit time,
+  so there is nothing to sign afterwards.
 - **No swap *partition*** — the NVMe is only p1 (512 MiB ESP) + p2 (232 GiB ext4 root), so
   there is no spare partition like services1's `nvme0n1p3` (18 GiB) or aibox's. It does have
   **a 16 GiB swap *file*, `/var/swap/services2`**, declared in `./hardware-configuration.nix`
