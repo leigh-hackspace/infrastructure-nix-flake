@@ -229,9 +229,11 @@ Maya), and grew the app layer. **Measured on the two input trees** (`diff -rq` o
 **384 files differ, 248 new files appear, 0 files are removed anywhere**) — the biggest
 new groups are `serve/web` (+9 files, the web chat page) and `strata_control` (the
 speed-switch table and the app's own settings), and the CUDA engine's own sources moved
-far less than that number suggests, but they moved, which is why this bump's engine build
-costs ~35 min on aibox (measured at this bump; the ~7 min figure in the ritual above is from
-an earlier rev, and 0.1.52's CUDA tree is bigger) and the 2026-10-23 bump cost 38 s. The app layer is not built by
+far less than that number suggests, but they moved, which is why this bump rebuilds the
+engine at all (the 2026-10-23 bump did not: 38 s, engine byte-identical) and at **8 min on
+aibox** (`systemd-run` unit `strata-engine`, 16:06:11 → 16:14:06, 25 derivations: the CUDA
+13.0 package set re-created around the new engine plus the engine itself) — the ~7 min
+figure in the ritual above was already the right order of magnitude. The app layer is not built by
 anything here (`strata-package.nix` compiles the CUDA engine and the install phase's
 Python layer only), so the app and the Terminal travel into the store and run on nothing.
 
@@ -324,7 +326,7 @@ above, both of which have moved once before, plus the two the install phase assu
   `STRATA_BUILD_DSV41`, **OFF by default** ("OFF by default: it changes no existing
   target"), and we do not pass it — so the CUDA build does not start compiling `src/dsv41/*.cu`.
   `add_executable(strata-gguf …)` and friends are built but not installed by us.
-- **The pinned `llama.cpp` is unchanged**: `setup.py:222 LLAMA_CPP_COMMIT = "3cf03257f219afbe7334045ff7c6a06ac68c627d"` at the new rev, same as the rev `strata-package.nix:44` pins and same as `third_party/ggml/VERSION.txt` in the new tree — so the **vendored ggml** side of this build is byte-for-byte what 0.1.46 built. **What is *not* unchanged is the engine's own sources** (384 files differ, above), so the engine derivation is dirtied and recompiles: this bump's engine build on aibox measured ~35 min where the 2026-10-23 bump (engine byte-identical, app-only change) took 38 s. The same is true of the *other* box: `machines/aibox/strata-package.nix` takes the same input, so aibox's HIP/gfx1030 engine recompiles on the next switch there too — read `machines/aibox/STRATA.md` before that one, since 0.2.7 also rewrote gfx12-class behaviour there.
+- **The pinned `llama.cpp` is unchanged**: `setup.py:222 LLAMA_CPP_COMMIT = "3cf03257f219afbe7334045ff7c6a06ac68c627d"` at the new rev, same as the rev `strata-package.nix:44` pins and same as `third_party/ggml/VERSION.txt` in the new tree — so the **vendored ggml** side of this build is byte-for-byte what 0.1.46 built. **What is *not* unchanged is the engine's own sources** (384 files differ, above), so the engine derivation is dirtied and recompiles: this bump's engine build on aibox measured **8 min** (25 derivations, the CUDA 13.0 set included) where the 2026-10-23 bump (engine byte-identical, app-only change) took 38 s. The same is true of the *other* box: `machines/aibox/strata-package.nix` takes the same input, so aibox's HIP/gfx1030 engine recompiles on the next switch there too — read `machines/aibox/STRATA.md` before that one, since 0.2.7 also rewrote gfx12-class behaviour there.
 - **The data files the unit points at are unchanged**: `data/draft_vocab.bin` md5
   `4135aad364e18d71caec866dc37d34e7` and `data/expert-profile-coder.bin` md5
   `a7ea5acbdff82c1e73ee023c0e818c6b`, **equal between the two input trees** (and equal to

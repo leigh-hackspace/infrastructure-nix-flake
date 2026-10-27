@@ -20,7 +20,9 @@ moved" in one call; upstream's own words for the release are **inside the input*
 docs are free to read: unpack the new rev into a scratch dir (`codeload.github.com/<repo>/tar.gz/<sha>`)
 and diff against the old input path. Measured on the two input trees: **384 files differ, 248
 appear, 0 removed** — of which the CUDA engine's own sources moved (which is why this bump's
-engine build costs ~35 min on aibox, against the **38 s** of the 2026-10-23 bump, whose
+engine rebuild costs **8 min on aibox** (measured: the `strata-engine` unit, 16:06:11 →
+16:14:06, 25 derivations — the CUDA 13.0 package set re-created around the new engine plus
+the engine), against the **38 s** of the 2026-10-23 bump, whose
 engine sources were byte-identical: same input *path*, different rev — 7ddc17a's tree had
 already been in the store since 2026-10-19 because the input path had not moved. A *same*
 -rev bump costs the engine derivation, not the 15 GB input unpack: the .drv alone is 190 MiB
