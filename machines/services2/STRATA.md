@@ -230,11 +230,10 @@ Maya), and grew the app layer. **Measured on the two input trees** (`diff -rq` o
 new groups are `serve/web` (+9 files, the web chat page) and `strata_control` (the
 speed-switch table and the app's own settings), and the CUDA engine's own sources moved
 far less than that number suggests, but they moved, which is why this bump's engine build
-costs ~35 min on aibox and the 2026-10-23 bump cost 38 s. The app layer is not built by
+costs ~35 min on aibox (measured at this bump; the ~7 min figure in the ritual above is from
+an earlier rev, and 0.1.52's CUDA tree is bigger) and the 2026-10-23 bump cost 38 s. The app layer is not built by
 anything here (`strata-package.nix` compiles the CUDA engine and the install phase's
 Python layer only), so the app and the Terminal travel into the store and run on nothing.
-(`strata-package.nix` compiles the CUDA engine only), so the app and the Terminal
-travel into the store and run on nothing.
 
 **Two of 0.2.7's new defaults apply to this very card class, and both change answers.**
 Not adopted by a flag of ours — they turn on because the *rules* say so. The rules

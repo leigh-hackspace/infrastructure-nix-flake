@@ -7,6 +7,93 @@ change runs into.
 
 Still-open items live in `docs/follow-ups.md`.
 
+## 2026-10-27 — the strata engine input went 0.1.48.1 → 0.1.52 across the version series
+
+**Asked:** "update strata".
+
+`nix flake update strata` **is** the bump (the input tracks upstream `main`; nothing pins a
+version), and this one is the first to cross the series: `7ddc17a` → `5e8a4cca7` is app
+**0.2.6 → 0.2.7**, Control and every engine package **0.1.48.1 → 0.1.52**, **813 commits in
+four days** upstream. `gh api repos/Niko1221/Strata/compare/<old>...<new>` answers "what
+moved" in one call; upstream's own words for the release are **inside the input** —
+`docs/release-notes-0.2.7.md`, and the switch tables in `docs/DETAILS.md`. A flake input's
+docs are free to read: unpack the new rev into a scratch dir (`codeload.github.com/<repo>/tar.gz/<sha>`)
+and diff against the old input path. Measured on the two input trees: **384 files differ, 248
+appear, 0 removed** — of which the CUDA engine's own sources moved (which is why this bump's
+engine build costs ~35 min on aibox, against the **38 s** of the 2026-10-23 bump, whose
+engine sources were byte-identical: same input *path*, different rev — 7ddc17a's tree had
+already been in the store since 2026-10-19 because the input path had not moved. A *same*
+-rev bump costs the engine derivation, not the 15 GB input unpack: the .drv alone is 190 MiB
+of vendored ggml + 96 MiB of Strata's source).
+
+**What it did to this box, which is why the doc is 154 lines and not a line:** two of 0.2.7's
+**new defaults turn on for this card class with no flag of ours** — `STRATA_ROUTE_PRIOR=1.5`
+(gate `kSmallCardGiB = 13.0`, so the 12 GB RTX 3060 is inside; upstream measured +15% story /
+**+37% code** on their RTX 3060 IQ3_XXS, and in the same sample **fewer agent loops finish**,
+4.5/10 vs 5.6/7) and `STRATA_PROMPT_ATTN_IMMA` (gate CUDA `cc ≥ 80`, so sm_86 — +1.1..1.8%
+prompt, another summation order). Both change *answers*, and this box is the one pi answers
+from (`PI_PROVIDER=strata-services2`), on an IQ1_M 256-of-512 pack neither number was taken
+on. The off switches are `extraEnv`, no rebuild; `STRATA_DEFAULTS=026` puts the whole 0.2.7
+Qwen default set back in one step (`defaults_026.hpp`), which is the shape upstream shipped
+for exactly this. Everything else 0.2.7 turned on was read **and ruled out by its gate**: the
+sm_120 / gfx12 pair, `cc == 89` (`MMVQ_IL_89`, Ada only), the two **sm_80-exactly** defaults
+of #3779 (`major==8 && minor==0`, `cc[dev]==80`), `STRATA_PLE_AUTO_RAM` (the residency policy
+is now *on*, and `ple_resident_admit` will not admit a 28.8 GB table into 29.97 GiB with a
+~23.4 GiB arena to fill — upstream's own reason for the policy is one line above the call:
+the 64 GB RTX 5070's table lock took the lockable memory and the expert load died with
+**error 1453, ERROR_WORKING_SET_QUOTA**).
+
+**Contracts re-checked at the new rev before deploying, all five:** the 13 `engineArgs` flag
+pairs parse, the 11 `configFile` keys are read by `serve/server.py` (now 8,550 lines), the
+package's build-time import guard's three modules exist (`serve.server`, `strata_control.procs`,
+`strata_cli.client` — a copy list that lags upstream fails the build in two seconds, and that
+bite is why the guard exists), `add_executable(strata …)` / `strata-device` still exist, and
+`data/draft_vocab.bin` + `data/expert-profile-coder.bin` md5s are equal between the two trees
+with `data/dsv41` the only new entry. The pinned llama.cpp is unchanged (`3cf03257f219…`, read
+in the *new* tree), so the vendored ggml side is identical and the pin needed no move.
+`--spec 4 --spec-min-p 0.5` — what `strata.nix` passes — is still upstream's own default depth.
+`STRATA_BUILD_DSV41` is OFF by default ("changes no existing target"), so the new third engine
+is not compiled here.
+
+**The version *is* in the input, in one place** — `CMakeLists.txt:11
+project(strata VERSION 0.1.52)` → the `STRATA_VERSION` macro → `strata --version` prints it
+(`src/program/generate.cpp:2873`), so the installed binary names the rev a switch landed and
+`$STRATA/bin/strata --version` is the cheap proof. What carries no version is the app layer
+(`setup.py`, the feed files) — the Python tree is copied, not versioned, which is why the check
+under the ritual is `--version` and not a grep. `grep -n VERSION` over the tree finds the
+CMake line; `rg setup.py` does not.
+
+**Two traps this run hit, both in `docs/nix-dev-workflow.md` already:**
+
+1. **A detached `systemd-run` nix build runs as root and pays the repo's `safe.directory`
+   rule even when root's own config lists the repo.** aibox has the `safe.directory` entry and
+   still fails, in seconds, with `opening Git repository … is not owned by current user
+   (libgit2 error code = 7)` — the unit's uid is root, the repo is uid 1234, and libgit2 checks
+   ownership against the *caller*, so a detached build must run the nix client as the operator
+   user (`sudo -u leigh-admin -H nix build …`). Receipt: `journalctl -u strata-engine` shows the
+   sudo line opening a session for uid 1234 while the unit itself is root's.
+2. **`nix eval ".#strata-cuda.outPath"` needs a `cd`, not an expression.** `nix eval --raw
+   "self..packages…"` with no flake context reads the argument as a *path* and reports
+   `getting status of "/home/leigh-admin/self..packages…"` — which looks like a broken
+   attribute path rather than a missing flake. From the repo, `nix eval --raw ".#strata-cuda.outPath"`
+   answers in one second and unpacks the input's new rev on first use.
+
+**Gate at this lock, re-read rather than inherited:** the four assertion evals, `just fmt-check`
+and `just check-source-size` pass; `nix flake check --no-build` still dies with
+`path 'zicnr…-sops-secret-pg_pass.drv' is not valid` — the eval-time secret read of
+`config.sopsSecretText`, a *different* drv name from the one recorded at the 2026-10-14 lock
+(`grafana_secret_key`), so the baseline is a fact about a lock and was re-read here. The bump
+was verified not to cause it: the same error at the same lock with the tree at `git stash`.
+
+**Deploy state as this commit landed:** pushed (`3c755fb..59cb3d8`, over services1 with its
+key in a temporary agent — services2 has no GitHub key of its own, and a hop-key private key
+must not be copied onto a box as a side effect of a deploy), aibox ff'd to `59cb3d8`, engine
+building on aibox detached (`systemctl is-active strata-engine`, log `/tmp/strata-engine.log`).
+**Not finished at this commit**: services2 is still serving 0.1.48.1 — the copy-back and the
+switch (with the GOLDEN-RULE confirm in the same invocation, and the journal line that says
+which of the new defaults resolved) are the next session's. The open item to measure the two
+new defaults on *this* pack is in `docs/follow-ups.md`, §Strata (services2).
+
 ## 2026-10-25 — a camera firmware update was almost run on a guess; then access arrived and the guess lost
 
 **Asked:** update one OpenIPC camera, guarantee WiFi and SSH come back, and see whether an
