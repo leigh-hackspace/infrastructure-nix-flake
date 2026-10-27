@@ -19,6 +19,7 @@ X first", X has already cost someone a day.
 | run non-trivial nix, debug a wedged/hanging nix, build detached, remote-build | `docs/nix-dev-workflow.md` |
 | touch DNS, dnsmasq, the router, the DigitalOcean zone, a new vhost's name | `docs/router-and-dns.md` (+ `machines/gw/README.md` — this box **is** the network's router, live at 10.3.1.1 since the 2026-10-21 cutover: it says what is proven on that box, what is still a guess, and what must not move) |
 | move TLS termination, a vhost, the nginx-sso gate, `anubis` or `headscale` **between boxes** — i.e. work the router-as-front-door plan is preparing | `docs/router-front-door-migration.md` (**deployed 2026-10-24: `gw` terminates everything the network has *one* of — cert, public + `*.int` vhosts, `nginx-sso`, `anubis`, the ACLs — and `services1` is an *origin*: plain HTTP on :80, `CONFIG.ROUTER_ONLY`, no cert, no gate, no anubis. `headscale`/`headplane` also run on `gw` now. Phase-by-phase history and the deploy findings are in that doc**) + `docs/router-and-dns.md` |
+| ask whether the router can be **redundant** — a second `gw`, or CARP / VRRP / keepalived / conntrackd, or "OPNsense did this with CARP" | `docs/router-ha.md` (**there is one router, and the retired appliance never configured CARP or pfsync either; the gate is an AAISP question about whether the routed `/29` and the delegated `/48` follow a failover dial, not a NixOS module; and nothing in this flake can tell a second `gw` from the first, because the network-tables guard reads tables and never asks which box is evaluating them**) |
 | touch the ProCurve switches (device side, RADIUS, logins) | `docs/procurve-switches.md` + `crates/switch-gui/README.md` |
 | touch NAS mounts, the NAS itself, or backups/borg | `docs/nas-and-borg.md` |
 | touch the UniFi controller, its backups, or UniFi OS Server | `docs/unifi-os-server.md` — the appliance is a *downgrade* of the running controller, and `.unf` backups are encrypted with a key that is not on disk |
@@ -166,7 +167,9 @@ X first", X has already cost someone a day.
   (a machine that is *built by* aibox rather than deployed —
   `machines/pi-room-sys/README.md`).
 - `docs/` — reference docs (`services.md`, `building-rust-code.md`,
-  `nix-dev-workflow.md`, `router-and-dns.md`, `procurve-switches.md`,
+  `nix-dev-workflow.md`, `router-and-dns.md`, `router-ha.md` (the router-redundancy
+  decision record: what CARP-style HA maps to on Linux, and the four things it does not fix),
+  `procurve-switches.md`,
   `nas-and-borg.md`, `monster-proxmox.md`, `printer-servers.md`, `follow-ups.md`,
   `work-log-2026-10.md`) and the dated narrative write-ups, post-mortems and audits
   (gtx1060 saga, filestore gotchas, the repo audit, the gw cutover attempt). They live

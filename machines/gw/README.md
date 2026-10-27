@@ -559,6 +559,40 @@ named server for, so the path and the server address are one fact and
 `./lib/network-tables.nix` keeps them together). Moving netboot to the router means
 moving the three files *and* the server address, not one of them.
 
+## A second router was considered on 2026-10-27 and not built
+
+The question was "another dual-NIC box, two `gw`s with HA — OPNsense did it with CARP". The
+whole answer is `docs/router-ha.md`; the four findings worth having before anyone asks again:
+
+* **The retired appliance never configured CARP or pfsync.** Its `config.xml` holds two
+  `ipalias` virtual IPs with empty `vhid`, and a `<hasync>` section whose only content is
+  `pfsyncversion=1400` — a default that looks like a decision — plus `disconnectppps=0` and
+  empty `pfsyncinterface`/`pfsyncpeerip`/`synchronizetoip`. `docs/follow-ups.md` carries the
+  correction to "disabled": it was never filled in, so there is no redundancy to miss.
+* **This network already tolerates ~20 minutes of a dead router** — 24 h leases renewed at
+  ~12 h, and `ra-param`'s 1200 s router lifetime — and a replacement running the same
+  tables does not NAK anyone (`dhcp-authoritative` is safe precisely because the tables are
+  the same). A rehearsed cold spare therefore covers the failure this box can actually
+  suffer, while VRRP's 1–3 s covers process crashes, which `INFRA.mkNeverGiveUpOverride`
+  and `Restart = "always"` already do on the box.
+* **CARP's seamless half is state, not the address.** pfsync on FreeBSD; on Linux that is
+  `conntrackd` in FTFW mode (in nixpkgs, no module, needs a crosslink and identical NAT on
+  both). Without it a failover resets every established connection, because the new master
+  holds no NAT binding for the return traffic. nixpkgs' literal CARP, `networking.ucarp`, is
+  IPv4-only and so cannot float this network's front-door address.
+* **The tunnel gates everything else.** `ppp0`, the routed `81.187.195.17/29` and the
+  delegated `/48` are one AAISP session, and VLAN 225 must egress it in both directions, so
+  no floating address moves the public door until AAISP says the block follows a failover
+  dial. Everything else in `docs/router-ha.md` protects the LAN only.
+
+One correction this directory should own: the check named above as refusing "a table where
+[`hosts.router`] is not one of this box's own" is **table-scoped, not box-scoped** — it never
+asks which machine is evaluating, and `machines/gw/int-dns.nix` only compares this box's
+vhosts against the table, which a second box running the same directory satisfies. So no
+guard in this repo refuses a duplicate router: a second `gw` renders a byte-identical
+dnsmasq conf and evaluates green. Only the cabling currently says there is one router, and
+that is the same fault shape the deleted co-existence mode left behind.
+
 ## Facts that were read off the old box, and what is still open
 
 The old box was reachable until 2026-10-17, and its config, pf rules, interface

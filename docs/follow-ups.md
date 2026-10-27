@@ -782,7 +782,17 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   captive portal, WireGuard, IPsec/swanctl and cron were all **disabled** there
   (nothing to port); its TrafficShaper pipes and its `snatrules` were empty or off;
   there was **no gateway failover** either (every `route-to` in `pf.txt` is
-  single-target, so `firewall.nix`'s static marks are parity, not a regression); the
+  single-target, so `firewall.nix`'s static marks are parity, not a regression);
+  **the CARP/pf-sync half was re-read on 2026-10-27 and is stronger than "disabled"**:
+  the HA page was never filled in at all — two virtual IPs, both `ipalias` with an empty
+  `vhid`, and `<hasync>` holding nothing but `pfsyncversion=1400` (a default that looks
+  like a decision), `disconnectppps=0` and empty `pfsyncinterface`/`pfsyncpeerip`/
+  `synchronizetoip`/`username`/`syncitems`. So there is no redundancy to have regressed
+  from, and the answer to "OPNsense does it with CARP" for this network is "it did not".
+  What a CARP-style pair would take on Linux, and the four things it would not fix, are
+  `docs/router-ha.md`; the one item to carry out of that file is that **the AAISP tunnel's
+  failover is unanswered and gates everything else** (can two L2TP sessions share a line,
+  and does the routed `/29` and the `/48` follow the session that dials). the
   floating `pass in … ANY` rule described as `EVERYTHING` and the `DELETEME` rule were
   **not** inherited and nobody has reported anything missing since; and its `bogons`
   table, `pf_share_forward`, `lb_use_sticky` and NAT-reflection *helper* are pf/FreeBSD
