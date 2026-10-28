@@ -79,6 +79,12 @@
     # /proc/net/nf_conntrack for a DynamicUser.  Deployed with it, not inside it,
     # because both have to hold before the service's first probe.
     ./conntrack-reader.nix
+    # What its `/api/leases` table needs: dnsmasq's lease file is `0640 root:root`,
+    # and this is the module that decides who may read it (and keeps it readable
+    # when dnsmasq rewrites it).  It reuses the account and group that
+    # ./conntrack-reader.nix defines, so it is imported after it for the reader's
+    # sake rather than for the module system's.
+    ./lease-reader.nix
     ./openvpn.nix
     ./sops.nix
     ./uplink.nix

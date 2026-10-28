@@ -109,6 +109,66 @@ impl Names {
     }
 }
 
+/// One dnsmasq lease line as a record: `(epoch, mac, ip, hostname, client-id)`.
+///
+/// Shared with [`crate::leases`], which renders the lease table: one parser of
+/// one format, because the two tables used to parse the same line separately and
+/// a disagreement about what a malformed line is is exactly the kind of drift a
+/// shared parser prevents.
+///
+/// A line whose first field is not a number is not a lease. That is dnsmasq's own
+/// header (`duid <hex>`, two fields and no epoch) and a half-written renewal,
+/// both of which fall out here rather than by special cases — and a lease whose
+/// address does not parse is refused rather than kept, because an address is what
+/// both tables hang their row off.
+///
+/// dnsmasq writes `*` for a client that sent no hostname; that is not a name,
+/// which is why the hostname half comes back empty here rather than as `*`.
+/// A client-id is optional and may contain spaces, so it is the tail.
+pub(crate) fn lease_line(line: &str) -> Option<LeaseLine> {
+    let toks: Vec<&str> = line.split_whitespace().collect();
+    // `<epoch> <mac> <ip> <hostname> [client-id]` — dnsmasq's own header has two
+    // fields and no leading number, so the length check and the number check are
+    // what keep it out here rather than a special case.
+    if toks.len() < 4 {
+        return None;
+    }
+    // A lease's expiry is a wall-clock epoch (dnsmasq lets one run into 2038),
+    // so a first field that is not a number is not a lease at all.
+    let expires: i64 = toks[0].parse().ok()?;
+    let ip: IpAddr = toks[2].parse().ok()?;
+    let name = if toks[3] == "*" {
+        String::new()
+    } else {
+        toks[3].to_string()
+    };
+    Some(LeaseLine {
+        expires,
+        mac: toks[1].to_string(),
+        ip,
+        name,
+        // A client-id is optional and may itself contain spaces, so it is the
+        // tail rather than field four.
+        cid: toks[4..].join(" "),
+    })
+}
+
+/// A parsed lease line, before `crate::leases` adds what the address's block
+/// says about it.  A struct rather than a five-tuple because five positional
+/// fields of two kinds is exactly how the second caller gets the order wrong.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct LeaseLine {
+    /// Wall-clock epoch seconds: when dnsmasq hands this address out again.
+    pub(crate) expires: i64,
+    /// The client's MAC, or `*` for a lease dnsmasq generated rather than one a
+    /// client took.
+    pub(crate) mac: String,
+    pub(crate) ip: IpAddr,
+    /// Empty for dnsmasq's `*`: a client that sent no hostname has no name.
+    pub(crate) name: String,
+    pub(crate) cid: String,
+}
+
 /// One `(address, name)` pair out of a hosts or leases line, if it has one.
 pub(crate) fn parse_name_line(line: &str, kind: SourceKind) -> Option<(IpAddr, String)> {
     let toks: Vec<&str> = line.split_whitespace().collect();
@@ -126,17 +186,14 @@ pub(crate) fn parse_name_line(line: &str, kind: SourceKind) -> Option<(IpAddr, S
             (ip, alias.to_string())
         }
         SourceKind::Leases => {
-            // `<epoch> <mac> <ip> <hostname> <client-id>`; dnsmasq writes `*`
-            // for a client that sent no hostname, which is not a name.
-            if toks.len() < 4 || toks[0].is_empty() || !toks[0].bytes().all(|b| b.is_ascii_digit()) {
+            // `<epoch> <mac> <ip> <hostname> <client-id>`, by way of the parser
+            // the lease table shares (`lease_line` above) — and dnsmasq's `*`
+            // comes back as an empty hostname there, which is not a name.
+            let lease = lease_line(line)?;
+            if lease.name.is_empty() {
                 return None;
             }
-            let ip: IpAddr = toks[2].parse().ok()?;
-            let host = toks[3];
-            if host.is_empty() || host == "*" {
-                return None;
-            }
-            (ip, host.to_string())
+            (lease.ip, lease.name)
         }
     };
     Some(out)

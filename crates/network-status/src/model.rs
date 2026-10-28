@@ -239,6 +239,9 @@ pub(crate) mod tests {
             conn_max_rows: 200,
             conn_stale: 15,
             hosts_files: Vec::new(),
+            leases: true,
+            lease_ttl: 86_400,
+            lease_max_rows: 500,
             leases_file: None,
         }
     }

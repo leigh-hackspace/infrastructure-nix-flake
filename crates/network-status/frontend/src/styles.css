@@ -128,3 +128,35 @@ tr.uncounted td { opacity: .72; }
   border: 1px solid var(--border); border-radius: 6px; padding: 3px 8px; font-size: 13px;
 }
 .ctl.q::placeholder { color: var(--muted); }
+
+/* --- tabs ----------------------------------------------------------------- */
+/* By question, not by widget: see app.tsx's TABS for why the page has them.  The
+   active tab is the only thing with colour, so the eye lands on where it is. */
+.tabs {
+  display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 14px;
+  border-bottom: 1px solid var(--border); padding-bottom: 8px;
+}
+.tab {
+  background: transparent; color: var(--muted); border: 1px solid transparent;
+  border-radius: 6px; padding: 5px 11px; font: inherit; font-size: 13px;
+  cursor: pointer;
+}
+.tab:hover { color: var(--text); background: var(--panel2); }
+.tab.active {
+  color: var(--text); background: var(--panel2); border-color: var(--border);
+  font-weight: 600;
+}
+/* `hidden` is the UA stylesheet's `display:none`, which an author `display:grid`
+   on `.cards` overrides — so a hidden overview tab would still take its space. */
+.tabpanel[hidden] { display: none !important; }
+
+/* --- the lease table ------------------------------------------------------ */
+/* The bar is the share of the lease still to run, drawn like the connection
+   table's rate bars so the two tables read the same way; `low` and `lapsed` rows
+   are the ones worth acting on. */
+.bar.lease { background: var(--good); opacity: .18; }
+.bar.lease.low { background: var(--warn); opacity: .3; }
+table.leases td { vertical-align: middle; }
+tr.lapsed td { opacity: .55; }
+tr.lapsed td.num { color: var(--bad); }
+tr.low td.num { color: var(--warn); }

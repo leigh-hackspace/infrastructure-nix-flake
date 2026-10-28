@@ -36,6 +36,15 @@ let
   localPrefixes = TABLES.localPrefixes VLANS;
   localPrefixesV4 = builtins.filter (p: !has ":" p) localPrefixes;
 
+  # The same set with a `vlan<id>=` in front of every prefix, which is the form
+  # ../network-status.nix hands to `--vlan` (see the assertion about it below).
+  # `builtins.split "="` on one spec gives [name [] cidr], so the two halves of a
+  # spec are element 0 and element 2.
+  vlanPrefixes = TABLES.vlanPrefixes VLANS;
+  unlabelled = map (spec: builtins.elemAt (builtins.split "=" spec) 2) vlanPrefixes;
+  labelledVlans = map (spec: builtins.elemAt (builtins.split "=" spec) 0) vlanPrefixes;
+  vlanDevices = map (v: TABLES.vlanDevice v) VLANS;
+
   need = cond: msg:
     if cond
     then true
@@ -233,10 +242,10 @@ in
     ''a VLAN whose block is not in the network's ACL: ${builtins.toJSON (map (v: v.net) VLANS)}''
   );
   # --- the connection table's idea of "ours" --------------------------------
-  # `TABLES.localPrefixes` is what ../network-status.nix hands to `--local-prefix`,
-  # and the whole answer to "who is downloading, and is that one of ours" is
-  # decided by it.  Checked with the same containment relation as every other
-  # assertion here, for the same reason the firewall uses it: a prefix the
+  # `TABLES.localPrefixes` is what the dashboard's `--vlan`/`--local-prefix` flags
+  # are made of, and the whole answer to "who is downloading, and is that one of
+  # ours" is decided by it.  Checked with the same containment relation as every
+  # other assertion here, for the same reason the firewall uses it: a prefix the
   # network's own ACL refuses must not be labelled internal on the page either,
   # or the dashboard would be showing a stranger's traffic as one of ours.
   #
@@ -266,6 +275,31 @@ in
     need
     (builtins.length localPrefixes == builtins.length (TABLES.uniq localPrefixes))
     ''a duplicated local prefix: ${builtins.toJSON localPrefixes}''
+  );
+  # --- the same prefixes, labelled with their VLAN ---------------------------
+  # `TABLES.vlanPrefixes` is what `../network-status.nix` hands to `--vlan`, and it
+  # is the *same set* as `localPrefixes` with a `vlan<id>=` in front.  That is the
+  # whole contract: the lease table groups by the label, the connection table
+  # decides direction from the prefix, and one list serving both is what keeps a
+  # lease's VLAN and its flow's direction from being two different answers about
+  # one address.  Carrying the label into a second, separately-derived list is how
+  # they would drift, so the assertion is equality of the prefix halves.
+  assert (
+    need
+    (builtins.sort builtins.lessThan unlabelled == builtins.sort builtins.lessThan localPrefixes)
+    ''the --vlan prefixes and the --local-prefix prefixes describe different blocks: ${
+        builtins.toJSON {
+          onlyInVlanFlags = builtins.filter (p: !builtins.elem p localPrefixes) unlabelled;
+          onlyInLocalPrefixes = builtins.filter (p: !builtins.elem p unlabelled) localPrefixes;
+        }
+      }''
+  );
+  # And each label is a VLAN device this box actually creates — a lease labelled
+  # `vlan999` would be a VLAN column pointing at an interface nobody can find.
+  assert (
+    need
+    (builtins.all (name: builtins.elem name vlanDevices) labelledVlans)
+    ''a --vlan label that is not one of the router's VLAN devices: ${builtins.toJSON (builtins.filter (name: !builtins.elem name vlanDevices) labelledVlans)}''
   );
   # --- the records table -----------------------------------------------------
   # Every record's VLAN exists in the VLAN table.  A record naming a VLAN that

@@ -54,11 +54,13 @@
 #
 # What this deliberately does **not** do is make the table readable by anyone else.
 # It is a list of every device on the network and who it is talking to, so the group
-# has exactly one member.  That is also why nothing here touches
-# `/var/lib/dnsmasq/dnsmasq.leases` (`0640 root:root`) — the one file with the
-# *names* of DHCP clients, which is why phones and laptops show as numbers on the
-# page.  Handing it to the same group is a decision about who may see which device
-# was seen doing what; it has not been made.
+# has exactly one member: the dashboard's own `network-status` account, which no human
+# logs in as.  That one file in `/var/lib/dnsmasq` used to be the counter-example here —
+# the lease file holds the *names* of DHCP clients, and handing it to this group was a
+# decision nobody had made.  It has been made: `./lease-reader.nix` is that module, it
+# puts the lease file in *this* group for the same single member, and its header is where
+# the reasoning lives.  Adding a second member to `conntrack-readers` now grants both —
+# which is the reason to read that header rather than add a line.
 {pkgs, ...}: let
   conntrackGroup = "conntrack-readers";
   conntrackFile = "/proc/net/nf_conntrack";

@@ -107,7 +107,7 @@ export function ConnectionsPanel(s: { store: Store }) {
     if (noteEl) {
       const why: string[] = [
         "Age is how long <em>this page</em> has seen the connection — conntrack records no start time — and rates are differenced between samples, so a connection needs two samples to have one.",
-        `\u201cdown\u201d is always peer \u2192 device, whichever way the connection started. Addresses come from the router's DNS records${data.unaccounted ? "" : " and leases"}; the rest stay numbers.`,
+        `\u201cdown\u201d is always peer \u2192 device, whichever way the connection started. Addresses come from the router's DNS records and dnsmasq's lease file (the DHCP leases tab has the same rows, with what each client calls itself); anything in neither stays a number.`,
       ];
       if (data.unaccounted > 0) {
         why.push(

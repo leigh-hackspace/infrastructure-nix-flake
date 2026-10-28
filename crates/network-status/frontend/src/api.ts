@@ -60,6 +60,15 @@ export interface AppConfig {
     stale: number;
     local_prefixes: string[];
   };
+  leases?: {
+    /** false when the router was started with `--no-leases` (no lease file). */
+    enabled: boolean;
+    /** the lease length dnsmasq hands out (`leaseTtl`), in seconds. */
+    ttl: number;
+    max_rows: number;
+    /** every VLAN the router knows about, whether or not it has leases. */
+    vlans: string[];
+  };
 }
 
 // --- the connection table (/api/connections) ------------------------------
@@ -175,4 +184,76 @@ export async function loadConnections(f: ConnFilter): Promise<ConnectionsRespons
   if (f.kind) p.set("kind", f.kind);
   if (f.q) p.set("q", f.q);
   return json<ConnectionsResponse>(await fetch(`/api/connections?${p}`, { cache: "no-store" }));
+}
+
+// --- the DHCP lease table (/api/leases) -----------------------------------
+
+/** One lease, as dnsmasq's lease file has it plus what the address's block says. */
+export interface LeaseRow {
+  ip: string;
+  /** what the client called itself; "" for dnsmasq's own `ra` rows. */
+  name: string;
+  /** the MAC, or `*` for a row dnsmasq generated rather than one a client took. */
+  mac: string;
+  /** dnsmasq's client-id: how the client was matched, and may be empty. */
+  cid: string;
+  /** wall-clock epoch seconds when this address is handed out again. */
+  expires: number;
+  /** the lease length the router hands out (`--lease-ttl`). */
+  ttl: number;
+  /** whether `ttl` describes *this* lease's block rather than the closest guess. */
+  known: boolean;
+  vlan: string | null;
+  /** the network the address is in (`10.3.2.0/24`), or "". */
+  net: string;
+  /** seconds until it is handed out again; negative once it has passed. */
+  left: number;
+  /** percent of the lease still to run; null when the length is unknown. */
+  pct: number | null;
+  /** when it was issued, recovered from the expiry; null when unknown. */
+  issued: number | null;
+  /** dnsmasq's `ra-*` row rather than a client's lease. */
+  generated: boolean;
+}
+
+export interface LeaseFilter {
+  sort: "expires" | "issued" | "name" | "vlan" | "addr";
+  /** "" keeps every lease; a number keeps only those expiring within it. */
+  maxLeft: number;
+  vlan: string;
+  q: string;
+}
+
+export interface LeasesResponse {
+  /** the router's clock when it answered: countdowns are relative to this. */
+  now: number;
+  lease_ttl: number;
+  file: string;
+  total: number;
+  /** lease-file lines that were not leases (dnsmasq's own header, a torn write). */
+  skipped: number;
+  matched: number;
+  returned: number;
+  expired: number;
+  /** leases whose block is not one the router was told about, so no true length. */
+  unknown_ttl: number;
+  generated: number;
+  max_left: number;
+  /** the count of leases per VLAN, keyed by VLAN device name. */
+  vlans: Record<string, number>;
+  /** the count of leases per network, keyed by prefix. */
+  networks: Record<string, number>;
+  filter: { max_left: number; vlan: string | null; net: string | null; sort: string; q: string | null; limit: number };
+  defaults: { max_left: number; limit: number };
+  vlan_labels: string[];
+  leases: LeaseRow[];
+}
+
+export async function loadLeases(f: LeaseFilter): Promise<LeasesResponse> {
+  const p = new URLSearchParams();
+  p.set("sort", f.sort);
+  if (f.maxLeft >= 0) p.set("max_left", String(f.maxLeft));
+  if (f.vlan) p.set("vlan", f.vlan);
+  if (f.q) p.set("q", f.q);
+  return json<LeasesResponse>(await fetch(`/api/leases?${p}`, { cache: "no-store" }));
 }

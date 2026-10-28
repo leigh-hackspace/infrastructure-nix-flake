@@ -81,6 +81,7 @@
 mod conntrack;
 mod flows;
 mod json;
+mod leases;
 mod model;
 mod names;
 mod nets;
@@ -155,6 +156,21 @@ struct Args {
     /// not: it is `0640 root:root`), which is what names the DHCP clients that
     /// have no record of their own.
     leases_file: Option<String>,
+    /// Serve `/api/leases` at all.  Off when there is no `--leases-file`, and
+    /// with `--no-leases` for a probe target whose lease file is not this
+    /// dashboard's to read — the same switch `--no-conns` is, and for the same
+    /// reason: an endpoint that answers an unreadable source with an empty table
+    /// looks like a network with no DHCP clients, which is a conclusion an
+    /// operator would act on.
+    leases: bool,
+    /// How long a lease this router hands out: `leaseTtl` in
+    /// `machines/gw/lib/network-tables.nix`.  dnsmasq's lease file records an
+    /// expiry and no length, so this is what turns one into "how much is left" —
+    /// and a lease in a block we were not told about is marked `known: false`
+    /// rather than divided by a number that does not describe it.
+    lease_ttl: i64,
+    /// Most rows `/api/leases` will return.
+    lease_max_rows: usize,
 }
 
 /// The filter `/api/connections` uses when the request asks for none.
@@ -182,7 +198,7 @@ fn route(
             200,
             "application/json".to_string(),
             format!(
-                r#"{{"wan":{},"title":{},"interval":{},"connections":{{"enabled":{},"min_age":{},"min_bytes":{},"max_rows":{},"stale":{},"local_prefixes":{}}}}}"#,
+                r#"{{"wan":{},"title":{},"interval":{},"connections":{{"enabled":{},"min_age":{},"min_bytes":{},"max_rows":{},"stale":{},"local_prefixes":{}}},"leases":{{"enabled":{},"ttl":{},"max_rows":{},"vlans":{}}}}}"#,
                 quoted(&args.wan),
                 quoted(&args.title),
                 args.interval.as_secs(),
@@ -192,6 +208,10 @@ fn route(
                 args.conn_max_rows,
                 args.conn_stale,
                 local_prefixes_json(args),
+                args.leases,
+                args.lease_ttl,
+                args.lease_max_rows,
+                json_strings(&args.local_nets.vlan_labels()),
             ),
         ),
         ("GET", "/api/snapshot") => {
@@ -242,6 +262,46 @@ fn route(
                 g.json(&q, &defaults, args.interval.as_secs()),
             )
         }
+        ("GET", "/api/leases") => {
+            // Three ways this can be off, each said out loud rather than answered
+            // with an empty table: the operator disabled it, no lease file was
+            // configured, or the file exists and this process may not read it.
+            if !args.leases {
+                return (
+                    404,
+                    "application/json".to_string(),
+                    r#"{"error":"lease table disabled (started with --no-leases)"}"#.to_string(),
+                );
+            }
+            let Some(path) = args.leases_file.as_deref() else {
+                return (
+                    404,
+                    "application/json".to_string(),
+                    r#"{"error":"lease table disabled (no --leases-file)"}"#.to_string(),
+                );
+            };
+            let defaults = lease_query(args);
+            let q = leases::parse(query, &defaults);
+            match leases::json(
+                path,
+                &q,
+                &defaults,
+                probe::now_ts(),
+                &args.local_nets,
+                args.lease_ttl,
+                args.lease_max_rows,
+            ) {
+                Ok(body) => (200, "application/json".to_string(), body),
+                // The file is root-only unless `machines/gw/lease-reader.nix`
+                // has put this account in its group; a 503 with the OS's own
+                // words is the receipt for that, not a table that reads empty.
+                Err(e) => (
+                    503,
+                    "application/json".to_string(),
+                    format!(r#"{{"error":{}}}"#, quoted(&e)),
+                ),
+            }
+        }
         // Anything else is a SPA route: serve the static asset if present,
         // otherwise fall back to index.html (client-side routing).
         ("GET", _) => match serve_static(&args.static_dir, path) {
@@ -249,6 +309,25 @@ fn route(
             None => (200, "text/html; charset=utf-8".to_string(), FALLBACK_HTML.replace("__TITLE__", &args.title)),
         },
         _ => (404, "application/json".to_string(), r#"{"error":"not found"}"#.to_string()),
+    }
+}
+
+/// `["vlan225","vlan226"]` — small helper the config's VLAN list needs.
+fn json_strings(items: &[String]) -> String {
+    let inner: Vec<String> = items.iter().map(|s| quoted(s)).collect();
+    format!("[{}]", inner.join(","))
+}
+
+/// The filter `/api/leases` uses when the request asks for none.
+fn lease_query(args: &Args) -> leases::Query {
+    leases::Query {
+        max_left: -1,
+        needle: None,
+        vlan: None,
+        net: None,
+        limit: args.lease_max_rows,
+        sort: leases::Sort::Expires,
+        reverse: false,
     }
 }
 
@@ -335,6 +414,10 @@ fn main() {
     let mut conn_stale: i64 = 15;
     let mut hosts_files: Vec<String> = Vec::new();
     let mut leases_file: Option<String> = None;
+    let mut no_leases = false;
+    let mut lease_ttl: i64 = 86_400;
+    let mut lease_max_rows: usize = 500;
+    let mut vlans: Vec<String> = Vec::new();
     let mut i = 0;
     while i < argv.len() {
         match argv[i].as_str() {
@@ -412,6 +495,29 @@ fn main() {
                     i += 1;
                 }
             }
+            "--no-leases" => no_leases = true,
+            // `--vlan vlan226=10.3.2.0/24`: the same block a `--local-prefix`
+            // would give, plus the VLAN's name so the lease table can group by
+            // it.  Kept in its own list because it is parsed by the same
+            // `Localness` and must land in the *same* list, not a second one.
+            "--vlan" => {
+                if let Some(v) = argv.get(i + 1) {
+                    vlans.push(v.clone());
+                    i += 1;
+                }
+            }
+            "--lease-ttl" => {
+                if let Some(v) = argv.get(i + 1) {
+                    lease_ttl = arg_num("--lease-ttl", v, lease_ttl as u64) as i64;
+                    i += 1;
+                }
+            }
+            "--lease-max-rows" => {
+                if let Some(v) = argv.get(i + 1) {
+                    lease_max_rows = arg_num("--lease-max-rows", v, lease_max_rows as u64) as usize;
+                    i += 1;
+                }
+            }
             "--conn-min-age" => {
                 if let Some(v) = argv.get(i + 1) {
                     conn_min_age = arg_num("--conn-min-age", v, conn_min_age);
@@ -453,7 +559,7 @@ fn main() {
     // table would classify every flow as neither-end-internal, which is a quiet
     // way to be wrong, so the fallback is the private address space and the
     // startup line says which of the two is in force.
-    let local_nets = if local_prefixes.is_empty() {
+    let local_nets = if local_prefixes.is_empty() && vlans.is_empty() {
         eprintln!(
             "network-status: no --local-prefix given, guessing with the private ranges ({DEFAULT_LOCAL_PREFIXES:?})"
         );
@@ -464,6 +570,15 @@ fn main() {
         Localness::new(&guess)
     } else {
         Localness::new(&local_prefixes)
+    };
+    // The `--vlan` blocks land in the *same* prefix list as `--local-prefix`: a
+    // VLAN is inside the network by definition, so the connection table's
+    // direction rules do not change, and `vlan_of` has one list to search
+    // rather than a second one that could disagree with it.
+    let local_nets = {
+        let mut nets = local_nets;
+        nets.add_named(&vlans);
+        nets
     };
     // `/etc/hosts` is the default name source because every Linux box has one;
     // the router adds its own DNS records file (see machines/gw/network-status.nix).
@@ -490,6 +605,9 @@ fn main() {
         conn_max_rows,
         conn_stale,
         hosts_files,
+        leases: !no_leases && leases_file.is_some(),
+        lease_ttl,
+        lease_max_rows,
         leases_file,
     };
     let state = Arc::new(State::new(&args.hosts_files, args.leases_file.clone()));
@@ -528,6 +646,20 @@ fn main() {
             .as_deref()
             .map(|p| format!(" + {p}"))
             .unwrap_or_default(),
+    );
+    eprintln!(
+        "  lease table: {} (ttl {}s, max {} rows, vlans: {})",
+        match (&args.leases, args.leases_file.as_deref()) {
+            (false, _) => "disabled".to_string(),
+            (true, Some(p)) => p.to_string(),
+            (true, None) => "disabled (no --leases-file)".to_string(),
+        },
+        args.lease_ttl,
+        args.lease_max_rows,
+        match args.local_nets.vlan_labels().is_empty() {
+            true => "none (--vlan vlan226=10.3.2.0/24)".to_string(),
+            false => args.local_nets.vlan_labels().join(" "),
+        },
     );
 
     // Sampler thread
@@ -636,5 +768,79 @@ mod tests {
         assert_eq!(arg_num("--conn-min-age", "30", 5u64), 30);
         assert_eq!(arg_num("--conn-min-age", "soon", 5u64), 5);
         assert_eq!(arg_num("--conn-max-rows", " 40 ", 200usize), 40);
+    }
+
+    #[test]
+    fn the_lease_endpoint_follows_the_switch_and_says_which_reason() {
+        // Three ways `/api/leases` can be off, and each has a different sentence:
+        // the operator disabled it, no file was configured, or the file is there
+        // and this process may not read it.  None of them may answer with an empty
+        // table, because "no DHCP clients" is a conclusion an operator acts on.
+        let state = Arc::new(State::new(&[], None));
+        let empty = HashMap::new();
+
+        let mut off = args_with(true);
+        off.leases = false;
+        off.leases_file = Some("/tmp/does-not-matter".into());
+        let (status, _, body) = route("GET", "/api/leases", &empty, &state, &off);
+        assert_eq!(status, 404, "{body}");
+        assert!(body.contains("--no-leases"), "{body}");
+
+        let no_file = args_with(true);
+        assert!(no_file.leases_file.is_none());
+        let (status, _, body) = route("GET", "/api/leases", &empty, &state, &no_file);
+        assert_eq!(status, 404, "{body}");
+        assert!(body.contains("no --leases-file"), "{body}");
+
+        let unreadable = {
+            let mut a = args_with(true);
+            a.leases_file = Some("/nonexistent/dnsmasq.leases".into());
+            a
+        };
+        let (status, _, body) = route("GET", "/api/leases", &empty, &state, &unreadable);
+        assert_eq!(status, 503, "an unreadable file is an error, not a table: {body}");
+        assert!(body.contains("dnsmasq.leases"), "the OS's own reason is the receipt: {body}");
+    }
+
+    #[test]
+    fn the_lease_table_renders_rows_and_ignores_dnsmasqs_header() {
+        // The live file was measured with 49 lines of which one was dnsmasq's own
+        // `duid` header; that header must be counted as skipped and not become a
+        // row, and a lease inside a labelled block must come back `known` so the
+        // page can draw a bar it can justify.
+        let path = std::env::temp_dir().join("network-status-main-leases-test");
+        std::fs::write(
+            &path,
+            concat!(
+                "duid 00:01:00:01:32:6b:9c:78:00:25:90:d3:f0:ea\n",
+                "1900000000 aa:bb:cc:dd:ee:ff 10.3.2.50 laptop *\n",
+                "1900000000 * 10.3.2.0 * *\n",
+            ),
+        )
+        .expect("temp lease file");
+
+        let mut args = args_with(true);
+        args.leases_file = Some(path.to_str().expect("utf-8 path").into());
+        args.lease_ttl = 86_400;
+        // A labelled block, so "this lease's length is the one the router hands
+        // out" is a fact the response can state rather than a guess.
+        let mut local_nets = Localness::new(&[]);
+        local_nets.add_named(&["vlan226=10.3.2.0/24".to_string()]);
+        args.local_nets = local_nets;
+        let state = Arc::new(State::new(&[], None));
+
+        let mut q = HashMap::new();
+        q.insert("sort".to_string(), "name".to_string());
+        let (status, ctype, body) = route("GET", "/api/leases", &q, &state, &args);
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(ctype, "application/json");
+        assert!(body.contains("\"skipped\":1"), "{body}");
+        assert!(body.contains("\"total\":2"), "{body}");
+        assert!(body.contains("\"name\":\"laptop\""), "{body}");
+        assert!(body.contains("\"known\":true"), "{body}");
+        // The `*` hostname is dnsmasq's "client sent none", not the name `*`.
+        assert!(!body.contains("\"name\":\"*\""), "{body}");
+        assert!(body.contains("\"generated\":true"), "{body}");
+        let _ = std::fs::remove_file(&path);
     }
 }

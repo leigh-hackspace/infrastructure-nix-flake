@@ -781,15 +781,19 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   count on this network, so 16-bit groups and a `mask mod 16 == 0` refusal are enough and
   no bignum arithmetic is wanted), then one line adding it to the same assertion block.
 - **The leases file is still root-only, so a DHCP client is a number on the page**
-  (opened 2026-10-25 with the connection table). `/etc/dnsmasq-records.hosts` is
-  world-readable and gives every *static* record a name; `/var/lib/dnsmasq/dnsmasq.leases`
-  is `0640 root:root` and holds the names of everything that got its address from the
-  dynamic ranges — which is most phones, laptops and the VLAN 226 cameras' own clients.
-  `machines/gw/conntrack-reader.nix` says where the two lines go. **Blocks:** nothing, and
-  it should stay blocked until someone decides it: the leases file is a list of which
-  MAC was seen on which VLAN when, and handing it to `conntrack-readers` means handing it
-  to whatever else is in that group. **Needs:** an explicit yes or no, written into that
-  module either way.
+  — **closed 2026-10-26, the decision is `machines/gw/lease-reader.nix`.** It was opened
+  2026-10-25 with the connection table: `/etc/dnsmasq-records.hosts` is world-readable
+  and gives every *static* record a name, while `/var/lib/dnsmasq/dnsmasq.leases` is
+  `0640 root:root` and holds the names of everything on the dynamic ranges — most
+  phones, laptops and the VLAN 226 cameras' own clients. **The answer was yes:** the file
+  goes to the group the dashboard's account already has (`conntrack-readers`, one
+  member, no login, `ProtectSystem=strict`), stays 0640, and is not readable by anything
+  else. What that group can now see is a device's hostname, MAC and client-id alongside
+  the address — which is the same audience the connection table already shows talking to
+  whom, over the front door's LAN ACL. The three places the group is re-applied, and why
+  a watch on `/var/lib/dnsmasq` rather than a timer, are in that module's header;
+  `/api/leases` is the endpoint and `docs/services.md` has its contract. **Blocks:**
+  nothing.
 - **`ExecStartPre=+` and not a timer is a decision, and it is open to being wrong**
   (2026-10-25, `machines/gw/conntrack-reader.nix`). The group on
   `/proc/net/nf_conntrack` is re-applied when network-status starts and not otherwise,

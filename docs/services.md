@@ -106,7 +106,7 @@ Served at `network-info.int.leighhack.org`, and **hosted on `gw` (10.3.1.1)** si
 2026-10-21. The Rust binary (`src/`, **zero external crates**) runs as its own system
 account with `--local`, reads the kernel's own statistics every 5 s, keeps a rolling
 history and serves the JSON API (`/api/snapshot`, `/api/history`, `/api/config`,
-`/api/connections`), `/metrics` and the static SPA (`--static-dir`).
+`/api/connections`, `/api/leases`), `/metrics` and the static SPA (`--static-dir`).
 
 It ran against the retired OPNsense box until 2026-10-21 and spoke its language:
 `root`, `netstat -ibn`, `pfctl`, `ifconfig -a`, `top -b`, `sysctl`. The probe is now
@@ -160,14 +160,17 @@ the question is asked in.
   reply tuple are the same flow; the counters go into *directions* (as/at the original
   tuple = the request side, as/at the reply tuple = the response side), which is what
   lets one row say "180 MB down, 40 kB up" for a download.
-- **Internal/external comes from `common/vlans.nix`.** `--local-prefix` is derived from
-  the VLAN table (`machines/gw/lib/network-tables.nix`'s `localPrefixes`: every VLAN's
-  block, plus the /64 of every address the VLAN answers on or advertises), so a device
-  on VLAN 226 cannot be labelled "external" because someone added a VLAN and not a
-  flag. `machines/gw/lib/check-network-tables.nix` checks the derived list against the
-  network's own ACL, with the same containment relation the firewall uses. Names come
-  from `/etc/dnsmasq-records.hosts` (static records, world-readable; the leases file is
-  root-only and the service does not read it, so a DHCP client is an address).
+- **Internal/external comes from `common/vlans.nix`.** `--vlan` is derived from
+  the VLAN table (`machines/gw/lib/network-tables.nix`'s `vlanPrefixes`: every VLAN's
+  block, plus the /64 of every address the VLAN answers on or advertises, each labelled
+  with its VLAN device name), so a device on VLAN 226 cannot be labelled "external"
+  because someone added a VLAN and not a flag.
+  `machines/gw/lib/check-network-tables.nix` checks the derived prefixes against the
+  network's own ACL with the same containment relation the firewall uses, and asserts
+  that the labelled list is the *same set* as the unlabelled one — the lease table
+  groups by those labels, so a drift there would be one address described two ways.
+  Names come from `/etc/dnsmasq-records.hosts` (static records, world-readable) and,
+  since the lease-reader below, from dnsmasq's lease file as well.
 - **Counters are 32-bit and wrap**, and the total is reported once it has wrapped — a
   5 GB flow reads 4.3 GB smaller. Rates are measured over a *flow's own* interval, not
   the global sample interval, because a flow seen every third sample has not been
@@ -200,6 +203,53 @@ sysctl goes on) — all under the binary's existing `router_` prefix rather than
 is scraped by the same Prometheus: two series answering nearly the same question with
 different units on one dashboard is a finding nobody notices.
 
+### The lease table (`/api/leases`)
+
+Added 2026-10-25 with the connection table, and **live on 2026-10-26** once the
+permission question was decided. It answers the other half of "what is on my network":
+the connection table says which address is talking, dnsmasq's lease file says which
+device that address belongs to, until when, and on which VLAN it was handed out.
+
+- **Source: `/var/lib/dnsmasq/dnsmasq.leases`, format `<expiry-epoch> <mac> <ip>
+  <hostname> <client-id>`.** It is `0640 root:root`, and handing it to the dashboard is
+  a decision about who may see which device was seen doing what —
+  **`machines/gw/lease-reader.nix` makes it, in its header, and is the module to read
+  before changing any of this.** It reuses the `conntrack-readers` group
+  `machines/gw/conntrack-reader.nix` already defines (one member: the dashboard's own
+  account, which has no login, no shell and `ProtectSystem=strict`), keeps mode 0640, and
+  re-applies the group from three places because dnsmasq owns and rewrites that file: a
+  tmpfiles rule (`f` then `z`), `lease-reader.service` started by `lease-reader.path`
+  watching `/var/lib/dnsmasq`, and an `ExecStartPre=+` on network-status so a boot never
+  races the path unit. A rename replaces the inode, which is why the watch is on the
+  directory and not the file.
+- **A lease's *length* is recovered, not read.** dnsmasq stores an absolute expiry and
+  no TTL. Every `dhcp-range` `machines/gw/lib/network-tables.nix` generates is generated
+  at `leaseTtl` (24 h), which reaches the binary as `--lease-ttl` from that same table,
+  so a lease inside a block the router was told about (`--vlan`) has a true fraction left
+  and is marked `known: true`; a tailnet or hand-written address gets the same arithmetic
+  with `known: false` and a dimmed bar, because what it actually ran at is not knowable
+  here. `issued` is `expiry - leaseTtl` for the same reason, and `null` when unknown.
+- **dnsmasq's own rows are rows.** `ra-only`/`ra-param` write a release time with no MAC
+  and no hostname; they are `generated: true`, have no bar and no `issued`, and are shown
+  rather than hidden because the address *is* spoken for. A `*` in the MAC column is
+  dnsmasq's marker, not a missing field.
+- **Malformed lines are counted, not fatal.** dnsmasq's own header (`duid <hex>`) and a
+  write caught mid-flight are `skipped`; the live file was measured with 49 lines of
+  which one was the header. Both tables parse leases through the same
+  `names::lease_line`, so the name column and the lease table cannot disagree about what
+  a lease is.
+- **Unreadable is 503 with the OS's reason, never an empty table** — "no DHCP clients"
+  is a conclusion an operator would act on, and it would be wrong. Same rule as
+  `--no-conns`: the endpoint says which of the three reasons applies (`--no-leases`, no
+  `--leases-file`, or the read itself failing).
+- **Query contract:** `q` (substring of name, address, MAC, client-id, VLAN or network),
+  `vlan` (a VLAN device name), `net` (a prefix), `max_left` (keep leases expiring within
+  that many seconds; negative keeps everything, lapsed rows included), `sort`
+  (`expires|issued|name|vlan|addr`, `^` prefix reverses), `limit`. Counts (`expired`,
+  `unknown_ttl`, `generated`, per-VLAN and per-network totals) are over **every** lease
+  read, not over the filtered page: they answer "what does this router hold", which is
+  the question `returned` already disambiguates for the other reading.
+
 It lives in `machines/gw/network-status.nix`. That does mean the router's system
 contains a Rust crate, but nothing compiles on gw for it: the box delegates to aibox
 with `max-jobs = 0`, so `just deploy gw` (or `just switch` on the box) builds the crate
@@ -212,6 +262,13 @@ nixpkgs-cached, so the flake copies `frontend/dist/` into the store rather than
 building it (`machines/gw/network-status.nix`). **After editing the SPA
 run `npm install && npm run build` in `frontend/` and commit the result** (or
 `just network-status-frontend`). See `crates/network-status/frontend/README.md`.
+
+It is **tabbed** (`Overview`, `Connections`, `DHCP leases`, `Interfaces & issues`)
+since 2026-10-26, because one column of cards holding two tables and a chart grid had
+got long enough that finding a lease meant scrolling past everything else. The tabs are
+by question, not by widget, all four panels stay mounted (a chart torn down is a chart
+that is blank until its next sample), and the active tab lives in the URL fragment
+(`#leases`) so a reload keeps it and a link can point at one.
 
 ## `crates/filestore/` — file browser over the NAS `filestore` share
 

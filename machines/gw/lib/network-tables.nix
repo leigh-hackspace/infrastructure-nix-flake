@@ -445,6 +445,24 @@ in rec {
   # address unlabelled is the honest answer, not "internal".
   localPrefixes = vlans: uniq (map (v: v.net) vlans ++ builtins.concatLists (map (v: map v6Block64 (v.ipv6 ++ map (r: r.from) v.ra)) vlans));
 
+  # The same prefixes, each carrying the name of the VLAN it belongs to:
+  # `vlan225=10.3.1.0/24`, which is what `../network-status.nix` hands to
+  # `--vlan`.  Identical in *content* to `localPrefixes` above and deliberately
+  # not derived from it, because that list is deduplicated across VLANs and has
+  # forgotten whose block each prefix was: the label is the fact this function
+  # adds, so it has to be attached before the dedup rather than guessed after it.
+  # `./check-network-tables.nix` asserts the two describe the same set of
+  # prefixes, so a VLAN that dropped out of one of them cannot go unnoticed.
+  #
+  # The label is the VLAN *device* name (`vlan225`), the same word dnsmasq tags a
+  # lease with and nftables matches on, so the lease table's VLAN column reads as
+  # the interface name an operator sees in `ip a`.
+  vlanPrefixes = vlans:
+    uniq (builtins.concatLists (map (
+        v: map (p: "${vlanDevice v}=${p}") (uniq ([v.net] ++ map v6Block64 (v.ipv6 ++ map (r: r.from) v.ra)))
+      )
+      vlans));
+
   # Order-preserving dedup: VLAN 225's `ipv6` and its `ra` ranges are in the same
   # /64, and a prefix handed to the same flag twice is a fact written twice.
   uniq = builtins.foldl' (seen: x:

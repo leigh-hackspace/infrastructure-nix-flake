@@ -143,7 +143,8 @@ in {
   # generation reads are store paths, so the failure the `f` rules used to guard —
   # a missing addn-hosts file makes dnsmasq exit, and the never-give-up policy
   # turns that into an endless restart loop rather than a visible error — cannot
-  # happen from a record file any more than from a missing /etc/hosts.
+  # happen from a record file any more than from a missing /etc/hosts.  The lease
+  # file itself is created by ./lease-reader.nix, which also decides who may read it.
   #
   # `names.hosts` is kept, and deliberately untouched, for exactly one deploy.  It
   # is no longer in `addn-hosts` above, so nothing reads it; it still exists,
@@ -155,7 +156,10 @@ in {
   # one that made the file dead.
   systemd.tmpfiles.rules = [
     "d /var/lib/dnsmasq 0755 root root -"
-    "f /var/lib/dnsmasq/dnsmasq.leases 0640 root root -"
+    # The lease file's owner/group/mode is ./lease-reader.nix's, not this file's:
+    # the dashboard reads it (`/api/leases`), so the module that says *who may read
+    # it* is the module that writes the rule — and it writes two (`f` to create,
+    # `z` to adjust), which is why there is no third copy of the same fact here.
     "f /var/lib/dnsmasq/names.hosts 0644 root root -"
   ];
 

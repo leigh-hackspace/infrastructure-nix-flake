@@ -3,12 +3,15 @@ import {
   loadConfig,
   loadConnections,
   loadHistory,
+  loadLeases,
   loadSnapshot,
   type AppConfig,
   type ConnFilter,
   type ConnKind,
   type ConnectionsResponse,
   type HistorySeries,
+  type LeaseFilter,
+  type LeasesResponse,
   type Snapshot,
 } from "./api";
 
@@ -35,6 +38,18 @@ export interface ConnControls {
   busyOnly: boolean;
 }
 
+/**
+ * The lease table's controls.  `maxLeft: -1` keeps every lease, including ones
+ * that have already lapsed and are waiting for the client's next renewal — which
+ * is the interesting row when a device has the wrong address.
+ */
+export interface LeaseControls {
+  sort: LeaseFilter["sort"];
+  maxLeft: number;
+  vlan: string;
+  q: string;
+}
+
 export interface Store {
   hist: () => History;
   last: () => Snapshot | null;
@@ -51,6 +66,21 @@ export interface Store {
   setControls: (patch: Partial<ConnControls>) => void;
   /** The age filter actually in force: the chosen one, or the server's. */
   effectiveMinAge: () => number;
+
+  leases: () => LeasesResponse | null;
+  leasesError: () => string | null;
+  leaseControls: () => LeaseControls;
+  setLeaseControls: (patch: Partial<LeaseControls>) => void;
+  /**
+   * Now, on the router's clock, in epoch seconds.
+   *
+   * The lease countdown is the only thing on this page that needs the time: a
+   * browser whose clock is two hours fast would otherwise show every lease as
+   * already expired.  So the offset between the two clocks is taken from the
+   * `now` the lease response carries and applied here, and the countdown is the
+   * router's arithmetic rather than the browser's.
+   */
+  routerNow: () => number;
 }
 
 export function useStore(): Store {
@@ -68,6 +98,18 @@ export function useStore(): Store {
     kind: "",
     busyOnly: false,
   });
+  const [leases, setLeases] = createSignal<LeasesResponse | null>(null);
+  const [leasesError, setLeasesError] = createSignal<string | null>(null);
+  const [leaseControls, setLeaseControlsSig] = createSignal<LeaseControls>({
+    sort: "expires",
+    maxLeft: -1,
+    vlan: "",
+    q: "",
+  });
+  // Router clock minus browser clock, in seconds.  Refreshed by every lease
+  // response; `routerNow()` is the only place either clock is read.
+  let clockSkew = 0;
+  const [tick, setTick] = createSignal(0);
 
   let lastTs: number | null = null;
 
@@ -187,6 +229,50 @@ export function useStore(): Store {
     pollConns();
   }
 
+  // The lease table is its own endpoint with its own failure: the lease file can
+  // be unreadable (a router started without ./lease-reader.nix's permission, or a
+  // dnsmasq that has just rewritten it), and that must read as an error in the
+  // panel rather than as a table of nothing — "no DHCP clients" is a conclusion an
+  // operator would act on.
+  let wantedLeases = 0;
+  function pollLeases(): void {
+    const cfg = config().leases;
+    if (cfg && cfg.enabled === false) {
+      setLeasesError("this router has no lease file configured (started with --no-leases)");
+      return;
+    }
+    const c = leaseControls();
+    const ticket = ++wantedLeases;
+    loadLeases({ sort: c.sort, maxLeft: c.maxLeft, vlan: c.vlan, q: c.q })
+      .then((res) => {
+        if (ticket !== wantedLeases) return;
+        // Keep the *offset*, not the number: the response's `now` is corrected
+        // for the round trip by being a whole second, and every countdown on the
+        // page is then the router's arithmetic rather than the browser's clock.
+        clockSkew = res.now - Date.now() / 1000;
+        setLeases(res);
+        setLeasesError(null);
+      })
+      .catch((e: unknown) => {
+        if (ticket !== wantedLeases) return;
+        setLeasesError(e instanceof Error ? e.message : String(e));
+      });
+  }
+
+  function setLeaseControls(patch: Partial<LeaseControls>): void {
+    setLeaseControlsSig((c) => ({ ...c, ...patch }));
+    pollLeases();
+  }
+
+  function routerNow(): number {
+    // Reading `tick` is deliberate: it is the dependency that redraws a countdown
+    // between responses, so the table does not freeze at "8h 12m" for a lease
+    // that has 8h 11m left.  `void` because the value is the dependency, not the
+    // answer.
+    void tick();
+    return Date.now() / 1000 + clockSkew;
+  }
+
   function start(): void {
     const onResize = () => setRedraw((r) => r + 1);
     window.addEventListener("resize", onResize);
@@ -195,6 +281,7 @@ export function useStore(): Store {
       // The search box's own default is the server's min-age; keep the two in
       // step rather than inventing a number here.
       pollConns();
+      pollLeases();
     });
     loadHistory()
       .then(seedFromHistory)
@@ -205,6 +292,10 @@ export function useStore(): Store {
         setInterval(() => {
           poll();
           pollConns();
+          pollLeases();
+          // Redraws the countdowns even when the lease rows are unchanged; see
+          // `routerNow`.
+          setTick((t) => t + 1);
         }, Math.max(1, secs) * 1000);
       });
   }
@@ -222,5 +313,10 @@ export function useStore(): Store {
     controls,
     setControls,
     effectiveMinAge,
+    leases,
+    leasesError,
+    leaseControls,
+    setLeaseControls,
+    routerNow,
   };
 }

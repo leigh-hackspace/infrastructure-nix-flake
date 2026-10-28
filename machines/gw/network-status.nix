@@ -9,21 +9,25 @@
 # It used to run on services1 and ssh to gw as `root`, first talking to the
 # OPNsense box and then briefly to gw.  Hosting it here is the last step of that
 # port: the probe is `--local`, so this unit is a DynamicUser reading kernel
-# files — no login, no ssh key, no host-key pin.  One of those files is not
-# world-readable: the per-connection table is `0440 root:root`, and ./conntrack-
-# reader.nix is what gives this unit's group the right to read it (and turns on
-# the accounting sysctl whose counters the table is made of).  It binds
+# files — no login, no ssh key, no host-key pin.  Two of the things it reads are
+# not world-readable, and each has its own module rather than a line here: the
+# per-connection table is `0440 root:root` and ./conntrack-reader.nix gives this
+# unit's group the right to read it (and turns on the accounting sysctl whose
+# counters the table is made of), and dnsmasq's lease file is `0640 root:root` and
+# ./lease-reader.nix decides that this unit's group may read it.  It binds
 # the LAN address only (`10.3.1.1:8091`); `./firewall.nix` lets services1 reach
 # it, and services1's nginx is what serves `network-info.int.leighhack.org`
 # (TLS and the ACL stay there) while Prometheus on services1 scrapes `/metrics`.
 #
 # What that makes visible is worth stating plainly: the per-connection view is a
-# list of which device talked to which address, and it is served to anyone the
-# front door's LAN ACL admits (the `int-` rule in `common/config.nix`) — plus
-# services1, which is the only remote host `./firewall.nix` opens 8091 to.  The
-# API itself stays unauthenticated, as the rest of it always has been; the ACL is
-# the access control, and this endpoint is the reason that sentence now carries
-# more than it used to.
+# list of which device talked to which address, the lease table adds what each of
+# those devices calls itself, and both are served to anyone the front door's LAN
+# ACL admits (the `int-` rule in `common/config.nix`) — plus services1, which is
+# the only remote host `./firewall.nix` opens 8091 to.  The API itself stays
+# unauthenticated, as the rest of it always has been; the ACL is the access
+# control, and these tables are the reason that sentence now carries more than it
+# used to.  `machines/gw/lease-reader.nix` states what handing the lease file's
+# names to that audience means, in the same paragraph that decides it.
 #
 # Consequence for deploying this box: its system now contains a Rust crate, so
 # nothing compiles here.  The crate is built on aibox and copied back — gw holds
@@ -72,7 +76,14 @@
   # that can disagree with itself.  To see what the router will be told:
   #
   #   nix-instantiate --eval -E '(import ./machines/gw/lib/network-tables.nix).localPrefixes (import ./common/vlans.nix)'
-  localPrefixArgs = builtins.concatLists (map (net: ["--local-prefix" net]) (TABLES.localPrefixes VLANS));
+  #
+  # Passed as `--vlan vlan225=10.3.1.0/24` rather than `--local-prefix`: the same
+  # prefix either way (both land in one `Localness`, so the direction rules are
+  # unchanged), but the labelled form also tells `/api/leases` which VLAN an
+  # address was handed out on — one list serving both questions, instead of a
+  # second table that could disagree with the one the connection table uses.
+  # `./lib/check-network-tables.nix` asserts the two forms describe the same set.
+  vlanArgs = builtins.concatLists (map (net: ["--vlan" net]) (TABLES.vlanPrefixes VLANS));
 
   # The group ./conntrack-reader.nix puts on /proc/net/nf_conntrack, read back out
   # of the option rather than written again here: if that module ever stops being
@@ -161,13 +172,30 @@ in {
           "15"
           # Names for the addresses.  The records file is the flake's own table
           # (world-readable, store-backed, and a `restartTriggers` input to
-          # dnsmasq, so it cannot be stale); the lease file is `0640 root:root`, so
-          # this service cannot read it and the DHCP clients keep their numbers —
-          # ./conntrack-reader.nix says what changing that would mean.
+          # dnsmasq, so it cannot be stale).  The lease file is `0640 root:root` and
+          # ./lease-reader.nix is what makes this account able to read it, which is
+          # also what makes the `/api/leases` table below have rows at all — an
+          # unreadable file is reported as an error by that endpoint, never as an
+          # empty table.
           "--hosts-file"
           "/etc/dnsmasq-records.hosts"
+          "--leases-file"
+          "/var/lib/dnsmasq/dnsmasq.leases"
         ]
-        ++ localPrefixArgs);
+        # --- the lease table (`/api/leases`) ------------------------------------
+        # dnsmasq stores an expiry and no lease length, so "how much of this lease
+        # is left" is recovered from the block the address falls in — and every
+        # `dhcp-range` ./lib/network-tables.nix generates is generated at
+        # `leaseTtl`.  Read from that table rather than written again here: a
+        # `--lease-ttl` that disagreed with dnsmasq's own value would draw every
+        # bar the wrong length and nothing else would notice.
+        ++ [
+          "--lease-ttl"
+          (toString TABLES.leaseTtl)
+          "--lease-max-rows"
+          "500"
+        ]
+        ++ vlanArgs);
     };
   };
 }

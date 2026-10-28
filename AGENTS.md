@@ -171,6 +171,18 @@ X first", X has already cost someone a day.
    self-hop, the hostname/table-key split (the router's hostname is `gw`, `common/hosts.nix`
    calls its address `router`), and how to re-verify it the next time nixos-rebuild-ng moves:
    `docs/nix-dev-workflow.md` ("Which box am I on?").
+28. **A root-owned file the dashboard has to read is a module of its own, and its header is
+   the decision.** `gw` has two: `/proc/net/nf_conntrack` (`0440`, group read granted by
+   `machines/gw/conntrack-reader.nix`) and `/var/lib/dnsmasq/dnsmasq.leases` (`0640`, by
+   `machines/gw/lease-reader.nix`). Neither permission is a line in the service's unit,
+   because handing a service a root file is a question about *who may see this* — the
+   conntrack table is who talked to whom, the lease file is what each device calls itself
+   — and the two modules carry that answer, the measurements behind it, and the reason the
+   mechanism is what it is (group + `ExecStartPre=+` for the sysctl-backed one, group +
+   a `systemd.path` watch for the file dnsmasq rewrites). A group here has exactly one
+   member on purpose: the dashboard's own `network-status` account. Read the module before
+   adding a member or a second file to it, and make the decision explicitly rather than
+   inheriting one by adding a line to a group.
 
 ---
 

@@ -1,0 +1,610 @@
+//! The DHCP lease table: dnsmasq's lease file rendered as "which client holds
+//! which address, and how much of that lease is left".
+//!
+//! The conntrack table ([`crate::flows`]) says an address is *in use*.  The lease
+//! file says dnsmasq promised to keep answering this client at this address until
+//! an expiry, which is why a client's connections look the way they do: when the
+//! lease lapses the client renews, and the address can move.  That is why the page
+//! shows a countdown rather than a date.
+//!
+//! ## Why a lease's length is recovered rather than read
+//!
+//! dnsmasq's file stores an **absolute expiry and no TTL**.  A lease's length is
+//! therefore not in the file, and a "how much is left" bar needs the length.  It
+//! is recovered from the block the address falls in: every `dhcp-range`
+//! `machines/gw/lib/network-tables.nix` generates is generated at `leaseTtl`, the
+//! flake's one knob for how long a lease lives, which reaches this crate as
+//! `--lease-ttl` beside the blocks themselves (`--vlan vlan226=10.3.2.0/24`, via
+//! [`crate::nets`]).  So a lease inside a block we were told about is `known:
+//! true` — its bar is a true fraction of a real lease.  A lease in no block (a
+//! tailnet address, a hand-written range this flake does not describe) gets the
+//! same arithmetic with `known: false`, because what it actually ran at was
+//! dnsmasq's own default, which this crate does not know.  The page dims those
+//! bars rather than drawing full-length lies.
+//!
+//! ## The 2038 rows
+//!
+//! dnsmasq's `ra-only`/`ra-param` lines hand a whole VLAN block a fixed release
+//! time with no client attached, and they land in the same file as leases.  Their
+//! expiry is the release time and the start was never recorded anywhere, so they
+//! have no `issued` and no bar: a countdown from "when this file was last written"
+//! would be a countdown whose length changes with every write, and would prove
+//! nothing.  They *are* leases as far as "this address is spoken for" goes, which
+//! is why they are rows and not skipped.
+//!
+//! ## Reading the file is a decision, not an accident
+//!
+//! On `gw` the file is `0640 root:root`.  `machines/gw/lease-reader.nix` is what
+//! makes it group-readable to the dashboard's account — the same shape as
+//! `conntrack-reader.nix`, and for the same reason: supplementary groups on a
+//! `DynamicUser` are not reliable for reading a root-owned file, so the service
+//! has a real system account with a primary group.  An unreadable file is
+//! therefore reported as an error by `/api/leases` and never as an empty table —
+//! an empty lease table reads as "no DHCP clients", which is the wrong thing for
+//! an operator to conclude.
+
+use crate::json::{jopt_num, opt_str};
+use crate::names::{lease_line, LeaseLine};
+use crate::nets::Localness;
+use common_json::quoted;
+use std::cmp::Ordering;
+use std::collections::BTreeMap;
+use std::collections::HashMap;
+
+// ---------------------------------------------------------------------------
+// The lease, and reading the file
+// ---------------------------------------------------------------------------
+
+/// The lease file's contents, plus what the read could not make sense of.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Leases {
+    pub(crate) rows: Vec<LeaseLine>,
+    /// Lines that were not leases.  Not an error: dnsmasq's own `duid <hex>`
+    /// header is one of these, and so is any half-written renewal caught
+    /// mid-write.  Counted so the page can say "49 leases, 2 lines ignored"
+    /// rather than quietly losing them.
+    pub(crate) skipped: usize,
+}
+
+/// Read the lease file.  `Err` is the file being unopenable, which the endpoint
+/// reports rather than answering with an empty table (module header).
+pub fn read(path: &str) -> Result<Leases, String> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| format!("{path}: {e}"))?;
+    let mut out = Leases::default();
+    for line in text.lines() {
+        match lease_line(line) {
+            Some(lease) => out.rows.push(lease),
+            // A blank line is not a finding; anything else is.
+            None if line.trim().is_empty() => {}
+            None => out.skipped += 1,
+        }
+    }
+    Ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// The query grammar `/api/leases` accepts
+// ---------------------------------------------------------------------------
+
+/// Which lease to show first.  `parse`/`as_str` are the pair
+/// [`crate::flows::query::Sort`] has, and for the same reason: the value comes
+/// back out in the JSON so the SPA can echo it without a second table.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Sort {
+    /// Soonest to be handed out again: the row a client is about to lose.
+    #[default]
+    Expires,
+    /// Most recently handed out — the same list read from the other end when
+    /// every lease has the same length, and a different one when they do not.
+    Issued,
+    /// By the name the client chose.
+    Name,
+    /// By VLAN, so one VLAN's leases sit together.
+    Vlan,
+    /// By address, so one network's leases sit together.
+    Addr,
+}
+
+impl Sort {
+    pub fn parse(s: &str) -> Sort {
+        match s.trim().trim_start_matches('^') {
+            "issued" => Sort::Issued,
+            "name" => Sort::Name,
+            "vlan" => Sort::Vlan,
+            "addr" => Sort::Addr,
+            _ => Sort::Expires,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Sort::Expires => "expires",
+            Sort::Issued => "issued",
+            Sort::Name => "name",
+            Sort::Vlan => "vlan",
+            Sort::Addr => "addr",
+        }
+    }
+}
+
+/// What to show, after defaults and clamping.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Query {
+    /// Keep leases expiring no later than `now + max_left` seconds.  Negative
+    /// keeps every lease, expired ones included — which is the useful default,
+    /// because an expired-but-still-listed lease is exactly the row an operator
+    /// looking at a stale address needs to see.
+    pub max_left: i64,
+    /// Case-insensitive substring of name, address, VLAN, network, MAC and
+    /// client-id.  Lower-cased by `parse`, because the filter narrows the same
+    /// haystack twice per row.
+    pub needle: Option<String>,
+    /// Keep leases on this VLAN label (`vlan226`).
+    pub vlan: Option<String>,
+    /// Keep leases inside this network, as the prefix was written
+    /// (`10.3.2.0/24`).
+    pub net: Option<String>,
+    pub limit: usize,
+    pub sort: Sort,
+    /// `^`-prefixed sort names, the way the connection table spells "backwards".
+    pub reverse: bool,
+}
+
+impl Default for Query {
+    fn default() -> Self {
+        Query {
+            max_left: -1,
+            needle: None,
+            vlan: None,
+            net: None,
+            limit: 100,
+            sort: Sort::Expires,
+            reverse: false,
+        }
+    }
+}
+
+/// Pull the filters out of a request's query string, falling back to the
+/// operator's defaults and clamping `limit` to what `--lease-max-rows` allowed.
+///
+/// Deliberately its own small grammar rather than a shared one with
+/// [`crate::flows::query`]: the two tables filter on different things, and a
+/// grammar both have to share is a bigger guess than the handful of names each
+/// of them actually has.
+pub fn parse(params: &HashMap<String, String>, defaults: &Query) -> Query {
+    let num = |key: &str| -> Option<i64> { params.get(key).and_then(|v| v.trim().parse().ok()) };
+    let text = |key: &str| -> Option<String> {
+        params
+            .get(key)
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+    };
+    let sort_raw = params.get("sort").map(|s| s.trim()).unwrap_or("");
+    Query {
+        max_left: num("max_left").unwrap_or(defaults.max_left),
+        needle: text("q").map(|v| v.to_lowercase()),
+        vlan: text("vlan"),
+        net: text("net"),
+        limit: params
+            .get("limit")
+            .and_then(|v| v.trim().parse::<usize>().ok())
+            .unwrap_or(defaults.limit)
+            .clamp(1, defaults.limit.max(1)),
+        sort: Sort::parse(sort_raw),
+        reverse: sort_raw.starts_with('^'),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// A row: the lease, plus what its address's block says
+// ---------------------------------------------------------------------------
+
+/// One lease as the renderer needs it: dnsmasq's fields plus the labels the
+/// address's block carries.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Row {
+    pub lease: LeaseLine,
+    /// The VLAN the block belongs to, when the prefix was labelled.
+    pub vlan: Option<String>,
+    /// The prefix the address falls in, as it was written; empty when no prefix
+    /// covers it.
+    pub net: String,
+    /// The lease length the renderer was given (`--lease-ttl`).
+    pub ttl: i64,
+    /// Whether `ttl` describes *this* lease's block.  False for an address no
+    /// labelled block covers, where the number is the closest thing we have
+    /// rather than the truth (module header).
+    pub known: bool,
+}
+
+impl Row {
+    pub(crate) fn new(lease: LeaseLine, local: &Localness, ttl: i64) -> Row {
+        let vlan = local.vlan_of(lease.ip);
+        let known = vlan.is_some();
+        Row {
+            net: local.prefix_of(lease.ip).unwrap_or_default(),
+            vlan,
+            lease,
+            ttl,
+            known,
+        }
+    }
+
+    /// When this lease was issued, as far as it can be recovered: the expiry
+    /// minus the block's lease length, and `None` when the block is unknown.
+    pub(crate) fn issued(&self) -> Option<i64> {
+        if self.known {
+            Some(self.lease.expires - self.ttl)
+        } else {
+            None
+        }
+    }
+
+    /// Seconds until the address is handed out again.  Negative once it has
+    /// already passed, which is a real state: the row is still in the file until
+    /// the client renews or dnsmasq rewrites it.
+    pub(crate) fn left(&self, now: i64) -> i64 {
+        self.lease.expires.saturating_sub(now)
+    }
+
+    /// How much of the lease is left, as a percentage — `None` when the length
+    /// is unknown or the lease has already expired, so the page can draw "no
+    /// bar" rather than "an empty bar", which would mean "one second left".
+    pub(crate) fn pct(&self, now: i64) -> Option<f64> {
+        let left = self.left(now);
+        if !self.known || self.ttl <= 0 || left < 0 {
+            return None;
+        }
+        Some((left as f64) * 100.0 / (self.ttl as f64))
+    }
+
+    /// dnsmasq's own row rather than a client's: `ra-*` writes `*` where a MAC
+    /// would be.
+    pub(crate) fn generated(&self) -> bool {
+        self.lease.mac == "*"
+    }
+
+    /// Does this row match a needle that `parse` has already lower-cased?
+    pub(crate) fn matches(&self, needle: &str) -> bool {
+        let hay = [
+            self.lease.ip.to_string(),
+            self.lease.name.clone(),
+            self.lease.mac.clone(),
+            self.lease.cid.clone(),
+            self.net.clone(),
+            self.vlan.clone().unwrap_or_default(),
+        ];
+        hay.iter().any(|s| s.to_lowercase().contains(needle))
+    }
+
+    /// One row as JSON.  Every string here is device-chosen (a hostname, a MAC,
+    /// a client-id), so it goes through `quoted` — and the SPA escapes it again
+    /// before it reaches the DOM.
+    pub(crate) fn json(&self, now: i64) -> String {
+        format!(
+            concat!(
+                r#"{{"ip":{},"name":{},"mac":{},"cid":{},"expires":{},"ttl":{},"known":{},"#,
+                r#""vlan":{},"net":{},"left":{},"pct":{},"issued":{},"generated":{}}}"#
+            ),
+            quoted(&self.lease.ip.to_string()),
+            quoted(&self.lease.name),
+            quoted(&self.lease.mac),
+            quoted(&self.lease.cid),
+            self.lease.expires,
+            self.ttl,
+            self.known,
+            opt_str(self.vlan.as_deref()),
+            quoted(&self.net),
+            self.left(now),
+            jopt_num(self.pct(now)),
+            match self.issued() {
+                Some(t) => t.to_string(),
+                None => "null".to_string(),
+            },
+            self.generated(),
+        )
+    }
+
+    /// Ascending order for `sort` — the caller reverses for `^`.
+    ///
+    /// `IpAddr` already orders by family then address, which is the order an
+    /// operator reading a table expects, so there is no hand-rolled key here — the
+    /// earlier version of this compared a `u128` cast and could not express IPv6
+    /// at all.
+    pub(crate) fn cmp(&self, other: &Row, sort: Sort) -> Ordering {
+        let primary = match sort {
+            Sort::Expires => self.lease.expires.cmp(&other.lease.expires),
+            // `issued()` is `None` for an unknown-length lease; the expiry is the
+            // honest fallback and keeps the order total.
+            Sort::Issued => self
+                .issued()
+                .unwrap_or(self.lease.expires)
+                .cmp(&other.issued().unwrap_or(other.lease.expires)),
+            Sort::Name => self
+                .lease
+                .name
+                .to_lowercase()
+                .cmp(&other.lease.name.to_lowercase()),
+            Sort::Vlan => self.vlan.cmp(&other.vlan),
+            Sort::Addr => self.lease.ip.cmp(&other.lease.ip),
+        };
+        primary
+            // A stable order under every sort: two rows with the same name are
+            // told apart by their address, so the page does not reshuffle between
+            // polls and a row can be read while it is being watched.
+            .then_with(|| self.lease.ip.cmp(&other.lease.ip))
+            .then_with(|| self.lease.name.cmp(&other.lease.name))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Rendering
+// ---------------------------------------------------------------------------
+
+/// `{"vlan226":12,"vlan225":3}` — the shape the connection table's per-host
+/// totals use, and a `BTreeMap` so the keys come out in a stable order.
+fn counts(map: &BTreeMap<String, usize>) -> String {
+    map.iter()
+        .map(|(k, n)| format!("{}:{}", quoted(k), n))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// Render `/api/leases`.
+///
+/// `Err` is the lease file being unopenable.  The summary counts are computed
+/// over **every** row that was read, not over the filtered page: they answer
+/// "what does this router hold", and a count that moved with the filter would
+/// answer "how many rows am I looking at", which `returned` already says.
+pub fn json(
+    lease_file: &str,
+    q: &Query,
+    defaults: &Query,
+    now: i64,
+    local: &Localness,
+    ttl: i64,
+    max_rows: usize,
+) -> Result<String, String> {
+    let file = read(lease_file)?;
+    let rows: Vec<Row> = file
+        .rows
+        .iter()
+        .map(|l| Row::new(l.clone(), local, ttl))
+        .collect();
+
+    let mut by_vlan: BTreeMap<String, usize> = BTreeMap::new();
+    let mut by_net: BTreeMap<String, usize> = BTreeMap::new();
+    let mut expired = 0usize;
+    let mut unknown = 0usize;
+    let mut generated = 0usize;
+    let mut farthest: i64 = 0;
+    for r in &rows {
+        if let Some(v) = &r.vlan {
+            *by_vlan.entry(v.clone()).or_insert(0) += 1;
+        }
+        if !r.net.is_empty() {
+            *by_net.entry(r.net.clone()).or_insert(0) += 1;
+        }
+        if r.left(now) < 0 {
+            expired += 1;
+        }
+        if !r.known {
+            unknown += 1;
+        }
+        if r.generated() {
+            generated += 1;
+        }
+        farthest = farthest.max(r.left(now));
+    }
+
+    let mut kept: Vec<Row> = rows
+        .iter()
+        .filter(|r| q.max_left < 0 || r.left(now) <= q.max_left)
+        .filter(|r| match &q.vlan {
+            None => true,
+            Some(v) => r.vlan.as_deref() == Some(v.as_str()),
+        })
+        .filter(|r| match &q.net {
+            None => true,
+            Some(n) => &r.net == n,
+        })
+        .filter(|r| match &q.needle {
+            None => true,
+            Some(needle) => r.matches(needle),
+        })
+        .cloned()
+        .collect();
+
+    kept.sort_by(|a, b| a.cmp(b, q.sort));
+    if q.reverse {
+        kept.reverse();
+    }
+    let matched = kept.len();
+    kept.truncate(max_rows);
+    kept.truncate(q.limit);
+    let returned = kept.len();
+
+    let body: Vec<String> = kept.iter().map(|r| r.json(now)).collect();
+    let vlans: Vec<String> = local.vlan_labels();
+
+    Ok(format!(
+        concat!(
+            r#"{{"now":{},"lease_ttl":{},"file":{},"total":{},"skipped":{},"matched":{},"#,
+            r#""returned":{},"expired":{},"unknown_ttl":{},"generated":{},"max_left":{},"#,
+            // The two counts are JSON *objects* (`{"vlan226":12}`) rather than
+            // arrays of pairs: the key is the name, and an array here would make
+            // the SPA look the name up in a list for every cell.
+            r#""vlans":{{{}}},"vlan_labels":[{}],"networks":{{{}}},"filter":{{"max_left":{},"#,
+            r#""vlan":{},"net":{},"sort":{},"reverse":{},"q":{},"limit":{}}},"#,
+            r#""defaults":{{"max_left":{},"limit":{}}},"leases":[{}]}}"#
+        ),
+        now,
+        ttl,
+        quoted(lease_file),
+        rows.len(),
+        file.skipped,
+        matched,
+        returned,
+        expired,
+        unknown,
+        generated,
+        farthest,
+        counts(&by_vlan),
+        vlans
+            .iter()
+            .map(|v| quoted(v))
+            .collect::<Vec<_>>()
+            .join(","),
+        counts(&by_net),
+        q.max_left,
+        opt_str(q.vlan.as_deref()),
+        opt_str(q.net.as_deref()),
+        quoted(q.sort.as_str()),
+        q.reverse,
+        opt_str(q.needle.as_deref()),
+        q.limit,
+        defaults.max_left,
+        defaults.limit,
+        body.join(","),
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ip(s: &str) -> std::net::IpAddr {
+        s.parse().expect("a test address parses")
+    }
+
+    fn specs(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn local() -> Localness {
+        let mut l = Localness::new(&[]);
+        l.add_named(&specs(&["vlan226=10.3.2.0/24", "vlan225=10.3.1.0/24"]));
+        l
+    }
+
+    fn row(expires: i64, ip_s: &str, name: &str, mac: &str) -> Row {
+        Row::new(
+            LeaseLine {
+                expires,
+                mac: mac.to_string(),
+                ip: ip(ip_s),
+                name: name.to_string(),
+                cid: String::new(),
+            },
+            &local(),
+            86_400,
+        )
+    }
+
+    #[test]
+    fn a_lease_inside_a_labelled_block_is_known_and_has_a_bar() {
+        let r = row(1_000_000 + 43_200, "10.3.2.50", "laptop", "aa:bb:cc:dd:ee:ff");
+        assert_eq!(r.vlan.as_deref(), Some("vlan226"));
+        assert_eq!(r.net, "10.3.2.0/24");
+        assert!(r.known);
+        assert_eq!(r.issued(), Some(1_043_200 - 86_400));
+        // Half a 24-hour lease left is half a bar: `now` is the lease's own start
+        // plus half its length.
+        assert_eq!(r.pct(1_043_200 - 43_200), Some(50.0));
+        assert_eq!(r.pct(1_043_200 + 1), None, "an expired lease has no bar");
+    }
+
+    #[test]
+    fn a_lease_outside_every_block_is_a_row_with_no_bar() {
+        // A tailnet address: inside the network's world, outside every VLAN.
+        let r = row(1_000_000, "100.64.0.9", "phone", "aa:bb:cc:dd:ee:01");
+        assert_eq!(r.vlan, None);
+        assert_eq!(r.net, "");
+        assert!(!r.known);
+        assert_eq!(r.issued(), None);
+        assert_eq!(r.pct(900_000), None, "no bar rather than a full one");
+    }
+
+    #[test]
+    fn dnsmasqs_own_rows_are_marked_generated() {
+        let r = row(1_000_000, "10.3.2.0", "", "*");
+        assert!(r.generated());
+        assert_eq!(r.lease.name, "");
+    }
+
+    #[test]
+    fn a_blank_line_is_not_a_finding_but_a_bad_one_is() {
+        let path = std::env::temp_dir().join("network-status-leases-test");
+        let text = concat!(
+            "duid 00:01:00:01:32:6b:9c:78:00:25:90:d3:f0:ea\n",
+            "\n",
+            "1800000000 aa:bb:cc:dd:ee:ff 10.3.2.50 laptop *\n",
+            "not-a-lease\n"
+        );
+        std::fs::write(&path, text).expect("temp file");
+        let file = read(path.to_str().expect("utf-8 path")).expect("readable");
+        assert_eq!(file.rows.len(), 1);
+        assert_eq!(file.skipped, 2, "the duid header and the garbage line");
+        assert_eq!(file.rows[0].name, "laptop");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn an_unreadable_file_is_an_error_not_an_empty_table() {
+        let err = read("/nonexistent/dnsmasq.leases").expect_err("no such file");
+        assert!(err.contains("dnsmasq.leases"), "{err}");
+    }
+
+    #[test]
+    fn the_query_defaults_and_clamps() {
+        let defaults = Query::default();
+        let q = parse(&HashMap::new(), &defaults);
+        assert_eq!(q, defaults);
+        assert_eq!(q.max_left, -1, "every lease, expired ones included");
+        assert_eq!(q.sort, Sort::Expires);
+
+        let mut p = HashMap::new();
+        p.insert("limit".to_string(), "100000".to_string());
+        p.insert("sort".to_string(), "^name".to_string());
+        p.insert("q".to_string(), "  Laptop ".to_string());
+        p.insert("vlan".to_string(), "vlan226".to_string());
+        let q = parse(&p, &defaults);
+        assert_eq!(q.limit, defaults.limit, "clamped to what was allowed");
+        assert_eq!(q.sort, Sort::Name);
+        assert!(q.reverse, "^ is the connection table's spelling of backwards");
+        assert_eq!(q.needle.as_deref(), Some("laptop"));
+        assert_eq!(q.vlan.as_deref(), Some("vlan226"));
+    }
+
+    #[test]
+    fn the_sort_names_round_trip() {
+        for s in [Sort::Expires, Sort::Issued, Sort::Name, Sort::Vlan, Sort::Addr] {
+            assert_eq!(Sort::parse(s.as_str()), s);
+        }
+        assert_eq!(Sort::parse("^issued"), Sort::Issued);
+        assert_eq!(Sort::parse("nonsense"), Sort::Expires, "an unknown sort is the default, not an error");
+    }
+
+    #[test]
+    fn sorting_is_total_and_breaks_ties_on_address() {
+        let a = row(1_000_000, "10.3.2.9", "same", "aa");
+        let b = row(1_000_000, "10.3.2.8", "same", "bb");
+        let mut rows = [a.clone(), b.clone()];
+        rows.sort_by(|x, y| x.cmp(y, Sort::Name));
+        assert_eq!(rows[0].lease.ip, b.lease.ip, "same name: the lower address wins");
+        let mut rows = [a.clone(), b.clone()];
+        rows.sort_by(|x, y| x.cmp(y, Sort::Addr));
+        assert_eq!(rows[0].lease.ip, b.lease.ip);
+    }
+
+    #[test]
+    fn a_needle_matches_any_field_except_the_bar() {
+        let r = row(1_000_000, "10.3.2.50", "laptop", "aa:bb:cc:dd:ee:ff");
+        assert!(r.matches("laptop"));
+        assert!(r.matches("10.3.2"));
+        assert!(r.matches("aa:bb"));
+        assert!(r.matches("vlan226"));
+        assert!(!r.matches("vlan225"));
+    }
+}
