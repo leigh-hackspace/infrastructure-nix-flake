@@ -145,33 +145,57 @@ services1 going down first is the ordering that does not hang anything.
 
 ## 5. Getting the network back without anyone touching a button
 
-**Measured on first deploy (2026-10-28): `driver.flag.allow_killpower: 0`.** NUT 2.8
-refuses to cut the UPS output unless the driver is explicitly given that flag, and
-`machines/gw/ups.nix` does not give it — so today `ups-killpower.service` would run
-`upsdrvctl shutdown` and the driver would decline the part that matters.  The
-consequence is concrete: after an outage that outlasts the battery, `gw` powers off,
-the outlets stay live, and **the network comes back when a person walks up to it.**
-That is a decision rather than an oversight — upstream added the flag because
-killpower is the one command in this path that can leave a building offline past its
-own recovery — but it does mean the rest of this section describes a mechanism that
-is not currently switched on.
+**Armed 2026-10-28: `allow_killpower = yes` in the driver directives.** Until that
+line, this section described something that could not happen. NUT 2.8 refuses to cut
+the output unless the driver is given the flag, and the refusal is silent — the
+driver's binary contains `…driver.flag.allow_killpower does not permit this - request
+was currently ignored!` for exactly the socket request `upsdrvctl shutdown` makes.
+So the servers would have gone down cleanly, the strips would have stayed live, and
+nothing would have come back.
 
-What the mechanism is for, if the flag is ever enabled deliberately: the sequence
-ends by writing NUT's POWERDOWNFLAG (`/run/killpower`, one path shared by
-`upsmon.conf`, `ups-killpower.service` and `--killpower-flag`), and during shutdown
-NUT runs `upsdrvctl shutdown`, which tells the UPS to drop its output and **return
-it when mains come back**. The box then powers on by itself if the BIOS does what
-"Restore on AC Power Loss → Power On" says it does, and the network rebuilds itself
-in the order `docs/network-upgrade-runbook.md` describes (NAS, then services1, then
-the rest). With the flag off neither half happens: no AC cycle, no power-on event.
+**Why dropping the load is the mechanism, not a hazard.** Every box here powers on
+when AC is supplied after an interruption — the operator's fact, not a guess, and
+not a setting to go and discover. The failure the graceful path had was that a
+machine which was *told* to power off never sees such an interruption: `systemctl
+poweroff` reaches S5 with standby power still at the PSU, and "restore on AC loss"
+fires on a transition, not on a state. Battery outlasting the outage is the common
+case, so the common case was four buttons in a cold room. Cutting the load at the
+end of the sequence manufactures the transition, and the firmware does the rest:
+every box comes back when the mains do, in the order
+`docs/network-upgrade-runbook.md` describes (NAS, then `services1`, then the rest —
+and `gw` first, because nothing else has DNS without it).
+
+The chain, and what each part is for:
+
+1. `ups-watchdog` writes POWERDOWNFLAG (`/run/killpower`) — the assertion that this
+   shutdown was decided by the battery. tmpfs, so a boot cannot inherit one.
+2. Two readers, both gated on that file: nixpkgs' `ups-killpower.service` during
+   shutdown, and NUT's own `system-shutdown/nutshutdown` hook (installed by the
+   package, active, calls `upsdrvctl shutdown` iff `upsmon -K` finds the flag) after
+   the filesystems are down. Neither fires on a routine reboot.
+3. The driver, now permitted, drops the output. On `ups.delay.shutdown` (20 s
+   measured) it goes, and with `shutdown.return` behaviour it re-energises when
+   input power is stable.
+
+**What is still unmeasured is the *return*, not the *cut*.** If this firmware drops
+the load and then keeps it down until someone presses the front button, the
+building waits for one button instead of four — worse only for whatever else is on
+these sockets and not managed here (the NAS and `monster1`, §7.4). That is the
+question the one controlled discharge answers, and it is answerable nowhere else.
 
 Two consequences worth keeping straight either way:
 
 * A short outage never reaches step 6 at all, so the network is not "restored" by
   anything here — it simply never went down.
-* Whether this firmware implements `shutdown.return` at all is still unmeasured, and
-  it sits *behind* the flag: measuring it and deciding on the flag are one exercise
-  (§7.1).
+* **AC returning *during* the shutdown is the race this cannot yet handle.** NUT's
+  answer is `POWEROFF_WAIT` in `nut.conf` (sleep, and reboot if the machine is still
+  alive rather than leaving it in limbo with power present), but the nixpkgs module
+  writes `nut.conf` with `MODE =` only and no hook for extra lines, so using it
+  means overriding a module-owned file with `mkForce` — deliberately not done here.
+  In practice the killpower command goes out while the UPS is on battery, so the
+  load drops and returns with mains like any other case; the residual risk is a
+  board whose autostart does not fire, and the tell is the same: a box still off
+  five minutes after AC.
 
 ## 6. Proving it without cutting the cable
 
@@ -281,17 +305,22 @@ Proven by activating it and reading the box:
 
 Still not verified, and none of it should be trusted until it is:
 
-1. **Whether the UPS can be told to drop its load at all.** `upsc` reports
-   `driver.flag.allow_killpower: 0`, so NUT 2.8 declines to send the killpower
-   command regardless of firmware support (§5): **today, after an outage that
-   outlasts the battery, the network stays down until someone walks to `gw`.**
-   Enabling the flag is a deliberate decision — it means the sequence really does
-   cut the power — and measuring `shutdown.return` sits behind it. **Do not** probe
-   with instant commands on a UPS carrying the router; the test is one controlled
-   discharge with a sacrificial box on it, watching `journalctl -u ups-killpower`.
-2. **The BIOS.** "Restore on AC Power Loss → Power On" is unreadable from the
-   running system, moot while the flag is off, and half of the recovery story once
-   it is on.
+1. **Whether this firmware *returns* the load after dropping it.** The cut is armed
+   (§5: `allow_killpower = yes`), so the sequence really does take the outlets down
+   at the end of a fleet shutdown. What has never been measured on this model is
+   `shutdown.return` behaviour — that it puts them back when input power is stable
+   rather than waiting for a hand on the front button. If it waits, the building
+   waits with it, which is one button instead of four and no worse than before this
+   line existed. **Do not** probe with instant commands on a UPS carrying the
+   router; the test is one controlled discharge **with a sacrificial box on the
+   UPS**, watching `journalctl -u ups-killpower` and then whether the outlets come
+   back on their own.
+2. **Autostart is stated, not measured.** Every box here powers on when AC is
+   supplied after an interruption — the operator's fact, and the premise §5's
+   mechanism rests on, so it is written down rather than re-derived. It is not a
+   per-box measurement from this side of the BIOS menu, and the ones that matter
+   most for an unattended recovery are the two this feature does not manage: the
+   NAS and `monster1`, whose sockets are still unconfirmed (§7.4).
 3. **The runtime arithmetic is a manufacturer's number, not a measurement.**
    `battery.runtime: 860` at `battery.charge: 100` — about fourteen minutes — with
    `battery.runtime.low: 120` and `battery.charge.low: 10`, so `LOWBATT` arrives

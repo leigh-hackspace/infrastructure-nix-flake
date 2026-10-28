@@ -1576,26 +1576,26 @@ the shutdown path has run only as a drill. **None of it has been through a real
 outage**, so the items below are ordered by "what would embarrass us at 04:00", not
 by size.
 
-- **`upsdrvctl shutdown` will not be obeyed, and that is NUT's own default.**
-  (measured 2026-10-28: `upsc apc@localhost` reports
-  `driver.flag.allow_killpower: 0`, and NUT 2.8 refuses to send the killpower
-  command without that flag.) So the recovery story in
-  `docs/ups-and-fleet-shutdown.md` §5 — the UPS drops its output and returns it with
-  mains — is **not armed**: after an outage that outlasts the battery, `gw` powers
-  off, its outlets stay live, and the network comes back when a person walks up to
-  it. It is left off deliberately, because enabling it means this sequence really
-  does cut the power. **Blocks:** any claim that the network recovers unattended.
-  **Do not** probe with instant commands on a UPS carrying the router. **Needs:**
-  the operator's decision on the flag (the exact `ups.conf` spelling for NUT 2.8 is
-  worth checking against upstream rather than guessing into a module), then one
-  controlled discharge **with a spare box on the UPS as the sacrificial load**,
-  watching `journalctl -u ups-killpower` — which also answers whether this firmware
-  implements `shutdown.return` at all, since that question sits behind the flag.
-- **Does this BIOS power on after AC loss?** ("Restore on AC Power Loss → Power
-  On"; unreadable from the running system, moot while `allow_killpower` is off —
-  there is no AC cycle to detect — and half the recovery story once it is on.)
-  **Needs:** the setting read/photographed at the next physical visit and the answer
-  written into `docs/ups-and-fleet-shutdown.md` §5.
+- **Does this firmware return its load after dropping it?** (armed 2026-10-28 —
+  `allow_killpower = yes` in `machines/gw/ups.nix`, after measuring that without it
+  NUT 2.8 silently ignores the shutdown request: `driver.flag.allow_killpower does
+  not permit this - request was currently ignored!`, verbatim from the driver. So
+  the cut happens now; **the return is the unmeasured half**.) If the UPS drops the
+  outlets and keeps them down until someone presses its front button, an unattended
+  recovery becomes one button instead of four — better, but still a walk, and worse
+  than before for anything on those sockets that this flake does not manage.
+  **Blocks:** claiming the network recovers unattended. **Do not** probe with
+  instant commands on a UPS carrying the router. **Needs:** one controlled discharge
+  **with a spare box on the UPS as the sacrificial load**, watching
+  `journalctl -u ups-killpower` for the cut and then whether the outlets come back
+  by themselves when mains are restored — and do it knowing the sequence at the end
+  of that discharge really does power the fleet off.
+- **Autostart after AC is stated, not measured.** The operator's fact: these boxes
+  power on when AC is supplied following an interruption. §5's whole mechanism rests
+  on it, so it is recorded rather than re-derived — but nobody has read the BIOS of
+  `gw` itself, and the two boxes that matter most for a dark building are outside
+  this feature (next item). **Needs:** at the next physical visit, the setting on
+  `gw` and whichever of the NAS/monster1 turn out to be on this UPS.
 - **The NAS and `monster1` are not in the shutdown list, and it is not known
   whether they are even on this UPS.** `nas` is TrueNAS — not a flake machine, its
   own shutdown verb — and monster1 hosts VMs this flake does not own; the second

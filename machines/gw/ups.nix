@@ -174,18 +174,15 @@
   # One path, three readers — `upsmon.conf`, that unit's `ConditionPathExists=`,
   # and `ups-watchdog --killpower-flag`, which is what arms it on the grace-timer
   # path (where `upsmon` never reaches its own power-off state and so never writes
-  # it).
+  # it).  NUT's installed `system-shutdown/nutshutdown` hook is a fourth reader and
+  # the backstop: it calls `upsdrvctl shutdown` iff `upsmon -K` finds this file.
   #
-  # **Arming it is not the same as the UPS dropping its load, and today it does
-  # not.** `upsc apc@localhost` on the deployed box reports
-  # `driver.flag.allow_killpower: 0`, and NUT 2.8 refuses to send the killpower
-  # command unless the driver is explicitly given that flag — so `upsdrvctl
-  # shutdown` runs, declines the part that matters, and gw stays off with its
-  # outlets live after an outage that outlasts the battery. That is left as
-  # upstream left it: enabling the flag means this sequence really does cut the
-  # network's power, which is a decision for a person to make with a battery on it
-  # rather than a default to slip into a module. The reasoning, and what measuring
-  # it would take, is `docs/ups-and-fleet-shutdown.md` §5 and §7.1.
+  # The flag is therefore the thing that says "this shutdown was decided by the
+  # battery", and it is on tmpfs so a boot cannot inherit one.  What it triggers —
+  # the driver actually cutting the load — is gated separately by
+  # `allow_killpower` in the driver directives above, which is **armed**, and
+  # `docs/ups-and-fleet-shutdown.md` §5 says what that means for getting the
+  # building back and what is still unmeasured about it.
   powerDownFlag = "/run/killpower";
 
   stateDir = "/run/ups-watchdog";
@@ -260,7 +257,7 @@
         ;;
       ${evRestored})
         matched=1
-        notice="MAINS RESTORED|Utility power is back at $(${pkgs.coreutils}/bin/date -u '+%Y-%m-%dT%H:%M:%SZ').|The outage timer was cancelled; no shutdown, no restart, nothing to do.|If a fleet shutdown had already started it cannot be undone: check 'journalctl -u ups-fleet-shutdown'."
+        notice="MAINS RESTORED|Utility power is back at $(${pkgs.coreutils}/bin/date -u '+%Y-%m-%dT%H:%M:%SZ').|If nothing had been powered off, that is all: the outage timer was cancelled and there is nothing to do.|If the fleet was powered off, it should boot itself now that AC is back. A box still off after five minutes means the UPS took its load down and has not let it back up: press the button on the front of the UPS, then power on gw, nas, services1, services2, aibox in that order — everything but gw needs its DNS.|'journalctl -u ups-fleet-shutdown' on gw says which case you are in."
         ;;
       ${evCommLost})
         matched=1
@@ -557,6 +554,43 @@ in {
       # `sdorder` 0: this is the UPS that carries the router, so it is the one NUT
       # is allowed to drop last, at shutdown, via ups-killpower.
       shutdownOrder = 0;
+
+      # **Armed: this box sheds its own load at the end of a fleet shutdown.**
+      #
+      # NUT 2.8 refuses to cut the output unless the driver is given this flag, and
+      # the refusal is silent — the driver's own binary carries the words:
+      #
+      #   Got socket protocol request for UPS [%s] to power off, but
+      #   driver.flag.allow_killpower does not permit this - request was currently
+      #   ignored!
+      #
+      # `upsdrvctl shutdown` speaks exactly that socket protocol, so without this
+      # line the whole recovery story in docs/ups-and-fleet-shutdown.md §5 was a
+      # no-op: the servers would be powered off cleanly, the strips would stay
+      # live, and a machine that was told to `poweroff` never sees the AC
+      # transition its firmware needs to come back.  Every box here *does* power on
+      # when AC is supplied after an interruption, which is what makes dropping the
+      # load the mechanism rather than a hazard: it manufactures the one event that
+      # turns "walk the building and press four buttons" into "the building comes
+      # back when the mains do".
+      #
+      # What it costs, stated plainly: at the end of the sequence this cuts power to
+      # everything on the UPS, and it depends on the firmware *returning* that load
+      # when input power is stable (`shutdown.return` behaviour) — unmeasured on
+      # this model.  If it stays off instead, the building is dark until someone
+      # presses the UPS's button, which is no worse than the four-button walk-around
+      # it replaces, but it is worse for anything on these sockets that this flake
+      # does not manage.  The one controlled discharge in
+      # `docs/follow-ups.md` is what closes that gap; read §5 before editing here.
+      #
+      # Two things run `upsdrvctl shutdown` on the same condition, both gated on
+      # POWERDOWNFLAG (`/run/killpower`, tmpfs, armed only by this feature): the
+      # nixpkgs `ups-killpower.service` during shutdown, and NUT's own
+      # `/run/current-system/sw/lib/systemd/system-shutdown/nutshutdown` hook after
+      # the filesystems are down.  It is installed by the package and calls the
+      # command iff `upsmon -K` finds the flag — so a routine reboot never sheds
+      # load, and neither does any shutdown this feature did not decide.
+      directives = ["allow_killpower = yes"];
     };
 
     # Loopback only.  Empty means "no LISTEN line", and NUT's built-in default is
