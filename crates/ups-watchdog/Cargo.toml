@@ -1,0 +1,15 @@
+[package]
+name = "ups-watchdog"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "ups-watchdog"
+path = "src/main.rs"
+
+# No dependencies, on purpose (the same rule `crates/network-status` keeps): this
+# program shells out to `ssh` and `systemctl` and reads one line from `upsc`, and
+# every one of those is a store path the unit puts on its PATH.  A crates.io
+# dependency would be one more thing between "the power failed" and "the fleet is
+# powered off", and a build-time one at that.
+[dependencies]

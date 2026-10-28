@@ -88,6 +88,13 @@
     ./openvpn.nix
     ./sops.nix
     ./uplink.nix
+    # The UPS on this box's USB port, and the ordered power-off it drives: NUT for
+    # the protocol, `upssched` for the outage countdown, and `crates/ups-watchdog`
+    # for the two things neither knows how to do — broadcast a notice to every
+    # server, and power the fleet off before itself.  The grace period, the notice
+    # texts and the target list all live there; `docs/ups-and-fleet-shutdown.md`
+    # has the battery maths and what is measured rather than assumed.
+    ./ups.nix
 
     # The guard over common/int-dns.nix read from *this box's nginx*: the same table
     # ./dns.nix answers with, compared against the vhosts ./http.nix declares.  It is

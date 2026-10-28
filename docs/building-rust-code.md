@@ -40,7 +40,7 @@ Two things keep the *per-crate* build times anyway:
   cannot build one member without loading every member's manifest — and it refuses
   a manifest whose declared targets are missing — so the tree has to carry the
   whole workspace. Stubs are what stop that meaning every `.rs` edit rebuilds all
-  eight programs: cargo sees the other members' manifests and no code.
+  the programs: cargo sees the other members' manifests and no code.
 - **The lock file reaches crane through `CRANE.lockFile`** (a `writeText` keyed on
   its **contents**), so the vendor derivation is keyed on dependencies rather than
   on the source tree. Changing a dependency anywhere invalidates the shared dep

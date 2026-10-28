@@ -21,7 +21,7 @@
 # ## Everything native is one cargo workspace
 #
 # `crates/` is a single cargo workspace (crates/Cargo.toml), so there is one lock
-# file and one dependency graph for all eight programs.  That has two consequences
+# file and one dependency graph for every program in here.  That has two consequences
 # here, and the helpers exist to keep the second one from costing anything:
 #
 # 1. there is one dependency derivation for the whole fleet (`workspaceArtifacts`):
@@ -31,7 +31,7 @@
 # 2. cargo loads *every* member's manifest to build any of them (and refuses a
 #    manifest whose target files are missing), so a member cannot be built from its
 #    own directory — the source tree has to carry the whole workspace.  Naively
-#    that would mean every .rs edit rebuilds all eight programs.  `memberSrc`
+#    that would mean every .rs edit rebuilds every program.  `memberSrc`
 #    avoids it: the tree carries the other members as crane's *stubs* (manifests
 #    only, which is all cargo needs from them) and the real code of just the member
 #    being built, so a crate's derivation still depends on that crate's source and

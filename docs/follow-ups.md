@@ -1564,3 +1564,63 @@ that **need an owner or a decision** rather than another measurement.
   recipe takes `CAM_FEED` from the caller and never trusted its own comment. **Needs:** the fault-8
   table, in one place both `just cam-probe` and the gatus rows can read; until then, treat any
   feed name quoted in prose as suspect and re-read it off `/srv/frigate/config/config.yaml`.
+
+## UPS and the power-cut path (gw) — opened 2026-10-28, `docs/ups-and-fleet-shutdown.md` owns it
+
+Deployed 2026-10-28: a Back-UPS XS 1400U on `gw`'s USB port, NUT
+(`machines/gw/ups.nix`), a 300 s `upssched` grace timer, notices that `wall`
+every server, and `crates/ups-watchdog` powering `services1`/`services2`/`aibox`
+off over the hop key before the router powers itself off. **None of it has been
+through a real outage**, so the items below are ordered by "what would embarrass
+us at 04:00", not by size.
+
+- **Does this firmware implement `shutdown.return`/`load.off` at all?** (unmeasured
+  2026-10-28, and it is the one that decides whether the network comes back by
+  itself). The sequence ends by writing NUT's POWERDOWNFLAG so
+  `ups-killpower.service` runs `upsdrvctl shutdown` at shutdown; if the UPS
+  ignores that instant command the outlets stay live, `gw` sits at its power
+  button, and "the network recovers on its own" is a story we told ourselves.
+  **Blocks:** trusting an unattended recovery. **Do not** test by sending instant
+  commands to a UPS carrying the router. **Needs:** `upscmd -l apc@localhost`
+  recorded in the doc, then one controlled discharge **with a spare box on the
+  UPS as the sacrificial load**, watching `journalctl -u ups-killpower`.
+- **Does this BIOS power on after AC loss?** ("Restore on AC Power Loss → Power
+  On"; unreadable from the running system, and it is the second half of the same
+  recovery story — the UPS returning its load does nothing if the board stays
+  off.) **Needs:** the setting read/photographed at the next physical visit and
+  the answer written into `docs/ups-and-fleet-shutdown.md` §5.
+- **The NAS and `monster1` are not in the shutdown list, and it is not known
+  whether they are even on this UPS.** `nas` is TrueNAS — not a flake machine, its
+  own shutdown verb — and monster1 hosts VMs this flake does not own; the second
+  `docs/monster-powercut-runbook.md` is the runbook for *that* box being down, not
+  for a plan. **Blocks:** claiming the network survives an outage cleanly: today
+  the router can go while the NAS is still serving NFS. **Needs:** which sockets
+  the NAS and monster1 are actually plugged into, then either their shutdown in
+  the right place in `shutdownTargets` (NAS after `services1`, before the router)
+  or a sentence saying why they are on a different UPS.
+- **Nobody has seen a real `OB`, and every number is judgement.** 300 s of grace,
+  30 s of notice window, 10 s settle, 20 s per hop: none measured. The battery
+  figure the grace period should be derived from — `battery.runtime` at the real
+  load, on a unit of unknown service history (firmware 926.x, serial
+  `4B1836P34201`) — has never been read under discharge. **Needs:** the first
+  `just ups-status` on battery in the doc, and the grace period restated as
+  `runtime − (the sequence + margin)` rather than a round number. The drill path
+  (`just ups-notice-test`, `just ups-drill`, then `sudo upssched apc ONBATT` — the
+  NOTIFYCMD contract, `<upsname> <event>` — followed by the matching `sudo upssched
+  apc ONLINE`) is §6 of the doc.
+- **`upsc`'s anonymous localhost read on NUT 2.8 is unproven here.** The nixpkgs
+  module writes no `ACCEPT` line, so the re-check is *advisory by design* — if it
+  turns out to need credentials the behaviour degrades to "always trust the
+  timer", which is the ask, but it also means the "OL means abort" guard is
+  silently off. **Needs:** `upsc apc@localhost ups.status` by hand after the first
+  deploy; if it refuses, a `power.ups.users` entry and a credential in sops (which
+  also means the loopback-only assertion in `machines/gw/ups.nix` has to be
+  revisited — its password is a store path *because* nothing remote can use it).
+- **No alerting of any kind reaches a human who is not in front of a terminal.**
+  The notices are `wall`, so an unattended building reads none of them; the
+  journal is the only record, and `ups-notice` exiting 30 (somebody was missed) is
+  visible only to whoever asks. **Blocks:** nothing, and it is explicitly *not* in
+  scope for a shutdown path — an alert that can fail must never be the reason the
+  sequence stops. **Needs:** if it is wanted, a Grafana/Alertmanager rule on the
+  NUT metrics or a gatus endpoint (`common/monitoring-endpoints.nix`), not a
+  webhook embedded in `ups-fleet-shutdown.service`.

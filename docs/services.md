@@ -33,6 +33,7 @@ Every address is in `common/hosts.nix`.
 | whisper-ws | `crates/whisper-ws/` | aibox:8083 | `crates/whisper-ws/README.md` |
 | moonraker-exporter | `crates/moonraker-exporter/` | metrics | `docs/printer-servers.md` |
 | strata | `machines/*/strata.nix` | services2:8080 → `strata.int.leighhack.org` (LAN, key injected) and `strata.leighhack.org` (public, API key); aibox:8080 → `strata2.int.leighhack.org` (LAN, key injected) | `machines/aibox/STRATA.md`, `machines/services2/STRATA.md` |
+| ups-watchdog | `crates/ups-watchdog/` | no port: it is a oneshot, and it calls out (ssh `wall`, ssh `poweroff`) | `docs/ups-and-fleet-shutdown.md`, `machines/gw/ups.nix` |
 
 ---
 
@@ -492,6 +493,55 @@ pinned to was removed on 2026-09-02, so `whisper-server` needs a repin before
 either comes up). Its status page is a Solid.js/Vite app embedded in the binary,
 which is why this one crate is packaged by `crates/whisper-ws/package.nix` rather
 than by crane: `docs/building-rust-code.md`, "the fifth non-member".
+
+## `crates/ups-watchdog/` — the outage notices, and the power-off that goes gw last
+
+Not a service in the usual sense: four modes, no port, no listener, and two
+systemd units that nothing starts on boot. NUT (`power.ups` on `gw`, configured in
+`machines/gw/ups.nix`) owns the UPS and the outage countdown; this owns the two
+things NUT has never heard of — **telling every server, and shutting them down in
+order before the router shuts itself down.** Started by `upssched`'s CMDSCRIPT (via
+`ups-trigger`), by `upsmon`'s `SHUTDOWNCMD`, and by hand.
+
+The three decisions worth knowing before editing it, because each looks like
+over-engineering from the outside: the countdown lives in `upssched.conf` and *not*
+in Rust (a second timer is a second timer to disagree with); the re-check of
+`ups.status` at the moment of action is advisory in both directions (`plan::decide`
+is the tested function that says which way); and `gw` is refused from the ssh list
+by *address* rather than by name, because the hop key is authorized on every box
+including this one and a self-hop exits 0 (`AGENTS.md` rule 27).
+
+`docs/ups-and-fleet-shutdown.md` is the runbook — including §7, what has never been
+exercised on a live battery, and the two things (does this firmware implement
+`shutdown.return`, and does this BIOS power on after AC loss) that decide whether
+the network comes back by itself.
+
+## `crates/ups-watchdog/` — the outage notices, and the power-off that goes gw last
+
+`ups-watchdog` is the one part of the power-cut path that is not NUT, and it is a
+program with no port, no daemon and no state: four modes
+(`run`/`broadcast`/`plan`/`status`), started by `upssched`'s CMDSCRIPT, by
+`upsmon`'s `SHUTDOWNCMD`, and by hand. NUT (`power.ups` on `gw`, configured in
+`machines/gw/ups.nix`) sees the UPS, counts the 300 s of grace and cancels it when
+mains return; this delivers the two notices that are not part of a shutdown and
+then powers `services1` → `services2` → `aibox` off over the hop key **before** the
+router powers itself off, because `gw` is the router and a router dying with its
+clients still drawing current is a hard shutdown for all of them.
+
+Three things about it are decisions rather than incidentals, and all three are the
+test suite's job rather than a reviewer's: the outage countdown lives in
+`upssched.conf` and deliberately **not** in here (a second timer is a second timer
+to disagree with); the last-second re-check of `ups.status` is advisory in both
+directions, so `OL` cancels a grace-timer shutdown but a broken `upsc` never
+prevents one (`plan::decide` is the function); and `gw` is refused from the target
+list **by address**, because the hop key is authorized on every box including this
+one and a self-hop exits 0 — `AGENTS.md` rule 27, mechanised.
+
+`docs/ups-and-fleet-shutdown.md` is the runbook: §6 is how to prove each half
+without unplugging anything (`just ups-status`, `just ups-notice-test`,
+`just ups-drill`), and §7 is what has never been exercised on a live battery —
+including whether this firmware implements `shutdown.return`, which is the thing
+that decides whether the network comes back by itself.
 
 ## `crates/common-rs/` — where new shared code goes
 

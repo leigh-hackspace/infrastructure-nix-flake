@@ -139,6 +139,7 @@ evaluation of this machine succeeds with tables that disagree, and standalone vi
 | `lib/assert-network-tables.nix` | the three-line module wrapper that runs them at eval time |
 | `network-status.nix` | the router's own dashboard (`network-info.int.leighhack.org`, :8091) — including the per-connection table, whose *permission* half is not here |
 | `conntrack-reader.nix` | the half of that dashboard that has to be true before its process starts: the `conntrack-readers` group, the service account whose primary group it is, `nf_conntrack_acct`, and the root `ExecStartPre` that `chgrp`s `/proc/net/nf_conntrack`. **Read its header before touching either file** — it records the four measurements that decided the design, including the one that killed the version before it |
+| `ups.nix` | the Back-UPS XS 1400U on this box's USB port, and everything that happens when the mains go: NUT (`usbhid-ups` → `upsd` → `upsmon`), the 300 s outage countdown in a generated `upssched.conf`, the notice that `wall`s every server at the start of the outage and again before the shutdown, and the ordered ssh power-off of `services1`/`services2`/`aibox` before this box. **The grace period, the notice texts and the target list are here; `docs/ups-and-fleet-shutdown.md` has the battery maths, the recovery question, and §7 — the list of what has never been tested on a live battery.** Read that before changing a timeout, a recipient, or anything that touches the UPS's load |
 
 ## DNS: three generated files, nothing mutable
 

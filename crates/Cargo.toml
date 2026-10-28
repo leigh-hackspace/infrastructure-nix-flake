@@ -69,6 +69,7 @@ members = [
   "status-dashboard",
   "switch-gui",
   "switch-gui/dto",
+  "ups-watchdog",
 ]
 # Belt and braces: each non-member's own `[workspace]` table is what actually
 # opts it out, and this list says the same thing from the other side.  Cargo
