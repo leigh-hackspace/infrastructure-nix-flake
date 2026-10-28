@@ -68,9 +68,15 @@ matter.
 ```bash
 just check      # the gate: evaluates everything, formats, builds NOTHING
 just fmt        # alejandra over every tracked .nix (the only formatter)
-just switch     # build + apply + sudo nixos-confirm, chained, on this machine
+just switch     # build + apply + sudo nixos-confirm, chained, on THIS machine
 just deploy m   # the same, on machine `m`: ssh in, fetch the commit, build and confirm THERE
 ```
+
+`just switch` resolves the machine from **`hostname`** — nixos-rebuild-ng's default attr is
+this box's name — and a session may be running on any box of the fleet, so read `hostname`
+before anything sshs: every flake machine has this repo and the hop key, so a hop to the box
+you are standing on succeeds silently into a shell that kept none of the state you had read
+outside it. `docs/nix-dev-workflow.md` ("Which box am I on?") and AGENTS.md rule 27.
 
 Two things bite, and both are load-bearing:
 

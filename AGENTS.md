@@ -17,6 +17,7 @@ X first", X has already cost someone a day.
 | change any service's behaviour, flags, API, ports, or deploy | `docs/services.md` (the crate's README too where one exists) |
 | touch how Rust is built: `common/crane.nix`, a `Cargo.toml`, `build.rs`, a Dioxus SPA | `docs/building-rust-code.md` |
 | run non-trivial nix, debug a wedged/hanging nix, build detached, remote-build | `docs/nix-dev-workflow.md` |
+| start a session, or ssh between boxes — **which box you are on is a fact to read, every box has this repo and the hop key** | rule 27 (`hostname` first) + `docs/nix-dev-workflow.md` ("Which box am I on?") |
 | touch DNS, dnsmasq, the router, the DigitalOcean zone, a new vhost's name | `docs/router-and-dns.md` (+ `machines/gw/README.md` — this box **is** the network's router, live at 10.3.1.1 since the 2026-10-21 cutover: it says what is proven on that box, what is still a guess, and what must not move) |
 | move TLS termination, a vhost, the nginx-sso gate, `anubis` or `headscale` **between boxes** — i.e. work the router-as-front-door plan is preparing | `docs/router-front-door-migration.md` (**deployed 2026-10-24: `gw` terminates everything the network has *one* of — cert, public + `*.int` vhosts, `nginx-sso`, `anubis`, the ACLs — and `services1` is an *origin*: plain HTTP on :80, `CONFIG.ROUTER_ONLY`, no cert, no gate, no anubis. `headscale`/`headplane` also run on `gw` now. Phase-by-phase history and the deploy findings are in that doc**) + `docs/router-and-dns.md` |
 | ask whether the router can be **redundant** — a second `gw`, or CARP / VRRP / keepalived / conntrackd, or "OPNsense did this with CARP" | `docs/router-ha.md` (**there is one router, and the retired appliance never configured CARP or pfsync either; the gate is an AAISP question about whether the routed `/29` and the delegated `/48` follow a failover dial, not a NixOS module; and nothing in this flake can tell a second `gw` from the first, because the network-tables guard reads tables and never asks which box is evaluating them**) |
@@ -152,6 +153,24 @@ X first", X has already cost someone a day.
     is in, and `monitoring-dashboards.nix` is on the baseline rather than exempt to prove
     it. If you add to a file that is already over, say so in the commit message instead of
     quietly making it longer.
+27. **Read `hostname` before anything sshs — you may already be on that box.** A session
+   runs on whichever box it was started on, and every flake machine holds this repo at the
+   same path and its own copy of the hop key, so nothing about the prompt, the cwd or the
+   git tree says which box ran it. Everything machine-shaped here keys to the **local**
+   hostname rather than to what you meant: `just switch` is `nixosConfigurations."$(uname
+   -n)"` (nixos-rebuild-ng resolves a bare `--flake .` to this box, so it can only deploy
+   the one you are standing on), `_build-host-guard` asks `[ "$(hostname)" = "gw" ]`,
+   `just check` skips its flake step on the router, `just deploy` switches *here* when its
+   argument equals `hostname`. So the accident is a **hop to the box you are already on,
+   which succeeds silently**: the key is authorized on every box including this one, so the
+   ssh exits 0 from a nested shell that carried in none of the cwd, `git log -1`, dirty-tree
+   state or tty the outer shell had just read, and the GOLDEN RULE's *same shell invocation*
+   has quietly ended. Read `hostname` first; when it equals the target, run the job locally
+   — `just deploy <machine>` already degenerates to exactly that, so it is safe typed on
+   any box, and hand-written ssh chains are where the mistake lives. Mechanism, the measured
+   self-hop, the hostname/table-key split (the router's hostname is `gw`, `common/hosts.nix`
+   calls its address `router`), and how to re-verify it the next time nixos-rebuild-ng moves:
+   `docs/nix-dev-workflow.md` ("Which box am I on?").
 
 ---
 
@@ -651,6 +670,14 @@ there is declarative. **Root SSH is keyed here** (unlike the flake machines):
 - Connect as **`leigh-admin`, never `root`** on the flake machines — root SSH is not keyed
   there (verified both directions). `leigh-admin` has passwordless sudo, so run
   `sudo nixos-rebuild ...` / `sudo nixos-confirm` after logging in.
+- **Check `hostname` before you hop — you may already be on the box you are hopping to.**
+  Every flake machine holds this repo and its own copy of the hop key, so a session that
+  started on `gw` and types a hop to 10.3.1.1 has already succeeded before it wonders: the
+  nested shell answers 0 and prints plausible output while keeping none of the cwd, the
+  `git log -1`, or the confirm-chaining that the outer shell had established. `just deploy
+  <machine>` is the form that is right wherever it is typed (it compares `hostname` to the
+  machine and switches *here* when they match); hand-written ssh chains are where the
+  mistake lives. Rule 27, and the receipts: `docs/nix-dev-workflow.md` ("Which box am I on?").
 - **services2 is no longer the exception** (verified 2026-10-15): it has the private
   `~/.ssh/agent-hop-key`, identical to services1's, and hops out to 10.3.1.20. What is still
   true is that it has **no GitHub key of its own**, so reach GitHub from it with `ssh -A`

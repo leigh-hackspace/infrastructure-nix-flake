@@ -9,7 +9,90 @@ has the commands and the full gotchas.
 
 The flake is pure and its sources come from the **git tree**, so everything below
 runs from this repo root, and untracked files are invisible to it (`git add` new
-`.nix` files first).
+`.nix` files first). **Which repo root is not settled either** — a session runs on
+whichever box it was started on, so read `hostname` before anything that sshs. That
+section is first for that reason.
+
+## Which box am I on? — read `hostname` before anything sshs
+
+A session is started on whichever box the operator was standing at. Every flake
+machine has **the same repo checkout at the same path** (`~/Projects/infrastructure-nix-flake`)
+and **the same `~/.ssh/agent-hop-key`**, so nothing about the prompt, the cwd, or the
+git prompt says which box ran it. `hostname` is the first fact of any job that sshs or
+deploys, not an assumption carried over from the last session.
+
+```bash
+hostname                       # gw | services1 | services2 | aibox | monster1 | …
+git rev-parse --short HEAD     # which commit this box's copy of the repo is at
+git status --porcelain | wc -l # and how dirty it is (rule 5's untracked-file trap)
+readlink /run/current-system   # the running generation — differs per box, and is
+                               # the thing the GOLDEN RULE confirms
+```
+
+**The trap: a hop to the box you are already on succeeds, silently.** The hop key is
+authorized for `leigh-admin` on every flake machine *including the one you are standing on*,
+so the ssh that was meant for another box lands back here, exits 0, and prints output that
+looks like it came from over there. Measured on `gw` on 2026-10-28, as two halves of one
+tool call:
+
+```text
+local:    host=gw gen=/nix/store/si3hsraw…-nixos-system-gw-26.11.20261014.319e4ce
+              head=dcedf96 dirty=0
+self-hop: hop-host=gw hop-gen=/nix/store/si3hsraw…-nixos-system-gw-26.11.20261014.319e4ce
+              hop-dir=/home/leigh-admin/Projects/infrastructure-nix-flake
+```
+
+Same hostname, same store path, same repo directory. What changed is the *shell*: the
+nested ssh carries none of the cwd, the `git log -1`, the `readlink /run/current-system`,
+the dirty-tree state or the tty that the outer shell had just read, so every one of those
+facts stops being what the transcript says it is — and `cd ~/Projects/infrastructure-nix-flake`
+in the outer half is now a claim about a box the inner half is not on. **The GOLDEN RULE
+cannot hold across two ssh layers** (rule 4: confirm in the *same* shell invocation as the
+switch), which is what makes a self-hop turn a "deployed and confirmed" transcript into
+nothing at all. Read `hostname` before issuing the hop; if it equals the target, run the
+job locally.
+
+Everything machine-shaped in this repo already keys to the local hostname, which is the
+other half of why it matters — those commands answer *"did you type this here?"*, not
+*"did you mean to build here?"*:
+
+| What | Reads the hostname how |
+| --- | --- |
+| `just switch` (`nixos-rebuild switch --flake .`) | nixos-rebuild-ng's `Flake.parse` builds `nixosConfigurations."{attr or uname -n(target_host) or default}"`. With no `#<machine>` and no `--target-host`, `attr` is empty and `_get_hostname(None)` is `platform.node()`: **`--flake .` means the box you are standing on**, and `just switch` can only ever deploy *this* machine — a mistaken machine name is not what bites, a mistaken idea of where you are is. With `--target-host` it runs `uname -n` on the far side instead, so a push that named no `#<machine>` asked the *remote*'s hostname what to build — the same fact, read on the other side of the hop. |
+| `just deploy <machine>` | `me=$(hostname)`; when it equals the machine it prints `=== <m> is this box: switching here` and runs the switch locally. **The recipe is correct typed on any box, self-hop included** — hand-written ssh chains are where the mistake lives. |
+| `_build-host-guard`, hence `just check-build` / `just test` / `just clippy` / `just build-frontend` / the `just filestore-*` family / `just switch-gui-test` / `just build-remote` | `[ "$(hostname)" = "gw" ]` — a refusal is a question about where you typed, so "run it on aibox" is a *move*, not an override (rule 22 says why it is also not a workaround for the flake step of `just check`). |
+| `just check` | skips its flake step on `gw` and prints why — the skip is a fact about this box, so quoting a green `just check` names the box it ran on. |
+
+Two name collisions to keep apart while mapping a hostname to an address:
+
+- `hostname` says **`gw`** where `common/hosts.nix` calls the same box **`router`** (the
+  table names an address after its job). `just deploy gw` maps the two (`case "$machine" in
+  gw) hkey=router ;; esac`) and `just known-hosts` reads the same table; a hand-written
+  hop has to do the mapping by hand, which is what AGENTS.md's ssh block spells out as
+  `leigh-admin@10.3.1.1`.
+- **aibox maps its own name to `127.0.0.2` in `/etc/hosts`**, so `ssh aibox` from aibox is
+  a self-hop behind a second indirection — use the IP in every hop.
+
+Re-verify the rebuild half instead of inheriting this text: nixos-rebuild-ng has moved
+once already (it is now `nixos-rebuild-ng-26.11`, a Python entry point rather than
+`switch-to-configuration`'s bash), and the default-machine rule lives in its own source:
+
+```bash
+n=$(readlink -f "$(which nixos-rebuild)")
+grep -n 'nixosConfigurations' "${n%/bin/*}"/lib/*/site-packages/nixos_rebuild/models.py
+```
+
+That prints the one line that decides the machine — `nixosConfigurations."{attr or
+cls._get_hostname(target_host) or "default"}"` — plus `_get_hostname`'s two branches:
+`uname -n` over `--target-host` when one was given, and `platform.node()` (this box's
+hostname) when none was.
+
+**The box also decides the rest of the session, not only the ssh:** `docs/network-upgrade-runbook.md`
+begins by printing `hostname` on each box before touching it, rule 20 (`git log -1` on a
+remote box before blaming a config change) only means anything because each box holds its
+own checkout at its own commit, and `docs/router-ha.md` names the three things keyed to the
+literal `gw` — a second router under that name would be indistinguishable from the first
+by every one of them.
 
 ## Test a change without applying
 
