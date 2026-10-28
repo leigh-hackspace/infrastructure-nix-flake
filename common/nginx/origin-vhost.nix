@@ -26,6 +26,46 @@
 # certificate. `lib.recursiveUpdate` merges them over the default `location /`, so a
 # caller adds a path without restating the proxy it would have inherited.
 #
+# --- `preserveForwardedHeaders`, and why it is opt-in ---------------------
+#
+# `recommendedProxySettings` (nixpkgs) emits `X-Real-IP $remote_addr` and
+# `X-Forwarded-Proto $scheme`. On an origin those two are lies: `$remote_addr` is the
+# front door (`10.3.1.1`) and `$scheme` is `http`, because the door→origin hop is plain
+# HTTP on :80 by design — while the door itself had already set both truthfully for the
+# client's real connection. So every origin behind the door has, since 2026-10-24,
+# silently replaced the client's address with the router's and https with http.
+#
+# Most apps never notice because they take their public URL from their own config. Apps
+# that build absolute URLs from the request notice immediately: authentik rendered
+# `base: "http://id.leighhack.org/"` into an HTTPS page and the browser blocked
+# `/api/v3/core/users/me/` as mixed content (2026-10-28, the day `id.int` became an
+# origin). Verified by fetching the same page twice — through the door (`http`) and
+# straight to the container with `X-Forwarded-Proto: https` (`https`).
+#
+# `preserveForwardedHeaders = true` passes the door's values through instead, and it is
+# safe to do at all because of an invariant this box already enforces twice over:
+# **there is no path to an origin that does not go through the front door**
+# (`originReachabilityRules` in `machines/gw/firewall.nix` is
+# `ip daddr services1 tcp dport { 80, 443 } ip saddr != 10.3.1.1 counter drop`, and
+# `CONFIG.ROUTER_ONLY` is the app-layer half). So `$http_x_real_ip` and friends are
+# always the door's honest values, never a client-supplied forgery — which is the same
+# shape of argument `crates/switch-gui/src/routes.rs` makes about its loopback socket.
+#
+# It is still **opt-in** rather than the default, for one reason: it is also correct for
+# every other origin, and flipping the default changes what seven running apps believe
+# about who is calling. An origin that applies its own IP allowlist currently sees
+# `10.3.1.1` for *everyone* and so lets the whole internet through a LAN rule; after the
+# flip it sees real client addresses and could start refusing traffic that works today.
+# That is a bug being fixed and a behaviour change at the same moment, so each origin
+# should get it deliberately, with its own allowlists read first. The audit is an open
+# item in `docs/follow-ups.md`.
+#
+# What `id.int` was flipped on (2026-10-28, measured against the migrated database rather
+# than reasoned about): **0** `GeoIPPolicy` rows, and **0 of 11** expression policies read
+# the client address (`2` read `request.user`/session, which is unaffected) — so no
+# authentik policy decision can change. What it does change is exactly the two lies: the
+# emitted base URL, and the client IP in authentik's event log.
+#
 #   mkOriginVhost = import common/nginx/origin-vhost.nix { inherit lib; };
 #
 #   services.nginx.virtualHosts."foo.int.leighhack.org" = mkOriginVhost {
@@ -38,6 +78,7 @@
 #     serverAliases = [];
 #     locations = {};          # extra locations, merged over "/"
 #     extraConfig = "";        # appended to the default location, not the server
+#     preserveForwardedHeaders = false;  # true = forward the door's X-Real-IP/XFF/XFP
 #   };
 #
 # A vhost with no proxy at all (`element.leighhack.org`'s built SPA, `retro.int`'s
@@ -56,6 +97,7 @@ in
     extraConfig ? "",
     serverAliases ? [],
     locations ? {},
+    preserveForwardedHeaders ? false,
   }: {
     inherit serverAliases;
 
@@ -66,11 +108,33 @@ in
       lib.recursiveUpdate {
         "/" = {
           inherit proxyPass;
-          recommendedProxySettings = true;
+          # When `preserveForwardedHeaders` is on, `recommendedProxySettings` is turned
+          # *off* rather than overridden: nixpkgs' recommended set and our own lines would
+          # be two `proxy_set_header` directives for the same field in the same location,
+          # and which one wins is not something to leave an app's URLs to guess about.  The
+          # set below is that same set — including `Host $host`, which is *not* optional,
+          # because nginx's own default is `$proxy_host` and an app that routes tenants or
+          # vhosts by `Host` would silently get `127.0.0.1:9000`.
+          recommendedProxySettings = !preserveForwardedHeaders;
           proxyWebsockets = websockets;
 
           extraConfig =
-            lib.optionalString (bodySize != null) ''
+            lib.optionalString preserveForwardedHeaders ''
+              # The front door already set these three honestly: `X-Forwarded-Proto` from
+              # the client's real TLS connection, `X-Real-IP` to the client.  Re-deriving
+              # them from *this* hop turns `https` into `http` (the door→origin hop is
+              # plain HTTP on :80, by design) and every client into `10.3.1.1`.  For an app
+              # that renders absolute URLs into its own HTML that is a hard failure:
+              # authentik emitted `base: "http://id.leighhack.org/"` into an HTTPS page and
+              # the browser blocked its API calls as mixed content.
+              proxy_set_header Host              $host;
+              proxy_set_header X-Real-IP         $http_x_real_ip;
+              proxy_set_header X-Forwarded-For   $http_x_forwarded_for;
+              proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;
+              proxy_set_header X-Forwarded-Host  $http_x_forwarded_host;
+              proxy_set_header X-Forwarded-Server $hostname;
+            ''
+            + lib.optionalString (bodySize != null) ''
               client_max_body_size ${bodySize};
             ''
             + lib.optionalString (timeouts != null) ''

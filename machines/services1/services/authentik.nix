@@ -441,6 +441,15 @@ in {
       proxyPass = "http://127.0.0.1:9000";
       websockets = true;
       proxyBuffering = false;
+      # authentik builds absolute URLs from the request, so it is the one origin on this
+      # box that cannot tolerate the hop rewriting `X-Forwarded-Proto`: it emitted
+      # `base: "http://id.leighhack.org/"` into an HTTPS page and the browser blocked
+      # `/api/v3/core/users/me/` as mixed content. It is also the app whose event log is
+      # worthless if `X-Real-IP` says `10.3.1.1` for every login. Measured before flipping:
+      # no GeoIP policies and no expression policy reads the address, so no policy decision
+      # moves — see `common/nginx/origin-vhost.nix` before copying this to another origin,
+      # where it is correct but not free.
+      preserveForwardedHeaders = true;
     };
   };
 
