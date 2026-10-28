@@ -1,27 +1,33 @@
-# PARKED — 2026-10-15 (0784799) — docs/authentik-container-migration.md owns this one,
-# end to end: what was migrated, what the checklist is, and what blocks the cutover
-# (docs/follow-ups.md). 10.3.1.36 is the live IdP; this is the shadow.
-#
-# Re-verify with: uncomment it in ./default.nix, `just check`, then
-# `sudo authentik-migrate all --force` — the state under /srv/authentik is stale.
 # authentik — the network's identity provider (OIDC, plus the LDAP and RADIUS
 # outposts), as a podman stack on this box.
 #
-# PARKED since 2026-10-15: this module is not imported (see the note in
-# ./default.nix), so nothing here is deployed.  It was built, migrated from the
-# appliance and verified end to end — `docs/authentik-container-migration.md`
-# records what was checked — and then switched off pending the cutover session.
-# Everything below is written for the state it was verified in.
+# **This box has been the IdP since 2026-10-28.**  The stack was first deployed in
+# 2026-10-15 as a *shadow* — a copy of the appliance's database running beside it on a
+# LAN-only hostname, the `unifi-os-server.nix` trick — and was cut over on 2026-10-28,
+# which is the interesting part of the story: the appliance at **10.3.1.36** was retired
+# by moving *that address* onto this box as a second address on `vlan225`
+# (./networking.nix) rather than by reconfiguring anything that dials it.  Two groups of
+# clients name the address or the name it answers, not this box, and neither could be
+# changed:
 #
-# This is a *shadow* install, deliberately run alongside the appliance at
-# 10.3.1.36 rather than in its place (the same trick `unifi-os-server.nix`
-# used): the stack here is fed a copy of the live database, is served on its
-# own LAN-only hostname, and runs the half of authentik that cannot touch
-# anything shared.  Nothing in this file talks to 10.3.1.36 — the copy is made
-# by `authentik-migrate` (see ./authentik-migrate.sh), and the whole procedure,
-# the cutover checklist and the reasons for every pin are in
-# docs/authentik-container-migration.md.  Rollback is `nixos-rebuild switch`
-# without this file imported.
+#   * the ProCurve switches' `radius-server host 10.3.1.36` — switch NVRAM is not
+#     written unless asked (AGENTS.md rule 16), and `docs/procurve-switches.md` is the
+#     reason nobody trusts that config to a redeploy;
+#   * every LDAP client — aibox's sssd (`machines/aibox/sso.nix`) and the pi-room
+#     netboot image — dials `ldaps://authentik.int.leighhack.org`, and that name is
+#     answered from `common/dns-records.nix`'s `authentik` record, i.e. with `.36`.
+#
+# So the address came here and the clients never moved.  `10.3.1.36` is a *second*
+# address on this box, deliberately not the primary: everything else this box does
+# still sources from `10.3.1.20`, and podman's published ports are netavark DNAT, which
+# un-NATs the reply, so a RADIUS request sent to `.36` is answered *as* `.36` — which is
+# the whole trick, and the reason the outpost ports below are published on `0.0.0.0`
+# rather than loopback.  Read that comment before "tidying" them.
+#
+# The procedure, the receipts of what was verified and what is still open are in
+# `docs/authentik-container-migration.md`; the reasons for every pin below are the same
+# doc.  The copy of the live database is made by `authentik-migrate` (see
+# ./authentik-migrate.sh), which is read-only against the source.
 #
 # What runs, mirroring the appliance's compose file:
 #
@@ -38,32 +44,42 @@
 # also keeps authentik's connection pool off the shared cluster that outline,
 # gocardless-dashboard, switch-gui and the door system live on.
 #
-# --- shadow mode -----------------------------------------------------------
+# --- staging mode ----------------------------------------------------------
 #
-# `shadow = true` is the state this box is in now.  It changes three things,
-# all of them about *not* being the real IdP twice:
+# `staged = true` runs the stack *without claiming the network*, which is what lets a
+# copy of the live database be taken, restored and checked while the real IdP is still
+# answering.  It changes four things, all of them about not being the IdP twice:
 #
-#   * the vhost is `id-shadow.int.leighhack.org` (LAN ACL) instead of
-#     `id.int.leighhack.org` + its aliases, so no client can reach it by
-#     accident;
+#   * no vhost at all.  `machines/services1/int-dns.nix` asserts that this box's vhosts
+#     are exactly the `upstream = "origin"` rows of `common/front-door.nix`, so a vhost
+#     for `id.int` cannot exist here before the front-door row says so — the evaluation
+#     refuses, which is the shape AGENTS.md rule 24 wants.  (The 2026-10-15 staging run
+#     had its own `id-shadow.int` name and vhost; that name is gone from both tables and
+#     verifying a staged copy needs no name: `curl -H 'Host: id.int.leighhack.org'
+#     http://127.0.0.1:9000/…` reaches the app with no DNS and no door involved.)
 #   * the worker is not started at boot — it is the half that runs authentik's
 #     scheduler, sends mail and drives outposts, so a second one would be a
 #     second copy of every scheduled job against a copy of the real data;
+#   * the outposts are not run at all: two containers registering the same outpost
+#     token against two authentik instances is a split brain on the switch logins;
 #   * the nightly database dump is not on a timer (a copy of a copy in the
 #     backups share would only ever confuse a restore).
 #
-# Flipping it to `false` is the cutover: it moves the vhost onto the real
-# names and turns the worker and the backup timer on.  Read the cutover
-# checklist in docs/authentik-container-migration.md first — the RADIUS and
-# LDAP outposts and the DNS records are not solved by that flag.
+# Flipping it to `false` is the cutover.  `10.3.1.36` is the fifth thing that moves and
+# it is *not* behind this flag, because interfaces are ./networking.nix's business; the
+# two edits have to land in the same commit — an origin that answers RADIUS on `.20`
+# only is a network of switches that time out.
 #
 # --- pins ------------------------------------------------------------------
 #
-# Every tag is the tag the appliance runs today, verified by image ID: the
-# server image here is `2c9dd0d4db11…`, byte-identical to the container
-# `authentik-server-1` runs.  A database restored into a *different* authentik
-# version is migrated on first boot, which is fine going forward and impossible
-# to undo, so both halves of the pin move together with the appliance.
+# Every tag is the tag the appliance ran, verified by image ID: the server image here is
+# `2c9dd0d4db11…`, byte-identical to the container `authentik-server-1` ran (re-checked
+# both sides on 2026-10-28, the day of the cutover — `authentik-migrate check` dies on an
+# image-ID mismatch, so this is not a pin that can quietly drift).  A database restored
+# into a *different* authentik version is migrated on first boot, which is fine going
+# forward and impossible to undo, so upgrades start here and never involve the retired
+# appliance: the reason the same-major rule mattered was the rollback path, and that path
+# closed when the VM was stopped.
 #
 # The two `latest`-style tags the appliance uses (`postgres:16-alpine`,
 # `redis:alpine`) are left as-is for postgres — 16-alpine is the appliance's
@@ -77,9 +93,12 @@
   ...
 }: let
   CONFIG = import ../../../common/config.nix;
-  mkIntVhost = import ../../../common/nginx/int-vhost.nix {inherit lib;};
+  mkOriginVhost = import ../../../common/nginx/origin-vhost.nix {inherit lib;};
 
-  shadow = true;
+  # The deploy-time gate described in the header.  `true` = the stack runs, the network
+  # is not claimed; `false` = this box *is* the IdP.  See the two commits that moved it
+  # from `true` to `false` on 2026-10-28 before changing anything else about it.
+  staged = true;
 
   authentikImage = "ghcr.io/goauthentik/server:2026.8.1";
   postgresImage = "docker.io/library/postgres:16-alpine";
@@ -124,10 +143,11 @@
   # so nothing else can claim it.
   akUid = 1000;
 
-  # The outposts are off until their tokens are in sops (see the note on the
-  # definitions below): a sops key that does not exist fails activation, and
-  # nothing can be tested here while the real outposts serve the network.
-  enableOutposts = false;
+  # The outposts are the network's RADIUS and LDAP servers, so they run only when this
+  # box is the IdP (`staged = false`) — and their tokens have to be in sops first, since
+  # a sops key that does not exist fails activation.  `authentik-migrate outpost-tokens`
+  # writes the two of them out of the migrated database for exactly that step.
+  enableOutposts = !staged;
 
   # The appliance's worker runs as root and mounts /var/run/docker.sock so
   # authentik can create its own outpost containers.  Neither happens here:
@@ -261,10 +281,10 @@ in {
         hostname = "authentik-worker";
         image = authentikImage;
         cmd = ["worker"];
-        # Shadow: see the header.  The unit still exists, so
+        # Staged: see the header.  The unit still exists, so
         # `systemctl start podman-authentik-worker` proves the worker works
         # without making it a boot-time second scheduler.
-        autoStart = !shadow;
+        autoStart = !staged;
         dependsOn = [
           pgContainer
           redisContainer
@@ -280,7 +300,7 @@ in {
       };
     }
     // lib.optionalAttrs enableOutposts {
-      # The appliance runs two outposts that authentik created for it: `Radius
+      # The appliance ran two outposts that authentik created for it: `Radius
       # Outpost` (the ProCurve/AP logins, docs/procurve-switches.md) and `LDAP
       # Outpost` (aibox's sssd, machines/aibox/sso.nix).  Both are rows in the
       # database, so they migrate with it; what does not migrate is the
@@ -294,17 +314,37 @@ in {
       # reads the two of them out of the migrated database into a root-only file
       # for exactly this.
       #
-      # They are off until that secret exists, because a missing sops key fails
-      # activation, and untested because nothing here can be tested while the
-      # real outposts serve the network: two containers registering the same
-      # outpost token against two different authentik instances is a split brain
-      # on the switch logins.  Read the cutover checklist in
-      # docs/authentik-container-migration.md before turning this on.
+      # They run only when this box is the IdP (`enableOutposts` above), for the
+      # reason the header gives: two containers registering the same outpost token
+      # against two different authentik instances is a split brain on the switch
+      # logins.  Measured on the appliance rather than assumed: **the LDAPS serving
+      # certificate is a database row** (`authentik_crypto_certificatekeypair`, name
+      # `authentik.int.leighhack.org`, sha256 `6E:B0:69:1B…F1:58`, expires 2035-11-15,
+      # and byte-identical to what `.36:636` served on 2026-10-28) while the appliance's
+      # `/srv/authentik/certs` was **empty**.  So it migrates with the dump and the
+      # outposts need no certificate mount — aibox's sssd runs `ldap_tls_reqcert =
+      # demand`, so a regenerated cert would lock the box and the netbooted pi-room
+      # clients out, and a future `certs` mount here would not fix that, only move it.
+      #
+      # ⚠️  THE PORTS BELOW ARE PUBLISHED ON `0.0.0.0` ON PURPOSE.  The clients dial
+      # `10.3.1.36`, which since the cutover is this box's *second* address, and a
+      # RADIUS client's socket is connected: an Access-Challenge sourced from
+      # `10.3.1.20` is dropped by the switch in silence and the symptom is an auth
+      # timeout.  What makes the reply come back as `.36` is that netavark publishes
+      # with iptables `NETAVARK-HOSTPORT-DNAT` and conntrack therefore un-DNATs the
+      # reply to the address that was dialled — true for `0.0.0.0` rules, and the reason
+      # not to "harden" these to `127.0.0.1:…` or to re-bind them to `.20`.  Binding
+      # them literally to `10.3.1.36:…` would work too and adds a boot-order coupling
+      # (the address has to exist before netavark installs the rule) for no extra
+      # safety: RADIUS and LDAP are UDP/TCP ports on a box whose firewall is off, and
+      # the appliance published them on `0.0.0.0` for a decade, postgres included.
       authentik-outpost-radius = {
         hostname = "authentik-outpost-radius";
         image = "ghcr.io/goauthentik/radius:2026.8.1";
         autoStart = true;
         dependsOn = [serverContainer];
+        # 1812 only: the appliance published no 1813 accounting port either, so there is
+        # nothing here to mirror beyond authentication.
         ports = ["1812:1812/udp"];
         environment = outpostEnv;
         environmentFiles = [CONFIG.AUTHENTIK_RADIUS_OUTPOST_ENV_FILE];
@@ -342,40 +382,38 @@ in {
 
   # --- vhost ---------------------------------------------------------------
   #
-  # One name at a time: whichever box answers `id.int.leighhack.org` is the IdP
-  # every client on the network uses, so the two halves below are mutually
-  # exclusive by construction rather than by remembering to delete one.
-  services.nginx.virtualHosts =
-    {
-      # The real names, taken from http.nix at cutover: `id.int.leighhack.org`
-      # with `id.leighhack.org` and `authentik.int.leighhack.org` as aliases,
-      # which is what the ACME cert, the DNS records and every client already
-      # use.  Not LAN-ACL'd, because `id.leighhack.org` is a public name — the
-      # current vhost in http.nix is `acl = ""` for the same reason.
-      "id.int.leighhack.org" = lib.mkIf (!shadow) (mkIntVhost {
-        serverAliases = [
-          "id.leighhack.org"
-          "authentik.int.leighhack.org"
-        ];
-        proxyPass = "http://127.0.0.1:9000";
-        websockets = true;
-        proxyBuffering = false;
-        acl = "";
-      });
-    }
-    // lib.optionalAttrs shadow {
-      # The shadow instance's own name.  LAN-only (the default ACL), and
-      # `common/int-dns.nix` names it, so the router answers it as soon as the
-      # router is deployed — and this module is parked, so nothing asks yet.  authentik's tenant base_url is https://id.int.leighhack.org
-      # and comes across with the database, so absolute URLs authentik
-      # generates still name the real host; the UI and the OIDC endpoints work
-      # over this name because everything else is relative.
-      "id-shadow.int.leighhack.org" = mkIntVhost {
-        proxyPass = "http://127.0.0.1:9000";
-        websockets = true;
-        proxyBuffering = false;
-      };
+  # An **origin**, not a TLS vhost: since `gw` became the front door (2026-10-24) this
+  # box terminates nothing — no certificate, no ACL, no gate.  `gw` proxies
+  # `id.int.leighhack.org` here over plain HTTP on :80, and `mkOriginVhost` is what puts
+  # `CONFIG.ROUTER_ONLY` at server level so the router is the only client that can
+  # answer for it.  The pair of guards that keeps the two halves honest is
+  # `machines/services1/int-dns.nix` (this box's vhosts == the table's `origin` rows)
+  # and `machines/gw/int-dns.nix`; the row itself is `common/front-door.nix`.
+  #
+  # Which is also why this vhost cannot exist while staged: the row says `origin` in the
+  # same commit that clears the flag, and a vhost the table does not grant is a refused
+  # evaluation rather than a second config for one name (AGENTS.md rule 24).
+  services.nginx.virtualHosts = lib.mkIf (!staged) {
+    # `id.leighhack.org` and `authentik.int.leighhack.org` come across as aliases exactly
+    # as the door has always served them (the wildcard cert covers both, and authentik's
+    # tenant `base_url` — `https://id.int.leighhack.org`, a row in the migrated database —
+    # is what absolute URLs are generated on).
+    #
+    # `authentik.int` is *also* in `common/int-dns.nix`'s `exempt`, and stays there: that
+    # exemption is about the DNS *answer* (the name resolves to `10.3.1.36`, from
+    # `common/dns-records.nix`, because RADIUS and LDAP dial it and cannot be re-pointed)
+    # and it is not in tension with serving the same name here — the door answers HTTPS
+    # for it, the outpost answers LDAPS, and since the cutover both land on this box.
+    "id.int.leighhack.org" = mkOriginVhost {
+      serverAliases = [
+        "id.leighhack.org"
+        "authentik.int.leighhack.org"
+      ];
+      proxyPass = "http://127.0.0.1:9000";
+      websockets = true;
+      proxyBuffering = false;
     };
+  };
 
   # --- backup --------------------------------------------------------------
 
@@ -392,7 +430,7 @@ in {
     };
   };
 
-  systemd.timers.authentik-db-dump = lib.mkIf (!shadow) {
+  systemd.timers.authentik-db-dump = lib.mkIf (!staged) {
     description = "Nightly authentik database dump";
     wantedBy = ["timers.target"];
     timerConfig = {

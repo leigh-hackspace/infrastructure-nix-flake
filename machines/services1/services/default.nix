@@ -13,7 +13,10 @@
     # should be recorded.  Uncomment, then run `just check`, and expect to fix it.
     #
     # ./affine.nix
-    # ./authentik.nix
+    # authentik — the IdP, since the 2026-10-28 cutover off the 10.3.1.36 appliance.
+    # `staged` in that file decides whether it claims the network; read
+    # docs/authentik-container-migration.md before changing either.
+    ./authentik.nix
     ./backup.nix
     ./cockpit.nix
     ./door-entry-management-system.nix
