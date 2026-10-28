@@ -3,7 +3,9 @@
 # https://strata2.int.leighhack.org (a row in `common/front-door.nix`, terminated by
 # `gw`) and, unproxied, on http://10.3.1.32:8080/v1.
 #
-# PARKED 2026-10-17 → UN-PARKED 2026-10-28.  It was disabled to make this box the
+# Disabled 2026-10-17, re-enabled 2026-10-28 — deliberately not written as a `# PARKED`
+# marker, because this module *is* imported and rule 23 makes that grep the list of what
+# is not running.  It was disabled to make this box the
 # network's builder (`common/build-farm.nix`), because the expert arena is ~33 GiB of
 # RAM a build cannot have; it is back on because the engine is what this box was
 # bought for.  Read ./STRATA.md before changing expertCache, context or the runtime —
