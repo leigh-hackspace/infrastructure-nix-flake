@@ -147,8 +147,19 @@
   # NUT's POWERDOWNFLAG: the file `ups-killpower.service` waits for at shutdown.
   # One path, three readers — `upsmon.conf`, that unit's `ConditionPathExists=`,
   # and `ups-watchdog --killpower-flag`, which is what arms it on the grace-timer
-  # path (where `upsmon` never reaches its own power-off state and so never
-  # writes it).
+  # path (where `upsmon` never reaches its own power-off state and so never writes
+  # it).
+  #
+  # **Arming it is not the same as the UPS dropping its load, and today it does
+  # not.** `upsc apc@localhost` on the deployed box reports
+  # `driver.flag.allow_killpower: 0`, and NUT 2.8 refuses to send the killpower
+  # command unless the driver is explicitly given that flag — so `upsdrvctl
+  # shutdown` runs, declines the part that matters, and gw stays off with its
+  # outlets live after an outage that outlasts the battery. That is left as
+  # upstream left it: enabling the flag means this sequence really does cut the
+  # network's power, which is a decision for a person to make with a battery on it
+  # rather than a default to slip into a module. The reasoning, and what measuring
+  # it would take, is `docs/ups-and-fleet-shutdown.md` §5 and §7.1.
   powerDownFlag = "/run/killpower";
 
   stateDir = "/run/ups-watchdog";
@@ -527,7 +538,7 @@ in {
   # `Restart=always` with the poweroff as its idea of "exited cleanly".
   systemd.services.${fleetUnit} = {
     description = "UPS outage: power the fleet off over ssh, then this box";
-    documentation = ["/etc/nixos/docs/ups-and-fleet-shutdown.md"];
+    documentation = ["https://github.com/leigh-hackspace/infrastructure-nix-flake/blob/main/docs/ups-and-fleet-shutdown.md"];
 
     # The hops are the work; the unit must outlive a slow box, and `TimeoutStop`
     # has to be short because a unit that is slow to die on the way down costs
@@ -575,7 +586,7 @@ in {
   # spends the battery it is announcing.
   systemd.services.ups-notice = {
     description = "UPS: broadcast a notice to every server (wall over ssh)";
-    documentation = ["/etc/nixos/docs/ups-and-fleet-shutdown.md"];
+    documentation = ["https://github.com/leigh-hackspace/infrastructure-nix-flake/blob/main/docs/ups-and-fleet-shutdown.md"];
     serviceConfig = {
       Type = "oneshot";
       ExecStart = "${lib.getExe upsWatchdog} ${lib.escapeShellArgs noticeArgs}";
@@ -599,7 +610,7 @@ in {
   # it, and it prints the argv it would run instead of running it.
   systemd.services."${fleetUnit}-dry" = {
     description = "UPS outage drill: print what would be done, do nothing";
-    documentation = ["/etc/nixos/docs/ups-and-fleet-shutdown.md"];
+    documentation = ["https://github.com/leigh-hackspace/infrastructure-nix-flake/blob/main/docs/ups-and-fleet-shutdown.md"];
     serviceConfig = {
       Type = "oneshot";
       ExecStart = "${lib.getExe upsWatchdog} ${lib.escapeShellArgs (watchdogArgs ["--dry-run" "--no-poweroff"])}";

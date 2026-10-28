@@ -145,25 +145,33 @@ services1 going down first is the ordering that does not hang anything.
 
 ## 5. Getting the network back without anyone touching a button
 
-Powering `gw` off with the UPS still energising its outlets leaves a router that
-is *off* and a building with no DNS until someone walks to it. So step 6 writes
-NUT's POWERDOWNFLAG (`/run/killpower`, one path shared by `upsmon.conf`,
-`ups-killpower.service` and `--killpower-flag`), and during shutdown NUT runs
-`upsdrvctl shutdown`, which tells the UPS to drop its output and **return it when
-mains come back**. The box then powers on by itself if the BIOS does what
-"Restore on AC Power Loss → Power On" says it does, and the network rebuilds
-itself in the order `docs/network-upgrade-runbook.md` describes (NAS, then
-services1, then the rest).
+**Measured on first deploy (2026-10-28): `driver.flag.allow_killpower: 0`.** NUT 2.8
+refuses to cut the UPS output unless the driver is explicitly given that flag, and
+`machines/gw/ups.nix` does not give it — so today `ups-killpower.service` would run
+`upsdrvctl shutdown` and the driver would decline the part that matters.  The
+consequence is concrete: after an outage that outlasts the battery, `gw` powers off,
+the outlets stay live, and **the network comes back when a person walks up to it.**
+That is a decision rather than an oversight — upstream added the flag because
+killpower is the one command in this path that can leave a building offline past its
+own recovery — but it does mean the rest of this section describes a mechanism that
+is not currently switched on.
 
-Two consequences people are surprised by, both stated in
-`machines/gw/ups.nix`'s header:
+What the mechanism is for, if the flag is ever enabled deliberately: the sequence
+ends by writing NUT's POWERDOWNFLAG (`/run/killpower`, one path shared by
+`upsmon.conf`, `ups-killpower.service` and `--killpower-flag`), and during shutdown
+NUT runs `upsdrvctl shutdown`, which tells the UPS to drop its output and **return
+it when mains come back**. The box then powers on by itself if the BIOS does what
+"Restore on AC Power Loss → Power On" says it does, and the network rebuilds itself
+in the order `docs/network-upgrade-runbook.md` describes (NAS, then services1, then
+the rest). With the flag off neither half happens: no AC cycle, no power-on event.
 
-* If `shutdown.return` is not supported by this firmware, the outlets drop and
-  **stay** dropped until mains return *and* the UPS's own return delay elapses —
-  or, in the worst case, until someone presses the front button. That is
-  unverified (§7) and it is the single most important thing to measure.
+Two consequences worth keeping straight either way:
+
 * A short outage never reaches step 6 at all, so the network is not "restored" by
   anything here — it simply never went down.
+* Whether this firmware implements `shutdown.return` at all is still unmeasured, and
+  it sits *behind* the flag: measuring it and deciding on the flag are one exercise
+  (§7.1).
 
 ## 6. Proving it without cutting the cable
 
@@ -182,34 +190,62 @@ the hop **on purpose** — regenerate `common/ssh-known-hosts.nix` with
 whoever is logged in (`wall` is root's tool; `sudo -n wall -n` is the remote verb
 for a reason).
 
-## 7. What is not verified, and what must not be trusted yet
+## 7. Deployed 2026-10-28: what was proven, and what is still a guess
 
-1. **`upsdrvctl shutdown` on this firmware.** Whether the XS 1400U implements
-   `shutdown.return`/`load.off` at all is unmeasured — and the module deliberately
-   does **not** send instant commands. Measure with `upscmd -l apc@localhost` and
-   the driver's own log line during a controlled discharge. Until then §5's
-   recovery story is a hypothesis.
-2. **The BIOS.** If "Restore on AC Power Loss" is not Power On, this box does not
-   come back by itself even when the UPS does the right thing. Unreadable from the
-   running system.
-3. **`upsc`'s anonymous read on NUT 2.8.** `upsd` ships no `ACCEPT` line (the
-   nixpkgs module writes `LISTEN`s only), and the re-check is advisory *because*
-   that has not been proven here: if it turns out to need credentials, the failure
-   mode is "always acts on the timer's authority", which is the behaviour the
-   original ask described.
-4. **Runtime arithmetic.** The XS 1400U is 1400 VA / 700 W; the router is tens of
-   watts, which is a *guess about the load*, not a measurement — and the real
-   ceiling is battery age (serial `4B1836P34201`, a 926.x firmware unit of unknown
-   service history). `upsc apc@localhost battery.runtime` after `just ups-status`
-   is the number to write into the grace period, and the grace period should be
-   `runtime − (the sequence, ~2 min, plus margin)`, not a round number.
-5. **The NAS (`10.3.1.6`) and Proxmox (`monster1`) are not in the list and are not
-   known to be on this UPS.** TrueNAS has its own shutdown verb, and monster1
-   hosts VMs this flake does not own; both need their own answer and an item in
-   `docs/follow-ups.md`. Until then this feature powers off the *flake machines*.
-6. **Nobody has watched a real `ONBATT`.** Every second value here — 300 s of
-   grace, 30 s of notice window, 20 s per-hop limit — is engineering judgement,
-   not measurement.
+Proven by activating it and reading the box:
+
+* **`usbhid-ups` reads this UPS, and `upsc` needs no credentials.** The driver came
+  up as `APC HID 0.100` with the right model and serial; `ups.status` read `OL` a
+  few seconds after `WAIT`; `upsd` is listening on `127.0.0.1:3493` and `::1` only
+  (`ss -ltnp`), as the assertions in `machines/gw/ups.nix` insist. The re-check
+  being *advisory* is still the design — "`upsc` failed" is not "the mains are
+  fine".
+* **Nothing is armed by a deploy.** `ups-fleet-shutdown` and `ups-notice` are
+  `inactive`, and the drill unit proves the argv without a hop (`--dry-run` skips
+  the hops *and* the sleeps).
+* **Three bugs the tests did not catch**, all found by running the deployed thing:
+  the drill unit exited 21 because `--dry-run` still obeyed the mains re-check (so
+  the check a person uses to trust the sequence could never run — now `plan::proceed`,
+  tested); a notice with no remote targets printed the *shutdown's* "the rest of the
+  network runs on to a dead switch" sentence; and `Documentation=` wanted a URL, not
+  a repo path, so systemd logged `Invalid URL` on every start.
+* **Three eval errors the router's own gate cannot see**, because `just check-eval`
+  evaluates no machine config: two `types.str` options (`power.ups.schedulerRules`,
+  `power.ups.users.<x>.passwordFile`) handed derivations, and one integer
+  interpolated into a string. `nixos-rebuild build --flake .#gw` is the eval gate on
+  this box, so it is not optional — see `docs/nix-dev-workflow.md`'s ordering of
+  build/switch.
+
+Still not verified, and none of it should be trusted until it is:
+
+1. **Whether the UPS can be told to drop its load at all.** `upsc` reports
+   `driver.flag.allow_killpower: 0`, so NUT 2.8 declines to send the killpower
+   command regardless of firmware support (§5): **today, after an outage that
+   outlasts the battery, the network stays down until someone walks to `gw`.**
+   Enabling the flag is a deliberate decision — it means the sequence really does
+   cut the power — and measuring `shutdown.return` sits behind it. **Do not** probe
+   with instant commands on a UPS carrying the router; the test is one controlled
+   discharge with a sacrificial box on it, watching `journalctl -u ups-killpower`.
+2. **The BIOS.** "Restore on AC Power Loss → Power On" is unreadable from the
+   running system, moot while the flag is off, and half of the recovery story once
+   it is on.
+3. **The runtime arithmetic is a manufacturer's number, not a measurement.**
+   `battery.runtime: 860` at `battery.charge: 100` — about fourteen minutes — with
+   `battery.runtime.low: 120` and `battery.charge.low: 10`, so `LOWBATT` arrives
+   with roughly two minutes of runway. The 300 s grace is about half the claimed
+   runtime, which is defensible; but `battery.mfr.date` is **2018-09-08** and
+   `battery.date` is the nonsense `2001-09-25`, so this is an eight-year-old pack at
+   a load we have never measured. Re-measure under discharge, and probably replace
+   the pack, before treating 860 s as real.
+4. **The NAS (`10.3.1.6`) and Proxmox (`monster1`) are not in the list and are not
+   known to be on this UPS.** TrueNAS has its own shutdown verb, and monster1 hosts
+   VMs this flake does not own; `docs/monster-powercut-runbook.md` is the runbook for
+   that box being down, not a plan. Until it is settled, this feature powers off the
+   *flake machines* and the router can still go while the NAS is serving NFS.
+5. **Nobody has watched a real `ONBATT`.** `upssched` has never fired a timer here
+   and a notice has never crossed ssh to another box. `sudo upssched apc ONBATT`
+   (then `… apc ONLINE`) is the drill that changes that; run it with the fleet's
+   knowledge, because it really does wall every server.
 
 ## 8. Read also
 
