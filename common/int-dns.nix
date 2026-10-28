@@ -169,19 +169,23 @@
     # `machines/services1/services/samba.nix` names it in a commented-out
     # `ldapsam:` line. docs/authentik-container-migration.md is the thing to read
     # before this one goes.
-    ldap = "historical name for the authentik LDAP outpost; nothing in the tree serves it";
+    ldap = "historical name for the authentik LDAP outpost; the outpost answers \"authentik.int\" (and 10.3.1.36) on 389/636, the door answers this name with itself and serves nothing on it";
   };
 
   exempt = {
-    # The one `*.int` vhost name on services1 that does not answer at services1.
-    # nginx serves it (as an alias of `id.int`, the authentik portal) but the
-    # appliance in `common/dns-records.nix` answers the name at 10.3.1.36, and
-    # that is load-bearing: the switch logins' RADIUS and pi-room-sys's LDAP both
-    # dial `ldaps://authentik.int.leighhack.org` (`machines/aibox/sso.nix`,
-    # `machines/pi-room-sys/configuration.nix`), and the appliance's :443 is not
-    # served through the front door.  Which answer *should* win is an open
-    # decision — `docs/follow-ups.md` — but it is not a decision this
-    # table gets to make by accident.
-    authentik = "10.3.1.36, the appliance in common/dns-records.nix (RADIUS/LDAP dial it directly)";
+    # The one `*.int` vhost name that must not answer with the front door, and the reason
+    # is a port the door does not proxy: `authentik.int` is the LDAPS endpoint (636) the
+    # switch-adjacent world dials — aibox's sssd and the pi-room netboot image
+    # (`machines/aibox/sso.nix`, `machines/pi-room-sys/configuration.nix`) — and the
+    # RADIUS address the ProCurve switches have in NVRAM is the same host, 10.3.1.36.
+    #
+    # Since the 2026-10-28 cutover that address is **not a separate box**: it is a second
+    # address on services1 (see its `networking.nix`), so this exemption and the door's
+    # `id.int` alias are the same machine serving two different protocols — HTTPS through
+    # the door, LDAPS/RADIUS direct.  Before that day the exemption was also the answer to
+    # "which box is the IdP"; it is now only about ports, and the open question in
+    # `docs/follow-ups.md` about which answer should win is closed by the fact that both
+    # land on the same host.
+    authentik = "10.3.1.36, a second address on services1 (RADIUS/LDAP dial it directly)";
   };
 }

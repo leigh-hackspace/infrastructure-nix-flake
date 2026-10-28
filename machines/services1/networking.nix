@@ -71,8 +71,30 @@ in {
         matchConfig.Name = "vlan225";
         networkConfig = {
           DHCP = false;
+          # `10.3.1.36` is the IdP's address and it is load-bearing *as an address*.
+          # The ProCurve switches have `radius-server host 10.3.1.36` in NVRAM, which
+          # nobody rewrites (AGENTS.md rule 16), and `authentik.int.leighhack.org` — the
+          # LDAPS endpoint aibox's sssd and the pi-room netboot image dial — is answered
+          # from `common/dns-records.nix`'s `authentik` record, i.e. with this address.
+          # When the authentik appliance was retired on 2026-10-28 the address therefore
+          # moved here rather than the clients being reconfigured; see
+          # docs/authentik-container-migration.md.
+          #
+          # Order matters: `.20` stays first so it stays the *primary* and everything
+          # this box originates keeps sourcing from it.  That is also why the RADIUS and
+          # LDAP outposts work at all from a second address — they are podman published
+          # ports, and netavark's DNAT means conntrack sends the reply back out as the
+          # address that was dialled (`machines/services1/services/authentik.nix` has the
+          # note).  A RADIUS client's socket is connected: an Access-Challenge sourced
+          # from `.20` is silently dropped, and the symptom is an auth timeout.
+          #
+          # The DHCP reservation for the old appliance's MAC is deliberately still in
+          # `common/dns-records.nix`, which is why the VM must stay *stopped* in
+          # Proxmox's HA (`ha-manager set vm:108 --state stopped`): a booted VM takes
+          # this address back and the resulting conflict is silent for whoever logs in.
           Address = [
             "10.3.1.20/24"
+            "10.3.1.36/24" # the IdP: RADIUS 1812/udp, LDAP 389/636, see above
             "2001:8b0:1d14:225::20/64" # Public
             "2001:8b0:1d14:225:d::1020/64" # LEGACY TO BE DELETED
             "fd99:dead:beef:225d::20/64" # NATv6

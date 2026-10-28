@@ -105,11 +105,26 @@
     macs = ["3c:a8:2a:a0:23:45"];
     clientIds = [];
   };
+  # The IdP's address, and note what this record is now: since the 2026-10-28 cutover it
+  # answers a **second address on services1** (`machines/services1/networking.nix`), not a
+  # box of its own, because the switch logins' `radius-server host 10.3.1.36` and the
+  # LDAP clients' `ldaps://authentik.int.leighhack.org` could not be reconfigured — so the
+  # address moved and the clients did not (docs/authentik-container-migration.md).
+  #
+  # The MAC is still the retired appliance VM's, and that is a deliberate lie worth
+  # knowing about: it is the only shape `common/int-dns.nix`'s `exempt` and this table's
+  # "no address claimed twice / no MAC claimed twice" rules accept for an address that is
+  # a second address (`.20` belongs to the `services1` record, and services1's two NICs
+  # belong there too).  The consequence is the one that bites: the reservation is live, so
+  # **Proxmox VM 108 must stay stopped** (`ha-manager set vm:108 --state stopped`) — boot
+  # it and it is handed this address again, and two hosts answering one address is silent
+  # for whoever is logging in.  Deleting the VM, or this record, needs the `exempt` name
+  # settled in the same change: `authentik.int` resolves *because* this record exists.
   authentik = {
     vlan = 225;
     ipv4 = "10.3.1.36";
     ipv6 = [];
-    macs = ["aa:29:e1:d0:14:35"];
+    macs = ["aa:29:e1:d0:14:35"]; # the stopped VM; see the note above
     clientIds = [];
   };
   # No IPv6: `2001:8b0:1d14:225::30`/`fd99:dead:beef:225d::30` were the old

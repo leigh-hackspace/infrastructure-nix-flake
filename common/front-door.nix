@@ -274,7 +274,7 @@ in {
 
     # The other single-box appliances.
     "id.int.leighhack.org" = {
-      upstream = "http://10.3.1.36:9000"; # the authentik appliance
+      upstream = "origin"; # the authentik stack on services1, since the 2026-10-28 cutover
       serverAliases = [
         "id.leighhack.org"
         "authentik.int.leighhack.org"
@@ -283,10 +283,20 @@ in {
       proxyBuffering = false;
       acl = "none";
       note = ''
-        `authentik.int` is in `common/int-dns.nix`'s `exempt` — the appliance answers that
-        name at 10.3.1.36 for RADIUS/LDAP — and nginx has always served it *as an alias*
-        too. Both stay true: the door answers the alias, the appliance keeps the address
-        the switch logins dial.'';
+        An origin rather than a one-line proxy because the app is loopback-bound on the box
+        that runs it (`127.0.0.1:9000` behind that box's nginx) and because both hops need
+        the websocket upgrade and unbuffered responses to be set twice for either to mean
+        anything.  `acl = "none"` is not an oversight: `id.leighhack.org` is a public name
+        and the IdP has always answered the internet on it — that is how members off-site
+        sign in.
+
+        `authentik.int` stays in `common/int-dns.nix`'s `exempt`, and keeps answering with
+        10.3.1.36, and that is *not* a second box any more: the address moved onto
+        services1 as a second interface address when the appliance was retired, because the
+        switch logins' `radius-server host 10.3.1.36` and the LDAP clients'
+        `ldaps://authentik.int.leighhack.org` could not be reconfigured.  So the door
+        answers HTTPS for the alias here, and the same name answers RADIUS/LDAPS directly
+        at the address.  docs/authentik-container-migration.md.'';
     };
     "monster.int.leighhack.org" = {
       upstream = "https://10.3.1.11:8006"; # Proxmox

@@ -36,19 +36,28 @@
 #   authentik-server    server               the web app (port 9000, loopback)
 #   authentik-worker    worker               scheduled tasks, email, outposts
 #
-# Deliberately *not* the host PostgreSQL: the appliance is on 16 and services1
-# is on 17, and keeping the same major version means the migration is a
-# same-version restore (so it can be dumped straight back onto the appliance if
-# the cutover is reversed) and cannot hit the `template1` collation-version
-# mismatch that a cross-major restore invites (docs/work-log-2026-10.md).  It
-# also keeps authentik's connection pool off the shared cluster that outline,
+# Deliberately *not* the host PostgreSQL: the appliance was on postgres 16 and
+# services1 is on 17, and keeping the same major version meant the migration was a
+# same-version restore (dumpable straight back onto the appliance if the cutover were
+# reversed) and could not hit the `template1` collation-version mismatch a cross-major
+# restore invites (docs/work-log-2026-10.md).  That reason expired with the appliance —
+# the dump has been restored into 16.15 and cannot go back to a 16.9 box that is now
+# stopped — but the container stays, because the other half of the reason is permanent:
+# it keeps authentik's connection pool off the shared cluster that outline,
 # gocardless-dashboard, switch-gui and the door system live on.
 #
 # --- staging mode ----------------------------------------------------------
 #
-# `staged = true` runs the stack *without claiming the network*, which is what lets a
-# copy of the live database be taken, restored and checked while the real IdP is still
-# answering.  It changes four things, all of them about not being the IdP twice:
+# `staged` is the deploy-time gate the cutover was done behind.  It is `false` now, so
+# this box *is* the IdP; set it back to `true` only deliberately, because it withdraws
+# four things at once — the vhost, the two outposts, the worker and the nightly dump
+# timer.  What it does **not** withdraw is `10.3.1.36`, which lives in ./networking.nix:
+# re-staging this box while it still holds the switches' RADIUS address means RADIUS
+# answers stop arriving with no unit to stop.
+#
+# `staged = true` runs the stack *without claiming the network*, which is what let a
+# copy of the live database be taken, restored and checked on 2026-10-28 while the real
+# IdP was still answering.  The four things it holds back:
 #
 #   * no vhost at all.  `machines/services1/int-dns.nix` asserts that this box's vhosts
 #     are exactly the `upstream = "origin"` rows of `common/front-door.nix`, so a vhost
@@ -56,7 +65,8 @@
 #     refuses, which is the shape AGENTS.md rule 24 wants.  (The 2026-10-15 staging run
 #     had its own `id-shadow.int` name and vhost; that name is gone from both tables and
 #     verifying a staged copy needs no name: `curl -H 'Host: id.int.leighhack.org'
-#     http://127.0.0.1:9000/…` reaches the app with no DNS and no door involved.)
+#     http://127.0.0.1:9000/…` reaches the app with no DNS and no door involved, which is
+#     how the 2026-10-28 staging was checked.)
 #   * the worker is not started at boot — it is the half that runs authentik's
 #     scheduler, sends mail and drives outposts, so a second one would be a
 #     second copy of every scheduled job against a copy of the real data;
@@ -96,9 +106,11 @@
   mkOriginVhost = import ../../../common/nginx/origin-vhost.nix {inherit lib;};
 
   # The deploy-time gate described in the header.  `true` = the stack runs, the network
-  # is not claimed; `false` = this box *is* the IdP.  See the two commits that moved it
-  # from `true` to `false` on 2026-10-28 before changing anything else about it.
-  staged = true;
+  # is not claimed; `false` = this box *is* the IdP.  It was `true` for the staging
+  # deploy of 2026-10-28 (466ba0d, the un-parking commit) and `false` from the cutover on;
+  # read the staging-mode section and docs/authentik-container-migration.md before changing
+  # it.
+  staged = false;
 
   authentikImage = "ghcr.io/goauthentik/server:2026.8.1";
   postgresImage = "docker.io/library/postgres:16-alpine";
