@@ -90,6 +90,13 @@ aaa authentication telnet enable radius local
 radius-server host 10.3.1.36
 ```
 
+`10.3.1.36` is **no longer a separate box**: since the 2026-10-28 authentik cutover it is
+a second address on services1 (`machines/services1/networking.nix`), and the outpost
+answers RADIUS there because podman's published ports are DNAT'd and conntrack replies as
+the address that was dialled. The switches were not reconfigured and nothing in their NVRAM
+changed — which is the whole reason the address moved instead of the clients. What the
+*answer* is has not changed either: see "no reply at all" below.
+
 so both the login *and* the `enable` second login go RADIUS-then-local, which means
 every GUI refresh (which logs in and enables) logs **two** failures in authentik.
 Until this is fixed, `login_failed` alerting in authentik is permanently noisy
@@ -98,8 +105,17 @@ incident. `show aaa` and `show radius` are **not commands on this firmware** —
 config is only in `show running-config`.
 
 **The fix** is to set the authentik `agent` password to match the switch's local
-one, or drop RADIUS from that account's auth order. Separately, `RadiusProvider`
-pk 7 (application `Switches`) has `authentication_flow = None` and the flow
+one, or drop RADIUS from that account's auth order. Sharpened on 2026-10-28, when the
+RADIUS path was probed end to end against the migrated database: **there is no `agent`
+user in authentik at all** (the usernames look like `Catryan`, `DougAddams`), so the
+identification stage fails, the flow — written for interactive prompting — recurses and
+dies with `exceeded stage recursion depth`, and **the outpost sends no reply of any kind**.
+That was the appliance's behaviour too (same database, same flow, same image ID), and it
+means the switch is literally right about the server: it gets nothing back, so it does not
+print a rejection, it times out and falls through to the local database. A probe with a
+nonexistent user and a probe with `agent` look identical from the client; the outpost's own
+log is the only place they differ. Separately, `RadiusProvider` pk 7 (application
+`Switches`) has `authentication_flow = None` and the flow
 actually used is `radius-authentication-flow` (resolved from the outpost, not the
 provider) — not the cause here, but worth tidying. Debugging procedure:
 `docs/authentik-oidc-notes.md` ("Debugging RADIUS").

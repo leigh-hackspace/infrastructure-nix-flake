@@ -1,62 +1,176 @@
 # Authentik in a container on services1
 
-The IdP has been run out-of-band on its own VM — `authentik` at **10.3.1.36**,
-docker compose in `/srv/authentik`, nothing in the flake — since before this repo
-described anything. This document is the other half: the same authentik as a
-podman stack on services1, fed a copy of that VM's database, so the two can be
-run side by side and the move is a config change instead of an outage.
+**Status since 2026-10-28 19:12Z: this box is the IdP.** `authentik` at **10.3.1.36**
+— docker compose in `/srv/authentik`, nothing in the flake — was retired by moving
+*that address* onto services1, and everything that used it followed the address: the
+switches' `radius-server host 10.3.1.36`, `ldaps://authentik.int.leighhack.org`, and
+`common/dns-records.nix`. The VM is stopped in Proxmox's HA (`vm:108`), its containers
+are `stopped` rather than removed, and its postgres was left running until the last dump
+was taken and restored. Nothing in the flake was pointed at a new address.
 
-**Status: built, verified, parked — and 10.3.1.36 is the IdP.** The module is
-**not imported** (`./default.nix`), so services1 currently runs none of this: no
-containers, no `id-shadow.int` vhost. While it *was* up it ran a copy of the
-appliance's database and was checked against the live appliance (see "What was
-verified"), and it was switched off on 2026-10-15 with the cutover left for a
-later session. Throughout, `id.int.leighhack.org` resolved to services1 and
-nginx proxied it to `10.3.1.36:9000` (`machines/services1/http.nix`); every
-client on the network authenticates against the appliance and nothing here was
-switched over.
+This document is still the story of how it got here, and it is written against the
+appliance being live for most of its length — that half is history now, and where the
+two disagree the cutover section below is the fact.
 
-**To re-enable:** uncomment `./authentik.nix` in
-`machines/services1/services/default.nix`, `just switch`, then
-`sudo authentik-migrate all --force` — the state under `/srv/authentik`
-survives parking (bind mounts, not volumes) but the copy goes stale, and
-`restore` refuses to overwrite a non-empty database without `--force`.
+**The four things that are easy to get wrong now, with their receipts, are in
+"The cutover, and what it taught" at the end.**
 
-Parking removed the containers (the generated units' `ExecStopPost` is
-`podman rm -f`, and the bind mounts are host directories, so nothing under
-`/srv/authentik` went with them) and the `id-shadow.int` vhost, and it also
-cleared the working copies: the dumps and `outpost-tokens.txt` under
-`/srv/authentik/migration` were deleted, since both are re-creatable and one of
-them held two live outpost credentials. `database/` (424 MB) and `media/` were
-left alone — wipe them with `sudo rm -rf /srv/authentik/database` if the next
-session should start from nothing.
-
-- Config: `machines/services1/services/authentik.nix`
+- Config: `machines/services1/services/authentik.nix` (`staged` is the gate: `true` runs
+  the stack without claiming the network — that is how the copy was verified — and the
+  cutover commit set it to `false`)
 - Migration tool: `machines/services1/services/authentik-migrate.sh`, installed
   as `authentik-migrate`
 - The OIDC contract, provider pks and the three invisible authentik bites:
   `docs/authentik-oidc-notes.md`
 - RADIUS clients (the switches): `docs/procurve-switches.md`
 
-## The two halves
+## The cutover, and what it taught (2026-10-28)
 
-| | appliance (live) | services1 (shadow) |
+Done in one session, `staged` deploy first, four minutes of IdP-down, no client
+reconfigured. Measured outage on the gatus `Authentik` endpoint: **19:08:21Z 502,
+19:11:21Z 502, 200 from 19:12:21Z** — appliance stopped at 19:08:19Z, services1 switched
+~19:09, `gw` switched ~19:11. Budget was an hour.
+
+The sequence, which is worth keeping as the shape of any future "move a stateful service
+onto a flake machine without touching its clients" job:
+
+1. `just switch` with `staged = true` — containers up, **no vhost, no outposts, no
+   worker, no timer**, and no claim on the address. The staging check needs no DNS name:
+   `curl -H 'Host: id.int.leighhack.org' http://127.0.0.1:9000/…` reaches the app with
+   neither DNS nor the door involved, which is why `id-shadow.int` was retired instead of
+   re-added to `common/int-dns.nix` and `common/front-door.nix`. (It had been
+   unresolvable since 2026-10-24 anyway, and the module still evaluated because a parked
+   module is never evaluated.)
+2. `authentik-migrate check` → the same server image ID on both sides (`2c9dd0d4db11`),
+   postgres 16.9 vs 16.15 (same major, the one warning).
+3. `dump` → `restore --force` → `files --force` → `verify`: table-for-table parity,
+   including `authentik_core_user 106` against the appliance's 106.
+4. **The check that actually mattered** — the doc's claim that "what could have broken
+   silently is the provider config: the `redirect_uris` JSON array, the signing key, the
+   scopes, the flow assignments", tested by firing *one* real authorize request at each
+   instance and comparing the `Location`. Re-run on 2026-10-28 against the Grafana
+   provider (strict `matching_mode`, S256 PKCE) with the same challenge on both sides:
+   **byte-identical 302s** into `/if/flow/default-authentication-flow/`. Build the request
+   from the migrated DB rather than by hand — in 2026.8 `redirect_uris` is a JSON array of
+   objects, so it is `jsonb_array_elements(...) ->> 'url'`, and `jsonb_array_elements_text`
+   hands you the whole object and looks like a valid redirect URI until the IdP refuses it.
+5. Outpost credentials: `authentik-migrate outpost-tokens` → sops
+   (`authentik_radius_outpost_env`, `authentik_ldap_outpost_env`), each a one-line
+   `AUTHENTIK_TOKEN=`. Both hashes matched the appliance's running containers, which is
+   the check that says "the tokens came across", not "a token was written".
+6. Final `dump` with the appliance still live → stop the appliance's serving side
+   (`docker compose stop server worker` + `docker stop ak-outpost-*`, postgres and redis
+   deliberately left up so the last re-dump is one command) → `restore --force` the final
+   dump → `just switch` services1 → `just deploy gw`.
+7. Verify, then stop the VM: `ha-manager set vm:108 --state stopped` (takes a few seconds
+   to take effect, so poll `qm status 108`).
+
+### 1. The outposts answer `10.3.1.36` because conntrack says so
+
+`10.3.1.36` is now a **second address on `vlan225`**, after `10.3.1.20` so `.20` stays
+the primary and stays the source address of everything else this box does. The outposts
+are podman published ports, netavark installs them as `NETAVARK-HOSTPORT-DNAT`, and
+conntrack therefore replies **as the address that was dialled**. That is the entire
+reason a switch with a connected UDP socket gets its Access-Challenge: an answer sourced
+from `.20` is dropped in silence and reads as an auth timeout. So the outpost ports are
+`0.0.0.0` on purpose — and the corollary is a testing trap: **probe RADIUS from a
+different host**. A locally-generated probe on services1 is a confusing experiment, while
+from aibox the outpost logs `Matched CIDR instance=switches ip=10.3.1.32`, which is the
+real path a switch takes.
+
+### 2. `AUTHENTIK_HOST` must be a URL, and a healthy unit means nothing
+
+The first cutover deploy had both outposts `active`, both ports published, and nothing
+bound: the env said `authentik-server:9000`, the outpost SDK parses that as a **scheme**,
+and the containers sat in `unsupported protocol scheme "authentik-server"` retries.
+`systemctl is-active` was green throughout. Fix: `http://authentik-server:9000`.
+
+The value the appliance actually used is worth knowing, and is recorded because it was
+not guessable: the outpost row in the DB (`authentik_outposts_outpost._config`) says
+`authentik_host = "https://id.int.leighhack.org/"`, `authentik_host_browser = ""`,
+`authentik_host_insecure = false`. So **the switches' RADIUS reached authentik's API out
+through the front door and back in** — RADIUS depended on the door being up. Naming the
+container is both shorter and truer. Read the outpost's log, not the unit state.
+
+### 3. The LDAPS certificate is a database row, so aibox and the pi-room clients survived
+
+`authentik.int.leighhack.org`'s serving certificate lives in
+`authentik_crypto_certificatekeypair` (fingerprint sha256 `6E:B0:69:1B…F1:58`, expires
+2035-11-15) and **migrates with the dump**; the appliance's `/srv/authentik/certs` was
+empty. Verified after the move by comparing the live leaf on `.36:636` with the row —
+identical. That is what makes aibox's `ldap_tls_reqcert = demand` keep working, and
+`id Catryan` on aibox returning `groups=…,21159(Infra)` over `ldaps://authentik.int` is
+the proof: the real client, the real name, the real certificate enforcement.
+
+The consequence for whoever adds a certificate mount here: the appliance also kept
+`./certs:/certs` in its compose file, so a `certs` volume with a *different* key/cert
+pair would be worse than useless — aibox and the netbooted pi-room clients would fail
+their CA check and the symptom would look like a broken IdP.
+
+### 4. Dead config the read-back caught (open)
+
+The module's `createCommand` block (`--memory 1G --cpus 2` on postgres and the server)
+is **not applied** by this nixpkgs' `virtualisation.containers`: the rendered start script
+is `podman run --replace …` with no resource flags and no `--network authentik`, so the
+stack rides the default `podman` network (name resolution works; that is why nobody
+noticed). Rule 10 — read back the rendered unit — is what caught it, and the fix is not
+mechanical: adding the network back means recreating the whole stack together, because a
+container cannot join a second network while its peers stay on the old one and the
+outposts would lose `authentik-server`. Open in `docs/follow-ups.md`.
+
+### What the cutover did *not* fix, and two things it proved were already broken
+
+- **Switch logins still do not authenticate via RADIUS.** Nothing about the move changed
+  that, and the row-level reason is now on record: there is **no `agent` user in
+  authentik** (the usernames look like `Catryan`, `DougAddams`), so the identification
+  stage fails, the flow — written for interactive prompting — recurses, and the outpost
+  gives up with `exceeded stage recursion depth` and **sends no reply at all**. That is
+  the appliance's behaviour reproduced exactly (same DB, same flow, same image ID), and
+  it means the switches time out rather than being rejected. Fixing RADIUS means creating
+  the account the switches actually send and setting `radius-server key` — NVRAM, so not
+  today: `docs/follow-ups.md`.
+- **aibox's sssd was already failing before the window**: 13 × `Unable to establish
+  connection` between 2026-10-27 and 19:00 today, the last at 18:19:36. After a restart it
+  resolves identities again, so the pre-existing GSSAPI/`krb5_validate` story in
+  `machines/aibox/sso.nix` is still the open item, not the certificate.
+- **`sss_userdk` does not exist in authentik any more** (queried: no matching username),
+  so the end-to-end test `machines/aibox/sso.nix` recommends is a dead canary. Use
+  `id <real-member>` instead.
+- **The appliance VM must stay stopped.** Its MAC still has a live DHCP reservation
+  (`common/dns-records.nix`'s `authentik` record — the shape the network-table guards
+  accept for an address that belongs to a flake machine), so a booted VM takes `.36` back
+  and two hosts answering one address is silent for whoever is logging in. Deleting the
+  VM or the record needs the `exempt` question settled in the same change, because
+  `authentik.int` resolves *because* that record exists.
+- **The LDAPS/RADIUS address is in the operator's `known_hosts`** (`10.3.1.36`, three
+  lines). Those keys belong to the retired VM and can never validate again; ssh to `.36`
+  now reaches services1.
+
+
+## The two halves, as they stood before the cutover
+
+Kept because it is the comparison the migration was designed around. Two rows are now
+false in the interesting direction: services1 has the vhost (`id.int.leighhack.org` as an
+origin behind the door, not `id-shadow.int`) and the outposts, and the appliance has
+nothing running.
+
+| | appliance (retired 2026-10-28) | services1 (the IdP) |
 | --- | --- | --- |
-| host | `authentik` VM, 10.3.1.36 | 10.3.1.20 |
+| host | `authentik` VM, 10.3.1.36 | 10.3.1.20, plus `.36` as a second address |
 | runtime | docker compose, `/srv/authentik` | podman `oci-containers`, `/srv/authentik` |
 | web | `0.0.0.0:9000` | `127.0.0.1:9000` only, nginx in front |
-| name | reached via nginx's `proxyPass` | `id-shadow.int.leighhack.org` (LAN ACL) |
+| name | reached via nginx's `proxyPass` | `id.int.leighhack.org`, an `origin` row in `common/front-door.nix` |
 | database | `authentik-postgresql-1` (postgres:16-alpine) | `authentik-postgres` (same image) |
 | redis | `authentik-redis-1` (redis:alpine = 7.2.2) | `authentik-redis` (redis:7.2-alpine) |
-| worker | running | **not started at boot** (see `shadow`) |
-| outposts | `Radius Outpost`, `LDAP Outpost`, created by authentik over the docker socket | declared in nix, **not enabled** |
+| worker | running | running (`staged = false`) |
+| outposts | `Radius Outpost`, `LDAP Outpost`, created by authentik over the docker socket | declared in nix, **running** |
 | secrets | `/srv/authentik/.env` | sops: `authentik_env_file` → `/run/secrets/authentik_env_file` |
 
-`shadow = true` in the module is the whole difference: it picks the shadow
-vhost, keeps the worker off at boot, and keeps the nightly dump off a timer.
-The worker is the half that runs authentik's scheduler, sends mail and drives
-outposts, so a second one running against a copy of the real data would be a
-second copy of every scheduled job.
+`staged` (that is what `shadow` was renamed to on 2026-10-28 — it stopped being a shadow
+the day the appliance stopped answering) was the whole difference while staging: it picked
+the vhost, kept the worker off at boot, and kept the nightly dump off a timer. The worker
+is the half that runs authentik's scheduler, sends mail and drives outposts, so a second
+one running against a copy of the real data would be a second copy of every scheduled job.
 
 One deliberate difference rather than a shadowing detail: the appliance
 publishes its **postgres on `0.0.0.0:5432`**, so any host on the LAN can try the

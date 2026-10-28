@@ -1221,36 +1221,77 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   on `propertymapping.name`. Fine for now; the proper fix is the web UI or the real
   API. `docs/authentik-oidc-notes.md`.
 
-- **The authentik cutover is not done — and the shadow is now parked.** The
-  container stack was deployed, migrated from the live database and verified
-  against the appliance (`docs/authentik-container-migration.md`), then switched
-  off on 2026-10-15 by un-importing `machines/services1/services/authentik.nix`;
-  10.3.1.36 is the IdP. **Step nought is uncommenting that import and
-  `sudo authentik-migrate all --force`** (the state under `/srv/authentik` is
-  still there but stale). Then the four things the checklist names: the outpost
-  containers (needs the two `AUTHENTIK_TOKEN` sops secrets, then
-  `enableOutposts = true`), the RADIUS clients that name 10.3.1.36 (switch NVRAM
-  — ask first), `authentik.int`'s router override to 10.3.1.36 (aibox's sssd),
-  and flipping `shadow = false` while deleting the `proxyPass` vhost from
-  `machines/services1/http.nix` in the same change.
+- **The authentik cutover is done** — 2026-10-28, `staged = false`, `10.3.1.36` moved onto
+  services1 as a second address, four minutes of IdP-down, no client reconfigured. The
+  appliance VM is stopped and must stay stopped. What is left is below; the receipts and
+  the four easy mistakes are in `docs/authentik-container-migration.md`.
 
-- **Rotate the appliance's postgres password (2026-10-15).** The first 40
-  characters of `PG_PASS` and of `AUTHENTIK_SECRET_KEY` reached a transcript
-  through a verification command whose redaction did not work. The database
-  password is cheap: it is only read by the appliance's own compose file, so
-  change `PG_PASS` in `/srv/authentik/.env`, `docker compose down && up -d`.
-  `AUTHENTIK_SECRET_KEY` is not cheap — authentik cannot re-encrypt what it has
-  already encrypted, so rotating it means regenerating every stored provider key
-  and bind password. Both are now also in `secrets/secrets.yaml`
-  (`authentik_env_file`), which is where they should have been.
+- **End state for `10.3.1.36` and its DNS record is undecided.** The record has to keep
+  `ipv4 = 10.3.1.36` (repointing it at `.20` trips `check-network-tables.nix`'s "no address
+  claimed twice", because `services1` already claims `.20`), it cannot have empty
+  `macs`/`clientIds` (rule 22 of that guard), and it cannot borrow either services1 MAC
+  ("no MAC claimed twice"). So it currently keeps the **retired VM's** MAC, which is a
+  deliberate lie documented in `common/dns-records.nix`, and it means the VM must stay
+  stopped while the record exists. Deciding means either accepting the lie permanently or
+  changing the guard so a table can say "this address is a second address on a flake
+  machine" — nothing in the tables can express that today. Deleting the VM, or the record,
+  needs `common/int-dns.nix`'s `exempt.authentik` handled in the same change: `authentik.int`
+  resolves *because* that record exists.
 
-- **`id-shadow.int.leighhack.org` has no DNS record.** The vhost works and was
-  tested with `curl --resolve`; the module is parked, and if it is un-parked the label
-  goes in `common/int-dns.nix` like every other `*.int` name (there is no dns-sync).
+- **RADIUS still authenticates nobody, and the row-level reason is now known.** There is
+  **no `agent` user in authentik**, so the identification stage fails, the flow (written
+  for interactive prompting) recurses, and the outpost sends no reply —
+  `exceeded stage recursion depth`, which the appliance did identically. Fixing it means
+  creating the account the switches actually send, gating it on the `Infra` scope, and
+  setting `radius-server key <new secret>` on each switch — **NVRAM, so ask first**
+  (rule 16) — plus deciding whether `mfa_support = true` is right for a device login. Until
+  then every switch login falls back to the local account database, as it has for months.
+  `docs/procurve-switches.md`.
 
-- **The nightly authentik dump timer is off** while `shadow = true` (a dump of a
-  copy of the live database would only confuse a restore). The unit itself is
-  tested; it turns on with the flag. `machines/services1/services/authentik.nix`.
+- **The outpost containers have no resource limits, and the stack is on the default
+  `podman` network, not `authentik`.** `createCommand` (`--memory 1G --cpus 2`) is ignored
+  by this nixpkgs' `virtualisation.containers` — the rendered start script is
+  `podman run --replace` with no such flags — and `network = "authentik"` is ignored the
+  same way, so the stack rides `podman` and resolves each other by name anyway. Both are
+  dead config that reads like a setting; the fix is `extraCreateArgs` for the limits, and
+  the network is **not** safe to add back casually: a running container cannot join a
+  second network, so the whole stack has to be recreated together or the outposts lose
+  `authentik-server`. Found by reading the rendered unit (rule 10).
+
+- **Rotate the IdP's postgres password (was: the appliance's; 2026-10-15).** The first 40
+  characters of `PG_PASS` and of `AUTHENTIK_SECRET_KEY` reached a transcript through a
+  verification command whose redaction did not work. The database password is cheap now:
+  it is read from `authentik_env_file` and only used by this box's own `authentik-postgres`
+  container — change it in sops, `nixos-rebuild switch`, and reset it inside the cluster
+  (`ALTER ROLE authentik …`), then re-dump. `AUTHENTIK_SECRET_KEY` is not cheap and is now
+  **unrotatable in practice**: authentik cannot re-encrypt what it has already encrypted,
+  so it would mean regenerating every stored provider key, LDAP bind password and the
+  outpost tokens — all of which live in the database being sealed with it.
+
+- **aibox's sssd: the GSSAPI/`krb5_validate` item is still open, and its test canary is
+  gone.** The LDAPS path works after the cutover (`id Catryan` → groups `Infra`), but sssd
+  had logged 13 `Unable to establish connection` failures *before* the window, so the
+  underlying flakiness recorded in `machines/aibox/sso.nix` is untouched. And
+  **`sss_userdk` no longer exists in authentik** (queried 2026-10-28), so the
+  end-to-end check that file recommends cannot pass — use a real member username.
+
+- **The pi-room netboot clients were not re-tested.** They dial
+  `ldaps://authentik.int.leighhack.org` and the certificate is byte-identical to the one
+  they already trust, so this is a "nobody has booted one since" gap rather than a
+  suspicion. Booting one and reading the LDAP result is the check.
+
+- **`10.3.1.36` in the operator's `known_hosts`.** Three lines hold the retired VM's host
+  keys; ssh to `.36` now reaches services1, so those entries can never validate again and
+  the first ssh after the cutover fails hard (it did, mid-window).
+
+- ~~`id-shadow.int.leighhack.org` has no DNS record~~ — **closed by deletion, 2026-10-28.**
+  The name is gone from `common/int-dns.nix` and from the module, and staging needs no
+  name: `curl -H 'Host: id.int.leighhack.org' http://127.0.0.1:9000/…` reaches the app with
+  neither DNS nor the door involved.
+
+- ~~The nightly authentik dump timer is off~~ — **on since 2026-10-28** (`staged = false`);
+  `authentik-db-dump.timer` fires at 03:15 into the backups share. First run unobserved at
+  the time of writing — check `journalctl -u authentik-db-dump.service` after 03:15 once.
 
 
 ---

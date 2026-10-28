@@ -31,7 +31,7 @@ X first", X has already cost someone a day.
 | touch the netboot image the Pi Room boots, or aibox's tftp/ipxe/NFS export of it | `machines/pi-room-sys/README.md` (the image is built by aibox, not deployed) |
 | touch a Dioxus SPA (any of the four) or its headless-browser suite | `docs/filestore-gotchas-2026-10-05.md` (the dioxus 0.7 + wasm traps apply to all of them) + `crates/filestore/tests/README.md`, `crates/switch-gui/tests/README.md` |
 | create or debug an OIDC app / authentik anything | `docs/authentik-oidc-notes.md` — **every part of it has bitten once** |
-| touch the authentik container stack on services1, or the migration/cutover off 10.3.1.36 | `docs/authentik-container-migration.md` — the flake half is a **parked shadow**, the appliance is the live IdP |
+| touch the authentik container stack on services1, or anything that still names `10.3.1.36` | `docs/authentik-container-migration.md` — **the flake stack on services1 *is* the IdP since 2026-10-28**; `10.3.1.36` is a second address on that box, the appliance VM is stopped, and the outposts answer RADIUS/LDAPS there |
 | run a **full network upgrade** — one flake pass landed on every box the hop key reaches | `docs/network-upgrade-runbook.md` (the order, the gates, and what must *not* move) |
 | are new to this flake, or are about to **restructure** `flake.nix`/`common/` rather than add a service | `docs/flake-simplification-audit-2026-10-22.md` — where each fact lives, what `just check` actually does on each box, the two secret models, and the five structural changes worth making (**its Status table is current, its body is the tree at `f923c6e` — read the table first**) |
 | are about to **simplify** — delete, merge or move config, or judge what is fat | `docs/flake-simplification-pass-2026-10-24.md` — the 2026-10-24 re-measure of the same question: 91 % of the tracked bytes are one vendored asset tree, three `AGENTS.md` rules are 93 of its 151 rule-lines, 1,044 lines cannot be deployed; every finding is gated **do now / decide / don't**, and its §3 says what may **not** be cut |
@@ -118,8 +118,8 @@ X first", X has already cost someone a day.
     import list only names the file. Then
     `grep -rl '^# PARKED' machines/` *is* the list of what is not running — which it was
     not: the reason lived in a comment beside the import, invisible to grep, and a
-    parked module is never evaluated, so its rot is silent. The five in tree (affine,
-    samba, gitlab, authentik on services1; nvidia on aibox) each carry their own
+    parked module is never evaluated, so its rot is silent. The four in tree (affine,
+    samba, gitlab on services1; nvidia on aibox) each carry their own
     re-verify command, because "just uncomment it" is not one. (`strata` on aibox came
     out of that list on 2026-10-28; un-parking it is a nine-release engine bump and
     the checklist for one is now in `machines/aibox/STRATA.md`.)
@@ -589,22 +589,46 @@ listed here is in the doc named for it.
   (the two Pis were cloned from one SD card, so their DNS names used to advertise each
   other's addresses). → `docs/printer-servers.md`.
 
-## Authentik (id.leighhack.org, 10.3.1.36)
+## Authentik (id.leighhack.org — services1, and 10.3.1.36)
 
-Out-of-band on its own box (docker compose in `/srv/authentik`), not flake-managed; nginx
-on the box proxies to 127.0.0.1:9000. Also served as `authentik.int.leighhack.org`.
+**The IdP is the podman stack on services1** (`machines/services1/services/authentik.nix`),
+cut over on 2026-10-28 from the docker-compose appliance that used to own **10.3.1.36**.
+The address came here rather than the clients being reconfigured, because two groups of
+clients cannot be reconfigured: the ProCurve switches' `radius-server host 10.3.1.36` in
+NVRAM (rule 16) and every LDAP client dialling `authentik.int.leighhack.org`, which
+`common/dns-records.nix` answers with `.36`. So `10.3.1.36` is a **second address on
+`vlan225`** (`machines/services1/networking.nix`, after `.20` so `.20` stays the source of
+everything else), the outpost ports are published on `0.0.0.0` on purpose so conntrack
+answers as the dialled address, and `id.int.leighhack.org` is an `origin` row in
+`common/front-door.nix`. `docs/authentik-container-migration.md` owns the procedure, the
+receipts and the four things that are easy to get wrong.
 
-**A second, flake-managed authentik exists for this box**
-(`machines/services1/services/authentik.nix`): a *shadow* that runs a copy of
-the appliance's database behind `id-shadow.int.leighhack.org`. It was built and
-verified end to end and is now **PARKED — the module is not imported**, so
-nothing of it is deployed. Un-parking it and flipping `shadow = false` is the
-cutover, and **neither should happen without reading
-`docs/authentik-container-migration.md`** — the RADIUS and LDAP outposts and the
-`authentik.int` router override are still on 10.3.1.36, and two authentik
-instances sharing a database's secrets is how the switch logins break. The
-appliance's `AUTHENTIK_SECRET_KEY` is in `secrets/secrets.yaml` as part of
-`authentik_env_file` because a copied database cannot be opened without it.
+- **`staged` in that module is the gate**: `true` runs the stack without claiming the
+  network (no vhost, no outposts, no worker, no dump timer) — how the migrated copy was
+  verified while the appliance still answered. Flipping it is a deploy-time decision, not
+  a runtime one, and it does **not** withdraw `.36`; stopping the old serving side and
+  clearing the flag belong in the same change, because two containers registering one
+  outpost token against two authentiks is how the switch logins break.
+- **`AUTHENTIK_SECRET_KEY` is load-bearing and unrotatable.** It is in
+  `secrets/secrets.yaml` as part of `authentik_env_file` because the copied database
+  cannot be opened without it, and authentik cannot re-encrypt what it has already sealed:
+  never rotate it. Same for the outpost tokens
+  (`authentik_radius_outpost_env`, `authentik_ldap_outpost_env`), which live in the
+  database and migrate with it.
+- **Upgrades happen here now** — bump the three image pins in the module, same-major
+  postgres, and the appliance's `check` parity is history (it existed because a database
+  restored into a *different* authentik version is migrated on first boot and cannot be
+  un-migrated; that was the rollback path and it closed with the VM).
+- **The retired VM (`vm:108` on monster1) must stay stopped** (`ha-manager set vm:108
+  --state stopped`): its MAC still has the live DHCP reservation in `common/dns-records.nix`,
+  so booting it takes `.36` back and two hosts answering one address is silent for whoever
+  is logging in. Do not delete it or its `/srv/authentik` while they are the only copy of
+  the pre-cutover state.
+- **Switch logins still do not authenticate over RADIUS, and it is not the move's fault:**
+  there is no `agent` user in authentik, so the identification stage recurses and the
+  outpost sends *no reply* (`exceeded stage recursion depth`), which is what the appliance
+  did too. The switch falls back to its local account database either way.
+  `docs/procurve-switches.md`.
 
 - **Before creating an OIDC provider, read `docs/authentik-oidc-notes.md`.** Three
   invisible bites, summarised: copy the flows + `signing_key` from a known-good provider
