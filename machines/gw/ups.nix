@@ -452,7 +452,7 @@ in {
     upsd.listen = [];
 
     users.upsmon = {
-      passwordFile = nutPasswordFile;
+      passwordFile = toString nutPasswordFile;
       actions = ["report"];
       upsmon = "primary";
     };
