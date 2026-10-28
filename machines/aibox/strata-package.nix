@@ -15,6 +15,13 @@
   # HSA_OVERRIDE_GFX_VERSION=10.3.0 in ./strata.nix) to report gfx1030 - the
   # same trick machines/aibox/alexandria-style ROCm setups use for this box.
   hipArch ? "gfx1030",
+  # The upstream Strata source tree (the flake's `strata` input outPath), passed
+  # in by flake.nix and by ./strata.nix.  Since 2026-10-28 this is the SAME source
+  # services2's CUDA engine builds from, so `nix flake update strata` moves both
+  # engines; before that aibox pinned its own fetchFromGitHub and the two drifted
+  # nine releases apart.  Plain source, so `finalAttrs.src` is usable in the
+  # install phase.
+  src,
 }:
 # Strata (https://github.com/Niko1221/Strata) for aibox's integrated Radeon.
 #
@@ -45,7 +52,11 @@ let
   };
 
   # serve/server.py needs jinja2 (chat template) and regex (tokenizer); pillow
-  # (WebP image parts) and psutil (Monitor) are optional.
+  # (WebP image parts) and psutil (Monitor) are optional.  No new REQUIRED import
+  # at 0.1.52: jsonschema/referencing stay a lazy optional import in
+  # serve/structured.py (absent -> "one JSON object" checking only), and
+  # textual/requests/tqdm in requirements.txt are the app/Terminal, not the serve
+  # layer - verified by the import guard in the install phase rather than by trust.
   serverPython = python3.withPackages (
     ps:
       with ps; [
@@ -70,14 +81,13 @@ let
 in
   stdenv.mkDerivation (finalAttrs: {
     pname = "strata";
-    version = "0.1.43.1";
+    # The input floats on upstream `main`; the pinned llama.cpp above is the
+    # reproducible part of the build.  (0.1.52 was `CMakeLists.txt`'s project
+    # version at the rev this was written against - the number lives in the tree
+    # now, not here, which is the point of taking the input.)
+    version = "unstable";
 
-    src = fetchFromGitHub {
-      owner = "Niko1221";
-      repo = "Strata";
-      rev = "a0116b2782a5b82622358c04a06496485d12b2d6";
-      hash = "sha256-ouJseBgkuS0WxgHgHw8vxuNNqR/B3W5yjbjfBzkBpqA=";
-    };
+    inherit src;
 
     nativeBuildInputs = [
       cmake
@@ -133,8 +143,28 @@ in
       # targets whenever HIP is on (they are not behind STRATA_BUILD_TESTS), so this
       # is one install line - run it with ./strata-tune/alias-check.sh.
       install -Dm755 hip_mapped_alias $out/bin/strata-alias-check
-      cp -r ${finalAttrs.src}/serve ${finalAttrs.src}/tools ${finalAttrs.src}/data $out/share/strata/
+      # The K-quant prompt library is built next to the engine and opened only for
+      # K-quant packs (moe_mmq.cu); IQ2_XS is an i-quant, so it may not exist here.
+      if [ -e libstrata_kq.so ]; then install -Dm755 libstrata_kq.so $out/bin/libstrata_kq.so; fi
+
+      # strata_control/ and strata_cli/ are NOT optional extras from 0.1.46 on:
+      # serve/lifeline.py imports `strata_control.procs` at module scope and
+      # serve/server.py reaches engine_component/tls/hipblaslt_tuning/vision_reader
+      # /draft_layer/drafting/user_args through it, and strata_control reaches
+      # strata_cli.  A tree that ships only {serve,tools,data} starts and dies in a
+      # ModuleNotFoundError crash-loop - which is how the same bump first failed on
+      # services2 (2026-10-20).  Both are stdlib-only on that path.
+      cp -r ${finalAttrs.src}/serve ${finalAttrs.src}/strata_control ${finalAttrs.src}/strata_cli \
+        ${finalAttrs.src}/tools ${finalAttrs.src}/data $out/share/strata/
       cp -r ${llama}/gguf-py $out/share/strata/gguf-py
+
+      # Contract guard, not a smoke test: import the server with only the installed
+      # tree on the path, so a copy list that lags upstream's imports fails the
+      # *build* in two seconds instead of crash-looping a service whose model load
+      # takes minutes.  Bytecode off so the check writes nothing into $out.
+      PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=$out/share/strata ${serverPython}/bin/python3 -c '
+        import serve.server, strata_control.procs, strata_cli.client
+      '
 
       # strata-server: what systemd runs (python -m serve.server).
       makeWrapper ${serverPython}/bin/python3 $out/bin/strata-server \

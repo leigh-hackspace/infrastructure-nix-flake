@@ -32,7 +32,7 @@ Every address is in `common/hosts.nix`.
 | status-dashboard | `crates/status-dashboard/` | both boxes | `common/status-dashboard.nix` |
 | whisper-ws | `crates/whisper-ws/` | aibox:8083 | `crates/whisper-ws/README.md` |
 | moonraker-exporter | `crates/moonraker-exporter/` | metrics | `docs/printer-servers.md` |
-| strata | `machines/*/strata.nix` | services2:8080 → `strata.int.leighhack.org` (LAN, keyless) and `strata.leighhack.org` (public, API key); aibox's is parked | `machines/aibox/STRATA.md`, `machines/services2/STRATA.md` |
+| strata | `machines/*/strata.nix` | services2:8080 → `strata.int.leighhack.org` (LAN, key injected) and `strata.leighhack.org` (public, API key); aibox:8080 → `strata2.int.leighhack.org` (LAN, key injected) | `machines/aibox/STRATA.md`, `machines/services2/STRATA.md` |
 
 ---
 
@@ -360,47 +360,57 @@ and the two builds differ only in backend:
 
 | box | model | backend | source | detail |
 | --- | --- | --- | --- | --- |
-| aibox (parked 2026-10-17) | full 125B, IQ2_XS | **HIP/gfx1030** (Radeon iGPU) | `.#strata` | `machines/aibox/STRATA.md` |
+| aibox | full 125B, IQ2_XS | **HIP/gfx1030** (Radeon iGPU) + optional ROCm 10 runtime | `.#strata` | `machines/aibox/STRATA.md` |
 | services2 | **Coder** IQ1_M | **CUDA/sm_86** (RTX 3060) | `.#strata-cuda` | `machines/services2/STRATA.md` |
 
-The aibox instance was disabled when that box became the network's build machine
-(2026-10-17, `common/build-farm.nix`): the IQ2_XS expert arena is ~33 GiB, which is
-the memory a build needs. Its module, measurements and `.#strata` package are kept
-so it can be brought back; the model data is outside the store and is not removed
-by the flake.
+The aibox instance was parked 2026-10-17 when that box became the network's build
+machine (`common/build-farm.nix`) — the IQ2_XS expert arena is ~33 GiB, which is the
+memory a build needs — and un-parked 2026-10-28. The trade did not change shape, only
+sign: with the engine loaded aibox has ~10 GiB for builds, so `systemctl stop strata`
+before a nixpkgs bump, and enabling it clears `llama-server`'s `wantedBy`, which 502s
+the `ai.*` vhosts. Model data is outside the store and was never removed by the
+parking; that is the only reason the un-parking was a config change.
 
-services2 takes its upstream source from the flake's **`strata` input, tracked on
-`main`** (`nix flake update strata`); aibox's package pins its own
-`fetchFromGitHub` (it was the older HIP build, kept with the parked service). Each
+Both engines take their upstream source from the flake's **`strata` input, tracked on
+`main`** (`nix flake update strata` moves both — aibox's package pinned its own
+`fetchFromGitHub` until 2026-10-28 and drifted nine releases behind). Each
 `strata-package.nix` pins the vendored llama.cpp revision from `setup.py`'s
 `LLAMA_CPP_COMMIT`. Model data (GGUF, pack, MTP runtime) is deliberately outside
 the store and prepared once by hand — the units have `ConditionPathExists` on the
 pack index so they never crash-loop before that. **Read the box's `STRATA.md`
 before changing engine flags**: the knobs were measured on different hardware and
-do not transfer.
+do not transfer, and `machines/aibox/STRATA.md` is also the bump checklist (what to
+re-verify in the tree — the ggml pin, `data/` hashes, the flag list, the arch gate —
+before trusting a release note).
 
 Because the engine's Python layer is *copied into the store by hand* in each
 `strata-package.nix`, a `nix flake update strata` can move upstream's module
 layout under it (0.1.46 renamed `apps/cli` → `strata_cli` and added
 `strata_control`, which `serve/lifeline.py` imports at module scope) and the
-service dies at import on boot. `machines/services2/strata-package.nix` therefore
-imports the server's module graph at install time, so a copy list that lags
-upstream fails the build rather than the boot; the update ritual — build on aibox,
-`nix copy --no-check-sigs` as root, switch, never confirm a failed activation — is
-in `machines/services2/STRATA.md`.
+service dies at import on boot. Both `strata-package.nix` files therefore import
+the server's module graph at install time, so a copy list that lags upstream fails
+the build rather than the boot (the aibox copy of that guard is what caught nothing
+on 2026-10-28 and would have caught the crash-loop it was written for); the update
+ritual — build on aibox, `nix copy --no-check-sigs` as root, switch, never confirm a
+failed activation — is in `machines/services2/STRATA.md`.
 
 `gw` terminates TLS for services2's engine as `https://strata.int.leighhack.org`
 (LAN-only behind the `LOCAL_NETWORK` ACL) and as the public
 `https://strata.leighhack.org`; both are rows in `common/front-door.nix`, and the
-door proxies straight to `10.3.1.21:8080`. One engine, two gates: the public name is
+door proxies straight to `10.3.1.21:8080`. aibox's engine is the third name,
+`https://strata2.int.leighhack.org` → `http://10.3.1.32:8080`, LAN-only and
+`strataBearer`-injected. One engine, two gates: the public name is
 open to the world and the engine's `api_key` (sops `strata_api_key`) is what makes
 that safe, while the `.int` name injects that same key at nginx so LAN clients — and
 the engine's own dashboard, which is nothing but `/v1/*` calls — stay keyless.
+The key is **one secret for both engines**, because `strataBearer` renders one
+`proxy_set_header Authorization`: a per-engine key would 401 the door's path.
 **A LAN vhost name and the engine's
 `allowed_hosts` are one fact in two files**: upstream's server refuses any `Host`
 it does not answer to (DNS-rebinding protection) and nginx forwards the incoming
 header upstream, so a vhost added without the name in
-`machines/services2/strata.nix` answers 403 to every request.  That protection is
+`machines/services2/strata.nix` — or `machines/aibox/strata.nix`, whose name is
+`strata2.int.leighhack.org` — answers 403 to every request.  That protection is
 switched off by the API key, which is why the public name is *not* in the list:
 remove the key and the public vhost 403s instead of serving an open engine.
 

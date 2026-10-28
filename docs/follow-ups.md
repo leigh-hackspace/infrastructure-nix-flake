@@ -375,7 +375,50 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   change — say so, and say what you verified against a clean HEAD.
 
 
-## Strata (services2)
+## Strata (services2, and aibox's engine since 2026-10-28)
+
+- **aibox's prefill wall has an upstream lever that its rocBLAS build refuses: measure a
+  gfx1030 solution table** (found 2026-10-28 while bumping aibox's engine from 0.1.43.1 to
+  the flake input's 0.1.52). aibox's real limit is prefill — ~45 tok/s whatever the config,
+  so a 20 000-token prompt is a 7-minute prompt (`machines/aibox/STRATA.md`, "The real limit
+  for coding use is prefill" and "The plateau"). 0.1.4x added exactly that problem for this
+  card: `src/prefill/rocblas_tuning.hpp` — "rocBLAS picks a kernel per GEMM shape from its
+  own table, and on gfx1030 that pick is up to 6x slower than the best kernel the library
+  holds for the same shape (N=10240 K=2560 below T=1152: `tools/hip/tune_rocblas.cpp`)" —
+  read through `STRATA_ROCBLAS_TUNING` (a table file, or a directory holding
+  `<arch>-rocblas-<version>.txt`). Upstream ships `tools/hip/gfx1030-rocblas-5.6.0.8d1ae90e.txt`,
+  and the loader refuses any table whose header's rocBLAS version string is not the linked
+  library's: nixpkgs reports **5.2.70203** (`librocblas.so.5.2.70203` in
+  `rocmPackages` 7.2.4), so today it is **refused and its absence is invisible** (one line
+  on stderr: `prefill gemm: rocBLAS … version mismatch …; rocBLAS's default kernels run`).
+  **To do:** build `tune_rocblas.cpp` against this rocBLAS (it is in the source tree the
+  engine builds from; `machines/aibox/strata-package.nix` already builds the HIP test
+  targets whenever HIP is on, which is how `strata-alias-check` got installed), name the
+  result `gfx1030-rocblas-<version>.txt`, point `STRATA_ROCBLAS_TUNING` at the directory in
+  `$out/share/strata/tools/hip`, and A/B a long prompt — answers may move (a different GEMM
+  algorithm is a different summation), so compare `md5` of a completion, per the house rule
+  about measuring the answer and not the banner. **Blocks:** nothing; env-only, no engine
+  rebuild once a table exists. Note the interaction with ROCm 10: with
+  `services.strata.rocm10Runtime = true` the linked rocBLAS *is* the runtime's (10.0.0
+  reports its own version string and carries 144 gfx1030 Tensile files), so a table has to
+  be measured for whichever runtime the unit actually loads — `strata-device --selftest`
+  prints `driver / runtime` and is the one-line check of which that is.
+
+  **And try the one-line version first.** The engine prints, unprompted, on every start of
+  the deployed unit (seen in `/var/lib/strata/strata.log` on 2026-10-28):
+
+  > `strata prefill: HIP device 0 gfx1030 - tip: STRATA_HIP_PROMPT_F16=1 reads long prompts
+  > about 2x faster here (FP16 prompt GEMMs, rocBLAS is tuned only for FP16 on gfx103x; the
+  > numbers differ slightly, see docs/AMD_HIP.md)`
+
+  That is upstream naming the *same* rocBLAS-tuning fact as an answer available today: FP16
+  prompt GEMMs are the tuned path on gfx103x, so the FP32-out shapes the tuning table above
+  exists to fix are partly a consequence of the default. `STRATA_HIP_PROMPT_F16=1` is one
+  `extraEnv`/`env` line in `machines/aibox/strata.nix` — no rebuild — against a claimed 2x on
+  the axis that costs 7 minutes per agent turn, for "the numbers differ slightly". Nobody has
+  measured it here: A/B a long prompt's `prompt_ms` (the bench harness in `strata-tune/`) and
+  an `md5` of the completion before believing the 2x, and expect the prefill ceiling of
+  ./STRATA.md to be wrong in a good way if it holds.
 
 - **The 2026-10-27 bump turned two switches on for this card class, and nobody has
   measured them on our pack** (found while bumping; the whole finding is in
@@ -1057,6 +1100,23 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
 
 
 ## Postgres
+
+- **Rotate the Postgres application password (`pg_pass`) — it was printed into an agent
+  transcript on 2026-10-28.** Not a config fault and not a store-boundary change: `pg_pass`
+  is in `infra.buildTimeSecrets` (`common/sops.nix`) and therefore already sits in a
+  world-readable store path on every box that builds or substitutes, which is the documented
+  cost of that list. What is new is a transcript that quotes it: while isolating
+  `error: path '…-sops-secret-pg_pass.drv' is not valid` from `nix flake check --no-build`, a
+  `nix eval` of `services.outline.databaseUrl` printed the resolved DSN — password in the
+  clear — instead of being answered by the rendered config. The mechanism, and why that eval
+  is the wrong probe for a secret-bearing option (it also *realises* the secret's derivation,
+  which is what `--no-build` was refusing), is written up in `docs/nix-dev-workflow.md`,
+  "Evaluation must not build". **Blocks:** nothing; it is a one-transaction change plus the
+  dependent units. **To do:** set the role password, update `secrets/secrets.yaml`, redeploy
+  the boxes whose generated config embeds it (services1's URIs — outline, affine, postgres
+  itself — and anything in `CONFIG` reading `ENV_FILE`), then restart those units. The
+  precedent for treating a transcript as a leak is the RADIUS shared secret (2026-10-12,
+  still open below in "Switches / RADIUS").
 
 - **The application databases still record collation version 2.42** while the box
   runs 2.44, so each still logs `database "…" has a collation version mismatch` on

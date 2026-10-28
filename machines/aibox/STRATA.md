@@ -2,16 +2,23 @@
 
 Qwen3.8-Flash-Next (125 B total / ~6 B active MoE) running as `strata.service`
 on the Radeon 660M iGPU + system RAM + NVMe. Config: `strata.nix` (service) +
-`strata-package.nix` (engine build). Endpoints: `http://10.3.1.32:8080/v1` and,
-through nginx, `http://aibox.int.leighhack.org/llm/v1`.
+`strata-package.nix` (engine build) + `rocm10-runtime.nix` (the optional ROCm 10
+userspace runtime). Endpoints: `http://10.3.1.32:8080/v1` directly and
+`https://strata2.int.leighhack.org/v1` through the front door on `gw` (one row in
+`common/front-door.nix`; this box has no nginx of its own).
 
-> **Parked 2026-10-17.** The service is disabled in `./default.nix` so this box can
-> be the network's build machine (`common/build-farm.nix`): the IQ2_XS expert arena
-> is ~33 GiB of RAM that a build needs. The module, this file and the `.#strata`
-> package remain so it can be brought back; the model data under
-> `/home/leigh-admin/Models` and `/home/leigh-admin/Strata` is outside the store and
-> is **not** removed by the flake. The numbers below are what it measured while it
-> ran, not a description of the deployed box today.
+> **Parked 2026-10-17, un-parked 2026-10-28.** It was disabled so this box could be
+> the network's build machine (`common/build-farm.nix`): the IQ2_XS expert arena is
+> ~33 GiB of RAM a build needs, and `llama-server` got its `wantedBy` back. It runs
+> again — on the flake's `strata` input instead of its own nine-releases-stale pin,
+> and behind a new name. **The RAM trade is unchanged and still real**: with the
+> engine loaded this box has ~10 GiB left for builds, so `systemctl stop strata`
+> before a nixpkgs bump or anything that links a browser, and `expertCache` in
+> `strata.nix` is the dial if the two must coexist for long. What made this an
+> un-parking rather than a rebuild from scratch is that the model data under
+> `/home/leigh-admin/Models` and `/home/leigh-admin/Strata` lives outside the store
+> and the parking never touched it. The numbers below are what it measured, on this
+> box, with the config `strata.nix` still describes.
 
 It replaced `llama-server` for a reason: the dense 27B (Dirk-Qwen3.8-27B-UD-Q6_K)
 decodes at **~2 tok/s** here — a 200-token completion timed out at 145 s.
@@ -195,16 +202,18 @@ grouped-GEMM throughput, not a cache or chunk-size problem.
 - **Ports:** 8080 strata, 8100/8081 llama-server, **8090 is frigate-monitor** (a
   bench client hitting it gets `HTTP 405: Method Not Allowed` and looks like a
   Strata failure). The harness uses 8123.
-- **The engine binds `10.3.1.32` (its `--host`), not loopback.** nginx's `/llm/`
-  must therefore `proxy_pass http://10.3.1.32:8080`; `127.0.0.1:8080` returns a
-  silent 502.
+- **The engine binds `10.3.1.32` (its `--host`), not loopback.** `proxy_pass` to
+  `127.0.0.1:8080` is a silent 502 — the one thing the `strata2.int` row in
+  `common/front-door.nix` exists to get right. And `10.3.1.32:8080` is reachable on
+  the LAN because this box's firewall is off (`machines/aibox/networking.nix`), which
+  is why the engine has an `api_key` rather than trusting a network.
 - **`ai.int.leighhack.org` is now broken by this module.** On services1
   (`machines/services1/ai.nix:28`) it proxies to `10.3.1.32:8081`, i.e. aibox's
   llama-server, which `displaceLlamaServer` stops → the vhost answers 502, and
   both Pi hosts still have it as their default (`llamaServerUrl` and
-  `defaultProvider` in `~/.pi/agent/settings.json`). Either repoint that vhost to
-  `10.3.1.32:8080` (Strata) or point pi at the `strata` provider in
-  `~/.pi/agent/models.json`.
+  `defaultProvider` in `~/.pi/agent/settings.json`). Either repoint that vhost at
+  Strata on :8080 (the `strata2.int` row is the same shape with one address
+  changed) or point pi at the `strata` provider in `~/.pi/agent/models.json`.
 - **A killed engine keeps its GTT.** If an experiment engine is SIGKILLed, the
   next `strata.service` start fails with
   `cudaMalloc(1538035200) for the weight arena failed (out of memory): 60 MiB of 53393 MiB VRAM free on this GPU`.
@@ -637,14 +646,245 @@ is deployed the switch restarts the engine and the request in flight is the only
 lands inside the band the bump changed nothing measurable and item 1 above is the only candidate for a
 gain, and anything outside it is a regression to bisect rather than a win to enjoy.
 
+## Update: un-parked — engine 0.1.43.1 → the flake input (0.1.52), ROCm 10, and a front-door name (2026-10-28)
+
+The module came back for the same reason it was parked: this is the box's reason for
+existing, and twelve days of being nothing but a builder did not use the card. Three
+things changed at once, so this section is what a *bump* of this engine costs, written
+as the checklist it should have been.
+
+### What the engine now is
+
+`strata-package.nix` takes its source from the flake's `strata` input (rev `5e8a4cca`,
+`CMakeLists.txt: project(strata VERSION 0.1.52}`, upstream's `v0.2.7` app release) —
+**the same tree services2's CUDA engine builds from**, so `nix flake update strata`
+moves both engines. Before this, aibox pinned its own `fetchFromGitHub` at `a0116b27`
+(0.1.43.1) and the two had drifted nine releases apart, which is the gap the
+`flake.nix` input comment used to describe as a feature.
+
+Checked at both tags before switching, from the trees and not the changelog:
+
+- **The pinned llama.cpp is unchanged** — `setup.py:222 LLAMA_CPP_COMMIT =
+  "3cf03257…"` at both tags, and `third_party/ggml/VERSION.txt` in the new tree names
+  the same rev — so the ggml / i-quant block-layout side of the build is byte-for-byte
+  what 0.1.43.1 built against.
+- **`data/` moved nothing we read**: `expert-profile.bin` (`8f59b4aa…`),
+  `expert-profile-coder.bin` (`a5146611…`) and `draft_vocab.bin` (`b1e1d3a7…`) hash
+  identically at both tags. The only additions are `data/dsv41/` and
+  `data/quant_quality/` (DeepSeek V4.1-Flash and a quant-quality tool — nothing this
+  pack touches). **No re-prep**: the pack under `/home/leigh-admin/Strata/pack/iq2xs`
+  and the MTP runtime under `…/mtp/rt`, prepared 2026-10-05, are the right bytes for
+  this engine.
+- **Every engine flag the unit passes is still parsed** (`--pack`, `--native`,
+  `--ple-gguf`, `--ple-io`, `--expert-profile`, `--expert-cache`, `--prefill`,
+  `--spec`, `--spec-min-p`, `--mtp`, `--max-context`, `--kv`, `--kv-resident`,
+  `--pcie-mode`, `--pcie-frac` — grepped as string literals in `src/program/generate.cpp`
+  at the pinned rev), and every cmake option the package passes is still an option,
+  `STRATA_PREFILL_MMQ` (HIP-only) included.
+- **The arch gate is unchanged**: `cmake/hip_backend.cmake` still refuses gfx1035 and
+  still lists gfx1030 under `_strata_hip_unvalidated`, so the gfx1030 build plus
+  `HSA_OVERRIDE_GFX_VERSION=10.3.0` stay, and `hip_mapped_alias` is still built
+  whenever HIP is on (so the `strata-alias-check` install line still stands).
+
+### The one thing that would have crash-looped, and the guard that now catches it
+
+From 0.1.46 `serve/` imports top-level packages the old copy list did not have:
+`serve/server.py:69-78` and `serve/lifeline.py:31` import `strata_control` at module
+scope and `strata_control` reaches `strata_cli`. aibox's package copied exactly
+`{serve,tools,data}`, so **the first boot of a 0.1.52 tree would have died in a
+`ModuleNotFoundError` crash-loop** — the identical failure services2 met on
+2026-10-20, nine days before it bit here. The package now installs
+`strata_control/` and `strata_cli/` beside them and runs a contract guard in the
+install phase:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=$out/share/strata python3 -c \
+  'import serve.server, strata_control.procs, strata_cli.client'
+```
+
+That is the pattern worth keeping off a changelog: it turns "the service crash-loops on
+a box whose model load takes minutes" into "the build fails in two seconds".
+
+### Nothing new turns on for this card — except one thing that costs RAM
+
+The 0.1.4x–0.1.5x answer and speed defaults are gated on RDNA4 and stay off here:
+`gfx_arch_is_gfx12()` guards the tail-skip and the measured PCIe share
+(`generate.cpp:2727`, `:3406`) and `STRATA_HIP_QUEUE_PRIME` is "gfx1200 / gfx1201 on
+Linux only" (`generate.cpp:2712`); aibox reports gfx1030. So the plateau numbers above
+are still the control, and both #884/#750 mitigations
+(`STRATA_HIP_ADAPT_KERNEL_COPY=1`, `HSA_USERPTR_FOR_PAGED_MEM=0`) are still read and
+still set.
+
+What did change is invisible and expensive: **#3493** made `--conversation-cache-mib`
+default to -1, meaning `--serve` sizes a host-RAM parked-conversation cache at 40 % of
+(free − 2560 MiB) in 256 MiB steps, capped at 8192, *computed after the model loads*
+(`include/strata/core/conversation_memory.hpp:70`). Measured against the running unit
+rather than estimated: `free -m` reads **6964 MiB available** with the arena and cache
+loaded, so the rule computes `(6964 − 2560) × 2/5 = 1761`, steps it down to 256, and
+answers **1536 MiB** of RAM the build farm wants. `strata.nix` passes
+`--conversation-cache-mib 0` — which is not a change of behaviour but the spelling of
+the engine this unit last ran (0.1.43.1 had no parked conversations). Before "just set a
+number": `available_host_bytes()` is MemAvailable/cgroup-limited and never counts swap,
+and the same 2560 MiB floor refuses *parking* as well as sizing — worked out end to end
+for the CUDA box in `machines/services2/STRATA.md`, "The conversation cache cannot be
+bought with the swap file", and it reads identically here. The R9700 box runs 16 GiB of
+that cache because parked conversations are what makes alternating agents cheap; on a
+bandwidth-bound box with a 45 tok/s prefill
+ceiling and 10 GiB of headroom, it is a dial to turn on deliberately, not to inherit.
+
+### The gfx1030 prefill lever upstream just added (measured: refused here)
+
+`src/prefill/rocblas_tuning.hpp` says it plainly: "rocBLAS picks a kernel per GEMM shape
+from its own table, and on gfx1030 that pick is up to 6x slower than the best kernel the
+library holds for the same shape". It is read through `STRATA_ROCBLAS_TUNING` (a table
+file, or a directory holding `<arch>-rocblas-<version>.txt`), upstream ships
+`tools/hip/gfx1030-rocblas-5.6.0.8d1ae90e.txt`, and `tools/hip/tune_rocblas.cpp` makes
+the table. The table is refused unless arch **and rocBLAS version string** match, and
+nixpkgs' rocBLAS reports `5.2.70203` (`librocblas.so.5.2.70203`) — so **the shipped
+table does nothing here** and rocBLAS's own picks run, same as last time.
+
+This is the cheapest untried prefill win this box has — prefill is the ~45 tok/s wall
+that makes a 20k-token prompt a 7-minute prompt — and the work is one run of
+`tune_rocblas.cpp` against nixpkgs' rocBLAS build, not a rewrite. Open item in
+`docs/follow-ups.md`.
+
+### ROCm 10 on an RDNA2 card: what is true, measured 2026-10-28
+
+Requested as "use ROCm 10 if you can", so: **nixpkgs cannot express it and the card
+makes it an experiment rather than a config line.**
+
+- **nixpkgs has exactly one ROCm.** `pkgs/top-level/all-packages.nix` defines
+  `rocmPackages = recurseIntoAttrs (callPackage ../development/rocm-modules {})`, its
+  `rocm-core` is **7.2.4** at this flake's nixpkgs, and there is no
+  `rocmPackages_8/_9/_10` anywhere in the tree. So ROCm 10 has to arrive as a runtime,
+  not an attribute: `rocm10-runtime.nix` streams one layer of the
+  `rocm/dev-ubuntu-24.04@10.0.0-full` image out of the registry (8 050 797 785 bytes —
+  and note the fixed-output hash of that stage *is* the layer digest, since an OCI
+  blob's sha256 is what the manifest publishes: `nix hash convert --to sri <digest>`
+  derives it) and filters `lib/` out of it (16 GB, 22 997 files). `strata.nix` hands it
+  to the engine through the run config's `lib_dirs`; serve's `child_env()` prepends it
+  to `LD_LIBRARY_PATH`, which beats the RUNPATH. `services.strata.rocm10Runtime` is the
+  switch, and it costs one restart, not a rebuild of the engine.
+- **Why:** upstream #879, the non-finite / poisoned verify window, is a *runtime* fault.
+  On the R9700 box the same binary and source fired it 2 times in 1 399 requests on
+  ROCm 7.2.3 and 0 times in 1 911 on 10.0.0 the same day (`cjdell/nixos-config`,
+  `hosts/zen3-nixos/ai/rocm10-runtime.nix`, whose `docs/strata-degeneration.md` is the
+  write-up). aibox runs the same 7.2.x series.
+- **Why it is not a given here:** Strata's own `docs/AMD_HIP.md` ships its Linux
+  `rx6000` package — gfx1030/gfx1031, this card — on TheRock **7.13.0** wheels with
+  "the gfx1030 wheels are unvalidated; a system ROCm 7 is the tested path there", and
+  RDNA2 gets a 10.x package only on **Windows**. So the question was "does this card
+  run on it at all", and the cheap answer is `strata-device`, which costs seconds and
+  loads no model:
+
+  | check | nixpkgs ROCm 7.2.4 | ROCm 10.0.0 (TheRock) |
+  |---|---|---|
+  | `strata-device --list-devices` | `gfx1030, 52.1 GiB, wave32` | same |
+  | `--selftest` `driver / runtime` | `70253211 / 70253211` | **`71526333 / 71526333`** |
+  | `--selftest` result | OK (allocations, over-allocation refused) | OK |
+  | `ldd bin/strata` under it | nixpkgs 7.2.4 for all five | **all five from the ROCm 10 path**: `libamdhip64`, `libhsa-runtime64`, `libhipblas`, `librocblas`, `libhipblaslt` |
+  | `strata-alias-check` (the `--pcie-mode direct` gate) | alias == host, kernel reads it correctly | identical |
+  | hipBLASLt Tensile kernels for gfx1030 | none (unused: gfx1030 has no hipBLASLt kernels) | none — `lib/hipblaslt/library/` is gfx1100 and newer |
+  | rocBLAS Tensile kernels for gfx1030 | yes | **yes** — `lib/rocblas/library/*gfx1030*`, 144 files, and `lib/rocblas/library/` spans gfx1010…gfx1250 |
+
+  The last two rows are the whole risk and they came out the right way: the dense path
+  on this card runs on rocBLAS, and the runtime that now supplies it does carry gfx1030
+  code. `rocm10-runtime` writes its own answer into `$out/RUNTIME-CODE.txt`, so the
+  next reader does not have to trust this table.
+
+  Cost of the pull: 2 min 55 s of download at ~43 MB/s plus a re-extract, 24 GB of
+  store for the blob and the runtime on a box that was at 81 % — which is why
+  `allowSubstitutes = false` and "build aibox on aibox" are in the header, and why
+  `nix gc` (`--delete-older-than 30d`, `common/build-farm.nix`) will take the 16 GB
+  back if the service is ever parked again.
+
+### The endpoint, and why there is no nginx here
+
+`strata.nix` used to end with `services.nginx.virtualHosts."aibox.int.leighhack.org"
+.locations."/llm/"`. That is wrong twice over now: this box has no nginx (see the
+headers of `frigate-monitor.nix` and `status-dashboard.nix`), and the front door on
+`gw` owns every name the network has one of. The engine is therefore one row in
+`common/front-door.nix` — `strata2.int.leighhack.org` → `http://10.3.1.32:8080`,
+`strataBearer = true`, 1024M body, 3600 s timeouts, no buffering — plus its label in
+`common/int-dns.nix`; the guard in `machines/gw/int-dns.nix` is what refuses a door
+that serves a name DNS does not answer, and `nixos-rebuild dry-build --flake .#gw` is
+clean with both. `strata2` because `strata` is services2's engine: different box,
+different quant, two names for two models.
+
+The engine also has an `api_key` now (it said so itself for a year: "WARNING: no API
+key - anyone on your network can use this model", and this box's firewall is off).
+It is `strata_api_key`, the same secret services2's engine holds, because
+`strataBearer` in the door renders exactly one `proxy_set_header Authorization` — a
+per-engine key would 401 the door's own path. Clients that used
+`http://10.3.1.32:8080/v1` directly now need that key; `pi-models.json` is pointed at
+`https://strata2.int.leighhack.org/v1` instead, where the door injects it and no client
+holds a secret.
+
+**And the trade that is not free:** enabling strata clears `llama-server`'s
+`wantedBy`, so `ai.int.leighhack.org` and `ai.leighhack.org` — origin vhosts on
+services1 proxying to `10.3.1.32:8081` — answer 502 while the engine has the box.
+`systemctl stop strata && systemctl start llama-server` is the swap, and `strata.nix`
+keeps `services.strata.displaceLlamaServer` as the switch for it.
+
+### Deploy record, 2026-10-28 (the first run of this config on this box)
+
+`nixos-rebuild switch --flake .` at 02:12, confirmed against the same generation. What
+the running service says, which is the part a bump is really judged on:
+
+- Engine came up in ~25 s of wall clock: `experts loaded: 33.02 GiB at 3.82 GiB/s (18 s
+  so far)`, then `filling the GPU's expert cache (4292 experts, 5.76 GiB of VRAM)` — the
+  `--expert-cache 4096` rounding the engine has always done, unchanged by the bump. The
+  budget at the top of this file says 4096 slots land at ~50 GiB used and ~10 GiB of
+  headroom; with 262144 context measured on the deployed unit it is **54 GiB used, 6.9
+  GiB available** and 15.1 GiB of GTT, so read the headroom as ~7 GiB when sizing what
+  else this box does.
+- **ROCm 10 really is the runtime**: the engine process maps
+  `…-rocm10-runtime-10.0.0/lib/libamdhip64.so.7.15.26333-0000000`, where the same binary
+  without `lib_dirs` reports runtime `70253211`. Steady-state footprint as before: GTT
+  15.10 GiB (`mem_info_gtt_used`, the 262144-context figure in the UMA section) and 52
+  GiB of 59 used, ~6 GiB available — i.e. the build-farm headroom the header warns about,
+  measured.
+- **Decode is not slower on the new engine or the new runtime**: 220 completion tokens in
+  18.3 s through `/v1/chat/completions` ≈ **12 tok/s**, at or above the 9.4-9.6 tok/s
+  plateau, with `finish_reason: length` and correct output. One `#267`-class event in
+  1.5 days of the old engine remains the fault record; nothing to add yet on this one.
+- The key is enforced: `/health` says `"api_key": true`, `/v1/models` is a 401 without it
+  and the model list with it, and the serve banner now ends `API key required`.
+- `strata.service` has `NRestarts=0` since the switch.
+
+Two operational notes from the switch itself:
+
+- **The activation failed with exit 4 and it was not strata.** `Failed to restart
+  exports-netboot\x2dsquashfs.mount` — the Pi Room netboot export's mount — killed
+  `switch-to-configuration` *after* `/run/current-system` had flipped and after
+  `strata.service` had started, with the auto-rollback timer already armed and firing in
+  ~3 minutes. Re-running `/run/current-system/bin/switch-to-configuration switch` (the
+  same activation, second attempt) exited 0 — the mount was busy at the wrong moment and
+  stayed mounted and active throughout — and only then was `nixos-confirm` run, against
+  the generation the switch meant. That is the documented ordering (never confirm a failed
+  activation; a retry that exits 0 is what makes the confirm true), and it is worth
+  re-reading `machines/aibox/netboot.nix` before the next switch here, because a
+  busy-restart of that mount is a switch failure waiting to happen on a box whose netboot
+  export NFS clients are real machines booting off it.
+- **Stopping `llama-server` is part of un-parking, and the flake only does half of it.**
+  `displaceLlamaServer` clears `wantedBy`, so the unit goes to `linked` and will not start
+  at boot — but a unit already running is left running by an activation, and an idle
+  llama-server that answers one request through `ai.*` will try to take ~33 GB of GTT the
+  arena now owns. `systemctl stop llama-server` was run by hand after the switch; do the
+  same on any future un-parking.
+
 ## Pi clients
 
 `~/.pi/agent/models.json` on **aibox** and **services1** (10.3.1.20) was written
 from `pi-models.json` in this directory (the canonical copy, kept here because
 `~/.pi` is per-user state and not in the flake):
 
-- `strata` → `http://10.3.1.32:8080/v1`, model `qwen3.8-flash-next-iq2xs`,
-  context 131 072, maxTokens 16 384.
+- `strata` → `https://strata2.int.leighhack.org/v1`, model
+  `qwen3.8-flash-next-iq2xs`, context 131 072, maxTokens 16 384. It is the front-door
+  URL on purpose: `strataBearer = true` on that row injects the engine's `api_key`,
+  so no client holds an inference secret and the `"apiKey": "strata"` placeholder in
+  `pi-models.json` never reaches anything that reads it. Pointing it back at
+  `http://10.3.1.32:8080/v1` is a 401 for anyone without `strata_api_key`.
 - `strata-zen3` → `https://llm.ai.chrisdell.info/v1`, model
   `qwen3.8-flash-next-iq3xxs`, context 262 144 — the fast fallback (51 tok/s
   decode, 1184 tok/s prefill), worth using for anything with a big context until

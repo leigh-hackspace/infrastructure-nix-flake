@@ -45,7 +45,7 @@ in {
         status_dashboard_lan_token = "Restart token that must match in three places at once: the dashboard's --restart-token, the nginx header on the LAN vhosts, and services2's dashboard.";
         grafana_admin_password = "Grafana admin password, set via its provisioning env (the plaintext-store warning this emits is a known finding).";
         grafana_secret_key = "Grafana's signing secret key, same provisioning file.";
-        strata_api_key = "Bearer key inside the Strata engine's own config (services2) and inside services1's proxy to it.";
+        strata_api_key = "Bearer key inside the Strata engines' own generated run configs (services2 and aibox) and inside the door's proxy to them; one secret for both because `strataBearer` in common/front-door.nix injects a single header, so a per-engine key would 401 the door's path.";
       };
       description = ''
         The names allowed through config.sopsSecretText, each with why it cannot be a

@@ -49,12 +49,16 @@
 
     # Strata (https://github.com/Niko1221/Strata), the ggml-based engine that serves
     # Qwen3.8-Flash-Next across GPU VRAM, RAM and the CPU.  This input is the source
-    # of services2's CUDA engine; upstream's own flake ships only a devShell, so the
-    # engine is packaged by hand (machines/services2/strata-package.nix), it is tracked
-    # on `main` on purpose, and aibox's older HIP package still pins its own
-    # fetchFromGitHub — which is why `nix flake update strata` moves one engine and not
-    # the other.  The engine itself, the pin and what a bump involves:
-    # machines/services2/STRATA.md.  The `follows` line is the rule in the door-entry
+    # of **both** engines: services2's CUDA one (machines/services2/strata-package.nix)
+    # and, since 2026-10-28, aibox's HIP/gfx1030 one (machines/aibox/strata-package.nix)
+    # build from its outPath.  Upstream's own flake ships only a devShell, so both are
+    # packaged by hand here, and the input is tracked on `main` on purpose — the
+    # engine is the bleeding edge and this network wants the RDNA2/CUDA fixes as they
+    # land.  (`aibox's package used to pin its own fetchFromGitHub, which is why
+    # `nix flake update strata` once moved one engine and not the other; the nine-
+    # release gap that produced is what the 2026-10-28 un-parking closed.)  The
+    # engine itself, the pin and what a bump involves: machines/services2/STRATA.md
+    # and machines/aibox/STRATA.md.  The `follows` line is the rule in the door-entry
     # note above, and it is the rule for every input here.
     strata = {
       url = "github:Niko1221/Strata";
@@ -308,14 +312,20 @@
     };
 
     # `nix build .#strata` - the Strata engine (HIP/gfx1030) plus its Python
-    # serve layer and the one-time model-prep tools: the derivation that
-    # machines/aibox/strata.nix installed as a service until 2026-10-17, when the
-    # aibox engine was parked to make the box the network's builder.  That file
-    # documents the hand-run model download/pack/MTP steps this package
-    # deliberately keeps out of the store.
+    # serve layer and the one-time model-prep tools: what machines/aibox/strata.nix
+    # installs as a service.  That file and ./machines/aibox/STRATA.md document the
+    # hand-run model download/pack/MTP steps this package deliberately keeps out of
+    # the store, and what a bump has to re-check (the ggml pin, `data/`, the serve
+    # layer's import list, the gfx1030 gate).
     #
     # `nix build .#strata-cuda` - the same engine built for services2's RTX
     # 3060 (CUDA 13.0 / sm_86), from the bleeding-edge `strata` flake input.
+    #
+    # `nix build .#rocm10-runtime` - the ROCm 10.0.0 (TheRock) user runtime aibox's
+    # engine can be told to load instead of nixpkgs' ROCm 7.2: an 8 GB image layer
+    # from Docker Hub, filtered to `lib/`.  Read the header of
+    # ./machines/aibox/rocm10-runtime.nix — including its size — before building it
+    # anywhere that is not this network's builder.
     #
     # `nix build .#whisper-ws` - the aibox WebSocket gateway (crates/whisper-ws,
     # built by its own recipe).  It is a package here as well as an overlay entry
@@ -330,12 +340,15 @@
       };
     in {
       whisper-ws = whisperWsPkg;
-      strata = pkgs.callPackage ./machines/aibox/strata-package.nix {};
+      strata = pkgs.callPackage ./machines/aibox/strata-package.nix {
+        src = flakeInputs.strata.outPath;
+      };
       strata-cuda = pkgsCuda.callPackage ./machines/services2/strata-package.nix {
         src = flakeInputs.strata.outPath;
         stdenv = pkgsCuda.cudaPackages_13_0.backendStdenv;
         cudaPackages = pkgsCuda.cudaPackages_13_0;
       };
+      rocm10-runtime = pkgs.callPackage ./machines/aibox/rocm10-runtime.nix {};
     };
 
     /*

@@ -104,6 +104,7 @@
     "services1-status"
     "services2-status"
     "strata"
+    "strata2"
     "switch"
     "truenas"
     "unifi-admin"

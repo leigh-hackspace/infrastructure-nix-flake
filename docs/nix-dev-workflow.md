@@ -409,6 +409,20 @@ class fix has to be one deliberate change covering both doors — verified with 
 above — rather than half of it as a side effect of a cleanup. Until then, `check-eval` is the
 gate, and `check`'s skip message says so on the box that has to hear it.
 
+**And when a read of that class fails, never answer it by evaluating the option.** The
+failure looks like `error: path '<hash>-sops-secret-pg_pass.drv' is not valid` and invites
+`nix eval .#nixosConfigurations.<box>.config.services.<app>.databaseUrl` as the probe —
+which does two damaging things at once. It realises the derivation (a plaintext secret into
+the store, and on a box with `--no-build` it *builds*, which is the very thing this section
+is about), and it prints the resolved secret to the terminal, hence to whatever log the
+session keeps. Hit on 2026-10-28 isolating exactly that `--no-build` error: the eval printed
+an application's plaintext Postgres password into a transcript, which is rotation work and
+noted in `docs/follow-ups.md`. The safe probe is the same one this file recommends for every
+other question — the *rendered* file from a built system, whose secret you then read by path
+(`$SYS/etc/…`) rather than into a terminal — and the safe probe for "is this failure mine"
+is `git diff HEAD --stat` plus a stash of the one file you suspect, not an eval of the option
+that holds the credential.
+
 ## Inspect the generated output (the reliable way to know what a service runs)
 
 Once you have a system path `$SYS`:
@@ -446,6 +460,22 @@ nix flake show               # what the flake exposes (aibox, services1, service
 git status --short           # untracked files are EXCLUDED from the flake!
 nix flake metadata           # locked inputs / rev
 ```
+
+**`just check-build` cannot finish on aibox, and it is the sandbox, not your change.** The
+recipe builds all four toplevels, services1's first, and services1's
+`door-entry-management-system` carries `__noChroot` (its `deno i` wants the network) — that
+package is the whole reason `sandbox = "relaxed"` exists on services1 and nowhere else
+(`AGENTS.md`, "Remote building is on"), so on aibox, which keeps `sandbox = true`, the build
+is refused: `derivation '…-door-entry-management-system-…drv' has '__noChroot' set, but
+that's not allowed when 'sandbox' is 'true'`. Seen 2026-10-28 after this box's store had been
+garbage-collected down 118 GB, which is when it starts to bite: with a warm store the package
+*substitutes* and `__noChroot` is never exercised, so the failure looks new and is not. It
+also bounds what a run here is worth: every machine is still **evaluated** before anything
+builds, so services1's and gw's module assertions (`machines/services1/int-dns.nix`,
+`machines/gw/int-dns.nix`, the network-tables guard) really are checked, and only the
+compiles behind that one derivation are not. For a compile gate use `nixos-rebuild build
+--flake .#<machine>` for the machine you changed plus `nixos-rebuild dry-build --flake .#gw`
+for the router, and run `just check-build` on a box that can build what it is asked to.
 
 ## Gotchas
 

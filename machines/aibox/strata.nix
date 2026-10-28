@@ -1,55 +1,68 @@
-# PARKED — 2026-10-17 (5bab91f) — machines/aibox/STRATA.md owns this: the engine was
-# disabled to make aibox the network's builder, and its ~33 GiB arena is memory a build
-# cannot have.  The `.#strata` package is still built by the flake, so this module is the
-# only half that is parked.
-#
-# Re-verify with: `nix build .#strata` (the package is not parked), then uncomment it in
-# ./default.nix, add `services.strata.enable = true;` and `just check`.
-{
-  config,
-  lib,
-  pkgs,
-  INFRA,
-  ...
-}:
 # Strata on aibox: Qwen3.8-Flash-Next (125B total / 6B active MoE) on the
-# Radeon 660M iGPU + system RAM + NVMe, replacing the dense 27B that decodes at
-# ~2 tok/s here.
+# Radeon 660M iGPU + system RAM + NVMe.  Served on the LAN as
+# https://strata2.int.leighhack.org (a row in `common/front-door.nix`, terminated by
+# `gw`) and, unproxied, on http://10.3.1.32:8080/v1.
 #
-# PARKED 2026-10-17: the service is disabled in ./default.nix (the import is
-# commented out) so this box can be the network's build machine — the expert
-# arena is ~33 GiB of RAM a build needs.  The module is kept for reference and
-# for bringing the engine back; see ./STRATA.md for what it measured.
+# PARKED 2026-10-17 → UN-PARKED 2026-10-28.  It was disabled to make this box the
+# network's builder (`common/build-farm.nix`), because the expert arena is ~33 GiB of
+# RAM a build cannot have; it is back on because the engine is what this box was
+# bought for.  Read ./STRATA.md before changing expertCache, context or the runtime —
+# it is the measurement record, and the two are not independent (the "plateau"
+# section: every cache/placement/draft configuration measured lands at
+# 225-231 ms/window = 9.4-9.6 tok/s, because both halves are compute-bound).
+#
+# What the 2026-10-28 un-parking changed, in one paragraph.  The engine now builds
+# from the flake's `strata` input instead of its own nine-releases-stale pin
+# (./strata-package.nix), so it moves with `nix flake update strata` like services2's
+# CUDA engine does; the endpoint is a front-door name rather than a location on this
+# box's own nginx (this box has no nginx — `services.nginx.virtualHosts` here would
+# have created a second, unguarded door, which is what `common/front-door.nix`
+# exists to prevent); the engine has an `api_key` (below); and `services.strata.
+# rocm10Runtime` can swap nixpkgs' ROCm 7.2 for the ROCm 10 userspace runtime
+# (./rocm10-runtime.nix), which is the only known mitigation for the #879
+# poisoned-context class.  What it did NOT change: the flags, which are the measured
+# config, and the fact that llama-server and strata cannot be resident at once.
 #
 # Why this can work on a box with no VRAM:
-#   Strata is not an offloader. Its tiers are: experts resident in RAM (the
-#   arena), a GPU expert cache for the hot ones, a CPU pool for the cold ones,
-#   and the 28.8 GB n-gram (PLE) table read unbuffered from the SSD. On an iGPU
-#   every "VRAM" allocation is GTT, i.e. the SAME RAM as the arena - so the GPU
-#   tier adds compute, not bandwidth. Decode is bandwidth-bound: ~2.7 GB of
-#   weights read per token at ~50 GB/s. A dense 27B reads ~21 GB per token,
-#   which is exactly why llama.cpp sits at 2 tok/s here; this model reads ~8x
-#   less per token.
+#   Strata is not an offloader. Its tiers are: experts resident in RAM (the arena),
+#   a GPU expert cache for the hot ones, a CPU pool for the cold ones, and the 28.8
+#   GB n-gram (PLE) table read unbuffered from the SSD. On an iGPU every "VRAM"
+#   allocation is GTT, i.e. the SAME RAM as the arena - so the GPU tier adds
+#   compute, not bandwidth. Decode is bandwidth-bound: ~2.7 GB of weights read per
+#   token at ~50 GB/s. A dense 27B reads ~21 GB per token, which is exactly why
+#   llama.cpp sits at 2 tok/s here; this model reads ~8x less per token.
 #
 # Card/arch: rocminfo says gfx1035, which Strata's cmake refuses (it accepts
 # gfx1100/gfx1101/gfx1200/gfx1201 validated, gfx1101/gfx1200 community,
-# gfx1012/gfx1102/gfx1030/gfx1031 unvalidated). gfx1035 is RDNA2 with the same
-# wave32, 64 KiB LDS and v_dot4_i32_i8 ISA as gfx1030, so the engine is built
-# for gfx1030 and HSA_OVERRIDE_GFX_VERSION=10.3.0 makes the runtime report
-# gfx1030 (the same override this box's ROCm torch setups use for the 660M).
+# gfx1012/gfx1102/gfx1030/gfx1031 unvalidated - and still refuses gfx1035 at 0.1.52).
+# gfx1035 is RDNA2 with the same wave32, 64 KiB LDS and v_dot4_i32_i8 ISA as gfx1030,
+# so the engine is built for gfx1030 and HSA_OVERRIDE_GFX_VERSION=10.3.0 makes the
+# runtime report gfx1030 (the same override this box's ROCm torch setups use for the
+# 660M).
 #
-# ⚠️ llama-server and strata CANNOT be resident at once: llama-server holds
-# ~33 GB of GTT for its model, and the IQ2_XS arena alone is 35.5 GiB. This
-# module therefore clears llama-server's wantedBy (see displaceLlamaServer) so
-# the box boots into Strata instead; `systemctl start llama-server` still works
-# for the small models when strata is stopped.
+# ⚠️ llama-server and strata CANNOT be resident at once: llama-server holds ~33 GB of
+# GTT for its model, and the IQ2_XS arena alone is 35.5 GiB. This module therefore
+# clears llama-server's wantedBy (see displaceLlamaServer) so the box boots into
+# Strata instead; `systemctl stop strata && systemctl start llama-server` still works
+# for the small models.  It is a real trade, not a free one: `ai.int.leighhack.org`
+# and `ai.leighhack.org` (origin vhosts on services1) proxy to 10.3.1.32:8081, i.e. to
+# llama-server, and 502 while strata has the box.  ./STRATA.md "Operational notes"
+# has the numbers for swapping the two by hand.
 #
-# Model data is NOT in the store. It is prepared ONCE by hand before this unit
-# will start (the unit has ConditionPathExists on the pack index):
+# Model data is NOT in the store. It is prepared ONCE by hand before this unit will
+# start (the unit has ConditionPathExists on the pack index), and it SURVIVED the
+# parking - the flake never owned it.  On this box it is already there:
+# /home/leigh-admin/Models/Qwen3.8-Flash-Next-GSQ-RCO-GGUF (64 GB) +
+# /home/leigh-admin/Strata/{pack/iq2xs,mtp/rt}, prepared 2026-10-05.  The pack and MTP
+# runtime do NOT have to be re-made for the 0.1.52 engine: `data/expert-profile.bin`,
+# `data/expert-profile-coder.bin` and `data/draft_vocab.bin` are byte-identical at
+# 0.1.43.1 and 0.1.52 (sha256 of all three re-compared on 2026-10-28), and the pinned
+# llama.cpp - the other thing a pack depends on - is `3cf03257` at both tags.  To do
+# it from scratch (or for a different quant):
 #
 #   # from the checkout, and NEVER through `builtins.getFlake "/abs/path"`: a path
-#   # ref copies the whole working tree (6.7 GB of cargo/dioxus target dirs + .git,
-#   # not just the 26 MB of source) into the store on every call — see
+#   # ref copies the whole working tree (7+ GB of cargo/dioxus target dirs + .git, not
+#   # just the 26 MB of source) into the store on every call - see
 #   # docs/nix-dev-workflow.md.
 #   STRATA=$(cd ~/Projects/infrastructure-nix-flake && nix build .#strata --no-link --print-out-paths)
 #   mkdir -p /home/leigh-admin/Models/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/IQ2_XS
@@ -70,29 +83,40 @@
 #     --out /home/leigh-admin/Strata/mtp/rt
 #   cp $STRATA/share/strata/data/draft_vocab.bin /home/leigh-admin/Strata/mtp/rt/
 #
-# Check the card first (before downloading anything):
+# Check the card first (before downloading anything), and again after any change to
+# the engine or the runtime, because it costs seconds and is the only cheap proof the
+# GPU path is alive at all:
 #   $STRATA/bin/strata-device --list-devices   # with HSA_OVERRIDE_GFX_VERSION=10.3.0
 #   $STRATA/bin/strata-device --selftest
 #
-# Access: http://10.3.1.32:8080/v1 (OpenAI chat/completions, /v1/messages for
-# Anthropic-style clients, /v1/models, /health) and, through the existing
-# aibox.int.leighhack.org vhost, http://aibox.int.leighhack.org/llm/v1.
-# Logs: journalctl -u strata -f and /var/lib/strata/strata.log.
-#
-# MEASURED ON THIS BOX (2026-10-05, IQ2_XS, ctx 131072, llama-server stopped).
-# Full numbers, the decode-time breakdown and the open suggestions are in
-# ./STRATA.md - read it before changing expertCache or context.
-#   decode 8.2-11.2 tok/s (llama-server's dense 27B: ~2 tok/s here)
-#   prefill ~45 tok/s at ANY chunk size: a 20k-token prompt costs ~7 min, which
-#         is the real limit for agent use, and it does not improve with more GTT
-#   the expert cache is a GPU-COMPUTE tier, not a memory tier: GTT is the same
-#         DRAM the CPU pool already reads, so 2048 -> 8192 slots (hit 63% -> 91%)
-#         bought only +11-17% decode and ate the RAM headroom. expertCache below
-#         is the middle point that keeps ~11 GiB free.
-let
+# Logs: journalctl -u strata -f and /var/lib/strata/strata.log.  The engine binds
+# 10.3.1.32 (its --host), NOT loopback, so a proxy_pass to 127.0.0.1:8080 is a silent
+# 502 - and that address is reachable on the LAN because this box's firewall is off
+# (machines/aibox/networking.nix), which is half the reason it has an api_key.
+{
+  config,
+  lib,
+  pkgs,
+  INFRA,
+  # The flake's `strata` input (upstream main), which arrives through specialArgs
+  # (flakeInputs) exactly as it does for machines/services2/strata.nix: its outPath
+  # is the source both engines build from.
+  strata,
+  ...
+}: let
   cfg = config.services.strata;
 
-  strata = pkgs.callPackage ./strata-package.nix {};
+  # The engine, built from the flake's `strata` input (upstream main) - the same
+  # source services2's CUDA engine builds from, so the two cannot drift by nine
+  # releases again.
+  strataPkg = pkgs.callPackage ./strata-package.nix {
+    src = strata.outPath;
+  };
+
+  # The ROCm 10.0.0 (TheRock) userspace runtime.  Only reaches the engine when
+  # cfg.rocm10Runtime is on; ./rocm10-runtime.nix explains the fetch, the size, and
+  # why nixpkgs cannot express this (it has exactly one ROCm).
+  rocm10 = pkgs.callPackage ./rocm10-runtime.nix {};
 
   # Model layout. The GGUFs stay under ~/Models with everything else there;
   # only the hand-prepared pack and MTP runtime live under modelDir.
@@ -102,7 +126,7 @@ let
   nativeGguf = "${ggufDir}/IQ2_XS/Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf";
   pleGguf = "${ggufDir}/IQ2_XS/Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00002-of-00002.gguf";
   mtpDir = "${modelDir}/mtp/rt";
-  expertProfile = "${strata}/share/strata/data/expert-profile.bin";
+  expertProfile = "${strataPkg}/share/strata/data/expert-profile.bin";
 
   # aibox's budget (59.6 GiB RAM, no dedicated VRAM). Measured with
   # cat /sys/class/drm/card0/device/mem_info_gtt_used and `free`:
@@ -120,16 +144,27 @@ let
   #   PLE table                0         (28.8 GB read from NVMe, --ple-io direct)
   # Measured total: 8.66 GiB GTT + 46 GiB RAM used at expertCache=2048; 17.9 GiB
   # GTT + 54 GiB at 8192 (only 4.7 GiB left - too tight for a box that also runs
-  # frigate/immich/whisper). 4096 lands at ~50 GiB used, ~10 GiB headroom.
+  # frigate/immich/whisper). 4096 lands at ~50 GiB used, ~10 GiB headroom - which is the
+  # 131072-context figure; measured with this unit's 262144 context loaded on 2026-10-28
+  # it is 54 GiB used, 6.9 GiB available, 15.1 GiB of GTT. Size what else shares the box
+  # off the 6.9, not the 10.
   # Raise --max-context only with the RAM for it: 262144 costs ~3.6 GiB of KV,
   # 524288 ~7.2 GiB + YaRN 2.
+  #
+  # That headroom is now shared with the build farm (this box builds for the whole
+  # network), which is the honest cost of un-parking: a nix build and the arena want
+  # the same DDR5.  expertCache is the dial - 2048 frees ~2.9 GiB for ~10 % decode
+  # (./STRATA.md's table) - and `--conversation-cache-mib 0` below is the other one,
+  # because leaving it unset lets a future release reserve from what is left.
   context = 262144;
   expertCache = 4096;
 
   # Explicit chunk, not "auto": auto picks the largest chunk the expert cache can
   # LEND (4096 at 2048 slots). Measured prefill was 44.6 tok/s at 4096 and 46.0 at
   # 8192 - the chunk is not what limits prefill here, but asking for 8192 costs
-  # nothing and is strictly better.
+  # nothing and is strictly better.  Keep it explicit: a bare `auto` may reach 16384
+  # on gfx12 (0.1.44), and this engine reports gfx1030, so the only honest spelling
+  # of "what chunk do I run" is the number.
   prefillChunk = "8192";
 
   engineArgs = [
@@ -168,6 +203,25 @@ let
     "int8"
     "--kv-resident"
     "32768"
+    # Off, stated. 0.1.48.1 made the host-RAM conversation cache default to -1, which
+    # means "--serve sizes it from the RAM still free once the model is loaded": 40 % of
+    # (available - 2560 MiB), in 256 MiB steps, at most 8192, off below 1024
+    # (include/strata/core/conversation_memory.hpp, auto_conversation_cache_mib, upstream
+    # #3493; only `--serve` takes it).  Measured on the running unit rather than
+    # estimated: `free -m` says 6964 available with the arena and cache loaded, so the
+    # rule computes (6964 - 2560) * 2/5 = 1761, stepped down to 256, and answers
+    # **1536 MiB** - RAM this box's other job (building for the network) wants.
+    # `available_host_bytes()` is MemAvailable/cgroup-limited and never counts swap, and
+    # the same floor refuses *parking* as well as sizing, so raising this to a number is
+    # not free either - the mechanism and that argument are worked out for the CUDA box
+    # in machines/services2/STRATA.md, "The conversation cache cannot be bought with the
+    # swap file", and they read the same here.  0.1.43.1, the engine this unit last ran,
+    # had no parked conversations at all, so 0 states this file's existing behaviour
+    # rather than changing it.  The cache is a real win for alternating agent
+    # conversations (the R9700 box runs 16 GiB of one, on 94 GiB of RAM) - if it is ever
+    # wanted here it goes in with `--resident-budget-gib` and the floor, not on its own.
+    "--conversation-cache-mib"
+    "0"
     # Plan v0.3 P6 delivers the "PCIe" share (the cache misses handed to the GPU
     # instead of the CPU pool) three ways: `dma` stages them with the copy engine,
     # `direct` lets the grouped kernel read the pinned expert arena through its
@@ -187,22 +241,54 @@ let
     "direct"
   ];
 
+  # The key clients must present on /v1/* (`Authorization: Bearer <key>`, or
+  # `x-api-key`; serve/server.py _authorized).  Upstream's startup warning for not
+  # having one is "WARNING: no API key - anyone on your network can use this model",
+  # and this box used to earn it: the engine binds 10.3.1.32 and this box's firewall
+  # is off, so "LAN-only" was a habit rather than a rule.  Setting a key also switches
+  # off the Host check and the browser-Origin guard, both of which exist to protect a
+  # keyless server from strangers - so allowed_hosts below stops being the boundary
+  # and stays documentation.
+  #
+  # It is the SAME secret services2's engine uses, because `gw` injects one key:
+  # `strataBearer = true` in a front-door row renders
+  # `proxy_set_header Authorization "Bearer …strata_api_key…"`, so a second key would
+  # be a 401 on the door's path.  Read at build time through config.sopsSecretText
+  # (common/sops.nix), which means - like nginx_sso_auth and status_dashboard_lan_token
+  # and services2's own copy - it is inside a world-readable store path on every box
+  # that builds or substitutes this system; that is what `infra.buildTimeSecrets` gates
+  # and why each entry has to say why it cannot be a runtime secret.  Here the answer
+  # is "it is interpolated into the JSON run config the unit execs".
+  apiKey = builtins.readFile (config.sopsSecretText "strata_api_key");
+
   # The run config serve/server.py reads: the engine binary, its args, the
-  # tokenizer. The Host check passes IP addresses on trust, so 10.3.1.32 needs
-  # no entry; the DNS name reached through nginx does.
+  # tokenizer.
   configFile = pkgs.writeText "strata-iq2xs.json" (
     builtins.toJSON {
-      exe = "${strata}/bin/strata";
+      exe = "${strataPkg}/bin/strata";
       args = engineArgs;
       cwd = "/var/lib/strata";
       tokenizer = "${packDir}/tokenizer";
       model_name = "qwen3.8-flash-next-iq2xs";
       log = "/var/lib/strata/strata.log";
+      # The names this server answers to.  nginx forwards the incoming Host header
+      # upstream (NixOS' default `proxy_set_header Host $host`), and host_allowed() in
+      # serve/server.py 403s anything unlisted - though with an api_key set that check
+      # is skipped, so keep this list honest rather than load-bearing.  The front-door
+      # row for strata2.int.leighhack.org is what has to move with it
+      # (common/front-door.nix + common/int-dns.nix; the guard in
+      # machines/gw/int-dns.nix refuses a door that serves a name DNS does not answer).
       allowed_hosts = [
-        "aibox.int.leighhack.org"
         "10.3.1.32"
+        "strata2.int.leighhack.org"
       ];
+      api_key = apiKey;
       backend = "hip";
+      # ROCm 10 instead of nixpkgs' ROCm 7.2, or not.  serve/server.py's child_env()
+      # PREPENDS these to the engine's LD_LIBRARY_PATH, which is how a binary built
+      # against 7.2.4 ends up running on 10.0.0 - and why the directories must exist,
+      # which is why they are store paths (./rocm10-runtime.nix).
+      lib_dirs = lib.optionals cfg.rocm10Runtime ["${rocm10}/lib"];
       env = {
         # gfx1035 -> gfx1030, so the engine's device check (src/core/device.cu,
         # which compares gcnArchName with the compiled STRATA_HIP_ARCHS) accepts
@@ -227,24 +313,23 @@ let
         # allocations avoids it (measured as the same median upstream).
         HSA_USERPTR_FOR_PAGED_MEM = "0";
       };
+      # Not set, and deliberately so - both are levers with a measurement attached:
+      #   * STRATA_ROCBLAS_TUNING (new with 0.1.4x, gfx103x only, and for us):
+      #     upstream's own header says rocBLAS's pick for some prompt GEMM shapes on
+      #     gfx1030 is up to 6x slower than the best kernel the library holds for the
+      #     same shape, and ships tools/hip/gfx1030-rocblas-5.6.0.8d1ae90e.txt plus
+      #     tools/hip/tune_rocblas.cpp.  It is keyed to the exact rocBLAS build, and
+      #     nixpkgs' reports 5.2.70203, so the shipped table is REFUSED here and
+      #     rocBLAS's own kernels run.  Pointing it at $strataPkg/share/strata/tools/hip
+      #     is harmless (a mismatch is refused with one log line) and useless until a
+      #     table is measured for this rocBLAS with tune_rocblas.cpp - which is the
+      #     cheapest real prefill lever this box has, against a 45 tok/s ceiling.
+      #   * STRATA_KERNEL_AUDIT / STRATA_VERIFY_TRACE: instrumentation for #879 and
+      #     #267.  The audit adds a node per layer to the captured verify graph
+      #     (~10/layer, measured cost on the R9700 box), so it is only ever set while
+      #     capturing.  STRATA_DEFAULTS=... is likewise a debugging escape hatch.
     }
   );
-
-  strataLocation = {
-    # The engine binds 10.3.1.32 (its --host), NOT loopback: proxy_pass to
-    # 127.0.0.1:8080 gives a silent 502 from nginx.
-    proxyPass = "http://10.3.1.32:8080";
-    proxyWebsockets = true;
-    extraConfig = ''
-      # First token can take minutes (the engine loads ~40 GB and fills its
-      # tiers); SSE must stream un-buffered. The /llm/ prefix is stripped so
-      # clients use .../llm/v1/chat/completions.
-      rewrite ^/llm/?(.*)$ /$1 break;
-      proxy_read_timeout 3600s;
-      proxy_send_timeout 3600s;
-      proxy_buffering off;
-    '';
-  };
 in {
   options = {
     services.strata = {
@@ -256,7 +341,22 @@ in {
         description = ''
           Clear llama-server's wantedBy so the two do not fight for RAM at boot.
           Set false to keep llama-server starting (then strata must be started by
-          hand after stopping it).
+          hand after stopping it).  Note what that costs on the network: the
+          `ai.int`/`ai.leighhack.org` vhosts proxy to llama-server's :8081.
+        '';
+      };
+
+      rocm10Runtime = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = ''
+          Load the ROCm 10.0.0 (TheRock) userspace runtime from ./rocm10-runtime.nix
+          instead of nixpkgs' ROCm 7.2, by putting it in the run config's lib_dirs.
+          The reason is upstream #879 (a non-finite / poisoned verify window), which
+          the network's other Strata box reproduces on ROCm 7.2.x and not on 10.0.0
+          with the same binary and source.  Set false to go back to the nixpkgs ROCm
+          with no rebuild of the engine - one flag, one restart, and
+          ./STRATA.md records what each runtime did on this card.
         '';
       };
     };
@@ -278,7 +378,7 @@ in {
       unitConfig.ConditionPathExists = "${packDir}/index.txt";
 
       serviceConfig = {
-        ExecStart = "${strata}/bin/strata-server --engine strata --config ${configFile} --host 10.3.1.32 --port 8080";
+        ExecStart = "${strataPkg}/bin/strata-server --engine strata --config ${configFile} --host 10.3.1.32 --port 8080";
         # The engine log (config "log") is written here; StateDirectory creates it.
         StateDirectory = "strata";
         RestartSec = 10;
@@ -287,6 +387,12 @@ in {
         TimeoutStopSec = 120;
         # The resident expert arena is page-locked where it can be.
         LimitMEMLOCK = "infinity";
+        # No core dumps, and this is not hygiene: the engine's hang watchdog
+        # (#29/#267) SIGABRTs itself, and on the R9700 box each dump was 32 GB of
+        # weights and KV - here it would be more, on the filesystem that holds the
+        # models - for a binary with no symbols to put in it.  The journal names the
+        # stall (layer + token) and that is all a dump ever told you.
+        LimitCORE = "0";
       };
     };
 
@@ -297,6 +403,11 @@ in {
       else ["multi-user.target"]
     );
 
-    services.nginx.virtualHosts."aibox.int.leighhack.org".locations."/llm/" = strataLocation;
+    # No `services.nginx` here, on purpose, and it is a rule rather than an accident:
+    # `gw` terminates TLS for every name the network has one of and serves every row
+    # of `common/front-door.nix`, and `common/int-dns.nix` + `machines/gw/int-dns.nix`
+    # are what keep the two in step.  This box used to expose the engine as
+    # `aibox.int.leighhack.org/llm/`; since the front-door move aibox has no nginx,
+    # and `strata2.int.leighhack.org` is a row there pointing at 10.3.1.32:8080.
   };
 }

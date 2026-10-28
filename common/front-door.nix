@@ -157,7 +157,8 @@ in {
     # Direct rows: the door proxies to the box that runs the app.
     # ---------------------------------------------------------------------------
 
-    # aibox (6).
+    # aibox (7 direct rows, counting strata2; the `ai.*` pair below are origin rows
+    # whose vhost is on services1 and whose upstream is llama-server on *this* box).
     "alexandria.int.leighhack.org" = {
       upstream = "http://${hosts.aibox}:4200";
       websockets = true;
@@ -218,6 +219,30 @@ in {
         the row that used to be built with the *internal* vhost helper and `acl = ""`
         (finding: `immich.leighhack.org` is a public name wearing an internal vhost). The
         row says what it is: public, big uploads, WebSockets.'';
+    };
+    # The second Strata engine, on aibox's Radeon iGPU (machines/aibox/strata.nix):
+    # the full 125B IQ2_XS, where `strata` below is services2's Coder IQ1_M on the
+    # RTX 3060.  Two names because there are two engines with different models; the
+    # engine is reached on :8080 with an address, not a name, like every row here
+    # (dnsmasq runs on this box and nginx must not ask it to start itself).
+    #
+    # `strataBearer = true` because the engine has an `api_key` and the key is one
+    # secret (`strata_api_key`, shared by both engines by necessity — the door
+    # injects one header): the name is LAN-only, so a client on the LAN should not
+    # have to hold the inference key to use it, and taking the injected Bearer away
+    # would 401 every request rather than open anything.  The engine's own
+    # `allowed_hosts` (machines/aibox/strata.nix) lists this name, because nginx
+    # forwards the client's Host header upstream.
+    "strata2.int.leighhack.org" = {
+      upstream = "http://${hosts.aibox}:8080";
+      bodySize = "1024M";
+      timeouts = "3600s";
+      proxyBuffering = false;
+      strataBearer = true;
+      note = ''
+        first token can take minutes (the engine reads ~40 GB and fills its tiers), so
+        the timeouts are the row and SSE must not be buffered; 1024M because a chat
+        request carrying a base64 picture or a long transcript is not a 1 MiB body.'';
     };
 
     # The 10.3.1.30 VM (5).

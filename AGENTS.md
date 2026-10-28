@@ -117,9 +117,11 @@ X first", X has already cost someone a day.
     import list only names the file. Then
     `grep -rl '^# PARKED' machines/` *is* the list of what is not running — which it was
     not: the reason lived in a comment beside the import, invisible to grep, and a
-    parked module is never evaluated, so its rot is silent. The six in tree (affine,
-    samba, gitlab, authentik on services1; nvidia, strata on aibox) each carry their own
-    re-verify command, because "just uncomment it" is not one.
+    parked module is never evaluated, so its rot is silent. The five in tree (affine,
+    samba, gitlab, authentik on services1; nvidia on aibox) each carry their own
+    re-verify command, because "just uncomment it" is not one. (`strata` on aibox came
+    out of that list on 2026-10-28; un-parking it is a nine-release engine bump and
+    the checklist for one is now in `machines/aibox/STRATA.md`.)
 24. **A vhost move is a guard move.** A name is a row in `common/int-dns.nix` (what it
     answers with) *and* a row in `common/front-door.nix` (what the door serves), and two
     evaluation-time guards refuse a half-move: `machines/gw/int-dns.nix` (gw's vhosts must

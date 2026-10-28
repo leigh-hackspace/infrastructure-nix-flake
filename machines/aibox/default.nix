@@ -26,20 +26,30 @@
     # ./nvidia.nix
     ./sso.nix
     ./status-dashboard.nix
-    # ./strata.nix
+    ./strata.nix
     ./whisper.nix
 
     flakeInputs.sops-nix.nixosModules.sops
   ];
 
-  # aibox is the network's build machine (common/build-farm.nix): 6c/12t, 59 GiB
-  # of RAM and no engine holding it since strata was parked.  Its apps are leaf
-  # services that services1 proxies, so a build storm here costs frigate/immich/
-  # whisper rather than the box that runs the rest of the network.
+  # aibox is the network's build machine (common/build-farm.nix): 6c/12t and 59 GiB
+  # of RAM.  It is also, since 2026-10-28, the Strata engine again (./strata.nix),
+  # whose expert arena is ~46 GiB of that - which is the trade that made it the
+  # builder in the first place, taken the other way on purpose.  What it means in
+  # practice: with the engine loaded a build runs in the ~10 GiB left over, so a
+  # big-compile pass (a nixpkgs bump, a rust release build) wants `systemctl stop
+  # strata` first, and `just check-build` here is a build against a loaded arena.
+  # ./STRATA.md has the numbers and `services.strata.expertCache`-sized dials; the
+  # apps below (frigate-monitor, immich, whisper, alexandria) are leaf services that
+  # the front door proxies directly, so a build storm here costs those rather than the
+  # box that runs the rest of the network.
   infra.buildFarm.serveBuilds = true;
 
-  # With strata gone, llama-server (./ai.nix) gets its default wantedBy back and
-  # starts at boot again.  It holds its model in GTT once a model is loaded, so
-  # stop it before a long build if memory is tight — it is not displaced by the
-  # flake any more.
+  services.strata.enable = true;
+
+  # llama-server (./ai.nix) is displaced by strata at boot - the two cannot be
+  # resident at once (llama-server holds ~33 GB of GTT for its model, the IQ2_XS arena
+  # is 35.5 GiB).  `systemctl stop strata && systemctl start llama-server` still works
+  # for the small models and for the `ai.*` vhosts, which point at its :8081; see
+  # ./strata.nix and ./STRATA.md "Operational notes".
 }
