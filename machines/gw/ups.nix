@@ -180,7 +180,7 @@
     notice=""
     priority=info
     case "$event" in
-      # The grace timer expired: still on battery after ${graceSeconds}s.
+      # The grace timer expired: still on battery after ${toString graceSeconds}s.
       ${upsName}-outage)
         reason=outage-grace-expired
         start=1
