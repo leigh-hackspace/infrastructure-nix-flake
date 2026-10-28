@@ -281,6 +281,13 @@ in the order that minimises the time the network has no IdP:
    one thing nobody does without being asked. The alternative is a router-level
    redirect of 1812/udp from 10.3.1.36 to 10.3.1.20 and leaving the switches
    alone.
+
+   **What was done on 2026-10-28:** neither. A third option, cheaper than both and the
+   reason this section is here — move `10.3.1.36` itself onto services1 as a second
+   address, so the NVRAM string and the DNS answer are both still true of a box that is in
+   the flake. No router rule, no switch touched, no `dns-records` edit. The consequence is
+   documented in "The cutover, and what it taught" above (and it is why the outposts' ports
+   are published the way they are).
 4. **`authentik.int.leighhack.org`.** aibox's sssd connects to
    `ldaps://authentik.int.leighhack.org` (machines/aibox/sso.nix) and that name
    is answered at the appliance, 10.3.1.36, on purpose: it is `exempt` in
@@ -288,24 +295,53 @@ in the order that minimises the time the network has no IdP:
    front door" is written down since `dns-sync` went; docs/router-and-dns.md). It has
    to move to 10.3.1.20 with the LDAP outpost, or aibox's `ldap_uri` changes. `id.int`
    and `ldap.int` already point at services1, so HTTP needs no DNS work at all.
+
+   **What was done:** nothing moved, which is the point of step 3 — the name still answers
+   `.36`, and `.36` is now this box. `exempt` stays, with its prose corrected to say that
+   the exemption is about LDAPS/RADIUS ports rather than about which box is the IdP. (The
+   plan's assumption that aibox's `ldap_uri` would need editing was wrong in an
+   uncomfortable direction: editing it would have broken the netbooted pi-room clients too,
+   which read the same name from a different module and were not in the checklist at all.)
 5. **Flip `shadow = false`** and deploy. That moves the vhost from
    `id-shadow.int.leighhack.org` onto `id.int.leighhack.org` +
    `id.leighhack.org` + `authentik.int.leighhack.org` and turns the worker and
    the dump timer on. **Delete the `proxyPass = "http://10.3.1.36:9000"` vhost
    from `machines/services1/http.nix` in the same change** — two vhosts for the
    same name is an nginx eval error, which is the safe way to fail.
+
+   **What was done:** `staged = false`, and step 5's second half is obsolete —
+   `machines/services1/http.nix` has had no `id.int` vhost since the front door landed on
+   2026-10-24; the proxy lives in `common/front-door.nix`, so the change to make there is
+   `upstream = "http://10.3.1.36:9000"` → `"origin"`, and it goes in the same commit as the
+   flag because the origin/DNS guards on both boxes refuse anything else. `id-shadow.int`
+   was deleted from `common/int-dns.nix` rather than revived: a staged copy needs no name
+   (loopback + `Host:` reaches it) and an unserved name in that table is a drift magnet.
 6. **Take a final dump after the appliance is stopped** and restore it, so the
    copy includes everything that happened while the shadow was being built.
    Steps 5 and 6 in either order; 6 after 5 means one restart of the server.
+
+   **What was done:** the final dump was taken *before* stopping the serving side (so
+   nothing could be lost in the gap), the serving side was stopped with postgres and redis
+   deliberately left up, the final dump restored, then services1 and then gw switched.
+   Measured IdP-down: about four minutes, 19:08:19Z → 200 at 19:12:21Z on the gatus
+   endpoint.
 7. Delete `id-shadow` from `common/int-dns.nix` once the name is no longer wanted, and
    deploy gw. (There is no `prune` any more: the record is the table, so removing a name
-   is removing a line and switching the router.)
+   is removing a line and switching the router.) — done 2026-10-28, in the same gw deploy.
 
-Rollback before the appliance is stopped: set `shadow = true` again and switch.
-Rollback after: point the vhost back at 10.3.1.36, start the appliance, and
-`pg_restore` the final dump onto the appliance's postgres 16 if anything was
-changed in the shadow's database in the meantime — which is why the pins are
-pins.
+**Rollback, as it now stands.** There is no instant one, and that is worth being blunt
+about, because the older version of this paragraph promised `docker compose up -d`. The VM
+is stopped and `10.3.1.36` belongs to services1. To go back: `git revert` the cutover
+commit and switch **services1** first (that releases `.36`), then start `vm:108` on
+monster1 with `ha-manager set vm:108 --state started`, then `docker compose up -d` in
+`/srv/authentik` (its containers were `stop`ped, not removed; the two `ak-outpost-*`
+containers need an explicit `docker start` — the compose file never names them, they were
+created by the worker over the docker socket), then revert the `id.int` row and switch
+**gw**. If anything was written to this box's database in the meantime — and after a day
+it will have been: sessions, events, last-login — `pg_restore` the relevant dump onto the
+appliance's postgres 16 first, which is the reason the image pins are pins. Do **not**
+start the VM while services1 still holds the address: that is two hosts answering `.36`,
+and it fails silently for whoever is logging in rather than loudly.
 
 ## What was verified (2026-10-15)
 
