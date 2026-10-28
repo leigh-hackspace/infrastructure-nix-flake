@@ -1395,7 +1395,29 @@ that **need an owner or a decision** rather than another measurement.
   md5-then-replace-then-restart, and `just check`/`just check-build` must stay
   gw-safe via `_build-host-guard` (the justfile recipe, `hostname`-based) —
   nothing about these devices is a nix build, so the crate stays off the deploy
-  sets. **Blocks:** nothing.- **`cam5`'s pulled `S99sdconf.sh` is not cam5's** (device md5 `ae29e67d…`,
+  sets. **Blocks:** nothing.
+- **OpenIPC's current `ssc337` builds have dropped the C110's WiFi driver, and `cam8` is off
+  the air because of it** (found 2026-10-28; `docs/camera-sd-card-firmware-flash.md` §4 now
+  gates on it, §9 records the updater behaviour). `cam8` = the spare C110 **v1** at
+  10.3.2.112 (`ssc337 (infinity6b0 family), sc3338`, `wlandev=ssw101b-ssc333-tapo-c110`,
+  env `soc=ssc337`), which ran OpenIPC `master+0f21c01, 2024-08-30` and was **not** in any
+  table — no row in `common/dns-records.nix`, so its address is a plain DHCP lease. A
+  rootfs-only flash of `nightly-20261028-9a84dce` `ssc337_lite` left it addressing nobody:
+  the new rootfs has `/etc/wireless/usb` naming `ssw101b` and **no `ssw101b_wifi_usb.ko`**
+  (the 2024 rootfs did; `ssc337_ultimate` from the same night is the same), so it boots
+  without WiFi. Confirmed from the LAN — no ICMP, `ip neigh` `FAILED`, no lease renewal
+  since 21:43 — and the same is true of every current nightly, so **rolling back, not
+  forward, is the repair**. A verified 5/5 flash dump and the `/etc`+`uboot-env` archive
+  exist in `~/camera-backups/cam8-flash-20261028T213947Z` and `cam8-etc-20261028T214018Z`
+  (mode 700, never in the repo), and the SD card holds that dump's kernel+rootfs as
+  `uImage.ssc337`/`rootfs.squashfs.ssc337` with the 2026 pair in `2026-9a84dce/`.
+  **Blocks:** hands and a **3.3 V UART at 115200 8N1** — `run setsdcard; fatls mmc 0;
+  run urnor; reset` (and `run uknor` if the kernel went with it). **Needs:** that console
+  session, which also closes §11-1 (is the card socket populated) and §11-2 (does Enter
+  interrupt `bootdelay=0`); then decide whether `cam8` joins the fleet properly (a
+  `dns-records.nix` row by MAC) or stays a bench spare. Do not "update" it again until a
+  build is measured to carry `ssw101b`.
+- **`cam5`'s pulled `S99sdconf.sh` is not cam5's** (device md5 `ae29e67d…`,
   `cameras/config/cam5/S99sdconf.sh` md5 `1b4ac291…`, which is cam9's copy).  Every
   other pulled file's md5 matched its device byte-for-byte on 2026-10-25 (the
   report's `etc_md5s` line vs `cameras/config/`), and cam7's crontab disagrees

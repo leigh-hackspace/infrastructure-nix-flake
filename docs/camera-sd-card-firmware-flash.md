@@ -142,6 +142,18 @@ argue.
 
 Before flashing anything, also:
 
+- **Check that the build still ships this board's WiFi driver.** A C110's WiFi is a USB
+  module loaded *from the rootfs* — `/lib/modules/4.9.84/extra/hal_apollo/ssw101b_wifi_usb.ko`,
+  selected by the env's `wlandev=ssw101b-ssc333-tapo-c110` — so a rootfs that no longer
+  carries it boots fine and joins nothing: no DHCP, no ARP, no ssh, and from the LAN that
+  is indistinguishable from a dead camera. Measured 2026-10-28 on `cam8` (10.3.2.112,
+  C110 **v1**, `ssc337`): `nightly-20261028-9a84dce` `ssc337_lite` **and**
+  `ssc337_ultimate` both ship `/etc/wireless/usb` naming `ssw101b` and **no `ssw101b`
+  module anywhere**, while the 2024 rootfs in that camera's own dump does. Flashing the
+  generic build removed the only thing putting it on the air, and the rollback then needs
+  a console. One command closes it first:
+  `unsquashfs -l rootfs.squashfs.<soc> | grep -c ssw101b` (and `atbm6032i` for the
+  ATBM603x C110 v2 revs) — **0 is a stop, not a detail.**
 - **`just cam-check cam7` and fix its web admin.** On 2026-10-25 cam7 answers `200`
   unauthenticated on `:80`/`:85` while cam5/cam9 answer `401`. An open admin plane on the
   device about to be flashed is an open upgrade button in a room you are not watching.
@@ -297,6 +309,16 @@ RAM) and applied without any console:
 scp -i ~/.ssh/agent-hop-key uImage.ssc333 rootfs.squashfs.ssc333 root@10.3.2.12:/tmp/
 ssh -i ~/.ssh/agent-hop-key root@10.3.2.12 'sysupgrade -h'      # THIS device's flags only
 ```
+
+Two behaviours found on 2026-10-28 that this section did not know about, both harmless once
+recognised: it **re-fetches itself** from the internet first (`A new version is available,
+ trying to activate updated script` — v1.0.41 → v1.0.79 on a camera whose curl cannot fetch
+the *manifest*, so gate 10 measures a different path than this one), and its "Stop services"
+stage curls majestic's `http://127.0.0.1:80/api/v1/upgrade/prepare`, which a 2024 `majestic`
+**accepts and never answers**. Normally `-m 60` bounds that; if the clock steps backwards
+during the update (it did — `ntpd` set 2026, something then set 2024) the timeout never
+fires and the updater hangs there forever with the camera still perfectly alive. The fix is
+to kill that one child and let the parent continue.
 
 It is not the lead option for three specific reasons. (a) The installed versions are
 **1.0.41 and 1.0.21**, and upstream's current 1.0.77 — whose behaviour this document's
