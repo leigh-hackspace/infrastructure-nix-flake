@@ -1422,3 +1422,47 @@ that **need an owner or a decision** rather than another measurement.
   and archives are the only rollback anyone has. **Blocks:** nothing until someone flashes.
   **Needs:** re-run `cam-flashdump` + `cam-backup` on the day of any flash, since the dumps
   in `$HOME/camera-backups` are the undo and they are a snapshot of *today's* config.
+- **cam1 serves its video with no credentials at all** (measured 2026-10-25, from services1,
+  unauthenticated and read-only): `DESCRIBE rtsp://10.3.2.6:554/0/av0` and `/1/1` answer **`200`**,
+  where cam5/cam7/cam9 answer `401, realm "WallyWorld"`. Its banners fingerprint it while we were
+  there — RTSP `Server: TAS-Tech Streaming Server V100R001`, HTTP `Server: Ginatex-HTTPServer`
+  (302 → `/index.asp`, `/login.cgi` → `401`), telnet `:23` **open** — that banner pair is the
+  Xiongmai-family application stack (an inference from two banners: nobody has seen cam1's SoC),
+  so it is not OpenIPC and not Ingenic, and none of this fleet's verbs apply to it either way.
+  **This is fault 13 in `cameras/README.md` and it outranks cam7's open admin**, because cam7's
+  open door is a web UI and this one is the picture, pulled anonymously by anything on a VLAN
+  whose gateway is the router itself. **Blocks:** nothing; the exposure is passive and live, and
+  frigate's `ffmpeg:` line for `rack_corridor` is fed by it today (the device's own admin plane
+  has never been inventoried, so nobody knows whether this is a setting or the factory default).
+  **Needs:** decide whether `rack_corridor` is *meant* to be open; if not, put credentials on the
+  device (which means finding its login, likely the telnet one) or make 10.3.2.6 reachable only
+  from services1 at the router — the `docs/router-and-dns.md` VLAN 226 rules are the place that
+  decision lands, not frigate's YAML. Read `cameras/README.md` fault 13 first: "fix it by editing
+  frigate" is explicitly not the fix.
+- **thingino was looked at, and it is not a route off OpenIPC for this fleet** (measured
+  2026-10-25 — **`./camera-thingino-evaluation-2026-10-25.md`**, one command per claim). Short
+  form: thingino is firmware for **Ingenic** SoCs; 252 device configs and 176 release images
+  contain no SigmaStar board, and our cameras are `ssc337` ×2 and `ssc333` ×1 (cam1 is
+  Xiongmai-family, see the item above). Its August-2026 SigmaStar *seam* is real but its
+  platform PR #1424 was closed unmerged on 2026-08-16 — "nothing builds this board yet" — and
+  the one SigmaStar model its Kconfig knows (`ssc30kq`, `infinity6e`) is not our chip. The
+  update these cameras can actually take is the OpenIPC one already staged and pre-flighted
+  (`./camera-sd-card-firmware-flash.md`). **Blocks:** nothing; it closes a question so it does
+  not get re-asked from a forum post. **Needs:** re-open only against evidence, with the four
+  commands in that doc's §8 — `Config.soc.in` naming `ssc333`/`ssc337`, *and* a `configs/**`
+  defconfig for a board with that chip, *and* a release asset for it. Two of three is not
+  support: thingino's `docs/brands/*.md` has catalogued `ssc337` machines since 2024 and issue
+  #370 is the maintainers saying they will not build one. The one live purchase note: an
+  Ingenic-board camera (Tapo C110 **v3** = T23N) is a thingino device, and that is a reason to
+  read the label before buying, not a reason to touch cam5/7/9.
+- **A second copy of the camera feed table was wrong in a justfile comment** (found
+  2026-10-25 while writing the thingino note): `cam-probe`'s `CAM_FEED` hint said
+  `cam5 -> main_space, cam7 -> pi_room, cam9 -> woodwork`, where `cameras/README.md`'s measured
+  table says cam5 → `pi_room`, cam7 → `cnc`, cam9 → `social_space` and puts
+  `main_space`/`woodwork`/`workshop` on **other devices**, VLAN 227. The comment is now a pointer
+  to that table rather than a duplicate of it. **The general form is the finding:** three names
+  for one feed (DNS name → go2rtc stream key → frigate camera) with no single table is fault 8,
+  and the copy that drifts is always the one written from memory. **Blocks:** nothing — the
+  recipe takes `CAM_FEED` from the caller and never trusted its own comment. **Needs:** the fault-8
+  table, in one place both `just cam-probe` and the gatus rows can read; until then, treat any
+  feed name quoted in prose as suspect and re-read it off `/srv/frigate/config/config.yaml`.

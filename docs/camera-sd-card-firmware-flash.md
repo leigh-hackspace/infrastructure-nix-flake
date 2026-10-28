@@ -6,6 +6,17 @@ of them. Every number below names the command that produced it; anything that ha
 measured is in §11 as an unknown with the test that closes it, and **nothing in §1–§9 should
 be run on a camera before §11's first two items are closed on the bench.**
 
+**Settled first, so nobody spends a day on it: the firmware to flash is OpenIPC, not thingino.**
+thingino builds for **Ingenic** SoCs and this fleet is SigmaStar (`ssc337` ×2, `ssc333` ×1) — its
+252 device configs and 176 release images contain no SigmaStar board, and its one SigmaStar
+Kconfig model (`ssc30kq`) is a different chip on a different family. Receipts, the four commands
+that re-answer it, the purchase case where thingino *is* the right answer (C110 **v3** = Ingenic
+T23N), and what a firmware swap would cost the frigate pipe:
+**[`./camera-thingino-evaluation-2026-10-25.md`](./camera-thingino-evaluation-2026-10-25.md)**.
+Everything below assumes an OpenIPC image (`uImage.<soc>` + `rootfs.squashfs.<soc>`), because
+thingino's images are a single assembled `.bin` with its own partition table — a different write
+entirely, not a different filename.
+
 **The question was "can we rig these to flash a whole image from SD on next boot, maybe by
 modifying U-Boot?" — and the answer is: no modification is needed, and one is not
 advisable.** All three cameras' U-Boot environments *already* contain the SD flashing

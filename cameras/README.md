@@ -59,7 +59,7 @@ identity, not by guesswork (verified below).  VLAN 226's `dhcp-mode` is `gateway
 | `cam5` | 10.3.2.10 | 226 | `3c:52:a1:48:fa:b2` ✓ | 2.4.08.22 / build 2024.02.1 / `master+9371591, 2024-08-21` | `INFINITY6B0 SSC009A-S01A QFN88` | `ssc337 (infinity6b0 family), sc3338, 8 MB nor flash, 2.4.08.22-lite, cam5, …` | `pi_room` | `rtsp://cam5.int.leighhack.org:554/stream=0` |
 | `cam7` | 10.3.2.12 | 226 | `3c:52:a1:49:24:0a` ✓ | **2.3.11.22** / build 2023.02.7 (no sysinfo at all) | `INFINITY6B0 SSC009A-S01A QFN88` | `ssc333 (infinity6b0 family), sc3338, …, 2.3.11.22-lite, cam7, …` | `cnc` | `rtsp://cam7.int.leighhack.org:554/stream=0` |
 | `cam9` | 10.3.2.17 | 226 | `3c:52:a1:49:1b:f7` ✓ | 2.4.08.22 / build 2024.02.1 / `master+9371591, 2024-08-21` | (sysinfo present, **no board line**) | `ssc337 (infinity6b0 family), sc3338, …, openipc-ssc337, …` | `social_space` | `rtsp://cam9.int.leighhack.org:554/stream=0` |
-| `cam1` | 10.3.2.6 | 226 | `10:a4:be:03:0d:36` | **not OpenIPC** — family not established | unknown | unknown | `rack_corridor` | `rtsp://cam1.int.leighhack.org:554` with `ffmpeg:` transcode (its go2rtc line asks `:554/0/av0`, the Novastorm path — commented out, see faults) |
+| `cam1` | 10.3.2.6 | 226 | `10:a4:be:03:0d:36` | **not OpenIPC, and not Ingenic either** — Xiongmai-family application firmware, by its own banners (2026-10-25) | SoC still unknown; `:23` **open** (telnet), `:80` open (302 → `/index.asp`, `/login.cgi` → `401`), `:85 :8080 :8000 :10554 :37777` closed | RTSP `Server: TAS-Tech Streaming Server V100R001`, HTTP `Server: Ginatex-HTTPServer`; `DESCRIBE /0/av0` and `/1/1` → **`200` with no credentials** (fault 13) | `rack_corridor` | `rtsp://cam1.int.leighhack.org:554` with `ffmpeg:` transcode (its go2rtc line asks `:554/0/av0`, the Novastorm path — commented out, see faults) |
 
 All four rows above are also rows in `common/dns-records.nix`; the router
 reserves the address by MAC (`dhcp-host=3c:52:a1:49:24:0a,set:vlan226,10.3.2.12,cam7`).
@@ -223,9 +223,13 @@ camera /etc/majestic.yaml (video0, rtsp port 554, `stream=0`)
   nobody read a label or a stock-version string, so "cam5 is a Tapo C110 vX" is
   not a fact here — and the reflash image is chosen per SoC, which is exactly
   when the difference stops being academic.
-* **What firmware `cam1` is**, and what its interfaces answer — its feed is
-  enabled and alive, its address and MAC are reserved, but its family is
-  different and none of this directory's verbs have been run against it.
+* **What SoC `cam1` carries**, and what its admin credentials are. Partly answered on
+  2026-10-25 by two unauthenticated banner reads: RTSP `Server: TAS-Tech Streaming Server
+  V100R001` and HTTP `Server: Ginatex-HTTPServer` — that is Xiongmai-family application
+  firmware, so it is neither OpenIPC nor Ingenic, and none of this directory's verbs
+  (`cam-check`, `cam-pull`, the flash machinery) apply to it. **The chip itself, the telnet
+  login on `:23`, and whether its feed is *meant* to be public are all still unknown** — the
+  feed question is fault 13, and it is the one part of this list that is not a curiosity.
 * **How a `*.int` device name gets to the device rather than the front door.**
   `curl http://cam5.int.leighhack.org/` answers **from cam5's own web
   interface** (401, realm `Authentication`), yet `cam5`/`cam7`/`cam9`/`cam1`
@@ -330,6 +334,18 @@ camera's config before the repo can hold it (`cam-pull` → `cam-diff` →
     explains.
 
 
+13. **cam1's video is readable with no credentials at all** (measured 2026-10-25, from
+    services1, nothing written): `DESCRIBE rtsp://10.3.2.6:554/0/av0` and `/1/1` both answer
+    **`200`**, where cam5/cam7/cam9 answer `401, realm "WallyWorld"`. This file's own rule —
+    "**a `200` from `:554` is a finding, not a win**" — was written about the OpenIPC three and
+    it is a *bigger* deal here, because unlike cam7's open web admin this one is the picture,
+    and it is the one device on the VLAN whose admin plane nobody has ever inventoried.
+    **Blocks:** nothing; the exposure is live and passive. **Needs:** a decision on whether
+    `rack_corridor`'s feed is supposed to be open (its go2rtc line is commented out but the
+    `ffmpeg:` transcode still pulls it, so frigate is fed by an anonymous stream today), then
+    credentials on the device or the VLAN rule that makes 10.3.2.6 reachable only from
+    services1. Nobody should "fix" it by editing frigate: read the fault, then decide.
+
 ## Firmware updates — the procedure lives elsewhere; this is the summary
 
 **Nothing has been flashed.** The full, measured procedure — what the commands are, what
@@ -339,6 +355,13 @@ The reasoning that got there, including what this file and its author believed b
 measurement, is **[`../docs/camera-firmware-audit-2026-10-25.md`](../docs/camera-firmware-audit-2026-10-25.md)**.
 What follows is only what a person touching a camera must know without opening either.
 
+* **thingino is not an option for this fleet, and that question is closed** (measured
+  2026-10-25): it is a firmware for **Ingenic** SoC cameras — 252 device configs, 176 release
+  images, zero SigmaStar — and cam5/cam9 are `ssc337`, cam7 is `ssc333`, cam1 is Xiongmai-family.
+  Its August-2026 SigmaStar seam offers one model (`ssc30kq`, family `infinity6e`) and its
+  platform PR #1424 was closed unmerged saying "nothing builds this board yet". **[`../docs/camera-thingino-evaluation-2026-10-25.md`](../docs/camera-thingino-evaluation-2026-10-25.md)**
+  has the receipts, the four commands that re-answer it, the one purchase case where thingino is
+  the better answer (C110 **v3** = Ingenic T23N), and what a migration would cost the frigate pipe.
 * **The flashing mechanism already exists and needs no U-Boot work.** All three environments
   ship `setsdcard` (`setenv updatetool fatload mmc 0`), `uknor` and `urnor` — load
   `uImage.${soc}` / `rootfs.squashfs.${soc}` off a FAT card and `sf erase`/`sf write` them at
@@ -471,8 +494,8 @@ the half a flash needs.
    hop key's *user* side, and must not be added to any deploy set.
 
 Open items for the fleet go to **docs/follow-ups.md** (filed from this pass: the
-Telegram token, frigate's config into the repo, the `*.int` names that answer with
-LAN devices with no guard describing the path, the cam5 `S99sdconf.sh` md5
+Telegram token, cam1's unauthenticated `DESCRIBE` (fault 13), frigate's config into the
+repo, the `*.int` names that answer with LAN devices with no guard describing the path, the cam5 `S99sdconf.sh` md5
 disagreement, and the Rust tool that would replace these shell recipes —
 `crates/camera-monitor/` was started half-written and **deleted untracked the same
 day**; the shell recipes above are the shipped thing and the crate is written from

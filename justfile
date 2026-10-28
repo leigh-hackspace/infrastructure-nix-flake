@@ -705,7 +705,7 @@ cam-probe name:
     if [ -n "${CAM_FEED:-}" ]; then
         echo "go2rtc feed ${CAM_FEED} (:8554) -> $(curl -s -m 6 -o /dev/null -w '%{http_code}' "rtsp://127.0.0.1:8554/${CAM_FEED}" || echo down)  (200 = the restream end of the pipe is alive; only true when run on services1, where go2rtc lives)"
     else
-        echo "go2rtc feed end not checked: set CAM_FEED to the name in services1's go2rtc stream table (see cameras/README.md: cam5 -> main_space, cam7 -> pi_room, cam9 -> woodwork)"
+        echo "go2rtc feed end not checked: set CAM_FEED to this camera's go2rtc stream key. The device -> stream -> frigate-camera table is owned by cameras/README.md (and by services1's untracked /srv/frigate/config/config.yaml, fault 8 there); there is deliberately no second copy in this recipe, because the copy that drifts is the one written from memory"
     fi
 
 # One ssh pass, one report: versions, board, sensor, uptime, load, memory,
