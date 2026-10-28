@@ -1275,10 +1275,34 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   **`sss_userdk` no longer exists in authentik** (queried 2026-10-28), so the
   end-to-end check that file recommends cannot pass — use a real member username.
 
-- **The pi-room netboot clients were not re-tested.** They dial
-  `ldaps://authentik.int.leighhack.org` and the certificate is byte-identical to the one
-  they already trust, so this is a "nobody has booted one since" gap rather than a
-  suspicion. Booting one and reading the LDAP result is the check.
+- **The pi-room netboot clients are verified on the wire, but nobody has booted one.** The
+  LDAPS path is proven by the IdP's own audit log — successful `login` events from
+  `10.3.14.101`/`10.3.14.102` (PI-ROOM-01/02) continuously after the 19:12Z cutover, with
+  `ldap_tls_reqcert = demand`, which means a successful bind *is* a certificate validation
+  of the migrated cert. What remains unobserved is a cold boot: the `pam_exec` login-script
+  half (`machines/pi-room-sys/configuration.nix`) and the iPXE/NFS path since aibox's
+  netboot export last changed.
+
+- **Every origin behind the front door still rewrites `X-Forwarded-Proto` and `X-Real-IP`;**
+  `id.int` is the only one that has opted out. nixpkgs' `recommendedProxySettings` sets
+  `$scheme`/`$remote_addr` in each origin's `location /`, so an origin believes its clients
+  are `10.3.1.1` and that nothing uses TLS — the door's honest values arrive and are then
+  overwritten. It broke authentik the day `id.int` became an origin (mixed content; fixed
+  2026-10-28 with `preserveForwardedHeaders = true`). Auditing the other seven means reading
+  each app's own IP allowlists first: today a LAN-only rule in one of them admits the
+  internet, so fixing the header is a behaviour change and each flip wants its own commit.
+  The invariant that makes the flip safe is already true — `originReachabilityRules` in
+  `machines/gw/firewall.nix` plus `CONFIG.ROUTER_ONLY` mean no client reaches an origin
+  except the door, so the forwarded headers cannot be forged. `common/nginx/origin-vhost.nix`.
+
+- **`https://authentik.int.leighhack.org/` serves nothing, by design, and never did.** The
+  name resolves to `10.3.1.36` (services1) rather than to the door and services1 serves no
+  TLS; the appliance answered web on `:9000` only, so the same was true before the cutover.
+  The alias in `common/front-door.nix` is unreachable through DNS, and the `exempt` row in
+  `common/int-dns.nix` is what keeps RADIUS/LDAPS working. Settling it means choosing:
+  leave the name a bare-address LDAPS/RADIUS service, or move it to the door and re-point
+  the two LDAP clients (aibox and the netboot image) at a name the door answers — a redeploy
+  of two machines, not a migration.
 
 - **`10.3.1.36` in the operator's `known_hosts`.** Three lines hold the retired VM's host
   keys; ssh to `.36` now reaches services1, so those entries can never validate again and
@@ -1289,9 +1313,16 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   name: `curl -H 'Host: id.int.leighhack.org' http://127.0.0.1:9000/…` reaches the app with
   neither DNS nor the door involved.
 
-- ~~The nightly authentik dump timer is off~~ — **on since 2026-10-28** (`staged = false`);
-  `authentik-db-dump.timer` fires at 03:15 into the backups share. First run unobserved at
-  the time of writing — check `journalctl -u authentik-db-dump.service` after 03:15 once.
+- ~~The nightly authentik dump timer is off~~ — **on since 2026-10-28** (`staged = false`).
+  `authentik-db-dump.service` was run by hand once (`Result=success`, 27 M custom-format
+  dump into the backups share); the first *unattended* 03:15 run is unobserved, so check
+  `journalctl -u authentik-db-dump.service` after the next one.
+
+- **The retired appliance VM is now doubly kept down** — HA desired state `stopped` plus
+  `qm set 108 -onboot 0` (it was `onboot: 1`, the only VM on monster1 changed, deliberately:
+  it owns an address that belongs to another host now). If the VM is ever decided to be
+  permanently gone, the `exempt`/`dns-records` question above has to be answered in the same
+  change, and the two `/srv/authentik` copies are the only pre-cutover state.
 
 
 ---

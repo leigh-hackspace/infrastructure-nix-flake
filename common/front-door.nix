@@ -291,12 +291,18 @@ in {
         sign in.
 
         `authentik.int` stays in `common/int-dns.nix`'s `exempt`, and keeps answering with
-        10.3.1.36, and that is *not* a second box any more: the address moved onto
-        services1 as a second interface address when the appliance was retired, because the
-        switch logins' `radius-server host 10.3.1.36` and the LDAP clients'
-        `ldaps://authentik.int.leighhack.org` could not be reconfigured.  So the door
-        answers HTTPS for the alias here, and the same name answers RADIUS/LDAPS directly
-        at the address.  docs/authentik-container-migration.md.'';
+        10.3.1.36, and that address is no longer a second box: it moved onto services1 as a
+        second interface address when the appliance was retired, because the switch logins'
+        `radius-server host 10.3.1.36` and the LDAP clients' `ldaps://authentik.int.leighhack.org`
+        could not be reconfigured. Read the consequence precisely, because it is easy to
+        overstate in both directions: `authentik.int` resolves to **services1**, so the door
+        is *bypassed* for that name and **nothing serves HTTPS on it** (measured with curl
+        on 2026-10-28, and equally true of the appliance before the cutover — it answered
+        web on :9000 only). The alias below is what the door would serve a request that
+        arrived with that `Host`; getting there means the DNS answer changes, which is the
+        open item in `docs/follow-ups.md`. What *is* true since the cutover is that both
+        answers are one machine: HTTPS for `id.int` here, LDAPS and RADIUS on the bare
+        address. docs/authentik-container-migration.md'';
     };
     "monster.int.leighhack.org" = {
       upstream = "https://10.3.1.11:8006"; # Proxmox

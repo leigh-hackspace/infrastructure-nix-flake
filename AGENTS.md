@@ -619,11 +619,20 @@ receipts and the four things that are easy to get wrong.
   postgres, and the appliance's `check` parity is history (it existed because a database
   restored into a *different* authentik version is migrated on first boot and cannot be
   un-migrated; that was the rollback path and it closed with the VM).
-- **The retired VM (`vm:108` on monster1) must stay stopped** (`ha-manager set vm:108
-  --state stopped`): its MAC still has the live DHCP reservation in `common/dns-records.nix`,
-  so booting it takes `.36` back and two hosts answering one address is silent for whoever
-  is logging in. Do not delete it or its `/srv/authentik` while they are the only copy of
-  the pre-cutover state.
+- **An origin rewrites `X-Forwarded-Proto` and `X-Real-IP` unless told not to.** nixpkgs'
+  `recommendedProxySettings`, which `common/nginx/origin-vhost.nix` puts in every origin, sets
+  `$scheme` and `$remote_addr` — so behind the door an app sees `http` and `10.3.1.1` for
+  every client, and anything building absolute URLs from the request emits `http://` into an
+  HTTPS page (authentik's mixed content, 2026-10-28). `preserveForwardedHeaders = true` opts
+  a vhost out; it is opt-in because correcting it changes what each app believes about who is
+  calling. Read the helper's header before flipping another origin.
+- **The retired VM (`vm:108` on monster1) must stay stopped, and two things keep it so:**
+  HA's desired state is `stopped` (`ha-manager set vm:108 --state stopped`, persistent in
+  `/etc/pve/ha/resources.cfg`) **and** `qm set 108 -onboot 0`, because `onboot: 1` would let
+  a monster1 boot start it before HA reconciled. Its MAC still has the live DHCP reservation
+  in `common/dns-records.nix`, so booting it takes `.36` back and two hosts answering one
+  address is silent for whoever is logging in. Do not delete it or its `/srv/authentik`
+  while they are the only copy of the pre-cutover state.
 - **Switch logins still do not authenticate over RADIUS, and it is not the move's fault:**
   there is no `agent` user in authentik, so the identification stage recurses and the
   outpost sends *no reply* (`exceeded stage recursion depth`), which is what the appliance

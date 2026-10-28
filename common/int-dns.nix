@@ -169,23 +169,28 @@
     # `machines/services1/services/samba.nix` names it in a commented-out
     # `ldapsam:` line. docs/authentik-container-migration.md is the thing to read
     # before this one goes.
-    ldap = "historical name for the authentik LDAP outpost; the outpost answers \"authentik.int\" (and 10.3.1.36) on 389/636, the door answers this name with itself and serves nothing on it";
+    ldap = "historical name for the authentik LDAP outpost; the outpost answers \"authentik.int\" (and 10.3.1.36) on 389/636, and nothing serves HTTPS on this name";
   };
 
   exempt = {
     # The one `*.int` vhost name that must not answer with the front door, and the reason
     # is a port the door does not proxy: `authentik.int` is the LDAPS endpoint (636) the
-    # switch-adjacent world dials — aibox's sssd and the pi-room netboot image
-    # (`machines/aibox/sso.nix`, `machines/pi-room-sys/configuration.nix`) — and the
-    # RADIUS address the ProCurve switches have in NVRAM is the same host, 10.3.1.36.
+    # switch-adjacent world dials — aibox's sssd (`machines/aibox/sso.nix`) and the pi-room
+    # netboot image (`machines/pi-room-sys/configuration.nix`, `ldap_tls_reqcert = demand`)
+    # — and the RADIUS address the ProCurve switches have in NVRAM is the same host,
+    # 10.3.1.36.
     #
     # Since the 2026-10-28 cutover that address is **not a separate box**: it is a second
-    # address on services1 (see its `networking.nix`), so this exemption and the door's
-    # `id.int` alias are the same machine serving two different protocols — HTTPS through
-    # the door, LDAPS/RADIUS direct.  Before that day the exemption was also the answer to
-    # "which box is the IdP"; it is now only about ports, and the open question in
-    # `docs/follow-ups.md` about which answer should win is closed by the fact that both
-    # land on the same host.
-    authentik = "10.3.1.36, a second address on services1 (RADIUS/LDAP dial it directly)";
+    # address on services1 (see its `networking.nix`), so the same machine answers the name
+    # for LDAPS/RADIUS and serves the `id.int` origin. Note what this exemption therefore
+    # *costs*: because the name resolves to `.36` rather than to the door, **the door is
+    # bypassed for `authentik.int` and no HTTPS is served on it** (measured: `curl
+    # https://authentik.int.leighhack.org/` fails to connect, and it failed the same way
+    # before the cutover, when `.36` was the appliance — the appliance served web on :9000
+    # only, never :443). The alias in `common/front-door.nix` is what the door would serve
+    # a request that arrived with that `Host`, which is not reachable through DNS. Which
+    # answer should win, and whether the name should move to the door and leave the outpost
+    # on the bare address, is the open item in `docs/follow-ups.md`.
+    authentik = "10.3.1.36, a second address on services1 (RADIUS/LDAP dial it directly; no HTTPS on this name)";
   };
 }

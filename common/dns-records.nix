@@ -115,11 +115,15 @@
   # knowing about: it is the only shape `common/int-dns.nix`'s `exempt` and this table's
   # "no address claimed twice / no MAC claimed twice" rules accept for an address that is
   # a second address (`.20` belongs to the `services1` record, and services1's two NICs
-  # belong there too).  The consequence is the one that bites: the reservation is live, so
-  # **Proxmox VM 108 must stay stopped** (`ha-manager set vm:108 --state stopped`) — boot
-  # it and it is handed this address again, and two hosts answering one address is silent
-  # for whoever is logging in.  Deleting the VM, or this record, needs the `exempt` name
-  # settled in the same change: `authentik.int` resolves *because* this record exists.
+  # belong there too). The consequence is the one that bites: the reservation is live, so
+  # **Proxmox VM 108 must stay stopped** — boot it and it is handed this address again, and
+  # two hosts answering one address is silent for whoever is logging in. Both safeguards
+  # are in place since 2026-10-28: HA's desired state is `stopped` (persistent —
+  # `/etc/pve/ha/resources.cfg` lives on pmxcfs) *and* `qm set 108 -onboot 0`, because
+  # `onboot: 1` alone would let a monster1 boot start it before HA reconciled. It is now
+  # the only VM on that host with `onboot` cleared, and that is the point. Deleting the VM,
+  # or this record, needs the `exempt` name settled in the same change: `authentik.int`
+  # resolves *because* this record exists.
   authentik = {
     vlan = 225;
     ipv4 = "10.3.1.36";

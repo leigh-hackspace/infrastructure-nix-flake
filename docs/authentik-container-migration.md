@@ -118,6 +118,51 @@ mechanical: adding the network back means recreating the whole stack together, b
 container cannot join a second network while its peers stay on the old one and the
 outposts would lose `authentik-server`. Open in `docs/follow-ups.md`.
 
+### 5. Making `id.int` an origin broke it in the browser, and the bug was four days older
+
+Reported within minutes of the move: the page at `https://id.leighhack.org/if/user/`
+emitted `base: "http://id.leighhack.org/"`, so the SPA's call to `/api/v3/core/users/me/`
+was blocked as mixed content. Cause: nixpkgs' `recommendedProxySettings` — which
+`common/nginx/origin-vhost.nix` puts in every origin's `location /` — sets
+`X-Forwarded-Proto $scheme` and `X-Real-IP $remote_addr`. On an origin those are lies:
+`$scheme` is `http` (the door→origin hop is plain HTTP by design) and `$remote_addr` is the
+router. The door had already set both truthfully, and the origin hop overwrote them.
+
+Reproduced by fetching the same page twice — through the door (`http`) and straight to the
+container with `X-Forwarded-Proto: https` (`https`) — and fixed by
+`preserveForwardedHeaders = true` on this one vhost, which swaps the recommended set for
+one that forwards the door's values (`Host $host` included: nginx's own default is
+`$proxy_host`, and an app that routes by `Host` would otherwise get `127.0.0.1:9000`).
+Verified after the deploy: `base:` is `https://id.leighhack.org/` and
+`https://id.int.leighhack.org/` per-`Host`, and `/api/v3/core/users/me/` answers 403
+instead of never being requested.
+
+**The general bug is still open and it is not authentik's.** Every origin behind the door
+has believed since 2026-10-24 that its clients are `10.3.1.1` and that nothing uses TLS.
+Apps that take their public URL from their own config never noticed; authentik builds URLs
+from the request, so it noticed immediately. The other seven are not flipped by default
+because it is a behaviour change dressed as a bug fix — an origin applying its own IP
+allowlist currently sees the router for *everyone*, so a LAN-only rule there lets the
+internet in, and correcting the header could start refusing traffic that works today. The
+audit (per origin: read its own allowlists, then flip) is in `docs/follow-ups.md`.
+
+Side effect worth knowing when reading authentik's event log: RADIUS and LDAP logins always
+carried their real client address (that path never touches nginx), so the header bug only
+ever miscredentialed **web** events — and there were no web login events to compare
+against, which is why the fix's IP half is argued from the rendered config plus the
+firewall invariant rather than observed.
+
+### What the cutover proved that two months of docs called untested
+
+The pi-room netboot clients were never touched by the cutover and needed no reboot to
+confirm: `authentik_events_event` records **successful `login` events from `10.3.14.101`/
+`10.3.14.102` (PI-ROOM-01/02) continuously after 19:12Z**, and aibox's own LDAP binds
+appear as `login` from `10.3.1.32`. Those clients run `ldap_tls_reqcert = demand` against
+their own CA bundle (`machines/pi-room-sys/configuration.nix`, and the same setting in
+`machines/aibox/sso.nix`), so a successful bind *is* a certificate validation — the
+migrated LDAPS certificate is being accepted by the real clients, not by curl. The RADIUS
+probes show up too: five `login_failed` rows at 19:19:2x-3x from the probing host.
+
 ### What the cutover did *not* fix, and two things it proved were already broken
 
 - **Switch logins still do not authenticate via RADIUS.** Nothing about the move changed
@@ -136,12 +181,21 @@ outposts would lose `authentik-server`. Open in `docs/follow-ups.md`.
 - **`sss_userdk` does not exist in authentik any more** (queried: no matching username),
   so the end-to-end test `machines/aibox/sso.nix` recommends is a dead canary. Use
   `id <real-member>` instead.
-- **The appliance VM must stay stopped.** Its MAC still has a live DHCP reservation
-  (`common/dns-records.nix`'s `authentik` record — the shape the network-table guards
-  accept for an address that belongs to a flake machine), so a booted VM takes `.36` back
-  and two hosts answering one address is silent for whoever is logging in. Deleting the
-  VM or the record needs the `exempt` question settled in the same change, because
-  `authentik.int` resolves *because* that record exists.
+- **The appliance VM must stay stopped, and now two things keep it stopped.** Its MAC still
+  has a live DHCP reservation (`common/dns-records.nix`'s `authentik` record — the shape the
+  network-table guards accept for an address that belongs to a flake machine), so a booted
+  VM takes `.36` back and two hosts answering one address is silent for whoever is logging
+  in. HA's desired state is `stopped` (persistent: `/etc/pve/ha/resources.cfg`) and
+  `qm set 108 -onboot 0` was added on 2026-10-28, because `onboot: 1` would otherwise let a
+  monster1 boot start the VM before HA reconciled. Deleting the VM or the record needs the
+  `exempt` question settled in the same change, because `authentik.int` resolves *because*
+  that record exists.
+- **What `authentik.int` is *not*.** Because the name resolves to `10.3.1.36` — services1 —
+  the front door is bypassed for it and **nothing serves HTTPS on that name** (measured;
+  equally true of the appliance, which served web on `:9000` only). The alias in
+  `common/front-door.nix` is unreachable through DNS, so "which answer should win" is not
+  cosmetic: it decides whether `https://authentik.int…` works at all. Open in
+  `docs/follow-ups.md`.
 - **The LDAPS/RADIUS address is in the operator's `known_hosts`** (`10.3.1.36`, three
   lines). Those keys belong to the retired VM and can never validate again; ssh to `.36`
   now reaches services1.
