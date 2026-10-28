@@ -31,12 +31,27 @@ a building that has just lost power is `systemctl show -p ExecMainStatus`:
 
 | File | Owns |
 | --- | --- |
-| `main.rs` | argv, the four modes, the step order of `run` |
-| `plan.rs` | the deciding, with no side effects: `ups.status` parsing, `decide()` (status × reason → act/abort), the target list and its refusals, the ssh argv, the broadcast text. **No sleeps, no `Command::new`, no clock** — that is what makes it the place to argue about behaviour |
+| `cli.rs` | argv and its defaults — the flag list `machines/gw/ups.nix` passes, and the refusals that belong at parse time (no mode, no identity file, a `broadcast` with no recipient, a `run` that would power off without arming the killpower flag). Knows nothing about power or ssh |
+| `main.rs` | the four modes and the step order of `run` |
+| `plan.rs` | the deciding, with no side effects: `ups.status` parsing, `decide()` (status × reason → act/abort), `proceed()` (same decision × is-this-a-drill), the target list and its refusals, the ssh argv, the broadcast text. **No sleeps, no `Command::new`, no clock** — that is what makes it the place to argue about behaviour |
 | `exec.rs` | running programs under a deadline, and the one `upsc` read |
 | `notice.rs` | composing a notice and delivering it over `wall` |
 
 ## Traps
+
+* **`--dry-run` does not obey the abort arm; it reports it.** `plan::proceed` is
+  `decide()` × "is this a drill", and the split exists because the drill unit is
+  started while the mains are fine: a dry run that honoured "mains are back, abort"
+  exited 21 every time and showed nobody the plan. The 37 tests that passed before
+  the deploy did not catch this, because the bug was in which arm a *mode* obeys —
+  so the behaviour is now `plan::tests::a_drill_reports_an_abort_instead_of_obeying_it`
+  and `just ups-drill` is the unit test that cannot lie.
+* **A self-address list is a list of addresses, not of names.** `gw` is refused from
+  the ssh targets by *address* (`--self-address`, built from `common/hosts.nix` and
+  every VLAN gateway this box answers on) and by *name* (`gw`, `gw.*`) — because the
+  hop key is authorised on every box including this one, a target that resolves to
+  localhost succeeds and powers this box off mid-sequence. See rule 27's self-hop
+  note in `AGENTS.md` before changing either half.
 
 * **There is no timer in here, on purpose.** "Discharging for N seconds, cancelled
   by `ONLINE`" is `upssched`'s idiom and it is configured in `machines/gw/ups.nix`.

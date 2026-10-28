@@ -86,7 +86,11 @@ pub(crate) fn run_bounded(argv: &[String], limit: Duration) -> Result<i32, Strin
 /// stdin is written on a thread and then dropped, because a message larger than
 /// the pipe buffer would otherwise deadlock the writer against the reader, and
 /// the reader is the process we are timing.
-pub(crate) fn run_bounded_stdin(argv: &[String], input: &str, limit: Duration) -> Result<i32, String> {
+pub(crate) fn run_bounded_stdin(
+    argv: &[String],
+    input: &str,
+    limit: Duration,
+) -> Result<i32, String> {
     let (bin, args) = argv.split_first().ok_or("empty command")?;
     let mut child = Command::new(bin)
         .args(args)
@@ -237,8 +241,11 @@ mod tests {
 
     #[test]
     fn a_command_that_cannot_start_is_an_error_not_a_zero() {
-        let err = run_bounded(&["definitely-not-a-binary".to_string()], Duration::from_secs(1))
-            .expect_err("must fail");
+        let err = run_bounded(
+            &["definitely-not-a-binary".to_string()],
+            Duration::from_secs(1),
+        )
+        .expect_err("must fail");
         assert!(err.contains("definitely-not-a-binary"), "{err}");
     }
 
@@ -256,8 +263,11 @@ mod tests {
 
     #[test]
     fn bounded_output_reads_a_child_that_writes_at_once() {
-        let out = bounded_output(&[sh(), "-c".to_string(), "echo hi".to_string()], Duration::from_secs(10))
-            .expect("ran");
+        let out = bounded_output(
+            &[sh(), "-c".to_string(), "echo hi".to_string()],
+            Duration::from_secs(10),
+        )
+        .expect("ran");
         assert_eq!(out.trim(), "hi");
     }
 
@@ -270,6 +280,10 @@ mod tests {
         )
         .expect_err("must time out");
         assert!(err.contains("after"), "{err}");
-        assert!(started.elapsed() < Duration::from_secs(5), "{:?}", started.elapsed());
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
     }
 }

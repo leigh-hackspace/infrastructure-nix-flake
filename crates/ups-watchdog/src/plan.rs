@@ -266,6 +266,37 @@ pub fn compose_broadcast(headline: &str, body: &[String], status: Option<&Status
     out
 }
 
+/// What a [`Decision`] means once you know whether this is a drill.
+///
+/// The distinction is not cosmetic and it was found by deploying: a drill is a
+/// review of the *plan*, and it happens while the mains are fine — so a `--dry-run`
+/// that obeys the abort arm exits 21 every time it is started and shows nothing.
+/// The dry unit in `machines/gw/ups.nix` is the thing a person runs to decide
+/// whether to trust the real one, which makes "it always fails" a bug rather than
+/// a curiosity.  A real run still aborts, and still aborts for the same reason.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Proceed {
+    /// Go on.  `note` is what the journal should say about the decision.
+    Yes { note: Option<String> },
+    /// Stop here: nothing has been powered off and nothing will be.
+    No { why: &'static str },
+}
+
+pub fn proceed(decision: Decision, dry_run: bool) -> Proceed {
+    match decision {
+        Decision::Abort(why) if dry_run => Proceed::Yes {
+            note: Some(format!(
+                "[dry-run] would ABORT and shut nothing down — {why}. continuing, to show the plan it stopped at"
+            )),
+        },
+        Decision::Abort(why) => Proceed::No { why },
+        Decision::Act { late } if late => Proceed::Yes {
+            note: Some("this reason is already late — short notice window, no further waits".into()),
+        },
+        Decision::Act { .. } => Proceed::Yes { note: None },
+    }
+}
+
 /// One machine to power off over ssh.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Target {
@@ -476,7 +507,11 @@ mod tests {
     fn a_late_reason_acts_through_a_mains_reading() {
         let s = status("OL CHRG");
         for reason in [Reason::LowBattery, Reason::UpsmonShutdown, Reason::Manual] {
-            assert_eq!(decide(Some(&s), reason), Decision::Act { late: true }, "{reason}");
+            assert_eq!(
+                decide(Some(&s), reason),
+                Decision::Act { late: true },
+                "{reason}"
+            );
         }
     }
 
@@ -497,13 +532,22 @@ mod tests {
     #[test]
     fn an_outage_reading_acts_however_it_arrived() {
         let s = status("OB LB");
-        assert_eq!(decide(Some(&s), Reason::OutageGraceExpired), Decision::Act { late: false });
-        assert_eq!(decide(Some(&s), Reason::LowBattery), Decision::Act { late: true });
+        assert_eq!(
+            decide(Some(&s), Reason::OutageGraceExpired),
+            Decision::Act { late: false }
+        );
+        assert_eq!(
+            decide(Some(&s), Reason::LowBattery),
+            Decision::Act { late: true }
+        );
     }
 
     #[test]
     fn reasons_are_parsed_from_what_the_module_writes() {
-        assert_eq!(Reason::parse("outage-grace-expired"), Reason::OutageGraceExpired);
+        assert_eq!(
+            Reason::parse("outage-grace-expired"),
+            Reason::OutageGraceExpired
+        );
         assert_eq!(Reason::parse("LOW-BATTERY\n"), Reason::LowBattery);
         assert_eq!(Reason::parse("upsmon-shutdown"), Reason::UpsmonShutdown);
         assert_eq!(Reason::parse("manual-drill"), Reason::Manual);
@@ -526,10 +570,14 @@ mod tests {
     #[test]
     fn the_plan_keeps_the_given_order() {
         // Order is the point of the list: postgres before the build box.
-        let specs = ["services1=10.3.1.20", "aibox=10.3.1.32", "services2=10.3.1.21"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect::<Vec<_>>();
+        let specs = [
+            "services1=10.3.1.20",
+            "aibox=10.3.1.32",
+            "services2=10.3.1.21",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect::<Vec<_>>();
         let got = plan(&specs, &[]).expect("fine");
         assert_eq!(
             got.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(),
@@ -590,13 +638,19 @@ mod tests {
         assert!(joined.contains("IdentitiesOnly=yes"), "{joined}");
         assert!(joined.contains("ConnectTimeout=5"), "{joined}");
         assert!(joined.contains("StrictHostKeyChecking=yes"), "{joined}");
-        assert!(joined.contains("-i /home/leigh-admin/.ssh/agent-hop-key"), "{joined}");
+        assert!(
+            joined.contains("-i /home/leigh-admin/.ssh/agent-hop-key"),
+            "{joined}"
+        );
         assert!(joined.contains("leigh-admin@10.3.1.20"), "{joined}");
         // OpenSSH 10.5 rejects `-o KnownHostsFile=` outright, and the pin lives in
         // /etc/ssh/ssh_known_hosts (common/ssh-known-hosts.nix).
         assert!(!joined.contains("KnownHostsFile"), "{joined}");
         assert!(!joined.contains("accept-new"), "{joined}");
-        assert_eq!(argv.last().map(String::as_str), Some(opts.remote_command.as_str()));
+        assert_eq!(
+            argv.last().map(String::as_str),
+            Some(opts.remote_command.as_str())
+        );
     }
 
     #[test]
@@ -618,6 +672,36 @@ mod tests {
         // that is the difference between a broadcast and a status page.
         let text = compose_broadcast("POWER RESTORED", &lines(&["Mains are back."]), None);
         assert_eq!(text, "=== gw UPS: POWER RESTORED ===\nMains are back.\n");
+    }
+
+    #[test]
+    fn a_drill_reports_an_abort_instead_of_obeying_it() {
+        let s = status("OL CHRG");
+        let real = proceed(decide(Some(&s), Reason::OutageGraceExpired), false);
+        assert!(matches!(real, Proceed::No { .. }), "{real:?}");
+
+        // …and the same decision, drilled, is a note and a plan.
+        let drill = proceed(decide(Some(&s), Reason::OutageGraceExpired), true);
+        match drill {
+            Proceed::Yes { note: Some(note) } => {
+                assert!(note.contains("would ABORT"), "{note}");
+                assert!(note.contains("continuing"), "{note}");
+            }
+            other => panic!("a drill must continue: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_late_reason_still_notes_that_it_is_late() {
+        let s = status("OB LB");
+        match proceed(decide(Some(&s), Reason::LowBattery), false) {
+            Proceed::Yes { note: Some(note) } => assert!(note.contains("already late"), "{note}"),
+            other => panic!("{other:?}"),
+        }
+        match proceed(decide(Some(&s), Reason::OutageGraceExpired), false) {
+            Proceed::Yes { note: None } => {}
+            other => panic!("in time, and nothing to say: {other:?}"),
+        }
     }
 
     #[test]
