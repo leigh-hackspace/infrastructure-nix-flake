@@ -169,10 +169,27 @@
   # The outposts are declared below instead.
   outpostEnv = {
     AUTHENTIK_INSECURE = "true";
-    # Reachable on the podman network by container name; the appliance used
-    # `10.3.1.36:9000` for the same purpose.
-    AUTHENTIK_HOST = "${serverContainer}:9000";
-    AUTHENTIK_HOST_BROWSER = "${serverContainer}:9000";
+    # The API an outpost registers itself with and reads its own config from.
+    #
+    # ⚠️  It has to be a URL **with a scheme**.  The outpost SDK parses this value as a
+    # URL, so a bare `authentik-server:9000` arrives as the *scheme* `authentik-server`
+    # and the container sits in a retry loop reading
+    # `Get "authentik-server://api/v3/outposts/instances/": unsupported protocol scheme "authentik-server"`.
+    # That is exactly how the first minutes of the 2026-10-28 cutover went: unit
+    # `active`, ports published, nothing bound, no RADIUS answer.  Read
+    # `podman logs authentik-outpost-radius`, not `systemctl is-active`.
+    #
+    # What the appliance really used — read out of the migrated outpost row
+    # (`authentik_outposts_outpost._config`) rather than assumed, because the generated
+    # compose file that held it is on a VM that no longer answers the address it owns:
+    # `authentik_host = "https://id.int.leighhack.org/"`, `authentik_host_browser = ""`,
+    # `authentik_host_insecure = false`.  So the switch logins reached authentik's API the
+    # long way round — out of the box, through the front door, and back — which made
+    # RADIUS depend on the door being up.  Naming the container on the podman network is
+    # shorter, and honest about the dependency: an outpost needs authentik, not the
+    # internet.
+    AUTHENTIK_HOST = "http://${serverContainer}:9000";
+    AUTHENTIK_HOST_BROWSER = "http://${serverContainer}:9000";
   };
 
   dumpDir = "/mnt/backups/services1.int.leighhack.org/authentik";
