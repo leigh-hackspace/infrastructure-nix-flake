@@ -154,6 +154,13 @@ GDN/QSA work on a 6-CU GPU ~100 ms, expert-cache handling + PCIe grouping +
 
 ## The real limit for coding use is prefill, not decode
 
+**SUPERSEDED IN SIZE, NOT IN DIRECTION (2026-10-28):** the ~45 tok/s below doubled to
+**82-84 tok/s** with `STRATA_HIP_PROMPT_F16=1`, so a 20 000-token prompt is ~4 minutes
+rather than ~7 and a 100K prompt ~20 minutes rather than ~45. Everything else in this
+section still holds — prefill is still the wall, it still does not respond to chunk size
+or GTT, and it is still what limits agent use here. See "Prefill 2.2×" for the
+measurement and the bit-identical caveat.
+
 **~45 tok/s, independent of chunk size** (`auto`→4096 = 44.6, explicit 8192 =
 46.0). A 20 000-token prompt costs **~7 minutes** before the first token, and a
 coding agent re-sends its context every turn. Decode at 8–11 tok/s is usable;
@@ -898,6 +905,90 @@ the row carries `timeouts = "3600s"`.
   llama-server that answers one request through `ai.*` will try to take ~33 GB of GTT the
   arena now owns. `systemctl stop llama-server` was run by hand after the switch; do the
   same on any future un-parking.
+
+## Prefill 2.2× from `STRATA_HIP_PROMPT_F16`, and what the conversation cache actually parks (2026-10-28)
+
+Two changes, one restart each, measured against the same fixed prompt in both arms
+(`strata2.int.leighhack.org`, `temperature: 0`, one request in flight, ~59 KB of
+pseudo-random prose = **13,069 prompt tokens**). Both are in `strata.nix`; both came from
+the question "should we drop to 192K context to fund the conversation cache?", and the
+answer measured out as **no** — the context change was never needed and neither of these
+required it.
+
+| | before (`F16` off, cache off) | after (`F16` on, cache 1536 MiB) |
+|---|---|---|
+| cold read, 13,069 tok | **349.7 s** = 37.4 tok/s | **158.4 s** = 82.5 tok/s |
+| second fresh prompt, ~13K tok | 258.0 s = 50.7 tok/s | 158.0 s = 81.7 tok/s |
+| decode | 8.5–10.6 tok/s | 10.4–12.4 tok/s |
+| repeat of an identical 13K prompt | full re-read | **1.2 s** client-side, `restored 13064 tokens (checkpoint) in 37 ms` |
+| same prompt **+30 tokens** (what an agent turn is) | full re-read | **full re-read: `reused 0`, 157.5 s** |
+| parked bytes | — | 0 when nothing repeats; **436 MB per 13K conversation**; `parked=3 bytes=1.22 GiB evictions=1` at the cap |
+
+### `STRATA_HIP_PROMPT_F16=1` — keep it, it is as advertised
+
+The engine had been printing the offer on every start of this card and nobody had taken
+it: "reads long prompts about 2x faster here (FP16 prompt GEMMs, rocBLAS is tuned only
+for FP16 on gfx103x; the numbers differ slightly)". It is opt-in
+(`src/prefill/gemm.cu:588`, #835) and when enabled it replaces the tip with
+`STRATA_HIP_PROMPT_F16=1: the prompt's 16-bit GEMMs run FP16 in and out … not
+bit-identical`. Measured: **2.21× on the cold read and 1.65× on the second**, across four
+independent reads in the after arm (81.7–83.7 tok/s) against two in the before arm
+(37.4, 50.7) — a spread far wider than the noise, so the effect is real even though the
+noise is not small (below). Prefill is this box's wall, so a 100K-token prompt moves from
+~45 minutes to ~20; that is the number that matters for agent use, and it cost one env
+line and no RAM. Decode is untouched, as it should be for a prompt-path switch.
+
+The cost is upstream's phrase, not a measured bound: **bit-identical no**. This box cannot
+bound the difference — see the methodology note under the table's footnotes, greedy output
+here is not reproducible run to run even with a fixed prompt and `temperature: 0`, so the
+digest comparison that `docs/follow-ups.md` recommends for exactly this purpose is not a
+usable instrument at this size.
+
+### The conversation cache parks *identities*, not prefixes
+
+On, with `--conversation-cache-mib 1536 --conversation-cache-slots 3
+--conversation-cache-min-tokens 2048`. It works exactly as designed and *not* as
+advertised in this file's own reasoning when it was chosen:
+
+- A parked conversation restored in **37 ms** turned a 158 s re-read into a **1.2 s**
+  turn, `parked=2 … bytes=1.07 GiB evictions=0`. Alternating two conversations, the second
+  and later visits to each cost 1.2 s. That is a 130× win and it is real.
+- A conversation whose prompt had **grown by 30 tokens** — i.e. every turn of every agent —
+  got `reused 0` and paid the full 157.5 s. Parking matches on prompt *identity*; it is not
+  a prefix cache. So this is not the cure for long growing contexts, and anyone reading
+  "turn on the conversation cache" as that will be disappointed.
+- The cap behaves: 436 MB per 13K-token conversation (`snapshot_bytes` in the engine's own
+  line), so 1536 MiB ≈ three of them, and at `parked=3 bytes=1.22 GiB` the next park
+  evicted one (`evictions=1`) rather than growing. With nothing repeating, `bytes=0`.
+
+Kept, on that reading: it costs no RAM until something repeats, it demonstrably cannot
+make the non-repeat case slower (the extension re-read measured *faster* than the baseline
+by exactly the F16 factor), and identical-prompt retries are cheap in a way they were not.
+It is not the reason this box has a 20-minute 100K prompt anymore — F16 is, and the next
+real step is the gfx1030 rocBLAS table / `--resident-budget-gib`, not more cache.
+
+### Methodology, because three things here nearly produced a fake result
+
+1. **Cold must be compared with cold.** The *baseline's* two cold reads of the same-size
+   prompt differed by 26% (349.7 s vs 258.0 s — the second had the page cache and PLE
+   tables warm). Any effect under ~30% would have been unmeasurable with one pair; a 2.2×
+   is not.
+2. **Greedy output is not reproducible here.** Two runs of one fixed 200-token probe in the
+   *same* arm, `temperature: 0`, produced different reasoning digests (`edf775d3…`,
+   `e83db119…`). So an md5 of a completion cannot detect the FP16 rounding this switch
+   introduces, in either direction; the file's own advice to "compare the md5" needs the
+   within-arm repeat first (`docs/follow-ups.md` says so now).
+3. **A probe that prints nothing is broken, not negative.** The harness filtered the engine
+   log for `" strata serve: prompt "` with a leading space; the lines start at column 1, so
+   both arms' first drafts reported `(no line)` while the timing next to them was fine.
+   Recovered from the log by hand and fixed, but it is the same failure as a UI that writes
+   "ok" when the button did nothing: the instrument's silence is not a result.
+
+And one thing still unexplained: this file's older logs show `prompt 97819 tokens = 97781
+reused + 38 read` on 0.1.43.1 with **no** parking available — so grown-prompt reuse exists
+somewhere (the built-in chat endpoint, multi-message `messages` arrays), and the
+single-user-message probes used here do not reproduce it. Worth chasing before believing
+anything above about what does and does not reuse; filed in `docs/follow-ups.md`.
 
 ## Pi clients
 

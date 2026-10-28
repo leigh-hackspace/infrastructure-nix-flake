@@ -377,6 +377,21 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
 
 ## Strata (services2, and aibox's engine since 2026-10-28)
 
+- **An md5 of the completion is a weak A/B instrument on Strata, and it is worth knowing
+  before you trust one** (measured 2026-10-28 on aibox's engine: same config, same prompt,
+  `temperature: 0`, two runs, **different output digests** — `edf775d3…` then `e83db119…`
+  over a fixed 200-token reasoning sample; and the same for two 16-token replies in one
+  A/B arm). Greedy decoding on this engine is not byte-reproducible run to run — most
+  plausibly kernel atomics / batch-shape in the grouped experts, none of which is a bug to
+  chase here. `docs/follow-ups.md` and `machines/services2/STRATA.md` both tell the next
+  reader to "compare the md5 of the completion", and that advice is right only with this
+  added: **run the arm twice first.** If the digest moves within an arm it cannot measure a
+  difference *between* arms, and the honest alternatives are (a) a many-sample agreement
+  rate (how often two runs share a digest), (b) upstream's own first-token KL figures, or
+  (c) reading both outputs. Timing stays a fine instrument, and the within-arm spread of
+  this box's own cold reads (349.7 s vs 257.9 s for the same-size prompt, ±26%) is the
+  noise floor any speed claim has to clear.
+
 - **aibox's prefill wall has an upstream lever that its rocBLAS build refuses: measure a
   gfx1030 solution table** (found 2026-10-28 while bumping aibox's engine from 0.1.43.1 to
   the flake input's 0.1.52). aibox's real limit is prefill — ~45 tok/s whatever the config,
@@ -415,10 +430,31 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   prompt GEMMs are the tuned path on gfx103x, so the FP32-out shapes the tuning table above
   exists to fix are partly a consequence of the default. `STRATA_HIP_PROMPT_F16=1` is one
   `extraEnv`/`env` line in `machines/aibox/strata.nix` — no rebuild — against a claimed 2x on
-  the axis that costs 7 minutes per agent turn, for "the numbers differ slightly". Nobody has
-  measured it here: A/B a long prompt's `prompt_ms` (the bench harness in `strata-tune/`) and
-  an `md5` of the completion before believing the 2x, and expect the prefill ceiling of
-  ./STRATA.md to be wrong in a good way if it holds.
+  the axis that costs 7 minutes per agent turn, for "the numbers differ slightly".
+  **Measured 2026-10-28: it is ON, and the 2× is real here** — 349.7 s → 158.4 s on the same
+  13,069-token cold read (37.4 → 82.5 tok/s), corroborated by a second fresh prompt at 81.7
+  tok/s, decode unchanged; the measurement, the 26% noise floor it had to clear and why an
+  md5 could not bound the "not bit-identical" are in `machines/aibox/STRATA.md`, "Prefill
+  2.2×". What the table above still buys, if anyone measures it, is the remaining gap on the
+  FP32-out shapes — and probably better than "slightly" on answers, since it changes the
+  algorithm chosen rather than the precision it runs at.
+
+- **Unexplained, and it bounds what aibox's conversation-cache numbers mean** (found
+  2026-10-28 while measuring that cache). This file's own older logs, on engine 0.1.43.1 with
+  **no** parking available at all, show `prompt 97819 tokens = 97781 reused + 38 read in
+  2834 ms … 6 checkpoints` — a *grown* prompt reusing 99.96% of the previous one. The probes
+  run today against the served endpoint (`/v1/chat/completions`, one `user` message, same
+  13K-token prefix, +2 and +30 tokens) report `reused 0` in **both** arms, parking on and
+  off, while an *identical* prompt restores in 37 ms. So prefix reuse exists on some path and
+  not on the one clients use, and nobody has read the code far enough to name the
+  discriminator (`--prompt-cache` checkpoints? the multi-message `messages` array? session
+  identity from the connection? a header the front door does or does not forward?). **Why it
+  matters:** the answer decides whether a long agent conversation on aibox costs 1.2 s or
+  158 s per turn — usable for coding agents, or not. **To do:** read the reuse/matching path
+  in `serve/server.py` and `src/core/conversation_*`, then reproduce with the built-in chat
+  endpoint (where the 97,781 line came from) against a single-message request of the same
+  tokens. Not an upstream bug until that comparison is done; the cache flags in
+  `machines/aibox/strata.nix` say what they measured rather than what this would conclude.
 
 - **The 2026-10-27 bump turned two switches on for this card class, and nobody has
   measured them on our pack** (found while bumping; the whole finding is in
@@ -523,6 +559,26 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   **The free half:** the cap covers *only* half-precision tensor math — FP32 FFMA and integer DP4A never pay it, which is why llama.cpp (upstream's own null there: pp512 1460.5 -> 1467.1) sees nothing and Strata does not. An upstream integer/DP4A prefill path would therefore buy the same thing with **zero boot risk**; nothing in `engineArgs` gives it today, and if it ever appears this item is the way back.
 
 ## Machines / access
+
+- **aibox's switch fails on `exports-netboot-squashfs.mount`, reproducibly, and it is not
+  the change being deployed** (2026-10-28, twice in one hour: both `nixos-rebuild switch`
+  runs ended `Failed to restart exports-netboot\x2dsquashfs.mount` →
+  `switch-to-configuration` exit 4 → the whole switch reports failure **after**
+  `/run/current-system` flipped and after the new units started, with `auto-rollback.timer`
+  armed and firing minutes later). The mount itself is fine — still `active`, still mounted,
+  `systemctl list-units --failed` empty — and re-running
+  `/run/current-system/bin/switch-to-configuration switch` exits 0 on the second attempt,
+  which is the fix and also the proof that nothing else was wrong. So this is a busy
+  restart of the Pi Room netboot export (real machines NFS-reading it) racing the
+  activation. **Blocks:** nothing, because the retry works; but every future aibox switch
+  pays a manual second activation and the judgement call on a *failed* activation (never
+  confirm one) with a 5-minute reboot timer running. **To do:** read
+  `machines/aibox/netboot.nix` and give that mount what a busy restart needs — the usual
+  answers are `umountOptions = "--lazy"`/`timeout` on the mount unit, or not marking it
+  restartable when its contents are a store path clients hold open — then verify by
+  switching with a netboot client reading it. Reproduce with:
+  `sudo systemctl restart exports-netboot\x2dsquashfs.mount` while `ss -tan 'sport = :2049'`
+  shows NFS clients attached.
 
 - **The boot path resolves a name, and it does not have to** (2026-10-26, the same
   investigation). Every URL in

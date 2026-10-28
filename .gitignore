@@ -42,3 +42,8 @@ config.xml
 # every evaluation (docs/flake-simplification-pass-2026-10-24.md §1). This entry only
 # makes a mistaken repo-local staging invisible instead of expensive.
 /camera-images/
+
+# Python bytecode from the strata-tune / tools scripts (a `py_compile` or an
+# import drops these next to the source, and they are never what you meant to add).
+__pycache__/
+*.py[cod]

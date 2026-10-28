@@ -203,25 +203,42 @@
     "int8"
     "--kv-resident"
     "32768"
-    # Off, stated. 0.1.48.1 made the host-RAM conversation cache default to -1, which
-    # means "--serve sizes it from the RAM still free once the model is loaded": 40 % of
-    # (available - 2560 MiB), in 256 MiB steps, at most 8192, off below 1024
-    # (include/strata/core/conversation_memory.hpp, auto_conversation_cache_mib, upstream
-    # #3493; only `--serve` takes it).  Measured on the running unit rather than
-    # estimated: `free -m` says 6964 available with the arena and cache loaded, so the
-    # rule computes (6964 - 2560) * 2/5 = 1761, stepped down to 256, and answers
-    # **1536 MiB** - RAM this box's other job (building for the network) wants.
-    # `available_host_bytes()` is MemAvailable/cgroup-limited and never counts swap, and
-    # the same floor refuses *parking* as well as sizing, so raising this to a number is
-    # not free either - the mechanism and that argument are worked out for the CUDA box
-    # in machines/services2/STRATA.md, "The conversation cache cannot be bought with the
-    # swap file", and they read the same here.  0.1.43.1, the engine this unit last ran,
-    # had no parked conversations at all, so 0 states this file's existing behaviour
-    # rather than changing it.  The cache is a real win for alternating agent
-    # conversations (the R9700 box runs 16 GiB of one, on 94 GiB of RAM) - if it is ever
-    # wanted here it goes in with `--resident-budget-gib` and the floor, not on its own.
+    # Parked conversations, on - but read the measured line before you turn this knob on
+    # somewhere else, because it is not what it was bought for.  Deployed and measured on
+    # this box 2026-10-28 (./STRATA.md, "Prefill 2.2x, and what the conversation cache
+    # actually parks"): a REPEATED prompt costs 1.2 s instead of 158 s
+    # (`restored 13064 tokens (checkpoint) in 37 ms`), and a prompt that has GROWN by 30
+    # tokens costs the full 157.5 s with `reused 0` - parking matches on prompt identity,
+    # not on prefix, so agent-turn traffic (prompt_t + new text every turn) gets nothing
+    # from it.  It stays on because it costs nothing until something repeats (`bytes=0`
+    # idle), retries and re-issued identical prompts are real here, and it demonstrably
+    # did not slow the non-repeat case.  It is NOT the answer to long agent contexts.
+    #
+    # Sizing, measured: one parked 13K-token conversation is 436 MB
+    # (`snapshot_bytes` in the engine's own accounting), so the 1536 MiB cap holds about
+    # three of them - eviction at the cap was observed at `parked=3 bytes=1.22 GiB`, which
+    # is the LRU doing its job.  1536 is also exactly what 0.1.48.1's own auto rule (#3493:
+    # 40% of available - 2560 MiB, 256 MiB steps) computes at this box's measured 6964 MiB
+    # available with the arena loaded - the auto default made explicit so a restart cannot
+    # silently pick another number when the load changes shape.
+    #
+    # Why it cannot hurt the build farm: the budget is a CAP and every park is refused
+    # unless MemAvailable covers it plus `--conversation-cache-min-free-mib` (default 2560)
+    # - `conversation_memory_admit(available, allocation, floor)` in
+    # include/strata/core/conversation_memory.hpp - so while a nix build runs, the engine
+    # parks nothing and a would-be resume is a fresh read.  Degrades, never fails.
+    # `available_host_bytes()` is MemAvailable/cgroup-limited and NEVER counts swap, and
+    # the same floor gates parking as well as sizing; that argument, with receipts, is
+    # machines/services2/STRATA.md, "The conversation cache cannot be bought with the swap
+    # file", and it reads identically on this card.  Slots=3 matches the three-conversation
+    # budget; min-tokens 2048 is the guard that stops a one-shot probe evicting a real
+    # conversation (its log line is `skip parking (N tokens, below the M minimum)`).
     "--conversation-cache-mib"
-    "0"
+    "1536"
+    "--conversation-cache-slots"
+    "3"
+    "--conversation-cache-min-tokens"
+    "2048"
     # Plan v0.3 P6 delivers the "PCIe" share (the cache misses handed to the GPU
     # instead of the CPU pool) three ways: `dma` stages them with the copy engine,
     # `direct` lets the grouped kernel read the pinned expert arena through its
@@ -312,6 +329,26 @@
         # the same verify timeout. Keeping ROCr off USERPTR for paged host
         # allocations avoids it (measured as the same median upstream).
         HSA_USERPTR_FOR_PAGED_MEM = "0";
+
+        # THE PROMPT PATH'S NUMBERS CHANGE WITH THIS ONE - and on this box it pays 2.21x.
+        # The engine printed the tip on every start of this card (`strata prefill: HIP
+        # device 0 gfx1030 - tip: STRATA_HIP_PROMPT_F16=1 reads long prompts about 2x
+        # faster here (FP16 prompt GEMMs, rocBLAS is tuned only for FP16 on gfx103x; the
+        # numbers differ slightly, see docs/AMD_HIP.md)`); it is opt-in at
+        # src/prefill/gemm.cu:588 (#835) and, when on, replaces the tip with its own
+        # line ending "not bit-identical" (gemm.hpp:137 is the 0/1 override).
+        # Measured here 2026-10-28 against the same 13,069-token prompt: 349.7 s (37.4
+        # tok/s) before, 158.4 s (82.5 tok/s) after, and a second fresh prompt in the
+        # after arm read at 81.7 tok/s - so the claim is real on this hardware, and
+        # prefill is the wall this box actually has (a 100K-token prompt: ~45 min at the
+        # old rate, ~20 min at this one).  Decode is untouched (10.4-12.4 tok/s both
+        # arms), as expected for a prompt-path switch.
+        # What it costs: "not bit-identical" is upstream's wording, and this box cannot
+        # bound it - greedy output at temperature 0 is already not reproducible here run
+        # to run (docs/follow-ups.md, "An md5 of the completion is a weak A/B instrument"),
+        # so no digest comparison would have meant anything either way.  Revert = delete
+        # this line; it is env, so the revert is one restart and no rebuild.
+        STRATA_HIP_PROMPT_F16 = "1";
       };
       # Not set, and deliberately so - both are levers with a measurement attached:
       #   * STRATA_ROCBLAS_TUNING (new with 0.1.4x, gfx103x only, and for us):
