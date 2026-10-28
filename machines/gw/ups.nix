@@ -499,7 +499,13 @@ in {
       };
     };
 
-    schedulerRules = upsschedConf;
+    # `schedulerRules` is `types.str` in this nixpkgs module (its own default is a
+    # string too), and the module hands it straight to
+    # `environment.etc."nut/upssched.conf".source` — so a derivation here is an
+    # eval error, found by `nixos-rebuild build` rather than by the router's
+    # eval-only gate.  `toString` on a `writeText` is its store path, which is
+    # exactly what the default form is.
+    schedulerRules = toString upsschedConf;
   };
 
   # `ups-trigger` writes the reason file into /run, and `ups-watchdog` reads it
