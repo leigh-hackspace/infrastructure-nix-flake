@@ -93,6 +93,32 @@
   # string, one place.
   upsName = "apc";
 
+  # Every event this box answers, named once here.  `upssched.conf` EXECUTEs these
+  # names (or starts a timer that expires into one) and `upsTrigger` has a `case`
+  # arm per name, and the `assertions` below refuse the day the two halves stop
+  # agreeing — which they had, in a sense, at the first deploy: the names matched
+  # each other perfectly and the *argument convention* did not, so every event fell
+  # through to "unhandled", logged a warning, and exited 0.  Upssched, upsmon and
+  # systemd all recorded a success.  A name-only review could not have found that;
+  # the reading of a real journal did, so see §6's drill before trusting any of it.
+  #
+  # The contract `upssched` keeps, measured on this NUT 2.8.4 with a throwaway
+  # CMDSCRIPT and a five-second timer (the man page reads as two arguments and the
+  # first draft of this file believed it):
+  #
+  #   * **one** argument.  `$1` is the `EXECUTE` name, or the *timer* name when a
+  #     timer expires.  There is no `$2`.
+  #   * `$UPSNAME` is set for an `EXECUTE` and **empty on the timer path** — the
+  #     timer path being the outage countdown this module exists for.  Nothing
+  #     load-bearing may read it, so the dispatcher uses `$1` alone.
+  evOutage = "${upsName}-outage";
+  evLowBattery = "${upsName}-low-battery";
+  evShutdown = "${upsName}-shutdown";
+  evObserving = "${upsName}-observing";
+  evRestored = "${upsName}-restored";
+  evCommLost = "${upsName}-comm-lost";
+  eventNames = [evOutage evLowBattery evShutdown evObserving evRestored evCommLost];
+
   # Seconds the outage has to last before the fleet goes.  Sized for a flicker
   # and a generator start, not for an outage: the XS 1400U carrying a router and
   # nothing else has tens of minutes of runtime, and 300 s of that is not what
@@ -166,9 +192,10 @@
 
   # The dispatcher: NUT's one entry point into the fleet.
   #
-  # `upssched` calls CMDSCRIPT as `<upsname> <event>` and `upsmon`'s SHUTDOWNCMD
-  # is a shell line, so both call this with the same two arguments and the event
-  # names are the ones the generated `upssched.conf` uses.
+  # `upssched` calls CMDSCRIPT with the event name as its only argument (see
+  # `eventNames` for the measurement and for why both halves are generated from one
+  # table), and `upsmon`'s SHUTDOWNCMD is a shell line that passes that same name
+  # explicitly, so the two entry points arrive identically.
   #
   # `--no-block` is not a style choice.  This script runs as a child of `upsmon`
   # inside a notification callback: if it waited for the whole sequence — five
@@ -176,15 +203,22 @@
   # for the duration, and an `ONLINE` arriving then is worth nothing.
   #
   # It runs as root because `upsmon` does (see `power.ups.upsmon.user`), and it
-  # needs root to start a system unit; `machines/gw/README.md`'s "least privilege
-  # we already pay for" note in docs/ups-and-fleet-shutdown.md says what the
-  # unrooted version would cost.
-  upsTrigger = pkgs.writeShellScript "ups-trigger" ''
+  # needs root to start a system unit; `docs/ups-and-fleet-shutdown.md` says what
+  # the unrooted version would cost.
+  #
+  # Kept as a string rather than handed straight to `writeShellScript` so the
+  # `assertions` below can compare it with `upsschedConfText` at eval time — an
+  # eval that reads either derivation would *build* it, and this box must never
+  # compile during an evaluation (AGENTS.md rule 22).
+  upsTriggerText = ''
     #!${pkgs.runtimeShell} $@
     set -u
 
-    ups="''${1:-unknown}"
-    event="''${2:-unknown}"
+    # One argument, the event name (`eventNames` has the measurement).  Anything
+    # else this is handed is a finding, so it is logged rather than guessed at.
+    event="''${1:-}"
+    argc=$#
+    matched=0
 
     reason=""
     start=0
@@ -192,20 +226,25 @@
     priority=info
     case "$event" in
       # The grace timer expired: still on battery after ${toString graceSeconds}s.
-      ${upsName}-outage)
+      # The one event that arrives with no `$UPSNAME` behind it, being a timer.
+      ${evOutage})
+        matched=1
         reason=outage-grace-expired
         start=1
+        priority=crit
         ;;
       # NUT says the battery is nearly empty.  The grace period is over, whatever
       # the clock says.
-      ${upsName}-low-battery)
+      ${evLowBattery})
+        matched=1
         reason=low-battery
         start=1
         priority=crit
         ;;
       # upsmon reached its own power-off decision.  Same sequence, different
       # witness; `ups-watchdog` treats it as "already late".
-      ${upsName}-shutdown)
+      ${evShutdown})
+        matched=1
         reason=upsmon-shutdown
         start=1
         priority=crit
@@ -215,71 +254,98 @@
       # written to ${stateDir}/notice, the unit reads it back.  A per-event unit
       # would be three units whose ExecStart lines differ by one sentence, and
       # three ways to deploy a message that disagrees with another.
-      ${upsName}-observing)
+      ${evObserving})
+        matched=1
         notice="POWER OUTAGE DETECTED|On battery at $(${pkgs.coreutils}/bin/date -u '+%Y-%m-%dT%H:%M:%SZ').|The servers power off in ${toString graceSeconds}s unless mains return.|Nothing has been switched off yet.|On gw: 'systemctl stop ups-fleet-shutdown' stops it; 'journalctl -fu ups-watchdog' watches it."
         ;;
-      ${upsName}-restored)
+      ${evRestored})
+        matched=1
         notice="MAINS RESTORED|Utility power is back at $(${pkgs.coreutils}/bin/date -u '+%Y-%m-%dT%H:%M:%SZ').|The outage timer was cancelled; no shutdown, no restart, nothing to do.|If a fleet shutdown had already started it cannot be undone: check 'journalctl -u ups-fleet-shutdown'."
         ;;
-      ${upsName}-comm-lost)
+      ${evCommLost})
+        matched=1
         notice="UPS UNREACHABLE|gw can no longer read the UPS at $(${pkgs.coreutils}/bin/date -u '+%Y-%m-%dT%H:%M:%SZ').|The outage countdown was cancelled: nothing will be powered off on the strength of a UPS we are not reading.|If mains really are gone, this box is now running on battery with no clock on it: 'journalctl -u upsdrv -u upsd' on gw."
         ;;
       *)
-        printf '%s\\n' "unhandled event '$event' (ups=$ups)" \
-          | ${pkgs.systemd}/bin/systemd-cat -t ups-watchdog -p warning
         ;;
     esac
+
+    if [ "$matched" = 0 ]; then
+      # Loud, and nonzero, and it says what it was actually handed: this branch is
+      # where a dispatcher/`AT`-line seam disagreement lands, and the first version
+      # of it logged `warning` and exited 0 — which is how "no event has ever been
+      # handled" looked like a healthy boot.  argv goes out verbatim because the
+      # only useful thing a reader can do with this line is compare it to the conf.
+      printf '%s\n' "unhandled event: argc=$argc argv=[$1] UPSNAME=[''${UPSNAME:-}] — nothing was started; check the AT lines in /etc/nut/upssched.conf against $0" \
+        | ${pkgs.systemd}/bin/systemd-cat -t ups-watchdog -p err
+      exit 1
+    fi
 
     if [ -n "$notice" ]; then
       ${pkgs.coreutils}/bin/mkdir -p ${stateDir}
       # `|` is the line separator: the notice file's first line is the headline
       # and the rest is the body (`ups-watchdog`'s notice_text does the split).
-      printf '%s\\n' "$notice" | ${pkgs.coreutils}/bin/tr '|' '\\n' > ${stateDir}/notice
-      printf '%s\\n' "event $event: broadcasting to the fleet" \
+      printf '%s\n' "$notice" | ${pkgs.coreutils}/bin/tr '|' '\n' > ${stateDir}/notice
+      printf '%s\n' "event $event: broadcasting to the fleet" \
         | ${pkgs.systemd}/bin/systemd-cat -t ups-watchdog -p info
       ${pkgs.systemd}/bin/systemctl start --no-block ups-notice.service
     fi
 
     if [ "$start" = 1 ]; then
       ${pkgs.coreutils}/bin/mkdir -p ${stateDir}
-      printf '%s\\n' "$reason" > ${stateDir}/reason
-      printf '%s\\n' "event $event: starting ups-fleet-shutdown.service (reason $reason)" \
+      # One line, no trailing punctuation: `ups-watchdog` reads the reason file's
+      # first line verbatim, and a stray `\n` here (which is what a `%s\\n` in an
+      # indented Nix string writes) lands in `--reason` and reads as "unknown".
+      printf '%s\n' "$reason" > ${stateDir}/reason
+      printf '%s\n' "event $event: starting ${fleetUnit}.service (reason $reason)" \
         | ${pkgs.systemd}/bin/systemd-cat -t ups-watchdog -p "$priority"
-      ${pkgs.systemd}/bin/systemctl start --no-block ups-fleet-shutdown.service
+      ${pkgs.systemd}/bin/systemctl start --no-block ${fleetUnit}.service
     fi
   '';
+
+  upsTrigger = pkgs.writeShellScript "ups-trigger" upsTriggerText;
 
   # `upssched.conf`.  The two `START-TIMER`/`CANCEL-TIMER` lines are the whole
   # outage policy, and they are here rather than in Rust so that the countdown
   # lives beside the thing that raises the events.
-  upsschedConf = pkgs.writeText "upssched.conf" ''
+  #
+  # Every event name is an `ev…` binding from `eventNames`, and the `assertions`
+  # below compare the two files, so a rule that fires into a dispatcher with no arm
+  # for it cannot be deployed.  There is deliberately **no `DATADIR`**: it is not a
+  # directive this `upssched` knows, and the first draft shipped one, which printed
+  # `upssched.conf: invalid directive DATADIR` and `Encountered 1 config errors`
+  # on the one path that has to work during a power cut.  What that means for
+  # behaviour: the timer lives in the daemon's memory, so a `gw` reboot forgets an
+  # outage in progress (the next `ONBATT` re-arms it, and `ONLINE` needs no timer).
+  upsschedConfText = ''
     CMDSCRIPT ${upsTrigger}
     PIPEFN /run/nut/upssched.pipe
     LOCKFN /run/nut/upssched.lock
-    DATADIR /run/nut/upssched
 
     # The outage timer: armed by ONBATT, disarmed by ONLINE, fires as the event
-    # `${upsName}-outage` when it expires.  A second ONBATT while it runs does not
+    # `${evOutage}` when it expires.  A second ONBATT while it runs does not
     # restart it (upssched refuses a duplicate timer), which is the behaviour we
     # want: the clock starts at the first sign of the outage.
-    AT ONBATT * START-TIMER ${upsName}-outage ${toString graceSeconds}
-    AT ONBATT * EXECUTE ${upsName}-observing
-    AT ONLINE * CANCEL-TIMER ${upsName}-outage
-    AT ONLINE * EXECUTE ${upsName}-restored
+    AT ONBATT * START-TIMER ${evOutage} ${toString graceSeconds}
+    AT ONBATT * EXECUTE ${evObserving}
+    AT ONLINE * CANCEL-TIMER ${evOutage}
+    AT ONLINE * EXECUTE ${evRestored}
 
     # Low battery does not wait for the timer; it pre-empts it.
-    AT LOWBATT * EXECUTE ${upsName}-low-battery
+    AT LOWBATT * EXECUTE ${evLowBattery}
 
     # And if the UPS stops answering, the timer is cancelled rather than trusted.
     # A countdown to powering off a network that is being driven by a UPS we can no
     # longer read is a worse failure than the hard-off it was preventing:
     # `ups-watchdog` has no proof either way at that point, and this line is where
     # that is decided.
-    AT COMMBAD * CANCEL-TIMER ${upsName}-outage
-    AT COMMBAD * EXECUTE ${upsName}-comm-lost
-    AT TIMEDOUT * CANCEL-TIMER ${upsName}-outage
-    AT TIMEDOUT * EXECUTE ${upsName}-comm-lost
+    AT COMMBAD * CANCEL-TIMER ${evOutage}
+    AT COMMBAD * EXECUTE ${evCommLost}
+    AT TIMEDOUT * CANCEL-TIMER ${evOutage}
+    AT TIMEDOUT * EXECUTE ${evCommLost}
   '';
+
+  upsschedConf = pkgs.writeText "upssched.conf" upsschedConfText;
 
   # Seconds the notice has to be on the screen before the first hop.  The
   # intervention it is buying is one command (`systemctl stop
@@ -401,8 +467,43 @@
     ++ sharedArgs;
 
   fleetUnit = "ups-fleet-shutdown";
+  # The event names the generated `upssched.conf` actually fires, read back out of
+  # the text of the file before it is deployed: `AT <notify> <flags> <ACTION> <name>`
+  # has the name in the fifth field, and that is the only shape used here.
+  confEventNames = lib.unique (
+    builtins.filter (n: n != "") (
+      map (
+        line: let
+          fields = lib.strings.splitString " " line;
+        in
+          if builtins.length fields >= 5 && builtins.elemAt fields 0 == "AT"
+          then builtins.elemAt fields 4
+          else ""
+      ) (lib.strings.splitString "\n" upsschedConfText)
+    )
+  );
+
+  # …and the five expected from `upssched`.  The sixth, `evShutdown`, is not
+  # an `AT` line at all: `upsmon` raises it through `SHUTDOWNCMD` when it reaches
+  # its own power-off decision.
+  expectedConfEvents = [evOutage evObserving evRestored evLowBattery evCommLost];
 in {
   assertions = [
+    {
+      # The seam that broke at the first deploy was between these two generated
+      # files, and it was invisible to reading either one: the names matched and the
+      # argument convention did not, so every event fell through to "unhandled",
+      # logged a warning and exited 0.  So: every name the conf fires must be a
+      # known event *and* have a `case` arm; every known event must be fired by the
+      # conf or by `SHUTDOWNCMD`; and the conf must fire exactly the five expected,
+      # which is what catches the arm-without-a-rule direction too.
+      assertion =
+        (builtins.all (n: builtins.elem n eventNames) confEventNames)
+        && (builtins.all (n: lib.strings.hasInfix "${n})" upsTriggerText) eventNames)
+        && (builtins.sort builtins.lessThan confEventNames
+          == builtins.sort builtins.lessThan expectedConfEvents);
+      message = ''machines/gw/ups.nix: `upssched.conf` and the `ups-trigger` dispatcher disagree. The conf fires ${builtins.concatStringsSep ", " confEventNames}; the dispatcher has arms for ${builtins.concatStringsSep ", " eventNames}; the expected set is ${builtins.concatStringsSep ", " expectedConfEvents} plus ${evShutdown} from SHUTDOWNCMD. A name with no arm is an event that does nothing, silently — read the header of eventNames in this file before editing either side.'';
+    }
     {
       # `nutPasswordFile` lives in the world-readable store, which is only
       # acceptable while nothing outside this box can be asked to present it.
@@ -494,7 +595,7 @@ in {
         # starts. `upsmon` re-runs SHUTDOWNCMD every 5 s until the machine is
         # down, and `RemainAfterExit` on the unit is what makes the second and
         # third of those starts do nothing at all.
-        SHUTDOWNCMD = "${upsTrigger} ${upsName} ${upsName}-shutdown";
+        SHUTDOWNCMD = "${upsTrigger} ${evShutdown}";
         # upsmon → upssched. The module sets this by default; it is stated
         # because everything above depends on it and a default is not a contract.
         NOTIFYCMD = "${config.power.ups.package}/bin/upssched";

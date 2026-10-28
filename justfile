@@ -364,6 +364,30 @@ ups-drill:
     sudo systemctl start ups-fleet-shutdown-dry.service
     journalctl -u ups-fleet-shutdown-dry.service --no-pager -n 40
 
+# The one drill that other people can see: a real `ONBATT` through `upssched`, and
+# the `ONLINE` that cancels it.  Between the two, every server's terminals are
+# walled with `POWER OUTAGE DETECTED` and the 300 s countdown is genuinely armed —
+# which is the only part of this design the dry unit cannot prove, because the dry
+# unit starts `ups-watchdog` directly and this starts it the way NUT does: upsmon's
+# NOTIFYCMD, upssched's rules, CMDSCRIPT, unit.
+#
+# Say so before running it.  And do not run the two halves by hand and stop after
+# the first: an uncancelled ONBATT ends with the fleet powering off.  The recipe
+# therefore runs the cancel whatever the notice did (no `set -e` in the one-liner,
+# `;` not `&&`) and finishes by asking whether the daemon is still alive, which is
+# the observable proof that nothing is counting down — `upssched` self-daemonises and
+# exits when its timer queue empties, so a live process here means an armed timer.
+#
+# `NUT_CONFPATH` is not decoration: it is how the NixOS units tell NUT where its
+# config is, and without it `upssched` reads the package's own `etc/` and fails with
+# `Can't open …/etc/upssched.conf` — measured, and it looks exactly like a feature
+# that was never wired up.  §6 of docs/ups-and-fleet-shutdown.md has the contract
+# this recipe is written against, and the throwaway-config proof of it.
+ups-drill-notify:
+    @echo "typing this walls every server: services1, services2, aibox, and this box"
+    @sudo sh -c 'NUT_CONFPATH=/etc/nut NUT_STATEPATH=/var/lib/nut UPSNAME=apc NOTIFYTYPE=ONBATT upssched; echo "--- ONBATT rc=$?"; sleep 5; systemctl show -p Result -p ExecMainStatus --value ups-notice.service; NUT_CONFPATH=/etc/nut NUT_STATEPATH=/var/lib/nut UPSNAME=apc NOTIFYTYPE=ONLINE upssched; echo "--- ONLINE rc=$?"; sleep 3; echo "--- anything still counting down?"; pgrep -a upssched || echo "no upssched daemon: nothing is armed"'
+    journalctl -u ups-notice -t ups-watchdog --no-pager -n 25 || true
+
 # How the outage policy is configured right now, as deployed.
 #
 # The countdown, the cancel-on-restore and the event→notice wiring are all in one
@@ -380,6 +404,9 @@ ups-events:
     for u in ups-notice ups-fleet-shutdown ups-fleet-shutdown-dry; do
         printf '%-26s %s\n' "$u" "$(systemctl is-enabled $u.service 2>&1) / $(systemctl is-active $u.service 2>&1)"
     done
+    echo
+    echo "=== anything counting down right now?"
+    pgrep -a upssched || echo "no upssched daemon: no timer armed (that is the idle state)"
     echo
     echo "=== the last thing each of them did"
     journalctl -u ups-watchdog -u ups-notice -u ups-fleet-shutdown --no-pager -n 30 || true

@@ -181,7 +181,34 @@ Two consequences worth keeping straight either way:
 | the notice reaches every server | `just ups-notice-test` | anything about the shutdown path — it runs `broadcast`, not `run` |
 | the shutdown list and argv | `just ups-drill` | that ssh works from `gw` (dry-run skips the hops *and* the sleeps) |
 | the policy as deployed | `just ups-events` | that NUT accepted `upssched.conf` (read `journalctl -u upsmon`) |
-| the whole chain | `sudo upssched apc ONBATT` (the NOTIFYCMD contract: `<upsname> <event>`) | — this is as close to a live drill as gets without unplugging; it starts the real 300 s timer and the real notice, so follow it with `sudo upssched apc ONLINE` |
+| the whole chain | `just ups-drill-notify` (sends a real `ONBATT` through `upssched`, then `ONLINE` to cancel it) | this is as close to a live drill as gets without unplugging: it starts the real 300 s timer and the real notice to every server, so it **must** be followed by the cancel — the recipe does both, back to back |
+| is a timer armed right now | `pgrep -a upssched` | that the timer is the one you think; `upssched` self-daemonises and **exits when its queue empties**, so "no process" is the healthy idle state and a running one means something is counting down |
+
+**`upssched`'s contract, measured (NUT 2.8.4) rather than read:** it calls `CMDSCRIPT`
+with **one** argument — the `EXECUTE` name, or the *timer* name on expiry — and sets
+`$UPSNAME` only for the `EXECUTE` path, **empty when a timer fires**. The first
+draft of `machines/gw/ups.nix` passed `<upsname> <event>` because the man page reads
+that way, so every event fell through to "unhandled", logged a warning and exited 0:
+upsmon, upssched and systemd all recorded a success and nothing worked. That is why
+the event names come from one table, why an unmatched event is now `err` and
+nonzero, and why the throwaway-config proof below is the recipe to re-run if a
+future NUT changes it:
+
+```bash
+# Nothing here touches the fleet: a private CMDSCRIPT, pipe and lock, a 5 s timer.
+mkdir -p /tmp/prove && printf '%s\n' '#!/run/current-system/sw/bin/bash' \
+  '{ echo "argc=$# arg1=[$1] arg2=[$2] UPSNAME=[$UPSNAME]"; } >> /tmp/prove/log' > /tmp/prove/cmd.sh
+chmod 755 /tmp/prove/cmd.sh && printf '%s\n' 'CMDSCRIPT /tmp/prove/cmd.sh' 'PIPEFN /tmp/prove/pipe' \
+  'LOCKFN /tmp/prove/lock' 'AT ONBATT * START-TIMER prove-timer 5' 'AT ONBATT * EXECUTE prove-immediate' > /tmp/prove/upssched.conf
+sudo env NUT_CONFPATH=/tmp/prove NUT_STATEPATH=/tmp/prove UPSNAME=proveups NOTIFYTYPE=ONBATT upssched
+sleep 8; cat /tmp/prove/log; sudo pkill -x upssched; rm -rf /tmp/prove
+```
+
+`NUT_CONFPATH` is not optional in any manual `upssched` call: it is how the NixOS
+units tell NUT where its config is, and without it `upssched` looks inside the
+package's own `etc/` and fails with `Can't open …/etc/upssched.conf` — which is what
+the first "drill" on this box actually reported, and it looked like a dead design
+rather than a missing environment variable.
 
 Two things the drill cannot tell you, and both bite: ssh from `gw` to each target
 with the hop key (a host-key rotation means `StrictHostKeyChecking=yes` refuses
@@ -209,6 +236,42 @@ Proven by activating it and reading the box:
   tested); a notice with no remote targets printed the *shutdown's* "the rest of the
   network runs on to a dead switch" sentence; and `Documentation=` wanted a URL, not
   a repo path, so systemd logged `Invalid URL` on every start.
+* **Three more, in the shell half**, found by sending a real `ONBATT` (§6): the
+  dispatcher read its event from `$2` because the man page reads as two arguments
+  and `upssched` passes one, so **every event fell through to "unhandled"** while
+  upsmon, upssched and systemd each logged success; `printf '%s\\n'` inside an
+  indented Nix string writes a literal backslash-n, so the reason file would have
+  read as "unknown" (a `LOWBATT` losing its "already late" handling) and the
+  broadcast text would have ended in `\n`; and `DATADIR` is not an `upssched`
+  directive at all, so the generated config printed `invalid directive` and
+  `Encountered 1 config errors` on the power-cut path. The event names are now one
+  table with an `assertions` entry comparing the generated conf against the
+  generated dispatcher, and an unmatched event is `err` + nonzero rather than a
+  warning + 0.
+* **`upssched` self-daemonises and exits when its timer queue empties**, so `pgrep
+  upssched` is the way to ask "is anything counting down?" and the absence of a
+  process is healthy idle, not a missing service. There is no `upssched.service`
+  in this repo and none is wanted: `NOTIFYCMD` starts it on demand. Its own
+  bookkeeping (`Timer daemon started`, `Cancelling timer: …`) goes to syslog
+  facility `daemon`, which this box does not collect — so the *journal* is not
+  evidence that a timer was armed or cancelled, and `just ups-events` asks the
+  process table instead.
+* **The notice path works, over ssh, twice in one boot.** A real `ONBATT` produced
+  `POWER OUTAGE DETECTED` on gw's terminals and on services1, services2 and aibox
+  (`gw: notified`, `services1: notified`, …, unit exit 0), and the following
+  `ONLINE` produced `MAINS RESTORED` the same way — which also proves
+  `ups-notice.service` is not `RemainAfterExit` and so fires on every event rather
+  than once per boot. What it does not prove is that a human was there to read one, and it
+  has one known gap: the dispatcher uses `systemctl start`, so an event arriving
+  *while* a notice is being delivered is a no-op (the job is already queued) and that
+  message is lost. Events are seconds to minutes apart in practice and a notice takes
+  under a second per recipient; `restart` would be worse, because it kills the hops
+  already in flight.
+* `systemctl mask` **does not work as an emergency brake on NixOS**: the unit file
+  is a symlink into the store and `mask` refuses it (`already exists and is a
+  symlink`), so the safety net for a drill is `--dry-run`/`--no-poweroff` in the
+  drill unit, and for a live sequence it is `systemctl stop ups-fleet-shutdown` —
+  which is what the wall message says, and why the wall message says that.
 * **Three eval errors the router's own gate cannot see**, because `just check-eval`
   evaluates no machine config: two `types.str` options (`power.ups.schedulerRules`,
   `power.ups.users.<x>.passwordFile`) handed derivations, and one integer
@@ -242,10 +305,15 @@ Still not verified, and none of it should be trusted until it is:
    VMs this flake does not own; `docs/monster-powercut-runbook.md` is the runbook for
    that box being down, not a plan. Until it is settled, this feature powers off the
    *flake machines* and the router can still go while the NAS is serving NFS.
-5. **Nobody has watched a real `ONBATT`.** `upssched` has never fired a timer here
-   and a notice has never crossed ssh to another box. `sudo upssched apc ONBATT`
-   (then `… apc ONLINE`) is the drill that changes that; run it with the fleet's
-   knowledge, because it really does wall every server.
+5. **Nobody has watched a real `ONBATT`** — closed, in part: `just ups-drill-notify`
+   has now done it (§6), and the notice, the timer, the cancel and the dispatcher
+   all behaved. Still open: a *real* `OB`/`LOWBATT` from the driver rather than a
+   notification typed by hand, and a human confirming they saw the wall.
+6. **The shutdown half has still never run.** The drill unit prints the ordered argv
+   and exits 0; no box has ever been powered off by this code, and the 30 s notice
+   window, the 20 s per-hop limit and the 10 s settle are judgement against that
+   measured 860 s of claimed runtime. The one command that would prove it for real
+   is a controlled discharge with a sacrificial machine on the UPS (§7.1).
 
 ## 8. Read also
 

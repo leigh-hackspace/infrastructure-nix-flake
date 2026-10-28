@@ -1567,28 +1567,35 @@ that **need an owner or a decision** rather than another measurement.
 
 ## UPS and the power-cut path (gw) — opened 2026-10-28, `docs/ups-and-fleet-shutdown.md` owns it
 
-Deployed 2026-10-28: a Back-UPS XS 1400U on `gw`'s USB port, NUT
-(`machines/gw/ups.nix`), a 300 s `upssched` grace timer, notices that `wall`
-every server, and `crates/ups-watchdog` powering `services1`/`services2`/`aibox`
-off over the hop key before the router powers itself off. **None of it has been
-through a real outage**, so the items below are ordered by "what would embarrass
-us at 04:00", not by size.
+Deployed 2026-10-28 and drilled the same evening: a Back-UPS XS 1400U on `gw`'s USB
+port, NUT (`machines/gw/ups.nix`), a 300 s `upssched` grace timer, notices that
+`wall` every server, and `crates/ups-watchdog` powering
+`services1`/`services2`/`aibox` off over the hop key before the router powers
+itself off. The notice path has now crossed ssh for real (`just ups-drill-notify`);
+the shutdown path has run only as a drill. **None of it has been through a real
+outage**, so the items below are ordered by "what would embarrass us at 04:00", not
+by size.
 
-- **Does this firmware implement `shutdown.return`/`load.off` at all?** (unmeasured
-  2026-10-28, and it is the one that decides whether the network comes back by
-  itself). The sequence ends by writing NUT's POWERDOWNFLAG so
-  `ups-killpower.service` runs `upsdrvctl shutdown` at shutdown; if the UPS
-  ignores that instant command the outlets stay live, `gw` sits at its power
-  button, and "the network recovers on its own" is a story we told ourselves.
-  **Blocks:** trusting an unattended recovery. **Do not** test by sending instant
-  commands to a UPS carrying the router. **Needs:** `upscmd -l apc@localhost`
-  recorded in the doc, then one controlled discharge **with a spare box on the
-  UPS as the sacrificial load**, watching `journalctl -u ups-killpower`.
+- **`upsdrvctl shutdown` will not be obeyed, and that is NUT's own default.**
+  (measured 2026-10-28: `upsc apc@localhost` reports
+  `driver.flag.allow_killpower: 0`, and NUT 2.8 refuses to send the killpower
+  command without that flag.) So the recovery story in
+  `docs/ups-and-fleet-shutdown.md` §5 — the UPS drops its output and returns it with
+  mains — is **not armed**: after an outage that outlasts the battery, `gw` powers
+  off, its outlets stay live, and the network comes back when a person walks up to
+  it. It is left off deliberately, because enabling it means this sequence really
+  does cut the power. **Blocks:** any claim that the network recovers unattended.
+  **Do not** probe with instant commands on a UPS carrying the router. **Needs:**
+  the operator's decision on the flag (the exact `ups.conf` spelling for NUT 2.8 is
+  worth checking against upstream rather than guessing into a module), then one
+  controlled discharge **with a spare box on the UPS as the sacrificial load**,
+  watching `journalctl -u ups-killpower` — which also answers whether this firmware
+  implements `shutdown.return` at all, since that question sits behind the flag.
 - **Does this BIOS power on after AC loss?** ("Restore on AC Power Loss → Power
-  On"; unreadable from the running system, and it is the second half of the same
-  recovery story — the UPS returning its load does nothing if the board stays
-  off.) **Needs:** the setting read/photographed at the next physical visit and
-  the answer written into `docs/ups-and-fleet-shutdown.md` §5.
+  On"; unreadable from the running system, moot while `allow_killpower` is off —
+  there is no AC cycle to detect — and half the recovery story once it is on.)
+  **Needs:** the setting read/photographed at the next physical visit and the answer
+  written into `docs/ups-and-fleet-shutdown.md` §5.
 - **The NAS and `monster1` are not in the shutdown list, and it is not known
   whether they are even on this UPS.** `nas` is TrueNAS — not a flake machine, its
   own shutdown verb — and monster1 hosts VMs this flake does not own; the second
@@ -1598,29 +1605,36 @@ us at 04:00", not by size.
   the NAS and monster1 are actually plugged into, then either their shutdown in
   the right place in `shutdownTargets` (NAS after `services1`, before the router)
   or a sentence saying why they are on a different UPS.
-- **Nobody has seen a real `OB`, and every number is judgement.** 300 s of grace,
-  30 s of notice window, 10 s settle, 20 s per hop: none measured. The battery
-  figure the grace period should be derived from — `battery.runtime` at the real
-  load, on a unit of unknown service history (firmware 926.x, serial
-  `4B1836P34201`) — has never been read under discharge. **Needs:** the first
-  `just ups-status` on battery in the doc, and the grace period restated as
-  `runtime − (the sequence + margin)` rather than a round number. The drill path
-  (`just ups-notice-test`, `just ups-drill`, then `sudo upssched apc ONBATT` — the
-  NOTIFYCMD contract, `<upsname> <event>` — followed by the matching `sudo upssched
-  apc ONLINE`) is §6 of the doc.
-- **`upsc`'s anonymous localhost read on NUT 2.8 is unproven here.** The nixpkgs
-  module writes no `ACCEPT` line, so the re-check is *advisory by design* — if it
-  turns out to need credentials the behaviour degrades to "always trust the
-  timer", which is the ask, but it also means the "OL means abort" guard is
-  silently off. **Needs:** `upsc apc@localhost ups.status` by hand after the first
-  deploy; if it refuses, a `power.ups.users` entry and a credential in sops (which
-  also means the loopback-only assertion in `machines/gw/ups.nix` has to be
-  revisited — its password is a store path *because* nothing remote can use it).
-- **No alerting of any kind reaches a human who is not in front of a terminal.**
-  The notices are `wall`, so an unattended building reads none of them; the
-  journal is the only record, and `ups-notice` exiting 30 (somebody was missed) is
-  visible only to whoever asks. **Blocks:** nothing, and it is explicitly *not* in
-  scope for a shutdown path — an alert that can fail must never be the reason the
-  sequence stops. **Needs:** if it is wanted, a Grafana/Alertmanager rule on the
-  NUT metrics or a gatus endpoint (`common/monitoring-endpoints.nix`), not a
-  webhook embedded in `ups-fleet-shutdown.service`.
+- **`battery.runtime: 860` is a manufacturer's number, not a measurement — and the
+  pack is eight years old.** (measured 2026-10-28 at `battery.charge: 100`, with
+  `battery.runtime.low: 120` and `battery.charge.low: 10`; `battery.mfr.date` is
+  **2018-09-08** and `battery.date` is the nonsense `2001-09-25`.) The 300 s grace is
+  about half the claimed runtime, which is defensible arithmetic; what is not
+  defensible is the 860. **Needs:** one timed discharge with the real load on it,
+  the grace period restated as `runtime − (the sequence + margin)` rather than a
+  round number, and probably a replacement pack (which also re-opens the `OB` →
+  `LOWBATT` timing the whole policy is sized around).
+- **`upssched`'s own bookkeeping goes nowhere.** It logs to syslog facility
+  `daemon`, which this box does not collect, so `Timer daemon started` and
+  `Cancelling timer: …` are absent from the journal: you cannot tell from the
+  journal whether a timer was armed or cancelled. `pgrep -a upssched` is the
+  workaround (the daemon self-starts and exits when its queue empties) and
+  `just ups-events` prints it. **Blocks:** reading an outage after the fact. **Do
+  not** make alerting a dependency of the shutdown path. **Needs:** either
+  `upssched -D` in a debug run during a drill, or a decision on collecting NUT's
+  syslog; and if it is wanted, a Grafana/Alertmanager rule on the NUT metrics or a
+  gatus endpoint (`common/monitoring-endpoints.nix`) — not a webhook embedded in
+  `ups-fleet-shutdown.service`.
+- **Nobody who was not at a keyboard has seen one of these notices.** The notices
+  are `wall`, so an unattended building reads none of them — the 2026-10-28 drill
+  proved `ssh` + `wall` returns 0 on three boxes, not that anyone read it. **Needs:**
+  the next drill to be announced and acknowledged, and a sentence here saying a
+  person saw one on a terminal.
+
+**Closed by the 2026-10-28 deploy**, kept here so the questions are not re-asked:
+`upsc` over loopback needs no credentials (the nixpkgs module writes no `ACCEPT`
+line and the units' own read of `ups.status` returned `OL`; `upsd` binds
+`127.0.0.1:3493`/`::1` only, which the module's assertions insist on); a second
+`ups-notice` in one boot does fire (`Type=oneshot`, no `RemainAfterExit`), so every
+outage of a boot gets its broadcast; and `usbhid-ups` on `port = auto` finds this
+one UPS cleanly and reports it as an APC HID unit.
