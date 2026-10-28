@@ -854,6 +854,32 @@ the running service says, which is the part a bump is really judged on:
 
 Two operational notes from the switch itself:
 
+**The door half, same day.** `just deploy gw` landed 210731b on the router (the recipe
+fetches, switches and confirms in one ssh call; `system-good` and `/run/current-system`
+equal afterwards, `systemctl list-units --failed` empty, nginx and dnsmasq restarted
+to pick up the new row and the new hosts file). Per AGENTS rule 22 the mandatory
+follow-up is `systemctl start front-door-cert-check.service`, and it read
+`leighhack.org is CA-issued and not near expiry: issuer=C=US, O=Let's Encrypt, CN=YE2`
+— the only check that distinguishes a real certificate from the minica fallback.
+What the name then does, from a LAN client with **no key of its own**:
+
+```console
+$ getent ahostsv4 strata2.int.leighhack.org
+10.3.1.1  STREAM strata2.int.leighhack.org
+$ curl -s https://strata2.int.leighhack.org/v1/models | head -c 80
+{"object": "list", "data": [{"id": "qwen3.8-flash-next-iq2xs", …
+$ curl -s -o /dev/null -w '%{http_code} %{time_total}s\n' -X POST \
+    -H 'Content-Type: application/json' -d '{"model":"qwen3.8-flash-next-iq2xs",…220 tokens…}' \
+    https://strata2.int.leighhack.org/v1/chat/completions
+200 17.787979s      # 220 tokens = ~12.4 tok/s, the same rate as localhost
+```
+
+17.8 s for 220 tokens through TLS via the door is the same decode rate measured
+straight off `10.3.1.32:8080`, so the extra hop, `proxy_buffering off` and the
+injected `Authorization` cost nothing measurable. The first request after an idle
+engine took 41 s for 24 tokens — that is the ramp, not the door, and it is the reason
+the row carries `timeouts = "3600s"`.
+
 - **The activation failed with exit 4 and it was not strata.** `Failed to restart
   exports-netboot\x2dsquashfs.mount` — the Pi Room netboot export's mount — killed
   `switch-to-configuration` *after* `/run/current-system` had flipped and after
