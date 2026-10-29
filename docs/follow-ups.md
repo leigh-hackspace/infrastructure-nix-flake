@@ -1337,12 +1337,13 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   members do not have. **It is not the Authentik move's doing**: the config that walks
   nesting (`ldap_schema = rfc2307bis`, `ldap_group_member = member`) predates it by a year,
   and it only *starts* on the cutover day in aibox's persistent journal because 19:22:34 that
-  day is the last time sssd restarted and went cache-cold — which is also why it reads as new
-  on every netboot client, whose sssd cache is on tmpfs and so misses on every cold boot.
-  **To do:** decide which half is wrong — either make the walk work
-  (`ldap_group_nesting_level` is the knob, present in sssd 2.13.1's own API table
-  `sssd.api.d/sssd-ldap.conf`; the compiled default is 2), or stop treating the authentik tree
-  as a Unix group source and drop the nesting-shaped attrs. **Do not confirm the effective
+  day is the last time sssd restarted.  **Do not silence it with
+  `ldap_group_nesting_level = 0` either** — measured 2026-10-29 on a booted netboot client, the
+  option does not reduce the failures (9 cold-cache lookups became 18 with it set), because the
+  failing step is direct-membership processing, not a depth limit.  **To do:** fix the shape, not
+  the symptom — every user's primary `gidNumber` names **no group object at all** (105/105),
+  which is what sssd is erroring on, so give users a real primary group or stop treating this
+  tree as a Unix group source.  `docs/auth-posix-logins.md` F3. **Do not confirm the effective
   config with `sssd --diagnostic` into a transcript** — it dumps `ldap_default_authtok` in
   cleartext (rule 13). Reproduce: `just pxe-client-uefi`, ssh in as root from aibox, then
   `journalctl -b -u sssd | grep -i nested` and `id bobm6tma` beside `id Johnze`. **And do not
@@ -1351,6 +1352,49 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   events against `pgina` on 2026-10-29** (account still `is_active = t`, verified). Extract
   the token with `grep … | awk '{print $2}'` and assert it is non-empty before binding — a
   lockout on `pgina` is a fleet-wide auth outage.
+
+- **Every uid in the fleet is `2000 + an authentik Postgres primary key`, and that number *is*
+  the ACL on people's home directories** (measured 2026-10-29: `uidNumber == 2000 + id` for
+  105/105 users LDAP serves; no uid column, 0/106 users carry a `uidNumber` attribute, redis
+  `dbsize` 0; and `ds-home/cjdell` on the NAS is `uid=2013 gid=2013` mode `0700` while cjdell's
+  pk is 13).  Group gids are generated too, stored nowhere, and are not any simple hash of the
+  group name or uuid (11 known pairs; crc32/adler32/md5/sha1/sha256/blake2b × 7 input spellings
+  × 17 moduli, no match) — so the honest finding is that nothing pins them.  **Blocks:** any
+  restore that does not preserve primary keys; any delete-and-recreate of a user — reachable by
+  accident, because `gocardless-dashboard`'s nightly sync *creates* authentik users; and any edit
+  to the provider's `uid_start_number`, which is a field in the web UI.  Failure order: the
+  person loses their home (`0700`, so not even an admin group can clean it up), then whoever is
+  later assigned that number gains it.  **To do:** `crates/authentik-posix --audit` first — dump
+  the map, cross-check against the NAS, alert on drift — then pin the numbers as stored
+  attributes, with the tool allowed to write only a number the files already use and required to
+  refuse otherwise.  `docs/auth-posix-logins.md` §P1.
+
+- **The netboot image ships a bind credential it cannot keep, and there is a way to stop needing
+  one** (measured 2026-10-29: the outpost is *not* the problem — empty bind `Invalid credentials
+  (49)`, wrong `(49)`, anonymous `Insufficient access (50)`; so no bypass.  But the credential
+  reads all 105 members' `cn`, `displayName`, `mail` and `memberOf`, which is the member list and
+  therefore personal data, and it lives in a squashfs anyone who can plug in an Ethernet cable
+  mounts.  `attributes` are not served, so door-card UIDs and customer ids are safe.)  **Blocks:**
+  nothing; it is a standing disclosure.  **To do:** serve the POSIX map from aibox the way aibox
+  already serves the client's own root filesystem — no new trust, no credential in any built
+  image, survives an IdP restart, and makes the uid map an auditable artefact — and authenticate
+  console logins with a per-user bind, which needs no service secret because `cn=<user>` plus
+  that user's password is already all a bind is.  Decide deliberately first: the provider runs
+  `bind_mode = direct`, so a per-user LDAP bind **bypasses authentik's flows and MFA entirely**
+  and lands in the event log as a plain `login`.  `docs/auth-posix-logins.md` §P2.
+
+- **`id`/`getent` cannot show this subsystem is alive, and more than one thing here assumes they
+  can** (measured 2026-10-29: a client with `ldap_uri` pointed at `no-such-host.invalid` kept
+  answering `getent passwd` for a user never queried that boot — nscd runs in front of sssd on
+  both boxes, and sssd keeps its own sysdb; both are tmpfs on a netboot client and *still*
+  survive a config change within one boot, which is why an earlier item today wrongly called
+  those lookups live).  A health probe has to bind and search, not `getent`.  Three instrument
+  traps, each of which cost time: sssd's cache is `/var/lib/sss/{db,mc}`, **not**
+  `/var/lib/sssd/`; `ldapwhoami` cannot probe this outpost (no Who-Am-I — a *successful* bind
+  answers `Protocol error (2)`), use `ldapsearch`; and sssd's `option# = /file` secret convention
+  is **unverified here** — every test was defeated by those caches, so it does not go into the
+  config of a machine that logs people in until it is proven.  Recipe in
+  `docs/auth-posix-logins.md` §F5.
 
 - **Every origin behind the front door still rewrites `X-Forwarded-Proto` and `X-Real-IP`;**
   `id.int` is the only one that has opted out. nixpkgs' `recommendedProxySettings` sets

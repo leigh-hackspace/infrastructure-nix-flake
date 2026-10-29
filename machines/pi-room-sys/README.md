@@ -88,9 +88,14 @@ After the menu the serial port is silent, but the image is up: root SSH answers 
 client's lease, carrying the two `authorizedKeys` in `configuration.nix` — one of which is
 `leigh-admin@aibox`, so **from aibox the guest is just another host to ssh into**.  Read
 there, not from the host: `systemctl is-active sssd`, `systemctl --failed`,
-`display-manager.service`, `/proc/mounts` (the NFS `/home`), and `id <a-real-user>` to prove
-the LDAPS path.  Verified end to end this way on 2026-10-29 against the post-Authentik IdP:
-clean boot, sddm session, NAS mounted, `id Catryan` → `21159(Infra)` over
+`display-manager.service`, `/proc/mounts` (the NFS `/home`).  **But not `id`/`getent` as proof
+of the LDAPS path** — nscd runs in front of sssd here and sssd keeps its own sysdb, so both
+answer from cache with the directory unreachable (measured: a client pointed at
+`no-such-host.invalid` still resolved a user never queried that boot).  Prove the directory
+path by binding to it directly, and remember `ldapwhoami` cannot — the outpost has no Who-Am-I,
+so a successful bind answers `Protocol error (2)`; use `ldapsearch`.  Verified end to end on
+2026-10-29 against the post-Authentik IdP that way: clean boot, sddm session, NAS mounted, a
+real `ldapsearch` from inside the client resolving `Catryan` → `21159(Infra)` over
 `ldaps://authentik.int.leighhack.org` with `demand`, and — the control that makes that mean
 something — the same bind against a bogus CA failing with `Can't contact LDAP server (-1)`.
 The receipts, and the one thing still unobserved, are the netboot item in
