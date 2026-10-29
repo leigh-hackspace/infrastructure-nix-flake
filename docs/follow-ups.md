@@ -568,17 +568,40 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   armed and firing minutes later). The mount itself is fine — still `active`, still mounted,
   `systemctl list-units --failed` empty — and re-running
   `/run/current-system/bin/switch-to-configuration switch` exits 0 on the second attempt,
-  which is the fix and also the proof that nothing else was wrong. So this is a busy
-  restart of the Pi Room netboot export (real machines NFS-reading it) racing the
-  activation. **Blocks:** nothing, because the retry works; but every future aibox switch
+  which is the fix and also the proof that nothing else was wrong. It was read as a busy
+  restart of the Pi Room netboot export (real machines NFS-reading it) racing the activation;
+  **that reading is wrong, see the correction below.** **Blocks:** nothing, because the retry works; but every future aibox switch
   pays a manual second activation and the judgement call on a *failed* activation (never
   confirm one) with a 5-minute reboot timer running. **To do:** read
   `machines/aibox/netboot.nix` and give that mount what a busy restart needs — the usual
   answers are `umountOptions = "--lazy"`/`timeout` on the mount unit, or not marking it
-  restartable when its contents are a store path clients hold open — then verify by
-  switching with a netboot client reading it. Reproduce with:
-  `sudo systemctl restart exports-netboot\x2dsquashfs.mount` while `ss -tan 'sport = :2049'`
-  shows NFS clients attached.
+  restartable when its contents are a store path clients hold open.
+  **Corrected 2026-10-29 by the third and fourth occurrences (a deploy at 11:58 and my own
+  retry two minutes later): the "real machines reading it" story is wrong, and so is the
+  reproduction instruction.** `journalctl -u exports-netboot\x2dsquashfs.mount` shows the
+  failing step is the **unmount**, not the mount — `umount[…]: /exports/netboot-squashfs:
+  target is busy`, status 32 — on every attempt back to 2026-10-26, including today with
+  **zero NFS clients attached** (`ss -tn '( sport = :2049 )'` empty, `lsof +D` empty, both Pi
+  Room boards powered off for days). So it does not need clients to reproduce; it reproduces
+  every time. The busy-to-a-normal-umount / free-to-a-lazy-one split points at a kernel-side
+  reference rather than an open file, and the obvious holder is **nfsd itself**: `exportfs -vs`
+  lists `/exports/netboot-squashfs` with `nohide`, and this is a bind mount **of a store path**
+  — so the export pins the very mount the activation is trying to move. **The workaround that
+  works first time, confirmed today:** `sudo umount -f -l /exports/netboot-squashfs` then
+  `sudo systemctl start exports-netboot\x2dsquashfs.mount` — which is what `just
+  switch-netboot` already does with its opening line, and is why that recipe exists.
+  **The consequence that matters more than the failure:** between the failed restart and
+  noticing, the box is completely healthy-looking — `active`, no failed units, nginx serving
+  the new kernel/initrd and the new menu — while `/exports/netboot-squashfs` **still bind-mounts
+  the previous generation's squashfs**. A client then boots a new kernel and initrd against the
+  old store, which is the exact generation-skew `netboot.nix`'s constant `init=` path exists to
+  tolerate, so nothing errors; it just silently tests the wrong image. After any aibox switch,
+  check `findmnt -no SOURCE /exports/netboot-squashfs` against
+  `nix eval .#nixosConfigurations.pi-room-sys.config.system.build.squashfsStore.outPath` before
+  believing a netboot test. **To do, in order of confidence:** make the export a stable
+  directory holding a symlink (or a copy step) instead of a bind of a store path, so a switch
+  updates a symlink rather than remounting an nfsd-pinned mount; failing that, order the mount
+  restart around nfsd (stop `nfs-server`, remount, start it) rather than racing it.
 
 - **The boot path resolves a name, and it does not have to** (2026-10-26, the same
   investigation). Every URL in

@@ -224,7 +224,7 @@ with P1/P2 rather than depending on them.
 
 | # | Step | Gate — what has to be true before the next one |
 |---|---|---|
-| 0 | (done) one module, one CA, documented deltas | rendered config diffed against both previous configs; nothing deployed yet |
+| 0 | (done, deployed to aibox 2026-10-29 11:59) one module, one CA, documented deltas | rendered config diffed against both previous configs (36/38 settings identical, 3 documented deltas); aibox switched, confirmed good, and the netboot image re-checked in QEMU against the deployed store — see the ladder note below for the export gotcha |
 | 1 | `authentik-posix --audit` | it runs clean, and its report is reviewed by whoever owns the NAS |
 | 2 | pin uid/gid as attributes, one account, verify LDAP still serves identical numbers, then all | `--audit` shows zero change for every user; `just pxe-client-uefi` still logs in |
 | 3 | POSIX snapshot served by aibox; netboot image fetches it | image boots with nscd *stopped* and sssd *disabled* and still resolves a real member |
@@ -253,6 +253,19 @@ with P1/P2 rather than depending on them.
 
 ## 5. Robustness work that is not architectural
 
+* **A QEMU netboot test can silently test the previous image.** After the 2026-10-29 deploy of
+  this page's P0 step, aibox looked entirely healthy — switch retried and confirmed, no failed
+  units, nginx serving the new menu and the new kernel/initrd — while
+  `/exports/netboot-squashfs` still bind-mounted the *old* generation's squashfs, because the
+  activation's restart of that mount failed (see the `exports-netboot\x2dsquashfs.mount` item in
+  `docs/follow-ups.md`, where a boot fetch succeeds against a stale store and nothing errors).
+  **Before believing a netboot test, compare** `findmnt -no SOURCE /exports/netboot-squashfs`
+  **against** `nix eval
+  .#nixosConfigurations.pi-room-sys.config.system.build.squashfsStore.outPath`, **and prove
+  which image booted from inside it** — read a config value the change was supposed to alter
+  (the deployed image was confirmed by `ldap_id_use_start_tls` being absent and
+  `cache_credentials=false` being present, neither true of the previous one).
+
 * The netboot image still has `pam_exec` mounting `//10.3.1.6/filestore` with the
   `hackspacer` credentials **in the module text** (visible to anyone who can read the config,
   as with F4), and its success has never been observed — the open item in
@@ -265,7 +278,28 @@ with P1/P2 rather than depending on them.
   is not (§F5).  The health check for this subsystem is a bound-and-searched probe to the
   outpost, which is what `just check`-style evals should do — not `getent`.
 
-## 6. Corrections to what this repo said before this dive
+## 6. Status of this page (2026-10-29)
+
+**P0 is deployed.**  aibox runs the shared module's generation (`nixos-system-aibox-…bb0305p…`,
+confirmed good) and the Pi Room image built from it boots and authenticates: verified in QEMU
+against the deployed store — new kernel/initrd/menu fetched, NFS store mounted, `display-manager`
+up, no failed units, `sssd` active with the three intended deltas present *inside the image*, and
+the LDAPS path proven from inside the client with a positive (a live search resolving
+`Catryan` → `21159(Infra)` with `reqcert = demand`) plus a real negative control (the same
+search against a single unrelated-but-valid CA returns nothing, so the trust decision is made on
+file *content* and our CA is necessarily in the bundle the module supplies).
+
+Two instrument failures during that verification, recorded because they will be repeated:
+**`openssl` is not installed on the netboot image**, so three `openssl … | grep` probes of the CA
+bundle were silently no-ops (a `0` that meant nothing) — the positive/negative pair above is the
+real test; and **`getent -s sss` cannot be trusted as a liveness probe**, only as a
+module-selection hint, for the caching reasons in F5.
+
+The deploy also surfaced a hazard that had nothing to do with this change and had been
+misdiagnosed for a day: see the `exports-netboot\x2dsquashfs.mount` item in
+`docs/follow-ups.md` and §5 above.  P1–P3 remain open and P1 is the one to do next.
+
+## 7. Corrections to what this repo said before this dive
 
 * `docs/follow-ups.md` (2026-10-29, earlier) claimed the nested-group failure was "noise only
   because authentik flattens membership".  **Wrong, and the script written to prove it is what

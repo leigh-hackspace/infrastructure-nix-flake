@@ -113,6 +113,25 @@ from the *dynamic* pool (`10.3.14.150-.253`), so the test costs a lease and noth
 capture on `gw`'s `vlan227` rather than on `br227` if you want the server's replies too,
 because the switch only floods the broadcasts to aibox's port.
 
+**Prove you booted the image you think you booted.**  A switch of aibox that trips the
+`exports-netboot\x2dsquashfs.mount` failure (see `docs/follow-ups.md`) leaves the box looking
+perfectly healthy — nginx serving the new menu, new `bzImage`, new `initrd`, no failed units —
+while the NFS export still bind-mounts the **previous** generation's squashfs.  The client then
+fetches four 200s, mounts the old store, and, because `init=` is deliberately a constant closure
+path, *nothing errors*: you have just tested an old image and recorded it as new.  So check the
+two paths agree before running anything else:
+
+```bash
+findmnt -no SOURCE /exports/netboot-squashfs
+nix eval .#nixosConfigurations.pi-room-sys.config.system.build.squashfsStore.outPath --raw
+```
+
+and if they differ, `sudo umount -f -l /exports/netboot-squashfs && sudo systemctl start
+'exports-netboot\x2dsquashfs.mount'` (a plain `systemctl restart` fails with `target is busy`
+even with no clients attached).  Then confirm *from inside the client* that a value the change
+was supposed to alter has actually changed — on 2026-10-29 that was `ldap_id_use_start_tls`
+being absent and `cache_credentials=false` being present in `/etc/sssd/sssd.conf`.
+
 ## Three facts about the boot path, measured 2026-10-26
 
 - **The bootfile URL has to be absolute, and its scheme is not decoration.**
