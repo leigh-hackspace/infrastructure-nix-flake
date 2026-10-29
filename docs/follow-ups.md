@@ -1279,13 +1279,78 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   **`sss_userdk` no longer exists in authentik** (queried 2026-10-28), so the
   end-to-end check that file recommends cannot pass — use a real member username.
 
-- **The pi-room netboot clients are verified on the wire, but nobody has booted one.** The
-  LDAPS path is proven by the IdP's own audit log — successful `login` events from
-  `10.3.14.101`/`10.3.14.102` (PI-ROOM-01/02) continuously after the 19:12Z cutover, with
-  `ldap_tls_reqcert = demand`, which means a successful bind *is* a certificate validation
-  of the migrated cert. What remains unobserved is a cold boot: the `pam_exec` login-script
-  half (`machines/pi-room-sys/configuration.nix`) and the iPXE/NFS path since aibox's
-  netboot export last changed.
+- **The netboot image boots and authenticates since the Authentik move; only the `pam_exec`
+  filestore mount is still unobserved** (re-verified 2026-10-29 on aibox, `just
+  pxe-client-uefi` against the deployed config, and the boot is now observed end to end:
+  TFTP → the blank `autoexec.ipxe` fallback, lease from the dynamic pool, then menu/logo/
+  `bzImage`/`initrd` all 200 **from the client's IPv6 address**, the initrd mounting the NFS
+  store, `root=tmpfs` with `/nix/store` an overlay, zero failed units,
+  `display-manager.service` active with an sddm session, NAS `/home` mounted, and root SSH
+  into the guest on the image's own `leigh-admin@aibox` key — which is how the next half was
+  measured). **Authentication was checked from inside the image**, not beside it:
+  `id Catryan`, `id cjdell` and `getent group Infra` all correct over
+  `ldaps://authentik.int.leighhack.org` with `ldap_tls_reqcert = demand`, and the `demand`
+  is live rather than dead config, because the identical bind pointed at a bogus CA returns
+  `Can't contact LDAP server (-1)`. **Re-run that control whenever this is doubted** — a
+  passing bind only proves certificate validation when a failing one is possible. The
+  server agreed: the LDAP outpost logged the guest (`10.3.14.180`) binding as `pgina` and
+  returning results, and `authentik_events_event` records 57 LDAP-Outpost `login` events
+  from `10.3.14.0/24` after the cutover — 54 service binds and **3 human authentications
+  from `10.3.14.101`/`.102`** (the real boards; `machines/pi-room-sys/README.md` says how to
+  attribute a board in aibox's nginx log), **zero `login_failed`**. So the earlier form of
+  this item — "verified on the wire, but nobody has booted one" — is closed on both halves.
+  **What remains:** the `pam_exec` login-script half
+  (`machines/pi-room-sys/configuration.nix`, the CIFS mount of `//10.3.1.6/filestore` as
+  `hackspacer`), which runs only on an interactive login and is `optional`, so nothing fails
+  visibly if it breaks. **To do:** log in at a Pi Room console once and confirm `~/Filestore`
+  appears; both boards were powered off and not answering ping as of 2026-10-29, with their
+  reservations still live on the router. **Do not substitute a deliberately-failed bind
+  against `pgina` for that** — every LDAP client in the fleet, aibox included, binds as
+  `pgina`, so a staging or lockout event on it is a fleet-wide auth outage. That is why this
+  item stops short of the last inch rather than testing it.
+
+- **sssd's nested-group walk fails against the LDAP outpost on every box, and nested group
+  membership really is being lost** (found 2026-10-29 reading a booted netboot client's
+  journal, where it is not optional reading: `Error processing direct membership [22]:
+  Invalid argument` → `Nested group processing failed` → `Group lookup failed` → `Due to an
+  error we will return cached data`, three times in one `id` call; the same six lines on
+  aibox this boot). **This started as a "probably noise" note and is not one.** The data
+  shape: four groups carry **groups** as `member` (`Members` nests `Directors`, `Infra`,
+  `Trusted`; `Public` nests `Members`), and every user's primary `gidNumber` (e.g. 2019) has
+  **no group object at all**, so the nested pass asks LDAP for something it cannot answer —
+  and the walk dies, taking the nesting with it. Measured both ways, not assumed: `Members`
+  is a member of `Public`, and of its 50 users 42 are **not** direct members of `Public`, so
+  those 42 should gain `28164(Public)` and do not — `id bobm6tma`, `id jeff`,
+  `id peterashford` → `(Members)` and nothing else, while `Johnze`, a **direct** member of
+  `Public`, gets `(Public)` normally. Same in the other direction: `hack_admin` is in `Infra`
+  ⊂ `Members` and gets `(Infra)` only. So the outpost does *not* flatten, and every
+  indirect membership is silently dropped for NSS/PAM consumers.
+  **Blast radius, which is why this is a finding and not an incident:** the Unix side of this
+  fleet gates on `Infra` alone — `security.sudo.extraRules` in
+  `machines/pi-room-sys/configuration.nix`, the same on aibox, and `Infra`'s 11 members are
+  all direct, which is exactly what does resolve (`id Catryan`, `id cjdell`, `id phyushin`
+  → `21159(Infra)`) — and the only consumer of `Members` in the tree is
+  `gitlab.nix`'s `required_groups`, which is **PARKED** (rule 23). App-level group gates
+  (OIDC `groups` scope for Grafana/switch-gui/filestore/gocardless-dashboard) go through
+  authentik's API, not sssd, so they are unaffected. Nobody is locked out today; the day a
+  share, unit or `required_groups` names `Members`/`Public`, it will name a group most of its
+  members do not have. **It is not the Authentik move's doing**: the config that walks
+  nesting (`ldap_schema = rfc2307bis`, `ldap_group_member = member`) predates it by a year,
+  and it only *starts* on the cutover day in aibox's persistent journal because 19:22:34 that
+  day is the last time sssd restarted and went cache-cold — which is also why it reads as new
+  on every netboot client, whose sssd cache is on tmpfs and so misses on every cold boot.
+  **To do:** decide which half is wrong — either make the walk work
+  (`ldap_group_nesting_level` is the knob, present in sssd 2.13.1's own API table
+  `sssd.api.d/sssd-ldap.conf`; the compiled default is 2), or stop treating the authentik tree
+  as a Unix group source and drop the nesting-shaped attrs. **Do not confirm the effective
+  config with `sssd --diagnostic` into a transcript** — it dumps `ldap_default_authtok` in
+  cleartext (rule 13). Reproduce: `just pxe-client-uefi`, ssh in as root from aibox, then
+  `journalctl -b -u sssd | grep -i nested` and `id bobm6tma` beside `id Johnze`. **And do not
+  probe this with hand-rolled bind scripts that read `ldap_default_authtok` from a file: a
+  `sed` anchored at column 0 silently produced an empty password and two `login_failed`
+  events against `pgina` on 2026-10-29** (account still `is_active = t`, verified). Extract
+  the token with `grep … | awk '{print $2}'` and assert it is non-empty before binding — a
+  lockout on `pgina` is a fleet-wide auth outage.
 
 - **Every origin behind the front door still rewrites `X-Forwarded-Proto` and `X-Real-IP`;**
   `id.int` is the only one that has opted out. nixpkgs' `recommendedProxySettings` sets

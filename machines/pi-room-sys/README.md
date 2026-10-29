@@ -83,6 +83,19 @@ Proved against the deployed config the day it was fixed: the UEFI guest reached
 `/var/log/nginx/access.log` then logged menu, logo, `bzImage` and `initrd` — four 200s
 from `fd99:dead:beef:227d:5054:ff:fe…`, the same shape as the pre-outage lines.
 
+**The booted guest is not a black box, which is how it gets tested for authentication.**
+After the menu the serial port is silent, but the image is up: root SSH answers on the
+client's lease, carrying the two `authorizedKeys` in `configuration.nix` — one of which is
+`leigh-admin@aibox`, so **from aibox the guest is just another host to ssh into**.  Read
+there, not from the host: `systemctl is-active sssd`, `systemctl --failed`,
+`display-manager.service`, `/proc/mounts` (the NFS `/home`), and `id <a-real-user>` to prove
+the LDAPS path.  Verified end to end this way on 2026-10-29 against the post-Authentik IdP:
+clean boot, sddm session, NAS mounted, `id Catryan` → `21159(Infra)` over
+`ldaps://authentik.int.leighhack.org` with `demand`, and — the control that makes that mean
+something — the same bind against a bogus CA failing with `Can't contact LDAP server (-1)`.
+The receipts, and the one thing still unobserved, are the netboot item in
+`docs/follow-ups.md`.
+
 A BIOS client (`-boot n` with no OVMF, which uses SeaBIOS's own iPXE and has no IPv6)
 walks straight past a broken AAAA, so **the BIOS VM passing is not evidence**: boot the
 EFI one, because the boards are UEFI and it is the one that resolves the name over
@@ -120,8 +133,20 @@ because the switch only floods the broadcasts to aibox's port.
   never once mattered — and the empty `autoexec.ipxe` is what turns a failed NBP transfer
   into a working boot, so deleting it would break the netboot. The reasoning, and what
   must not be simplified away because of it, is the NBP item in `docs/follow-ups.md`.
-- **A QEMU client is a proxy for a board, not a board.** The two boards are still
-  unplugged, so nothing here has been observed on the hardware. The caveat is not
+- **A QEMU client is a proxy for a board, not a board — but a board in the same log *is*
+  the hardware, and both boards have been seen booting.**  A fetch is attributable to a
+  board without the board still being plugged in, because a board's address on the netboot
+  VLAN is `fd99:dead:beef:227d::<EUI-64 of its reserved MAC>`: pi-room-01's
+  `0c:9d:92:c6:61:d0` becomes `…:e9d:92ff:fec6:61d0`, pi-room-02's `2c:fd:a1:6f:ce:9c`
+  becomes `2efd:a1ff:fe6f:ce9c` on the public /64 — flip the U/L bit, split, insert
+  `ff:fe`, and `grep` aibox's `access.log`.  Read that way the log shows **both boards**
+  pulling menu, logo, `bzImage` and `initrd` in full: pi-room-01 on 2026-10-26 20:44, again
+  at 19:02 and **22:11 on 2026-10-28** (after the Authentik cutover, 25 s before that box's
+  next LDAP bind), and pi-room-02 on 2026-10-27 03:00.  So an earlier sentence here — the
+  boards are unplugged, so nothing has been observed on the hardware — was true when written
+  and then quietly stale: it is the log, not the board, that holds the evidence.  As of
+  2026-10-29 both are powered off again, so nothing *new* can be observed on them without
+  someone walking to the Pi Room.  The QEMU caveat is not
   "QEMU vs. hardware": it is that the failure this whole investigation chased was
   iPXE resolving `aibox.int.leighhack.org` over IPv6 and taking whatever AAAA comes back,
   and `just pxe-client-uefi` exercises that path exactly — same iPXE 2.0.x, same DHCPv6
