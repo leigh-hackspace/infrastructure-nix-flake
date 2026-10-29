@@ -348,9 +348,14 @@ camera's config before the repo can hold it (`cam-pull` → `cam-diff` →
 
 ## Firmware updates — the procedure lives elsewhere; this is the summary
 
-**Nothing has been flashed.** The full, measured procedure — what the commands are, what
-each one destroys, how to make the card, how to recover — is
-**[`../docs/camera-sd-card-firmware-flash.md`](../docs/camera-sd-card-firmware-flash.md)**.
+**One camera has now been flashed: `cam8`, 2026-10-28, rootfs only, from the SD card over
+U-Boot — a rollback, and it worked.** The full, measured procedure — what the commands are,
+what each one destroys, how to make the card, how to recover — is
+**[`../docs/camera-sd-card-firmware-flash.md`](../docs/camera-sd-card-firmware-flash.md)**;
+the flash sequence it now carries is `sf update` + a read-back `cmp.b`, **not**
+`run urnor`, which on this U-Boot is refused at the erase and then writes over un-erased NOR
+while printing `Written: OK` (§8 of that document has the receipt, and it is the reason the
+byte count is not a check).
 The reasoning that got there, including what this file and its author believed before the
 measurement, is **[`../docs/camera-firmware-audit-2026-10-25.md`](../docs/camera-firmware-audit-2026-10-25.md)**.
 What follows is only what a person touching a camera must know without opening either.
@@ -366,11 +371,29 @@ What follows is only what a person touching a camera must know without opening e
   ship `setsdcard` (`setenv updatetool fatload mmc 0`), `uknor` and `urnor` — load
   `uImage.${soc}` / `rootfs.squashfs.${soc}` off a FAT card and `sf erase`/`sf write` them at
   `kernaddr=0x50000`/`rootaddr=0x250000` — plus `ubnor` for the boot region and a wired
-  `tftpboot` default (`ethact=sstar_emac`). `just cam-env <cam>` reads them.
+  `tftpboot` default (`ethact=sstar_emac`). `just cam-env <cam>` reads them. **`uknor`/`urnor`
+  are not usable as shipped** (measured on `cam8`, 2026-10-28: the erase is refused and the
+  write goes ahead anyway); use `sf update` and verify by read-back —
+  `../docs/camera-sd-card-firmware-flash.md` §8.
+* **A generic `ssc337_lite` image has no WiFi driver for these boards, and never had one.**
+  `BR2_PACKAGE_SSW101B` is selected by the builder's *device* defconfigs, not by the SoC ones,
+  so the asset to take is `ssc337_lite_tp-link-tapo-c110-v1-nor.tgz` — and the newest
+  published one is **`nightly-20261010-a40b399`** (the job fails at *Build firmware* every
+  night since 2026-10-11; the rolling `nightly` tag still serves that file). **`cam8` runs it
+  as of 2026-10-28**, with the kernel too: that image **prunes `sc3338`** (it is built for
+  SC3336) and its WiFi driver **oopses on the 2024 kernel**, so an update needs the matched
+  kernel and the outgoing rootfs's `sc3338` module carried across by hand. The WiFi
+  credentials are not part of that: they live in the U-Boot env (`wlanssid`/`wlanpass`), which
+  a rootfs flash does not touch — `/etc/wpa_supplicant.conf` is an unused open-network stub,
+  and copying it into the overlay bought nothing. Recipe and receipts:
+  `../docs/camera-sd-card-firmware-flash.md` §9a; sizes and the measured table:
+  `../docs/follow-ups.md`.
 * **The layout is fixed-slot, so a flash does not move the settings.** `256k(boot),
   64k(env),2048k(kernel),5120k(rootfs),-(rootfs_data)` = the whole 8,388,608 B chip,
   identical on all three; `rootfs_data` sits at 0x750000 regardless of squashfs size, and
-  `uknor`/`urnor` erase exactly mtd2 and mtd3. WiFi credentials, host keys,
+  `uknor`/`urnor` **are meant to** erase exactly mtd2 and mtd3 (measured on `cam8`: the erase
+  is refused and the write lands on un-erased NOR — use `sf update`, §8 of the procedure).
+  WiFi credentials, host keys,
   `authorized_keys`, `majestic.yaml` and the sensor pads are all outside what they touch.
 * **But `sf write` writes `${filesize}` bytes and never consults `rootsize`** — an oversized
   rootfs would land on the settings partition. The current build's rootfs is 5,136,384 B
@@ -437,8 +460,10 @@ the half a flash needs.
   looked like a dead camera), and no `rev` (absent on all three, which once made
   a `free_kb` computation print empty **on a box with 452 KB of it** — a broken
   check reads as a healthy device).  It never cats a credential and never cats
-  a binary (the WiFi PSK lives in `/etc/wpa_supplicant.conf` on the jffs2 overlay, and in
-  the U-Boot env as `wlanpass`, which `just cam-env <cam>` masks; there is **no
+  a binary (the WiFi credentials live **only in the U-Boot env**, as `wlanssid`/`wlanpass`,
+  which `just cam-env <cam>` masks and which `/etc/network/interfaces.d/wlan0` turns into
+  `/tmp/wpa_supplicant.conf` at every `ifup`; `/etc/wpa_supplicant.conf` is a stale
+  open-network stub and holds nothing — measured on all four 2026-10-28; there is **no
   `/etc/wlanpass`** on these three — that is the SD customizer's filename,
   the Basic-auth user in `/etc/httpd-htpasswd.user`, the sensor pads in
   `/etc/sensors/` at ~115 KB, all four reported by md5/size only).

@@ -7,6 +7,107 @@ change runs into.
 
 Still-open items live in `docs/follow-ups.md`.
 
+## 2026-10-29 — the no-WiFi recovery, and where the credentials actually live
+
+**Asked:** document an SD-card recovery for when the WiFi changes.
+
+**The measurement first, because it inverted the plan.** On all four boards the SSID and PSK
+come from the **U-Boot env** (`wlanssid`/`wlanpass`) — `/etc/network/interfaces.d/wlan0`
+regenerates `/tmp/wpa_supplicant.conf` from them on every `ifup`. `/etc/wpa_supplicant.conf`
+is a stale open-network stub (`key_mgmt=NONE`, 78 B) that nothing reads, and two places in this
+repo said the PSK lived there (one said "in the rootfs"). Both were wrong; corrected in
+`cameras/README.md` and the flash guide's §9a, and the copy the previous day's update seeded
+into the overlay turns out to have been pointless. `cam5`/`cam7` differ only in carrying an
+overlay copy of the stanza (`wpa_passphrase`/`post-up` instead of `wlan_conf`/`pre-up`).
+
+**The recovery is the card, and only the card.** One thing runs from it: `S99sdconf.sh` runs
+`/mnt/mmcblk0p1/sdconf.sh` at boot. It is present on cam5/cam8/cam9 and **absent on cam7**, so
+that board is console-only until the hook is pushed. The payload
+(`cameras/sd-recovery/sdconf.sh`) writes `/etc/wpa_supplicant.conf` plus a three-line stanza
+that reads it, into the overlay, then reboots once and renames itself to `sdrecover.done` so a
+card left in the slot does nothing later.
+
+**Deliberately not an env write.** `/etc/fw_env.config` is one 64 KiB sector with no redundant
+copy, and that partition also holds `bootcmd` and `ethaddr`; an interrupted `fw_setenv` costs a
+console at best. The file override gets the camera back without touching mtd1, at the price of
+shadowing the env until it is removed.
+
+**Tested end to end on `cam8`** — payload built on the camera from the live env (so the secret
+never hit a transcript), applied at boot (`SD CONFIG DETECTED` → `sdrecover: credentials
+written` → `reboot`), camera back with `wpa_supplicant … -c /etc/wpa_supplicant.conf`, then
+rolled back to the stock stanza (`-c /tmp/wpa_supplicant.conf`) and verified online. One thing
+learned by doing it: cam8 had a **pre-existing overlay copy of the stanza** from the 2024
+system, which the test overwrote and the rollback deleted — so "rollback" landed on the stock
+2026 stanza, not the state before the test. Both work; check what is there before calling it a
+rollback. Procedure, receipts and the security caveat: `docs/camera-wifi-recovery.md`.
+
+## 2026-10-28 — `cam8` updated to `nightly-20261010-a40b399`, and the kernel was not optional
+
+**Asked:** "do the update", after the recovery earlier the same day.
+
+The finding that made this more than a flash: **the 2026 `ssw101b` driver oopses on the 2024
+kernel.** Rootfs-only, the camera boots, the sensor initialises, and `modprobe
+ssw101b_wifi_usb` dies at `Sstar_usb_memcpy_fromio`-time with `Unable to handle kernel paging
+request at virtual address 000040c0` — no `wlan0`, no DHCP, and `reboot` from that state hangs
+at `Requesting system reboot`, so the way out is a power cycle. Flashing the **matched kernel**
+(the same release's `uImage.ssc337`) fixed it outright: `Linux 4.9.84 … Oct 10 2026`, driver
+loads, `wlan0` gets `10.3.2.112`, H.264 2304×1296 @ 20 fps. A kernel and a rootfs from one
+release are a pair; a rootfs and a kernel two years apart are not.
+
+Three more things that only showed up by doing it:
+
+- **The WiFi credentials are in the U-Boot env, not in any file** (`wlanssid`/`wlanpass`;
+  `/etc/network/interfaces.d/wlan0` regenerates `/tmp/wpa_supplicant.conf` from them on every
+  `ifup`), so a rootfs flash does not lose them. `/etc/wpa_supplicant.conf` is a stale
+  open-network stub and the copy this session seeded into the overlay bought nothing. What did
+  matter was the sensor: the C110-v1 image **prunes `sc3338`** and `cam8` is genuinely
+  `sc3338` (`ipcinfo -s`, not the env), so the 9 956 B module from the outgoing rootfs went
+  into the overlay and works unchanged on the new kernel.
+- **The overlay is 704 KB and the old WiFi driver is 744 504 B** — putting it there fills the
+  partition (`No space left on device`) and a full jffs2 stalls the box (21 ms pings → 700 ms
+  with 33 % loss). It was also unnecessary once the kernel matched.
+- **`mount -o loop,ro` works on this kernel**, so a rootfs dump on the SD card can be read for
+  parts from the camera itself — that is where the `sc3338` module and the 2024 driver came
+  from, without moving the card. The 2024 pair stayed at the card root throughout as the
+  rollback.
+
+Both partitions were written with `sf update` and verified by a full `cmp.b` read-back
+(rootfs 5 242 880 = `0x500000`, kernel 2 097 152 = `0x200000`), which is the §8 rule from the
+recovery that morning paying for itself. Recipe: `docs/camera-sd-card-firmware-flash.md` §9a.
+
+## 2026-10-28 — `cam8` unbricked from the serial console, and `run urnor` was the trap
+
+**Asked:** "C110 that was bricked is attached to the serial device with SD card inserted,
+please recover." The board was `cam8` (C110 v1, `ssc337`, 10.3.2.112), off the air since a
+rootfs-only flash of `nightly-20261028-9a84dce` `ssc337_lite` — that rootfs has
+`/etc/wireless/usb` naming `ssw101b` and no `ssw101b_wifi_usb.ko`, so it boots and addresses
+nobody (`docs/follow-ups.md`). The repair was a rollback, not a forward fix.
+
+**Recovered with:** 3.3 V UART at 115200 8N1, Enter-spam during power-up → `OpenIPC #` →
+`run setsdcard` → `fatls mmc 0` → write the dump's rootfs → `reset`. The camera came back as
+the 2024 build: `wpa_supplicant` up, DHCP `10.3.2.112`, ICMP clean, `:80`/`:554` both `401`.
+The kernel, env, WiFi PSK, host keys and jffs2 settings partition were never touched.
+
+**What it proved, and it was not what the procedure said:** `run urnor`'s
+`sf erase 0x250000 0x500000` is refused (`ERROR: attempting erase past flash size
+(0x800000)` — a range inside the chip), the `;`-separated `sf write` runs anyway and prints
+`5242880 bytes @ 0x250000 Written: OK`, and the partition is then a bitwise-AND of old and
+new. The success line and the byte count were both right and the rootfs was garbage. Only a
+read-back `cmp.b` against the card caught it (`byte at 0x21000004 (0xa2) != byte at
+0x22000004 (0xa0)`). `sf erase` works one 64 KiB block at a time; the usable sequence is
+`sf update` (erase-then-write per sector, 26 s for the 5 MB rootfs) followed by `cmp.b` over
+the whole partition (`Total of 5242880 byte(s) were the same`). `docs/camera-sd-card-firmware-flash.md`
+§8 now carries that, §11-1/§11-2 are closed by the same session (the card socket is
+populated; Enter does interrupt `bootdelay=0` on `U-Boot 2015.01 … I6gf3a2dcf`).
+
+**Two harness lessons, both about believing a tool that reported success:** a write
+command's own success message is not evidence, and a `Written: OK` over un-erased NOR is
+indistinguishable from a good flash until something reads it back. Also worth recording for
+the next bench session: the WiFi-less rootfs reboots itself every couple of minutes
+(watchdog), which is what made catching the sub-second autoboot window easy — and the serial
+port can be opened and closed freely without disturbing the board, so a lost console is not
+a lost session.
+
 ## 2026-10-27 — the strata engine input went 0.1.48.1 → 0.1.52 across the version series
 
 **Asked:** "update strata".

@@ -1,10 +1,16 @@
 # Flashing a camera's firmware from an SD card (procedure, 2026-10-25)
 
-**Status: nothing has been flashed.** This is the procedure, assembled on 2026-10-25 from
-measurement on the three devices (`cam5`/`cam7`/`cam9`), and it has not been executed on any
-of them. Every number below names the command that produced it; anything that has not been
-measured is in §11 as an unknown with the test that closes it, and **nothing in §1–§9 should
-be run on a camera before §11's first two items are closed on the bench.**
+**Status: executed once, on 2026-10-28, and it failed the way §8 now warns.** The procedure was
+assembled on 2026-10-25 from measurement on the three devices (`cam5`/`cam7`/`cam9`); on
+2026-10-28 it was run for real on `cam8` (the C110 v1 at 10.3.2.112) to roll its rootfs back
+after a WiFi-less 2026 build took it off the air. §11-1 and §11-2 are therefore **closed**
+(card socket populated; Enter does interrupt `bootdelay=0`), and **`run urnor` is not usable
+as written** — its `sf erase` is refused by this U-Boot and the following `sf write` then
+reports success over un-erased NOR, which is silent corruption. §8 carries the measured
+sequence (`sf update`, then a read-back `cmp.b`) and the receipt.
+
+Every number below names the command that produced it; anything still unmeasured is in §11
+as an unknown with the test that closes it.
 
 **Settled first, so nobody spends a day on it: the firmware to flash is OpenIPC, not thingino.**
 thingino builds for **Ingenic** SoCs and this fleet is SigmaStar (`ssc337` ×2, `ssc333` ×1) — its
@@ -154,6 +160,18 @@ Before flashing anything, also:
   a console. One command closes it first:
   `unsquashfs -l rootfs.squashfs.<soc> | grep -c ssw101b` (and `atbm6032i` for the
   ATBM603x C110 v2 revs) — **0 is a stop, not a detail.**
+
+  **Run that gate on the board-specific asset, because the generic one fails it and always
+  has.** `ssc337_lite`/`ssc337_ultimate` never select `BR2_PACKAGE_SSW101B`; only the
+  builder's device defconfigs do (for this board,
+  `ssc337_lite_tp-link-tapo-c110-v1`). So `just cam-image ssc337_lite` stages an image with
+  no WiFi driver by construction, and the asset to fetch is
+  `…/nightly-<date>/ssc337_lite_tp-link-tapo-c110-v1-nor.tgz`. Measured 2026-10-28:
+  `nightly-20261010-a40b399` (the newest published build of that asset — the job has failed
+  every night since 2026-10-11) carries the module, while the generic
+  `nightly-20261027-d20e5c3/ssc337_lite_tiandy-tc-c321n-v2` carries none. That image also
+  **prunes `sc3338`** (SC3336 board), so the sensor is a second thing to prove;
+  `docs/follow-ups.md` has the table and the sizes.
 - **`just cam-check cam7` and fix its web admin.** On 2026-10-25 cam7 answers `200`
   unauthenticated on `:80`/`:85` while cam5/cam9 answer `401`. An open admin plane on the
   device about to be flashed is an open upgrade button in a room you are not watching.
@@ -176,19 +194,21 @@ Everything in §8 needs the U-Boot prompt.
   donor board of this family. **Never 5 V TTL.** The `console=ttyS0,115200 panic=20` on the
   command line and `stdin/stdout/stderr=serial` in the env confirm the kernel and U-Boot
   both talk to it.
-- **Unproven for these three units:** that the pads are reachable without removing a shield
-  (`c110.md` §2 records the donor's being solder-jumpered to a header, and §"What is not
-  proven" says to assume hot air may be needed), and that the pads on *this* PCB are where
-  the donor's were. This is unknown §11-1 and it is the first thing the bench decides.
+- **Pads: proven reachable on `cam8` (2026-10-28), still unproven on the other three.**
+  `c110.md` §2 records the donor's being solder-jumpered to a header, and §"What is not
+  proven" says to assume hot air may be needed; on `cam8` a 3.3 V adapter on the same pads
+  worked with the shield in place. Whether *cam5*/*cam7*/*cam9* are laid out the same is
+  unknown, and it is the first thing a bench session on any of them decides.
 - **Interrupting autoboot with `bootdelay=0`:** the OpenIPC build for this family
   (`configs/infinity6b0_defconfig` + `include/configs/infinity6b0.h`, read 2026-10-25) has
   `CONFIG_BOOTDELAY 0`, **`CONFIG_ZERO_BOOTDELAY_CHECK`** and
   `CONFIG_AUTOBOOT_KEYED` with `CONFIG_AUTOBOOT_DELAY_STR "\x0d"` — i.e. it polls the
-  console even at zero delay and interrupts on **Enter**. Our U-Boot identifies itself as
-  `U-Boot 2015.01 (Nov 05 2023)` and is plausibly that build but **is not provably it**, so
-  treat "hold Enter through power-on, or send `\r` at ~9600–115200 as soon as power is
-  applied" as an attempt, not a certainty. Failing to interrupt is harmless: the camera
-  boots normally and you try again.
+  console even at zero delay and interrupts on **Enter**. **Confirmed on `cam8` 2026-10-28**
+  against `U-Boot 2015.01 (Nov 05 2023 - 19:22:35)` / `Version: I6gf3a2dcf`: a CR stream at
+  10/s during power-up lands at `OpenIPC #`. The Enter must already be going when power is
+  applied. Failing to interrupt is harmless: the camera boots normally and you try again —
+  and a camera whose rootfs is unusable reboots itself every couple of minutes, so attempts
+  come free.
 - **If the console cannot be interrupted** the fallback is not this document: it is §10's
   restore-from-Linux, which needs no console at all and works whenever Linux still boots.
 
@@ -271,27 +291,68 @@ anything**: `${soc}` selects the filename, and `${updatetool}` must become `fatl
 
 ```
 sf probe 0
-mmc info                      # does the card answer at all?  (see §11-1)
+mmc info                      # does the card answer at all?  (§11-1, closed: yes)
 run setsdcard                 # updatetool := fatload mmc 0
 fatls mmc 0                   # expect exactly uImage.<soc> and rootfs.squashfs.<soc>
 
-run uknor                     # erase 0x050000+0x200000, write the kernel
-run urnor                     # erase 0x250000+0x500000, write the rootfs
+run uknor                     # kernel   — see the warning below before using this
+run urnor                     # rootfs   — see the warning below before using this
 reset
 ```
 
-What you should see for each: `mw.b` fills RAM, `fatload …` reports `** File not found …`
-or `XXXXX bytes read`, `sf probe` reports the flash chip, `sf erase` reports the range,
-`sf write` reports the byte count. **The byte counts are the whole check**: `uknor` must
-report ~2,003,8xx and `urnor` ~5,136,384 for the 2026-10-24 builds. A `fatload` that reads
-0 bytes followed by a successful-looking `sf write` of 0 bytes leaves an erased partition
-and an unbootable camera, which is the mistake this table exists to prevent — `sf write`
-does not care how empty what it wrote was.
+**Measured on `cam8`, 2026-10-28: `run urnor` is broken on this U-Boot, and it fails
+silently.** Its `sf erase ${rootaddr} ${rootsize}` is refused —
 
-Do **one at a time, verify the byte count, then the next**. Erasing both and then failing to
-load is how a camera that was up becomes a paperweight; one at a time means the worst case
-is one bad partition, and §10 can put one partition back from Linux if the other still
-boots.
+```
+Flash is detected (0x0C0B, 0x20, 0x40, 0x17)
+SF: Detected nor0 with total size 8 MiB
+ERROR: attempting erase past flash size (0x800000)
+```
+
+— for a range (`0x250000`+`0x500000` = `0x750000`) that is inside the 8 MiB chip, and then
+the `;`-separated `sf write` runs anyway and reports
+
+```
+_spi_flash_write to 0x250000, len 0x500000 from 0x21000000    … 100%(cost 9172 ms)
+SF: 5242880 bytes @ 0x250000 Written: OK
+```
+
+`Written: OK` over NOR that was never erased is a **bitwise-AND of old and new**, i.e. a
+corrupt rootfs. The byte count is right, the success line is there, and the partition is
+garbage — which is exactly the class of check this document used to call sufficient. It was
+caught only by reading the flash back and comparing it:
+
+```
+fatload mmc 0 0x21000000 rootfs.squashfs.ssc337
+sf read 0x22000000 0x250000 0x500000
+cmp.b   0x21000000 0x22000000 0x500000
+=> byte at 0x21000004 (0xa2) != byte at 0x22000004 (0xa0)      # corrupt
+```
+
+`sf erase` works one 64 KiB block at a time (`sf erase 0x250000 0x10000` → `Erased: OK`,
+reads back `ff`), so the refusal is in the multi-block length handling, not the chip or the
+offsets — the threshold was not found, and finding it is not worth a board. What *does* work
+is the sector-at-a-time updater, which erases each sector immediately before writing it:
+
+```
+fatload mmc 0 0x21000000 rootfs.squashfs.ssc337
+sf update 0x21000000 0x250000 0x500000
+=> 5177344 bytes written, 65536 bytes skipped in 25.97s, speed 218453 B/s
+sf read 0x22000000 0x250000 0x500000
+cmp.b   0x21000000 0x22000000 0x500000
+=> Total of 5242880 byte(s) were the same
+```
+
+**So: use `sf update`, and make the `cmp.b` the gate, not the byte count.** `sf update`
+reports its own arithmetic (`written` + `skipped` = the length asked for), and the read-back
+is the only thing that can tell an erased write from a failed one. `run uknor` was never
+exercised — the kernel was not what went wrong on `cam8` — so treat it as suspect for the
+same reason until someone runs the same three lines against `${kernaddr}`.
+
+Do **one partition at a time, verify by read-back, then the next**. Erasing both and then
+failing to load is how a camera that was up becomes a paperweight; one at a time means the
+worst case is one bad partition, and §10 can put one partition back from Linux if the other
+still boots.
 
 Then, from Linux after it comes up:
 
@@ -335,6 +396,94 @@ Both routes write the same two partitions, so both are equally safe once the siz
 checked — the SD/U-Boot route is the one that also works when Linux no longer boots, which
 is the only property that makes it worth the console.
 
+## 9a. The one real upgrade so far: `cam8` → `nightly-20261010-a40b399` (measured)
+
+`cam8` (C110 **v1**, `ssc337`, genuinely `sc3338` — `ipcinfo -s`, not the env) was moved
+from the 2024 build to the last published build that still carries the WiFi driver. It took
+three steps that are not obvious, and all three are traps worth more than the recipe.
+
+**The artifact.** `ssc337_lite_tp-link-tapo-c110-v1-nor.tgz` from tag `nightly-20261010-a40b399`
+(7 238 936 B). Inside: `rootfs.squashfs.ssc337` (5 238 784 B, md5 `23fdb5430f42fc71ab68bb71732637f5`)
+and `uImage.ssc337` (2 003 264 B, md5 `fb28af071a991f079ba171919fa3d28e`) — both match the
+`.md5sum` files shipped beside them. Every nightly from 2026-10-11 onward omits this asset
+(the job fails at *Build firmware*); §4 has the table.
+
+**1. The credentials are not in the rootfs, so do not carry them across.** `wlanssid` and
+`wlanpass` live in the **U-Boot env**, and `/etc/network/interfaces.d/wlan0` regenerates
+`/tmp/wpa_supplicant.conf` from them on every `ifup` — a rootfs flash does not touch either.
+`/etc/wpa_supplicant.conf` is a **stale open-network stub** (`key_mgmt=NONE`, 78 B) that
+nothing reads; an earlier version of this section told you to copy it into the overlay, and
+that was harmless but bought nothing. The things that *do* need carrying are the sensor
+(step 2) and the kernel (step 3). Measured on all four boards 2026-10-28:
+`docs/camera-wifi-recovery.md` §1.
+
+**2. The image prunes `sc3338`, and `cam8` is `sc3338`.** The C110-v1 device exclusion list
+drops `/etc/sensors/sc3338.bin` and `sensor_sc3338_mipi.ko` (the board it is built for is
+SC3336). The driver from the outgoing rootfs is 9 956 B and works unchanged against the new
+kernel — put it in the overlay, where it costs nothing (no `.bin` is needed; the 2024 image
+did not ship one either):
+
+```sh
+cp /rom/lib/modules/4.9.84/sigmastar/sensor_sc3338_mipi.ko \
+   /overlay/root/lib/modules/4.9.84/sigmastar/                # md5 e4984cd70cdea1e2cbe671c6fd3a5ec3
+```
+
+**Do not** try to keep the old `ssw101b` driver the same way. It is **744 504 B** and the
+overlay is **704 KB with ~480 KB free**: copying it leaves the partition at `No space left on
+device`, and a jffs2 that full also stalls the whole system (pings went from 21 ms to 700 ms
+with 33 % loss). It was not needed once the kernel matched (step 3).
+
+**3. Flash the kernel too — the new rootfs's WiFi driver oopses on the old kernel.** Rootfs
+only, the camera boots, the sensor works, and `modprobe ssw101b_wifi_usb` dies during chip
+firmware load:
+
+```
+usb 1-1: New USB device found, idVendor=1b20, idProduct=8888      # SigmaStarWIFI
+[Sstar_log]:Sstar_set_firmare:fw_dccm(c419a000)
+Unable to handle kernel paging request at virtual address 000040c0
+Internal error: Oops: 2805 [#1] PREEMPT THUMB2
+Modules linked in: ssw101b_wifi_usb(O+) exfat(O)      # Sstar_usb_memcpy_fromio <- Sstar_after_load_firmware
+```
+
+No `wlan0`, and `reboot` from that state **hangs at `Requesting system reboot`** — the wedged
+USB stack never resets the SoC, so the recovery is a power cycle. Both images are therefore
+part of the update, not just the rootfs.
+
+**4. Pad both to the partition, `sf update`, `cmp.b`.** The release images are not
+partition-sized, and `sf update` takes an explicit length, so pad each with `0xff` to the
+partition and flash the whole partition (this is the pair that verified):
+
+```bash
+# rootfs: 5 238 784 -> 5 242 880 (0x500000)
+{ cat rootfs.squashfs.ssc337; dd if=/dev/zero bs=4096 count=1 | tr '\000' '\377'; } > padded
+# kernel: 2 003 264 -> 2 097 152 (0x200000), i.e. 93 888 bytes of 0xff
+{ cat uImage.ssc337;       dd if=/dev/zero bs=93888 count=1 | tr '\000' '\377'; } > padded
+```
+
+```
+run setsdcard
+fatload mmc 0 0x21000000 padded-rootfs ; sf update 0x21000000 0x250000 0x500000
+=> 5242880 bytes written, 0 bytes skipped in 25.124s
+fatload mmc 0 0x22000000 padded-rootfs ; sf read 0x23000000 0x250000 0x500000 ; cmp.b 0x22000000 0x23000000 0x500000
+=> Total of 5242880 byte(s) were the same
+fatload mmc 0 0x21000000 padded-kernel ; sf update 0x21000000 0x50000  0x200000
+=> 2097152 bytes written, 0 bytes skipped in 9.968s
+fatload mmc 0 0x22000000 padded-kernel ; sf read 0x23000000 0x50000 0x200000 ; cmp.b 0x22000000 0x23000000 0x200000
+=> Total of 2097152 byte(s) were the same
+reset
+```
+
+**What it looks like when it worked** (2026-10-28): `Linux version 4.9.84 … Sat Oct 10
+20:13:06 UTC 2026`; `ssw101b_wifi_usb` from the rootfs with **no oops**; `sensor_sc3338_mipi`
+from the overlay; `udhcpc: lease of 10.3.2.112`; H.264 **2304×1296 @ 20 fps** over
+`rtsp://…/stream=0`; `:80` serves the 225-byte index stub (200) while every functional CGI
+answers **401**; overlay back to 216 KB used of 704 KB.
+
+**One extra tool this kernel gives you:** `mount -o loop,ro /mnt/mmcblk0p1/rootfs.squashfs.ssc337 /mnt/old`
+works on the camera, so a dump on the SD card can be read for parts (that is how the `sc3338`
+module and the 2024 driver were recovered without moving the card). It is also how the rollback
+stayed available the whole time: the 2024 pair sat at the card root, untouched.
+
 ## 10. Recovery, three levels
 
 **L1 — Linux still boots (this works today, no console, no card).** Restore the partition
@@ -354,8 +503,9 @@ ssh -i ~/.ssh/agent-hop-key root@10.3.2.12 'cd /tmp && \
 `sync` and reboot, because you have just replaced the thing that boots the thing you
 rebooted into.
 
-**L2 — Linux does not boot, U-Boot does.** `run uknor`/`run urnor` from the card (§8) to
-put the kernel and rootfs back; the env and settings were never touched. For the boot
+**L2 — Linux does not boot, U-Boot does.** `sf update` the kernel and rootfs back from the
+card (§8 — not `run uknor`/`run urnor`, which do not erase on this U-Boot); the env and
+settings were never touched. For the boot
 region, note the §3 trap: `ubnor` erases `0x0`–`0x50000`, which is **boot *and* env**, so
 the image must be both partitions concatenated, loaded at `${baseaddr}`:
 
@@ -375,17 +525,24 @@ conv=notrunc bs=1 seek=<offset>` lines that rebuild `chip.bin` from the five par
 
 ## 11. What is not known, and the test that closes it
 
-1. **Whether these three PCBs have a card socket.** The board file describes a removable
-   slot with power and card-detect GPIOs (`slot-removable`, `slot-cdzs-gpios`,
-   `slot-pwr-gpios`) and the driver probes — but a DTB is a claim about a board, not
-   evidence of a populated connector. **Test: `just cam-card cam7` with a FAT32 card in.**
-   It triggers an MMC bus rescan (a sysfs write, no flash, no config) and reports whether a
-   card answers. Two minutes, no risk, and it decides whether this document is a plan or an
-   essay.
-2. **Whether Enter interrupts `bootdelay=0` on *this* U-Boot.** §5. Test: console attached,
-   power-cycle, spam Enter. No risk — failing means a normal boot.
-3. **Whether `fatload mmc 0` on this U-Boot reads this card format.** Test: `mmc info`,
-   `fatls mmc 0` at the prompt — read-only, and it is already step 1 of §8.
+1. **~~Whether these three PCBs have a card socket.~~ CLOSED 2026-10-28 on `cam8`** (C110
+   v1, `ssc337`): the socket is populated and the card is a boot-time device —
+   `mmc0: new high speed SDXC card at address b369` in the kernel log, and at the U-Boot
+   prompt `mmc info` / `fatls mmc 0` list the card. The DTB's claim was true on this board;
+   it is still a claim about the other three until each is tried.
+2. **~~Whether Enter interrupts `bootdelay=0` on *this* U-Boot.~~ CLOSED 2026-10-28 on
+   `cam8` — yes.** `U-Boot 2015.01 (Nov 05 2023 - 19:22:35)`, `Version: I6gf3a2dcf`, and a
+   stream of CRs (10/s is enough) during power-up lands at `OpenIPC #` every time. §5's
+   `CONFIG_ZERO_BOOTDELAY_CHECK`/`\x0d` reading was right. Two practical notes: the window
+   is the usual sub-second one, so the Enter has to be *already going* when power is
+   applied; and the board reboots itself every couple of minutes when its rootfs is
+   unusable (§4's WiFi-less case), which gives repeated free attempts rather than needing a
+   hand on the plug.
+3. **~~Whether `fatload mmc 0` on this U-Boot reads this card format.~~ CLOSED 2026-10-28 on
+   `cam8`**: the §6 card (MBR, FAT32 at LBA 8192) is read by both `fatls` and `fatload`, and
+   `run setsdcard` sets `updatetool=fatload mmc 0`. U-Boot's FAT driver matched the
+   filenames case-insensitively (`uimage.ssc337` on the card, `uImage.${soc}` in the env),
+   but do not rely on that: name the files exactly as the env does.
 4. **What the installed `sysupgrade` does to the settings** (it should do nothing, per §2,
    but the version on the device is 1.0.21/1.0.41 and its split-layout code has lost
    settings on other layouts before). Test: read `/usr/sbin/sysupgrade` on cam7 (9,332
@@ -412,7 +569,9 @@ conv=notrunc bs=1 seek=<offset>` lines that rebuild `chip.bin` from the five par
   issue #2238 being exactly that state.
 - **Never `ubnor` without a boot+env image** (§10 L2) — it erases the env.
 - **Never `sf write` something you have not measured against the partition it lands in**
-  (§3), and never trust a `fatload` that did not print a plausible byte count.
+  (§3), never trust a `fatload` that did not print a plausible byte count, and **never trust
+  `Written: OK`** — on `cam8` it followed a refused `sf erase` and produced a corrupt
+  rootfs. `sf update` + `cmp.b` read-back is the sequence; §8 has the receipt.
 - **Do not flash cam9 first** (§4), and do not flash two cameras in one session: the second
   one is the control group for whatever the first one did.
 - Nothing in this procedure touches `/etc` on a running camera. Keep it that way: `cam-push`
@@ -425,6 +584,7 @@ conv=notrunc bs=1 seek=<offset>` lines that rebuild `chip.bin` from the five par
 model), `cameras/c110.md` §8 (the original reflash route on the donor board — the IPL/
 `sload`/clip detail this document does not repeat), `docs/camera-firmware-audit-2026-10-25.md`
 (what was believed before the measurement, what replaced it, and the strike list of claims
-that never had a source), `docs/follow-ups.md` (cam7's open admin, the PSK rotation, and the
-bench session), and the recipes: `cam-preflight`, `cam-flashdump`, `cam-backup`, `cam-image`,
-`cam-env`, `cam-card`.
+that never had a source), `docs/camera-wifi-recovery.md` (the card-only recovery for a camera
+that boots without a radio, and what actually holds the credentials), `docs/follow-ups.md`
+(cam7's open admin, the PSK rotation, and the bench session), and the recipes: `cam-preflight`,
+`cam-flashdump`, `cam-backup`, `cam-image`, `cam-env`, `cam-card`.

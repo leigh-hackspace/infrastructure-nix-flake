@@ -1396,9 +1396,10 @@ that **need an owner or a decision** rather than another measurement.
   gw-safe via `_build-host-guard` (the justfile recipe, `hostname`-based) —
   nothing about these devices is a nix build, so the crate stays off the deploy
   sets. **Blocks:** nothing.
-- **OpenIPC's current `ssc337` builds have dropped the C110's WiFi driver, and `cam8` is off
-  the air because of it** (found 2026-10-28; `docs/camera-sd-card-firmware-flash.md` §4 now
-  gates on it, §9 records the updater behaviour). `cam8` = the spare C110 **v1** at
+- **~~OpenIPC's current `ssc337` builds have dropped the C110's WiFi driver, and `cam8` is off
+  the air because of it~~ — RECOVERED 2026-10-28 from the serial console.** (found
+  2026-10-28; `docs/camera-sd-card-firmware-flash.md` §4 gates on it, §9 records the updater
+  behaviour). `cam8` = the spare C110 **v1** at
   10.3.2.112 (`ssc337 (infinity6b0 family), sc3338`, `wlandev=ssw101b-ssc333-tapo-c110`,
   env `soc=ssc337`), which ran OpenIPC `master+0f21c01, 2024-08-30` and was **not** in any
   table — no row in `common/dns-records.nix`, so its address is a plain DHCP lease. A
@@ -1411,12 +1412,74 @@ that **need an owner or a decision** rather than another measurement.
   exist in `~/camera-backups/cam8-flash-20261028T213947Z` and `cam8-etc-20261028T214018Z`
   (mode 700, never in the repo), and the SD card holds that dump's kernel+rootfs as
   `uImage.ssc337`/`rootfs.squashfs.ssc337` with the 2026 pair in `2026-9a84dce/`.
-  **Blocks:** hands and a **3.3 V UART at 115200 8N1** — `run setsdcard; fatls mmc 0;
-  run urnor; reset` (and `run uknor` if the kernel went with it). **Needs:** that console
-  session, which also closes §11-1 (is the card socket populated) and §11-2 (does Enter
-  interrupt `bootdelay=0`); then decide whether `cam8` joins the fleet properly (a
-  `dns-records.nix` row by MAC) or stays a bench spare. Do not "update" it again until a
-  build is measured to carry `ssw101b`.
+
+  **How it was fixed, 2026-10-28 (3.3 V UART at 115200 8N1 on `/dev/ttyUSB0`, the card in
+  the slot):** Enter-spam during power-up interrupted `bootdelay=0` and landed at
+  `OpenIPC #`; `run setsdcard`; `fatls mmc 0` showed the dump pair at the card root
+  (2 097 152 / 5 242 880 B — full-partition dumps) and the 2026 pair in `2026-9a84dce/`
+  (2 003 528 / 5 156 864 B); the **rootfs only** was written (the kernel was never what
+  broke), `reset`, and the camera came back as the 2024 build — `wpa_supplicant` up, DHCP
+  `10.3.2.112` from `10.3.2.1`, ICMP clean, `:80` and `:554` both `401`. **The kernel was
+  not touched and `ubnor` was not run**, so the env, the WiFi PSK, the host keys and the
+  jffs2 settings partition are all as they were.
+
+  **The finding worth keeping: `run urnor` does not work on this U-Boot, and it lies.**
+  Its `sf erase 0x250000 0x500000` is refused (`ERROR: attempting erase past flash size
+  (0x800000)` — a range that is inside the chip), the following `sf write` runs anyway and
+  prints `5242880 bytes @ 0x250000 Written: OK`, and the partition is then a bitwise-AND of
+  old and new. Only a read-back `cmp.b` caught it. `sf update` (erase-then-write per 64 KiB
+  sector, ~26 s) plus `cmp.b` over the whole partition is the sequence that works; the
+  procedure, the receipt and the corrected "never trust the byte count" rule are in
+  `docs/camera-sd-card-firmware-flash.md` §8, and §11-1/§11-2 (card socket; Enter
+  interrupts autoboot) are closed by the same session.
+
+  **Still open:** whether `cam8` joins the fleet properly (a `dns-records.nix` row by MAC)
+  or stays a bench spare.
+
+  **Which build to use, measured 2026-10-28.** The `ssw101b` gate is necessary but not
+  sufficient on its own — **it has to be run on the image you are about to flash, and only
+  the board-specific asset passes it.** On `master`, `BR2_PACKAGE_SSW101B` is selected by
+  exactly three configs: the builder device files `ssc337_lite_tp-link-tapo-c110-v1` (ours),
+  `ssc335_lite_*` and the `ssc333`/`ssc335` *ultimate* SoC configs. The **generic**
+  `ssc337_lite`/`ssc337_ultimate` defconfigs never select it — which is why the generic
+  build bricked this camera. Verified against the published assets:
+
+  | image | `unsquashfs -l … \| grep -c ssw101b` |
+  | --- | --- |
+  | `nightly-20261010-a40b399/ssc337_lite_tp-link-tapo-c110-v1-nor.tgz` | **1** (`lib/modules/4.9.84/extra/hal_apollo/ssw101b_wifi_usb.ko`) |
+  | `nightly-20261027-d20e5c3/ssc337_lite_tiandy-tc-c321n-v2-nor.tgz` (generic) | **0** |
+
+  **`nightly-20261010-a40b399` is the newest published build for this board** — from
+  2026-10-11 every dated nightly is missing the `ssc337_lite_tp-link-tapo-c110-v1` asset
+  entirely (the `Firmware (ssc337_lite_tp-link-tapo-c110-v1)` job still runs and fails at
+  *Build firmware*; `ssc337_lite_h3c-tc2101` and the `c110` v2/v26 builds fail the same way
+  while `ssc337_lite_tiandy` still succeeds), and the rolling `nightly` tag still serves the
+  2026-10-10 file (`updated_at 2026-10-10T21:55:54Z`). That image is rootfs 5 238 784 B of
+  a 5 242 880 B partition — **4 KB spare** — with `md5 23fdb543…` / `fb28af07…` matching the
+  release's own `.md5sum` files.
+
+  **Two things to check before flashing it.** (1) The image **prunes `sc3338`**: its
+  exclusion list drops `/etc/sensors/sc3338.bin` and `sensor_sc3338_mipi.ko` (the board is
+  SC3336 per `cameras/c110.md`), leaving sc3335/sc3336/sc401ai — and `cam8`'s env says
+  `sensor=sc3338` and its current rootfs loads that module with no `insmod` error. So WiFi
+  would come back and the *picture* is what needs proving; `ipcinfo -s` (a real probe, not
+  the env) decides it. (2) The build's own kernel is 2 003 264 B of a 2 097 152 B partition,
+  so the kernel can be written too if the `uImage` is ever suspect.
+
+  **DONE 2026-10-28: `cam8` runs that build, and it is on the air with a picture.** The
+  probe (`ipcinfo -s`) said **`sc3338`**, so the pruning mattered, and two things had to
+  be true that the release alone does not give you: the **`sc3338` module had to come from
+  the outgoing rootfs** (9 956 B, works unchanged on the new kernel); and the **kernel had to
+  be flashed with the rootfs**,
+  because the new `ssw101b` driver oopses on the old one (`Unable to handle kernel paging
+  request at virtual address 000040c0` in `Sstar_usb_memcpy_fromio`, no `wlan0`, and
+  `reboot` then hangs, so the recovery from that state is a power cycle). Keeping the old
+  driver in the overlay instead is not an option: it is 744 504 B against a 704 KB overlay,
+  and filling that partition stalls the box. Verified end to end: `Linux 4.9.84 … Oct 10
+  2026`, DHCP `10.3.2.112`, H.264 **2304×1296 @ 20 fps**, `:80` index 200 / CGIs 401,
+  overlay 216 KB of 704 KB. The measured recipe is `docs/camera-sd-card-firmware-flash.md`
+  §9a. **Still open:** whether `cam8` joins the fleet (a `dns-records.nix` row by MAC) or
+  stays a bench spare — and the 2024 pair is still at the card root as its rollback.
 - **`cam5`'s pulled `S99sdconf.sh` is not cam5's** (device md5 `ae29e67d…`,
   `cameras/config/cam5/S99sdconf.sh` md5 `1b4ac291…`, which is cam9's copy).  Every
   other pulled file's md5 matched its device byte-for-byte on 2026-10-25 (the
@@ -1437,16 +1500,19 @@ that **need an owner or a decision** rather than another measurement.
   device (they are **not** all the same sensor: cam5/cam7 are `sc3338`-based
   SSC009A, cam9 is `sc401ai` SSC33X), so it is a decision with a hardware
   consequence, not a config tidy-up.
-- **Camera firmware: the blockers are now physical, not informational** (re-measured
-  2026-10-25 with the cameras keyed; **nothing has been flashed**). The open questions that
-  stopped an update have all been answered except two, and both need hands on a board:
-  **is there a card socket** (the board file describes a removable slot with power and
-  card-detect GPIOs, which is a claim about a PCB, not evidence of a connector — `just
-  cam-card <cam>` with a FAT32 card in answers it in two minutes) and **does Enter interrupt
-  `bootdelay=0`** on this specific `U-Boot 2015.01 (Nov 05 2023)` build (the family's
-  defconfig has `ZERO_BOOTDELAY_CHECK` + `AUTOBOOT_KEYED` with `\x0d`, which says yes, and
-  our U-Boot is not provably that build). **Blocks:** flashing anything. **Needs:** one bench
-  session with a USB-serial at 3.3 V and a card, following
+- **Camera firmware: the two physical blockers were closed on `cam8` on 2026-10-28, and a
+  flash has now been run once** (re-measured 2026-10-25 with the cameras keyed; the first
+  real flash was `cam8`'s rootfs rollback on 2026-10-28 — see the item above). The two
+  questions that stopped an update are both answered on that board: **there is a card
+  socket** (populated, `mmc0: new high speed SDXC card`, `fatls mmc 0` lists it) and **Enter
+  does interrupt `bootdelay=0`** on `U-Boot 2015.01 (Nov 05 2023)` / `Version: I6gf3a2dcf`
+  (a CR stream at 10/s during power-up lands at `OpenIPC #`). What the session also found is
+  that the documented sequence was wrong: **`run urnor` refuses its `sf erase` and then
+  writes over un-erased NOR while reporting `Written: OK`** — `sf update` plus a read-back
+  `cmp.b` is the usable form, and `docs/camera-sd-card-firmware-flash.md` §8/§11 now carry it.
+  **Blocks:** nothing for `cam8`; the same two facts are still *unverified* on cam5/cam7/cam9
+  (pads, socket population, and the layout of their PCBs are per-board). **Needs:** one bench
+  session per board, following
   **`docs/camera-sd-card-firmware-flash.md`** §5–§6; that document is the procedure and its
   §11 is this list. Everything else it needs is already taken: verified flash dumps and `/etc`
   archives for all three, the staged builds, and a pre-flight that passes 9/1/0 on cam7.
@@ -1485,7 +1551,8 @@ that **need an owner or a decision** rather than another measurement.
   rotate-the-key item and not a delete-the-file item. **Blocks:** nothing. **Needs:** a
   rotation window (it moves every client on the network, the cameras included — their copy
   lives in the jffs2 overlay *and* the U-Boot env, so a camera needs `cam-init`-style
-  re-provisioning or an env write, and §12 of the flash guide says do not `fw_setenv`).
+  re-provisioning or an env write, and §12 of the flash guide says do not `fw_setenv`; the
+  no-console route that avoids the env altogether is now `docs/camera-wifi-recovery.md`).
 - **The camera admin password is not the secret this directory believed it was** (found the
   evening the cameras were keyed). It is the RTSP password, and the RTSP passwords are in
   `/srv/frigate/config/config.yaml` because frigate must authenticate — so
