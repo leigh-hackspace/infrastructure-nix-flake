@@ -7,6 +7,38 @@ change runs into.
 
 Still-open items live in `docs/follow-ups.md`.
 
+## 2026-10-29 — `cam8` streams at half speed, and the fault is its transmit
+
+**Asked:** "are you actually able to get smooth video… I can't even get a picture in VLC."
+
+Two answers. The picture: **the RTSP path is not optional** — `rtsp://<addr>:554` has nothing to
+describe, `…:554/stream=0` works (all four cameras). The smoothness: no, and it is a real fault,
+measured from both ends on the camera:
+
+- receive 4 MB in 5.589 s → **716 KB/s**; transmit 4 MB in >90 s → **<45 KB/s**. Video is almost
+  entirely transmit, so that ceiling (~350 kbit/s) is the whole story.
+- camera → gateway is 3 ms idle, then **loses 54 %** of 200 × 64 B at 100 pps, and 500 × 1400 B
+  refuses outright with `sendto: No buffer space available`.
+- the stream runs 0.11× real time at 4 Mbit/s, 0.55× at 512 kbit/s, 0.67× at 256 — the shape a
+  bandwidth wall predicts, not a decoder or config problem.
+- the same laptop, same minute, pulls `cam5` at **1.38× real time**, so neither the laptop nor
+  its AP is it (they are a different network: 5 GHz `WiFi Go Brrr` vs the camera's ch-6
+  `Leighhack`, which explains the extra 20 ms and nothing else).
+
+The traps, all of which point the wrong way: a load average of ~10 that is D-state `MI_SYS`
+timed waits with the CPU **72 % idle**; `iwconfig` reporting 65 Mb/s and −55 dBm while measured
+throughput is 150× worse; and power save — the obvious suspect — on, turned off, and changed
+nothing.
+
+Not fixed. Two candidates and one test: the **2026 `ssw101b` driver** (new yesterday) or the
+**board's TX chain** (bench board, shield off, already through one USB oops). Load the 2024
+module — it is in the 2024 dump already on the card, and `mount -o loop,ro` works there — against
+the current kernel and re-measure. If TX recovers, keep the older module; if not, it is hardware.
+Receipts, re-measure recipe and the oops risk: `docs/camera-wifi-tx-2026-10-29.md`.
+
+Camera left as found: bitrate restored to 4096, the temporary `/32` route removed, power save off
+(runtime only, does not survive a reboot).
+
 ## 2026-10-29 — the no-WiFi recovery, and where the credentials actually live
 
 **Asked:** document an SD-card recovery for when the WiFi changes.

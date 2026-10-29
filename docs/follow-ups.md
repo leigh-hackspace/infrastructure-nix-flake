@@ -1480,6 +1480,19 @@ that **need an owner or a decision** rather than another measurement.
   overlay 216 KB of 704 KB. The measured recipe is `docs/camera-sd-card-firmware-flash.md`
   §9a. **Still open:** whether `cam8` joins the fleet (a `dns-records.nix` row by MAC) or
   stays a bench spare — and the 2024 pair is still at the card root as its rollback.
+- **`cam8` cannot stream video: its WiFi transmit is ~350 kbit/s while its receive is
+  716 KB/s** (measured 2026-10-29; `docs/camera-wifi-tx-2026-10-29.md` has the numbers and the
+  re-measure recipe). It boots, associates, serves H.264 2304×1296 in full 20 fps bursts, and
+  then stalls — 4 MB takes 5.6 s one way and over 90 s the other, camera→gateway loses 54 % of
+  200 small packets, and the stream runs 0.11× real time at 4 Mbit/s, 0.67× at 256 kbit/s. Not
+  the laptop (`cam5` pulls 1.38× from the same machine, same minute), not the encoder, not CPU
+  (72 % idle; the load is D-state `MI_SYS` waits), not power save. **Blocks:** using `cam8` for
+  anything but stills, and any claim that the 2026-10-10 build is good on this board. **Needs:**
+  load the 2024 `ssw101b_wifi_usb.ko` — it is inside the 2024 rootfs dump already on the
+  camera's card, and `mount -o loop,ro` works there — against the current kernel, restart the
+  network, and re-measure transmit. If TX recovers, keep the older module; if it does not, the
+  board is the fault and no firmware will fix it. The mismatch may oops the way the reverse
+  case did, so this is a bench job with a power cycle available.
 - **`cam5`'s pulled `S99sdconf.sh` is not cam5's** (device md5 `ae29e67d…`,
   `cameras/config/cam5/S99sdconf.sh` md5 `1b4ac291…`, which is cam9's copy).  Every
   other pulled file's md5 matched its device byte-for-byte on 2026-10-25 (the

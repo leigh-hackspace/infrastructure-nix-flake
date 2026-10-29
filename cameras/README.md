@@ -121,7 +121,9 @@ camera /etc/majestic.yaml (video0, rtsp port 554, `stream=0`)
   `:554` answers **`RTSP 401 Authentication required`, realm `WallyWorld`**
   (curl speaks RTSP: `curl -m 6 -o /dev/null -w '%{http_code}'
   rtsp://<addr>:554/stream=0` → `401`; with credentials, `--config` +
-  `--data-urlencode`, the `DESCRIBE` answers `200`), and HTTP on `:80`
+  `--data-urlencode`, the `DESCRIBE` answers `200`; **the path is not optional** — a client
+  given `rtsp://<addr>` with no `/stream=0` has nothing to describe, which is what "the camera
+  doesn't work in VLC" usually turns out to be), and HTTP on `:80`
   (`:85` too) answers **`401` / `Authentication Required`, realm `Authentication`**
   with `www-authenticate: Basic realm="Authentication"` — **except cam7, which on
   2026-10-25 answers `200` with a 228-byte body and no credentials on both `:80` and `:85`,
@@ -388,6 +390,13 @@ What follows is only what a person touching a camera must know without opening e
   and copying it into the overlay bought nothing. Recipe and receipts:
   `../docs/camera-sd-card-firmware-flash.md` §9a; sizes and the measured table:
   `../docs/follow-ups.md`.
+* **`cam8`'s radio works in one direction only, and that is the direction video needs**
+  (measured 2026-10-29). Receive is **716 KB/s**; transmit is **under 45 KB/s** — a ceiling of
+  about 350 kbit/s — so it streams at 0.11× real time at the shipped 4 Mbit/s and 0.67× even at
+  256 kbit/s. The board is otherwise healthy: it associates, the sensor delivers 2304×1296, and
+  every burst runs a full 20 fps before the TX queue backs up. The same laptop pulls `cam5` at
+  1.38× real time, so this is `cam8`, not the network. Not fixed; the driver-vs-hardware test is
+  `../docs/camera-wifi-tx-2026-10-29.md`, open item in `../docs/follow-ups.md`.
 * **The layout is fixed-slot, so a flash does not move the settings.** `256k(boot),
   64k(env),2048k(kernel),5120k(rootfs),-(rootfs_data)` = the whole 8,388,608 B chip,
   identical on all three; `rootfs_data` sits at 0x750000 regardless of squashfs size, and
