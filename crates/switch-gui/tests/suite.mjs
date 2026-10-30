@@ -157,7 +157,35 @@ const row = (id) => page.locator(`tr[data-port=${JSON.stringify(id)}]`);
 // The matrix's own hooks, added for this suite (see the comment in
 // `frontend/src/page.rs`): a row by the switch's port id, a VLAN column by VLAN
 // id. The checkbox cells are `td.ck`, the header cells are `th.v`.
-const box = (id, vlan) => row(id).locator(`input[data-vlan="${vlan}"]`);
+//
+// A cell is the component library's `Checkbox`: a `button[role=checkbox]`, not an
+// `input`. Playwright's `isChecked()`/`isDisabled()`/`isEnabled()` only speak to form
+// controls, so the suite asserts on the announced state instead — which is the point:
+// that is what a screen reader receives, and it is what this page never had.
+const box = (id, vlan) => row(id).locator(`td.ck[data-vlan="${vlan}"] [role=checkbox]`);
+const ariaChecked = async (cell) => await cell.getAttribute('aria-checked');
+// The widget's disabled state. A `button[role=checkbox]` is not a form control, so
+// Playwright's `isChecked()`/`check()` do not apply to it, and the library does not emit
+// `aria-disabled`: the HTML `disabled` attribute on the button is the channel a screen
+// reader reads, and `data-disabled` is the library's documented styling hook. Assert the
+// channel the browser sees and check the two agree — a widget that emits only one of them
+// is a widget that lies to either the browser or the stylesheet.
+const cellDisabled = async (cell) => {
+  const dom = await cell.evaluate((e) => e.disabled === true);
+  const data = await cell.getAttribute('data-disabled');
+  assert.equal(data, String(dom), `data-disabled (${data}) disagrees with the DOM (${dom})`);
+  return dom;
+};
+const ariaName = async (cell) => await cell.getAttribute('aria-label');
+// The text behind `aria-describedby`: the sentence that says what the cell is, or why
+// it is locked.  It used to live only in `title`, which is a pointer-only channel.
+const description = async (cell) => {
+  const d = await cell.getAttribute('aria-describedby');
+  assert.ok(d, 'the cell has no aria-describedby');
+  const target = page.locator(`#${d}`);
+  assert.ok(await target.innerText(), 'aria-describedby points at nothing');
+  return await target.innerText();
+};
 const applyButton = (id) => row(id).locator(`button[data-apply="${id}"]`);
 const nativeSelect = (id) => row(id).locator('select');
 // The banner, not the first `.note`: the page also carries the read's own
@@ -189,11 +217,15 @@ async function latestChange() {
 async function setTagged(id, vlan, want) {
   const b = box(id, vlan);
   await b.waitFor({ timeout: 10000 });
-  // A real click: it is the `change` event that moves the overlay, and only a
-  // click dispatches it. `check()`/`uncheck()` would set the same property, but
-  // a test that bypassed the event would not be testing the page.
-  if ((await b.isChecked()) !== want) await b.click();
-  assert.equal(await b.isChecked(), want, `ticking VLAN ${vlan} on port ${id} did not stick`);
+  // A real click: it is the widget's own handler that moves the overlay, and only a
+  // click dispatches it. `check()`/`uncheck()` would set a property on a control that
+  // is a button, and a test that bypassed the event would not be testing the page.
+  if ((await ariaChecked(b)) !== (want ? 'true' : 'false')) await b.click();
+  assert.equal(
+    await ariaChecked(b),
+    want ? 'true' : 'false',
+    `ticking VLAN ${vlan} on port ${id} did not stick`,
+  );
   await applyButton(id).waitFor({ timeout: 10000 });
   assert.ok(await applyButton(id).isEnabled(), 'Apply stayed disabled on a changed row');
   await applyButton(id).click();
@@ -231,7 +263,7 @@ test('read: tagged memberships are shown, not just stored', async () => {
   for (const id of ['1', '2', '47']) {
     for (const v of d.vlans.map((x) => x.id)) {
       const want = d.ports[id].tagged.includes(v);
-      assert.equal(await box(id, v).isChecked(), want, `port ${id} VLAN ${v}`);
+      assert.equal(await ariaChecked(box(id, v)), want ? 'true' : 'false', `port ${id} VLAN ${v}`);
     }
     assert.equal(
       await nativeSelect(id).inputValue(),
@@ -265,7 +297,7 @@ test('write: ticking a VLAN on a down port reaches the device and stays ticked',
   // And after the sync re-reads, the page agrees with the device.
   await until('the page never showed the new membership', async () => {
     await open();
-    return (await box(SAFE, ADD).isChecked()) ? true : null;
+    return (await ariaChecked(box(SAFE, ADD))) === 'true' ? true : null;
   });
   // The change settled, and the row is no longer offered as an edit.
   const done = await latestChange();
@@ -315,29 +347,84 @@ test('lock: a port is never offered its own native VLAN as a tagged membership',
   // refusal reached an operator as "the checkboxes reset and nothing happened".
   await open();
   assert.ok(
-    await box(SAFE, NATIVE).isDisabled(),
+    await cellDisabled(box(SAFE, NATIVE)),
     'the row offered its own native VLAN as a tagged membership',
   );
-  assert.equal(await box(SAFE, NATIVE).isChecked(), false);
-  // The reason is in the cell's `title`, like every other lock on this page.
-  assert.match(
-    await box(SAFE, NATIVE).locator('xpath=..').getAttribute('title'),
-    /untagged \(native\) VLAN/,
-  );
+  assert.equal(await ariaChecked(box(SAFE, NATIVE)), 'false');
+  // The reason is announced, not only hoverable.  It used to be a `title`, which a
+  // screen reader cannot read and a keyboard user cannot reach: `aria-describedby`
+  // resolves to text that is in the cell.
+  assert.match(await description(box(SAFE, NATIVE)), /untagged \(native\) VLAN/);
   // Only that one column: an ordinary membership is still editable.
-  assert.ok(await box('1', ADD).isEnabled(), 'a real tagged membership was locked too');
+  assert.ok(!(await cellDisabled(box('1', ADD))), 'a real tagged membership was locked too');
   // Moving the native VLAN moves the locked column with it, because the rule is
   // about the row being edited and not about the switch it was read from.
   await nativeSelect(SAFE).selectOption(String(ADD));
-  assert.ok(await box(SAFE, NATIVE).isEnabled(), 'the old native VLAN stayed locked');
+  assert.ok(!(await cellDisabled(box(SAFE, NATIVE))), 'the old native VLAN stayed locked');
   assert.ok(
-    await box(SAFE, ADD).isDisabled(),
+    await cellDisabled(box(SAFE, ADD)),
     'the new native VLAN is offered as a tagged membership',
   );
   // Back where it started, and nothing was written: this test touches no switch.
   await nativeSelect(SAFE).selectOption(String(NATIVE));
-  assert.ok(await box(SAFE, NATIVE).isDisabled());
+  assert.ok(await cellDisabled(box(SAFE, NATIVE)));
   assert.equal(await applyButton(SAFE).isEnabled(), false, 'the row was left marked as changed');
+});
+
+test('a11y: a cell has a name, announces its state, and answers without a pointer', async () => {
+  // What the component library is for. Before it a cell was an anonymous `input`
+  // inside a `label` with no text: a screen reader read the matrix as a wall of
+  // unnamed checkboxes, and the only channel for "why is this one locked" was a
+  // `title`, which needs a mouse.
+  await open();
+  const locked = box(SAFE, NATIVE);
+  const free = box(SAFE, ADD);
+  await locked.waitFor({ timeout: 10000 });
+
+  assert.match(
+    await ariaName(locked),
+    new RegExp(`port ${SAFE}, VLAN ${NATIVE}`),
+    'no accessible name',
+  );
+  assert.equal(await ariaChecked(locked), 'false', 'the state is not announced');
+  assert.match(await description(locked), /untagged \(native\) VLAN/);
+
+  // The sentence is on screen for a sighted keyboard user too, not only in the
+  // accessibility tree: the cell shows it while the control inside it has focus.
+  // Measured before anything is focused — the keyboard part below is what focuses the
+  // cell, and a test that measures the box after focusing it measures the shown state
+  // and calls it hidden.
+  const why = page.locator(`#${await free.getAttribute('aria-describedby')}`);
+  const hidden = await why.boundingBox();
+  assert.ok(hidden && hidden.width <= 2, `the reason is visible without focus: ${JSON.stringify(hidden)}`);
+
+  // ARIA's rule for a checkbox: Space changes state, Enter must not.
+  await free.focus();
+  await page.keyboard.press('Space');
+  assert.equal(await ariaChecked(free), 'true', 'Space did not tick the cell');
+  assert.equal(await free.getAttribute('data-state'), 'checked');
+  await page.keyboard.press('Space');
+  assert.equal(await ariaChecked(free), 'false', 'Space did not untick it again');
+  await page.keyboard.press('Enter');
+  assert.equal(await ariaChecked(free), 'false', 'Enter changed a checkbox');
+
+  // The pointer path, checked separately because it has a failure mode the keyboard
+  // path does not: the reason box is 1px on screen, and if it can take pointer events it
+  // is the hit target for a click on the cell, so the control never sees the click and
+  // the click that "worked" changed nothing.
+  await free.click();
+  assert.equal(await ariaChecked(free), 'true', 'a click did not reach the control');
+  await free.click();
+  assert.equal(await ariaChecked(free), 'false', 'the second click did not reach the control');
+
+  // And it is shown on focus, for the keyboard user who needs to read why a cell is
+  // locked without a mouse.
+  await free.focus();
+  const shown = await why.boundingBox();
+  assert.ok(shown && shown.width > 40, `the reason is not shown on focus: ${JSON.stringify(shown)}`);
+  assert.match(await why.innerText(), /tagged/);
+  // This test ticks and unticks the same cell, so it leaves nothing queued.
+  assert.equal(await applyButton(SAFE).isEnabled(), false, 'the cell left an edit behind');
 });
 
 test('write: making a ticked VLAN the native VLAN takes the tick with it', async () => {
@@ -352,9 +439,9 @@ test('write: making a ticked VLAN the native VLAN takes the tick with it', async
   const seen = (await latestChange())?.id ?? 0;
   const b = box(SAFE, ADD);
   await b.click();
-  assert.ok(await b.isChecked(), 'the tick never appeared');
+  assert.ok(await ariaChecked(b) === 'true', 'the tick never appeared');
   await nativeSelect(SAFE).selectOption(String(ADD));
-  assert.equal(await box(SAFE, ADD).isChecked(), false, 'the row asked for both halves at once');
+  assert.equal(await ariaChecked(box(SAFE, ADD)), 'false', 'the row asked for both halves at once');
   assert.ok(await applyButton(SAFE).isEnabled(), 'the row stopped being an edit');
   await applyButton(SAFE).click();
   const change = await until('the change never made it through the queue', async () => {
@@ -392,7 +479,7 @@ test('refused: the row keeps the edit that was refused', async () => {
   try {
     const b = box(SAFE, ADD);
     await b.click();
-    assert.ok(await b.isChecked(), 'the tick never appeared');
+    assert.ok(await ariaChecked(b) === 'true', 'the tick never appeared');
     await applyButton(SAFE).click();
     // Not `.note.err`: the fake switch answers every read with the RADIUS warning,
     // so an error note is already on this page before the click happens.  The
@@ -400,7 +487,7 @@ test('refused: the row keeps the edit that was refused', async () => {
     await until('the refusal never reached the banner', async () =>
       /REFUSED-BY-TEST/.test(await noteText()));
     // The edit survives the refusal, and so does the button to fix it.
-    assert.ok(await box(SAFE, ADD).isChecked(), 'the refused tick was thrown away');
+    assert.ok(await ariaChecked(box(SAFE, ADD)) === 'true', 'the refused tick was thrown away');
     assert.ok(await applyButton(SAFE).isEnabled(), 'Apply went away with the edit');
     // And nothing was queued: a refusal is a refusal.
     const c = await latestChange();
@@ -423,7 +510,7 @@ test('lock: a trunk member and a trunk group cannot be edited', async () => {
   // offer it — and the rule covers the group's own row as well as its members.
   await open();
   for (const id of ['47', '48', 'Trk1']) {
-    assert.ok(await box(id, ADD).isDisabled(), `port ${id} is editable`);
+    assert.ok(await cellDisabled(box(id, ADD)), `port ${id} is editable`);
     assert.equal(await row(id).locator('button[data-apply]').count(), 0, `port ${id} offers Apply`);
   }
   // The reason is in the cell's `title`, not its text: the row says enough

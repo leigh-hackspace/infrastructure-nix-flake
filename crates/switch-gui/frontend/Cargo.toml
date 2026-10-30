@@ -33,6 +33,10 @@ serde_json = "1"
 # In the source tree dto/ is a symlink to ../dto (git-ignored); the Nix build
 # replaces it with a real copy (see switch-gui.nix).
 switch-gui-dto = { path = "./dto" }
+# The component library — a pruned vendored copy of dioxus-components' `primitives`
+# (docs/component-library.md). Reached the same way as dto/: symlink here, real copy
+# in the Nix build (`sharedCrates`).  The widgets are upstream's, not ours.
+common-ui = { path = "./common-rs/ui" }
 gloo-net = "0.6"
 gloo-timers = { version = "0.3", features = ["futures"] }
 js-sys = "0.3"

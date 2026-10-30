@@ -1,0 +1,44 @@
+[package]
+name = "common-ui"
+version = "0.1.0"
+edition = "2021"
+
+# KIND: VENDORED CRATE — a pruned copy of `dioxus-components`' `primitives` crate
+# (see src/lib.rs for the pin, the module list and the deviations). It is the
+# component library the SPAs use; the widgets are not written here.
+#
+# This is its own cargo workspace, like every SPA and whisper-ws: it is a wasm
+# crate and must not be resolved in the native workspace's lock file, because a
+# shared graph would put `dioxus` — and the version of `wasm-bindgen` behind it —
+# under feature unification with the native crates (AGENTS.md rule 18). SPAs reach
+# it by a git-ignored symlink (`frontend/common-rs`) created by `just shared-rs`
+# and by `sharedCrates = ["ui"]` in the flake, because a symlink cannot travel in
+# a flake source.
+# This crate declares no `[workspace]` table, which is the opposite of every SPA and
+# whisper-ws, and it is what makes the path dependency work: it reaches the SPAs
+# *through a symlink inside their own directory*, so cargo makes it a member of that
+# SPA's workspace — the same trick `common-rs/preview` uses. Declaring a workspace
+# root here instead fails outright: "multiple workspace roots found in the same
+# workspace" (measured on services1, 2026-10-30). It stays out of the **native**
+# workspace through `exclude` in crates/Cargo.toml, so `cargo build --workspace`
+# never tries to compile it for the host.
+
+[dependencies]
+# `0.7`, not a pinned patch: each SPA's own lock already resolves 0.7.10 and this
+# crate must resolve to the same instance, or the SPAs get two `dioxus` cores.
+# No `web` feature here — that is the SPA's, and feature unification gives the
+# renderer to both. No `router`: nothing in this subset needs it, and upstream's
+# default features include it for `navbar`, which is not vendored.
+dioxus = { version = "0.7", default-features = false, features = [
+    "macro",
+    "html",
+    "signals",
+    "hooks",
+    "document",
+    "launch",
+    "mounted",
+] }
+
+# No `[profile.release]` here: in a build this crate is always a *member* of a
+# SPA's workspace, so the profile is that SPA's (`opt-level = "s"`, LTO) and a
+# second copy here would be a second answer to the same question.

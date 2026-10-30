@@ -85,4 +85,9 @@ exclude = [
   "gocardless-dashboard/frontend",
   "switch-gui/frontend",
   "whisper-ws",
+  # The component library is out for the wasm-bindgen reason, not the npm one: it
+  # is a `dioxus` crate, so as a member it would put `dioxus` (and the
+  # `wasm-bindgen` behind it) under feature unification with the native graph —
+  # the thing rule 18 exists to prevent. SPAs reach it by symlink + `sharedCrates`.
+  "common-rs/ui",
 ]

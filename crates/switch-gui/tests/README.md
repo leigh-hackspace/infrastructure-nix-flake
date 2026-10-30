@@ -130,3 +130,12 @@ Two traps the suite has already eaten:
   at the HTTP boundary: `page.route('**/api/intent', r => r.fulfill({ body:
   JSON.stringify({ ok: false, error: '…' }) }))`. That is what the
   "the row keeps the edit that was refused" test does.
+* **A matrix cell is a `button[role=checkbox]`, not an `input`** (the component
+  library's `Checkbox`, `crates/common-rs/ui/`). `isChecked()`/`check()`/`isEnabled()`
+  only speak to form controls, so the suite asserts the announced state: `aria-checked`,
+  `aria-label`, `aria-describedby`, and the DOM `disabled` plus `data-disabled` — the two
+  channels the widget actually emits (it does not emit `aria-disabled`). The selector is
+  `td.ck[data-vlan=…] [role=checkbox]`, with `data-vlan` on the cell rather than the
+  widget, because the cell is this app's markup and the control inside it is the library's.
+  The a11y test is the one that proves the widget is what made the page readable: name,
+  announced state, Space-ticks/Enter-does-not, and the reason box shown on focus.

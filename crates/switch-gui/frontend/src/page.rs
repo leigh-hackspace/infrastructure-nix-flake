@@ -23,6 +23,7 @@
 //! Apply.  It is an **overlay** on the snapshot, so the poll keeps running
 //! underneath it — a refresh can neither lose a tick nor invent one.
 
+use common_ui::checkbox::{Checkbox, CheckboxIndicator, CheckboxState};
 use dioxus::prelude::*;
 use std::collections::BTreeMap;
 use switch_gui_dto as dto;
@@ -727,7 +728,13 @@ fn matrix(
                                         let native_here = !on
                                             && !native.is_empty()
                                             && native == vid.to_string();
-                                        let hint = if native_here {
+                                        // What the cell is, and why it is locked — the two things
+                                        // the widget cannot know.  They used to live only in a
+                                        // `title`, which is a pointer-only channel: `aria-label`
+                                        // names the cell and `aria-describedby` points at this text,
+                                        // so the same sentence reaches a screen reader and a
+                                        // keyboard user.
+                                        let cell_why = if native_here {
                                             format!(
                                                 "VLAN {vid} is this port's untagged (native) VLAN — \
                                                  a port cannot be tagged in the VLAN it is untagged \
@@ -738,33 +745,22 @@ fn matrix(
                                         } else {
                                             "not tagged".to_string()
                                         };
-                                        let mut ed = edits.clone();
-                                        let pid = id.clone();
-                                        let snap = snapshot.clone();
+                                        let name = format!("port {id}, VLAN {vid}");
+                                        // An id a CSS selector can actually take: `#23-228` is a
+                                        // valid HTML id but not a valid selector, so the suite had to
+                                        // reach it through `getElementById`. `why-` makes the
+                                        // reference readable in both.
+                                        let why_id = format!("why-{id}-{vid}");
                                         rsx! {
-                                            td { class: "ck",
-                                                label { title: "{hint}",
-                                                    input {
-                                                        r#type: "checkbox",
-                                                        checked: on,
-                                                        disabled: locked || native_here,
-                                                        "data-vlan": vid.to_string(),
-                                                        onchange: move |e| {
-                                                            let on = e.checked();
-                                                            let mut w = ed
-                                                                .read()
-                                                                .get(&pid)
-                                                                .cloned()
-                                                                .unwrap_or(snap.clone());
-                                                            w.tagged.retain(|x| *x != vid);
-                                                            if on {
-                                                                w.tagged.push(vid);
-                                                                w.tagged.sort();
-                                                            }
-                                                            ed.write().insert(pid.clone(), w);
-                                                        },
-                                                    }
-                                                }
+                                            Cell {
+                                                edits,
+                                                port: id.clone(),
+                                                vlan: vid,
+                                                snap: snapshot.clone(),
+                                                locked: locked || native_here,
+                                                name,
+                                                reason: cell_why,
+                                                why_id,
                                             }
                                         }
                                     }
@@ -820,6 +816,90 @@ fn matrix(
                 }
             }
         }
+    }
+}
+
+/// One cell of the matrix.  The widget is the library's `Checkbox`, and it owns the
+/// parts of the ARIA contract a hand-written cell never had: `role="checkbox"`, the
+/// announced state (`aria-checked`), the Space-only rule ARIA gives a checkbox, and
+/// focus-on-click on the browsers that do not focus a button when it is clicked.
+/// What it cannot know is what the cell *means*, so the name and the reason stay on
+/// this side of the line.
+///
+/// `Checkbox` is controlled by a signal, while this page's truth is the poll, so the
+/// signal is created once per cell and reconciled with every fetch: a tick made in
+/// another tab, or by another operator, still moves this cell — the rule stated at
+/// the top of this file.
+#[component]
+fn Cell(
+    edits: Signal<BTreeMap<String, RowEdit>>,
+    port: String,
+    vlan: i64,
+    snap: RowEdit,
+    locked: bool,
+    name: String,
+    reason: String,
+    why_id: String,
+) -> Element {
+    // `Checkbox` is *controlled*: it reads `checked` on every render, so the cell's state
+    // has to be a signal that follows the overlay. A `bool` prop captured at the first
+    // render keeps announcing the tick as it was when the row was drawn while the overlay
+    // moves underneath it; the effect re-runs because the overlay is a signal, and that is
+    // the difference — a tick made in another tab, or by another operator, still moves
+    // this cell.
+    let mut state = use_signal(|| Some(cell_state(snap.tagged.contains(&vlan))));
+    // Two closures, so two copies: `String` and `RowEdit` are not `Copy`, and the effect
+    // cannot move them while the click handler still needs them.
+    let effect_port = port.clone();
+    let effect_snap = snap.clone();
+    let handler_port = port.clone();
+    let handler_snap = snap.clone();
+    use_effect(move || {
+        let w = edits.read().get(&effect_port).cloned().unwrap_or(effect_snap.clone());
+        state.set(Some(cell_state(w.tagged.contains(&vlan))));
+    });
+
+    rsx! {
+        td {
+            class: "ck",
+            // The hook the headless suite selects on, kept from the old cell. It is on the
+            // cell rather than on the widget: the cell is markup this app writes, while the
+            // control inside it is the library's, and its attribute list comes from the
+            // component's own props rather than from keys at the call site.
+            "data-vlan": vlan.to_string(),
+            Checkbox {
+                checked: ReadSignal::from(state),
+                // A `ReadSignal<bool>`, not the plain `bool`: a bare `locked` here lands on the
+                // button as the HTML `disabled` attribute, and the widget's own disabled state —
+                // `data-disabled`, and the state a screen reader is told — is never set.
+                disabled: ReadSignal::new(Signal::new(locked)),
+                aria_label: name.clone(),
+                aria_describedby: why_id.clone(),
+                on_checked_change: move |s| {
+                    let mut w = edits
+                        .read()
+                        .get(&handler_port)
+                        .cloned()
+                        .unwrap_or(handler_snap.clone());
+                    w.tagged.retain(|x| *x != vlan);
+                    if s == CheckboxState::Checked {
+                        w.tagged.push(vlan);
+                        w.tagged.sort();
+                    }
+                    edits.write().insert(handler_port.clone(), w);
+                },
+                CheckboxIndicator { "✓" }
+            }
+            span { id: why_id, class: "why", "{reason}" }
+        }
+    }
+}
+
+fn cell_state(checked: bool) -> CheckboxState {
+    if checked {
+        CheckboxState::Checked
+    } else {
+        CheckboxState::Unchecked
     }
 }
 

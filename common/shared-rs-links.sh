@@ -30,9 +30,12 @@ if [ ! -w "$root" ] || [ ! -d "$root/crates" ]; then
 fi
 
 # The wasm frontends share their path dependencies this way: the wire-type crate
-# each SPA renders, and filestore's SPA reading the preview table its API uses.
+# each SPA renders, filestore's SPA reading the preview table its API uses, and the
+# component library (`common-rs/ui`, the vendored dioxus-components subset — see
+# docs/component-library.md) for whichever SPAs have been converted to it.
 ln -sfn ../dto "$root/crates/gocardless-dashboard/frontend/dto"
 ln -sfn ../dto "$root/crates/switch-gui/frontend/dto"
 ln -sfn ../../common-rs "$root/crates/filestore/frontend/common-rs"
+ln -sfn ../../common-rs "$root/crates/switch-gui/frontend/common-rs"
 
 echo "SPA path-dependency symlinks are in place"

@@ -72,10 +72,35 @@ table.mx{table-layout:auto}
 .mx th.v{writing-mode:vertical-rl;transform:rotate(180deg);text-align:left;
 vertical-align:bottom;height:11em;padding:6px 3px;font-size:10px;letter-spacing:.04em}
 .mx th.v abbr{text-decoration:none;cursor:help}
-.mx td.ck{text-align:center;padding:4px 3px}
-.mx td.ck label{display:block;cursor:pointer}
-.mx input[type=checkbox]{accent-color:var(--accent);width:15px;height:15px;margin:0;cursor:pointer}
-.mx input[type=checkbox]:disabled{cursor:not-allowed;opacity:.35}
+.mx td.ck{position:relative;text-align:center;padding:4px 3px}
+/* The cell is the component library's `Checkbox`: a button with role=checkbox, so the
+   tick is drawn from the state the widget announces rather than from a native input.
+   The input the library keeps for form submission is hidden by the widget itself. */
+.mx td.ck [role=checkbox]{display:inline-flex;align-items:center;justify-content:center;
+  width:15px;height:15px;padding:0;margin:0;background:#0e1013;color:var(--accent);
+  border:1px solid var(--line);border-radius:4px;font-size:11px;line-height:1;cursor:pointer}
+.mx td.ck [role=checkbox][data-state=checked]{border-color:var(--accent)}
+.mx td.ck [role=checkbox][data-disabled=true]{cursor:not-allowed;opacity:.35}
+.mx td.ck [role=checkbox]:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+/* What a cell is locked for, as text. Hidden until the control in the cell has focus,
+   so the sentence reaches a screen reader and a keyboard user, which `title` — the
+   channel this used, and the one the suite used to assert on — could not reach.
+   `pointer-events:none` is not decoration: without it this box is 1px on screen but
+   still the hit target, and a click on the cell lands on it instead of the control
+   (measured with Playwright — the suite's clicks stopped reaching the widget). The
+   anchor is `td.ck` itself so the text sits under its own cell rather than under
+   whatever positioned ancestor the table happens to have.
+   It stays `position:absolute` when shown, and that is not styling taste either: a
+   click focuses the control on mousedown, and if revealing the text puts it in flow the
+   cell relayouts between mousedown and mouseup, so the browser delivers the `click` to
+   the common ancestor — the `td` — and the control's handler never runs. Measured with a
+   document-level listener: the first click on a cell reports `TD` as its target, the
+   second reports the button. */
+.mx td.ck{position:relative}
+.mx td.ck .why{position:absolute;left:0;top:100%;width:1px;height:1px;overflow:hidden;
+  clip-path:inset(50%);pointer-events:none;white-space:nowrap;font-size:11px;color:var(--dim)}
+.mx td.ck:focus-within .why{clip-path:none;width:auto;height:auto;overflow:visible;
+  max-width:280px}
 /* A row whose form no longer matches the switch.  The page is a cache of the
    device, so say which rows are about to change rather than making the operator
    remember what they ticked. */

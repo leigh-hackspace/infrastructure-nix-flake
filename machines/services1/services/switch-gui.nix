@@ -129,6 +129,12 @@
       version = "0.1.0";
       localCrates = ["dto"];
       sharedCrates = ["json" "web" "oidc" "pg" "service" "build-spa"];
+      # `ui` is not a Rust dependency of the binary: it is a manifest path dependency of
+      # the *frontend* (`common-rs/ui` through the git-ignored symlink), so it has to be
+      # copied into the frontend's source tree — `spaSharedCrates`, not `sharedCrates`.
+      # In the source tree the symlink makes it work; in a flake source a symlink cannot
+      # travel, so the copy is the build (same shape as filestore's `preview`).
+      spaSharedCrates = ["ui"];
     }).binary;
 in {
   systemd.services.switch-gui = INFRA.mkNeverGiveUp {
