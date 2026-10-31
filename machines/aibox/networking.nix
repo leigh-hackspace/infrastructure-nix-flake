@@ -3,6 +3,24 @@ let
   # addresses below are the ones `aibox.int.leighhack.org` answers with, and a
   # second spelling of them here is how the two drift apart.
   RECORDS = import ../../common/dns-records.nix;
+
+  # The VLAN table, for this box's IPv6 default gateway.  `common/vlans.nix`
+  # already says what the router answers on VLAN 225 (`…​::1`), so the default
+  # route below reads it from there instead of spelling an address again.
+  #
+  # **This route is not optional and RAs do not reliably provide it.**  Forwarding
+  # is on (`net.ipv6.conf.all.forwarding`, for QEMU guests), and a forwarding host
+  # is not supposed to take a default route from an RA — so `IPV6AcceptRA = true`
+  # on this link gives the on-link /64s and *no* default route.  On 2026-10-31 this
+  # box was found with no IPv6 default route at all: its reply to a Pi Room board's
+  # menu fetch died with `Network is unreachable`, the board's iPXE retransmitted
+  # into a /64 that answered nothing and timed the transfer out at
+  # `netboot.ipxe` — the netboot was down network-wide while every server-side
+  # check (local `curl`, `gw`'s `curl -6`) passed, because both of those talk to
+  # an address the box already holds.  Restoring one route fixed it instantly.
+  VLANS = import ../../common/vlans.nix;
+  VLAN225 = builtins.head (builtins.filter (v: v.id == 225) VLANS);
+  ROUTER_V6 = builtins.head VLAN225.ipv6;
 in {
   boot.kernel.sysctl = {
     # enable IPv4 and IPv6 forwarding on all interfaces
@@ -121,6 +139,17 @@ in {
 
           IPv6AcceptRA = true;
         };
+
+        # See ROUTER_V6 above: the RA gives this link its /64s but not a default
+        # route, and without one nothing off-link can be answered.  Metric 2048 so
+        # that an RA-provided default, if one ever appears again, wins.
+        routes = [
+          {
+            Destination = "::/0";
+            Gateway = ROUTER_V6;
+            Metric = 2048;
+          }
+        ];
       };
 
       "12-vlan227" = {

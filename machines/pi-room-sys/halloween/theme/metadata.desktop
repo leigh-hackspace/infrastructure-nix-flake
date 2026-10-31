@@ -1,0 +1,22 @@
+# Read by sddm's daemon before it starts a greeter, not by the theme.
+#
+# **`QtVersion=6` is load-bearing and its absence fails quietly.**  sddm defaults it
+# to 5 (`src/common/ThemeMetadata.cpp`) and then looks for an unsuffixed
+# `bin/sddm-greeter`, which this sddm does not ship — it only has
+# `sddm-greeter-qt6`.  The daemon then logs "requires missing .../sddm-greeter. Using
+# fallback theme." and shows breeze instead, so the symptom is "my theme did not
+# appear" with a working greeter and nothing on screen to say why.  Measured
+# 2026-10-31: the first deploy of this theme did exactly that.
+[SddmGreeterTheme]
+Name=Leigh Hackspace Halloween
+Description=A black Pi Room login screen that shows a random scare after a minute of silence.
+Type=sddm-theme
+Author=Leigh Hackspace
+Copyright=Leigh Hackspace
+License=MIT
+Version=0.1
+MainScript=Main.qml
+ConfigFile=theme.conf
+Theme-API=2.0
+QtVersion=6
+Theme-Id=leighhack-halloween

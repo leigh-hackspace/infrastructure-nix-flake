@@ -175,7 +175,20 @@ in {
   services.displayManager.sddm = {
     enable = true;
     wayland.enable = true;
+
+    # The greeter is this box's only UI while nobody is logged in, so the Halloween
+    # screensaver is a theme (see ./halloween): SDDM's greeter is kwin_wayland and
+    # nothing outside the theme can paint over it.  `qtmultimedia` is what gives the
+    # theme `import QtMultimedia` for its sounds; extraPackages is the module's own
+    # hook for exactly that (it lands on the greeter's QML import path).
+    theme = "leighhack-halloween";
+    extraPackages = [pkgs.qt6.qtmultimedia];
   };
+
+  # The theme loads QtMultimedia through a Loader, so a missing audio backend costs the
+  # sounds and nothing else — but the greeter is a minimal session and owns the seat, so
+  # give it the sound card outright rather than depending on logind's uaccess ACL alone.
+  users.users.sddm.extraGroups = ["audio"];
 
   # Enable the KDE Plasma Desktop Environment.
   services.desktopManager.plasma6.enable = true;
@@ -263,6 +276,15 @@ in {
   };
 
   environment.systemPackages = with pkgs; [
+    # The greeter theme, installed where SDDM looks: /run/current-system/sw/share/sddm/themes.
+    # Its knobs are this image's policy — 60 s of silence, and a window that opens on
+    # 30 October and closes on 2 November, month-and-day only so it re-arms itself.
+    (callPackage ./halloween {
+      idleSeconds = 60;
+      activeFrom = 1030;
+      activeTo = 1102;
+    })
+
     just
     git
     openldap # for ldapsearch
