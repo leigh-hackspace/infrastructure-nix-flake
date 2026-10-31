@@ -536,6 +536,38 @@ because `specialArgs`/`nixpkgs.lib` need the flake-resolved inputs that
 `nixos-rebuild` provides. So use the flake reference form (`nix build .#aibox`)
 for building.
 
+## Never replace a file a daemon has open
+
+`install`, `mv`, `rsync` without `--inplace`, `cp --remove-destination` and an editor's
+save-replace all **unlink before they write**: the path becomes a new inode while the
+daemon goes on writing the old one. The file you read is then frozen at the moment of
+the swap and nothing about it looks wrong — right owner, right mode, plausible
+contents, an mtime that never moves. dnsmasq's lease file is the case that bit here on
+2026-10-28 (`machines/gw/lease-reader.nix` and `docs/router-and-dns.md`, "The lease
+table is a channel"), but the shape is general and the daemon is usually the only
+thing holding the truth.
+
+- Test the suspicion against the daemon, not the file: `sudo ls -l /proc/$(pgrep -x
+  <daemon>)/fd/*` and look for a target reading `… (deleted)`. That orphan **is** the
+  live state, and root can read it — `sudo cat /proc/<pid>/fd/<n>`.
+- Write it back **in place**: `cat saved | sudo tee <path>` truncates the existing
+  inode and keeps its owner, group and mode; `install`/`mv` are the accident all over
+  again. Then restart the daemon so it reopens the path.
+- Restore **before** restarting. A daemon that loads a file older than its own memory
+  re-allocates whatever that file is missing — for dnsmasq under `dhcp-authoritative`
+  that is every client whose lease lives only in RAM.
+- `SIGHUP` is not usually a repair, and which signals reload what is worth measuring
+  rather than assuming: `systemctl kill -s HUP dnsmasq` left the lease fd `(deleted)`
+  and the mtime unmoved.
+- **A comment that says "measured on the box" may be quoting your own earlier
+  command.** The path unit in `lease-reader.nix` was justified by an observation of
+  the lease file being replaced with fresh ownership — made the same day, by the same
+  session, with the `install` that froze it minutes later. The observation was real;
+  the inference ("dnsmasq replaces its own lease file often") was the opposite of what
+  it does, and the *actual* mechanism — dnsmasq chowns the file every time it starts —
+  is what the unit is really for. Re-measure a load-bearing premise instead of
+  inheriting it, and write down the command, not just the conclusion.
+
 ## Common checks
 
 ```bash
@@ -560,7 +592,25 @@ compiles behind that one derivation are not. For a compile gate use `nixos-rebui
 --flake .#<machine>` for the machine you changed plus `nixos-rebuild dry-build --flake .#gw`
 for the router, and run `just check-build` on a box that can build what it is asked to.
 
+And do not chase the refused leg by running the recipe on some *other* box: it builds the
+tree it is run from, and every box's checkout is its own (measured 2026-10-31: services1
+sat at `ea37d22` with 70 dirty files while `gw` ran `a9cef07`, and a patch that applied
+on one did not apply on the other), so a green run there says nothing about the change in
+front of you. `git log -1` and `git status --porcelain | wc -l` on the box before trusting
+what it builds — the same two commands rule 20 asks for before blaming a config change for
+a machine's behaviour.
+
 ## Gotchas
+
+- **`pkill -f` on a remote box kills the shell doing the killing.** The pattern is matched
+  against full command lines, and the `ssh 'pkill -f "some-unit"'` wrapper's own command
+  line contains that string — so the session dies, its exit status is 255, everything after
+  the `pkill` in the same command silently never runs, and the tool call looks like a
+  network hiccup. Hit twice in one session on 2026-10-31 (once leaving a pointless build
+  running, once leaving a working tree patched). Either `pgrep -af` first and `kill` the
+  PIDs, or write the pattern with a bracket (`nixosConfigurations[.]services1`) so it does
+  not match itself — and when a remote command vanishes with 255, **re-read the box's
+  state** rather than assuming the first half ran.
 
 - **`nix hash path` is not the hash of a file.** It prints the hash of the *path*
   (the NAR), and for a single regular file that is a different number from the

@@ -221,8 +221,20 @@ device that address belongs to, until when, and on which VLAN it was handed out.
   re-applies the group from three places because dnsmasq owns and rewrites that file: a
   tmpfiles rule (`f` then `z`), `lease-reader.service` started by `lease-reader.path`
   watching `/var/lib/dnsmasq`, and an `ExecStartPre=+` on network-status so a boot never
-  races the path unit. A rename replaces the inode, which is why the watch is on the
-  directory and not the file.
+  races the path unit. **What actually costs the group is dnsmasq starting, which chowns
+  the file `root:root`** (measured 2026-10-31 on the same inode, so the rewrite is
+  in-place and the earlier "a rename replaces the inode" note in this file was the wrong
+  inference); the watch is on the *directory* so that a path replaced by anything else —
+  which is what froze this table for 2 d 17 h — is caught too.
+- **The endpoint reports the health of its own source.** `/api/leases` answers
+  `source_mtime`, `source_age` and `stale`, where `stale` is `"all-expired"` when every
+  row in the file has lapsed (a DHCP server that is serving always has one that has not),
+  `"unwritten"` when the file is older than two lease lengths (dnsmasq rewrites it on
+  every lease event), and `null` otherwise; `leases.rs::stale` is the only definition of
+  it, the leases panel banners it, and `lease-reader-watch.timer` on `gw` fails on it
+  rather than re-deriving it. This exists because a frozen table is not visibly frozen:
+  for 2 d 17 h this endpoint answered `"total":56,"expired":56` truthfully while holding
+  none of the network's 92 live leases, and an operator concluded a device was absent.
 - **A lease's *length* is recovered, not read.** dnsmasq stores an absolute expiry and
   no TTL. Every `dhcp-range` `machines/gw/lib/network-tables.nix` generates is generated
   at `leaseTtl` (24 h), which reaches the binary as `--lease-ttl` from that same table,

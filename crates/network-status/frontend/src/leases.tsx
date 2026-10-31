@@ -45,6 +45,37 @@ function fmtLeft(secs: number): string {
 }
 
 /**
+ * Why the backend thinks this table cannot be the truth, in the page's words.
+ *
+ * The verdict is the backend's (`crates/network-status/src/leases.rs::stale`), so
+ * the reason and the counts beside it cannot disagree; this only translates the
+ * reason it chose.  An unknown reason still banners — a verdict this file does not
+ * know is still a verdict that something is wrong with the channel.
+ */
+const STALE_WHY: Record<string, string> = {
+  "all-expired":
+    "every lease in it has already lapsed, and a DHCP server that is serving always has one that has not",
+  unwritten:
+    "it has not been written for longer than two of these leases last, and dnsmasq rewrites it on every lease event",
+};
+
+function staleBanner(data: LeasesResponse): string {
+  if (!data.stale) return "";
+  const why = STALE_WHY[data.stale] ?? `the router reported the lease file as ${data.stale}`;
+  const age =
+    data.source_age == null
+      ? ""
+      : `, and it was last written ${esc(fmtDur(data.source_age))} ago`;
+  return (
+    `<span class="pill bad">not live</span> <span class="warn-text">` +
+    `this table is a snapshot, not the network: ${esc(why)}${age}. dnsmasq is not ` +
+    `writing to ${esc(data.file)}, so what is missing from here is not evidence ` +
+    `that a device is absent — the router still holds the real leases. ` +
+    `<code>machines/gw/lease-reader.nix</code> is what owns that file.</span><br/>`
+  );
+}
+
+/**
  * The DHCP lease table: what the router has promised to whom.
  *
  * The countdown is the point of the table.  A lease's expiry is the one number
@@ -79,10 +110,16 @@ export function LeasesPanel(s: { store: Store }) {
         .map(([v, n]) => `${esc(v)} ${n}`)
         .join(" · ");
       summaryEl.innerHTML =
+        staleBanner(data) +
         `<span class="mono">${data.total}</span> lease${data.total === 1 ? "" : "s"}` +
         (data.expired ? ` <span class="warn-text">(${data.expired} lapsed)</span>` : "") +
         (per ? ` <span class="muted">· ${per}</span>` : "") +
         (truncated ? ` <span class="muted">· showing ${data.returned} of ${data.matched}</span>` : "") +
+        // Freshness in the healthy case too: "is this live?" is the first question
+        // a lease table has to answer, and `not live` above is only half of it.
+        (data.source_age == null
+          ? ""
+          : ` <span class="muted">· written ${esc(fmtDur(data.source_age))} ago</span>`) +
         ` <span class="muted">· ${esc(data.file)}</span>`;
     }
 

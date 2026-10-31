@@ -186,6 +186,21 @@ X first", X has already cost someone a day.
    member on purpose: the dashboard's own `network-status` account. Read the module before
    adding a member or a second file to it, and make the decision explicitly rather than
    inheriting one by adding a line to a group.
+29. **The lease table is a channel, and a channel can die while still answering.** The
+   leases page reads `/var/lib/dnsmasq/dnsmasq.leases` and nothing else, and dnsmasq
+   rewrites that file **in place on the descriptor it opened at startup** — so anything
+   that *replaces* the path (`install`, `mv`, an editor's save-replace) leaves the daemon
+   writing an orphan and the page serving a frozen table indefinitely. Measured: 2 d 17 h
+   of `"total":56,"expired":56` with no `10.3.2.212`, while dnsmasq held 92 live leases
+   and had ACKed that one eight times. `machines/gw/lease-reader.nix` owns the file and
+   carries the receipts, the repair (`/proc/<pid>/fd/N` is the live database — write it
+   back with `tee`, never with `install`; `SIGHUP` does not reopen the lease file) and the
+   5-minute `lease-reader-watch.timer` that fails when the channel dies; `/api/leases`
+   answers `stale` (`crates/network-status/src/leases.rs` is the only definition of it)
+   and the page banners it, because a table of zeroes is otherwise indistinguishable from
+   a quiet network. The general form, including the meta-lesson that a doc's "measured on
+   the box" may be quoting your own earlier command: `docs/nix-dev-workflow.md`, "Never
+   replace a file a daemon has open".
 
 ---
 

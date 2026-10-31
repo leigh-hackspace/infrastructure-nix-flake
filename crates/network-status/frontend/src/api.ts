@@ -239,6 +239,15 @@ export interface LeasesResponse {
   unknown_ttl: number;
   generated: number;
   max_left: number;
+  /** unix seconds when the lease file was last written, or null when the OS
+   *  would not say. A fact about the *channel*, not about any lease. */
+  source_mtime: number | null;
+  /** seconds between that write and `now`; null when the mtime is unknown. */
+  source_age: number | null;
+  /** why this table cannot be the truth, if it cannot be: `"all-expired"` or
+   *  `"unwritten"` — the backend's verdict (`leases.rs::stale`), null when it
+   *  found nothing wrong with the channel. */
+  stale: string | null;
   /** the count of leases per VLAN, keyed by VLAN device name. */
   vlans: Record<string, number>;
   /** the count of leases per network, keyed by prefix. */

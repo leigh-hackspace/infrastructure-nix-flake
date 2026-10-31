@@ -340,6 +340,29 @@ Leases are 24 h and dnsmasq re-reads its config only on restart, so a device alr
 holding an address keeps it until it renews (≈12 h) or reconnects. The reservation is
 already correct; the lease table is just behind.
 
+### The lease table is a channel, and it can die silently
+
+`network-info.int.leighhack.org/#leases` and `/api/leases` read exactly one thing:
+`/var/lib/dnsmasq/dnsmasq.leases`. dnsmasq rewrites that file **in place, on the
+descriptor it opened when it started** — so the file is current only while nobody
+replaces it. From 2026-10-28 20:51 to 2026-10-31 14:28 the page served a table of 56
+leases, every one already lapsed, while dnsmasq held 92 and ACKed the device somebody
+was looking for (`10.3.2.212`, `led-board`): a debugging session had run
+`install -m 0600 … /var/lib/dnsmasq/dnsmasq.leases`, `install` unlinks before writing,
+and the daemon went on writing the orphaned inode. `SIGHUP` does not reopen it; a
+restart does, and `cat /proc/$(pgrep -x dnsmasq)/fd/3 | sudo tee <path>` first means
+no client is offered a different address when it does. `machines/gw/lease-reader.nix`
+owns the file and carries the full receipts, and `lease-reader-watch.timer` fails
+every 5 min when the channel is dead. To ask whether the table is live right now:
+
+```bash
+curl -s http://10.3.1.1:8091/api/leases | grep -o '"stale":[^,]*'   # null = live
+```
+
+`"all-expired"` means every row has lapsed (a serving DHCP server always has one that
+has not), `"unwritten"` means the file is older than two lease lengths; the page
+banners either rather than showing a table of zeroes.
+
 This is why `common/hosts.nix` holds **addresses, not names**: every machine in this
 network is a DHCP reservation, and a table that resolved through the resolver it is
 meant to be independent of would not be one.

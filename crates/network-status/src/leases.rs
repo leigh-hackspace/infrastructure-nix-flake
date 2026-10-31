@@ -32,6 +32,25 @@
 //! nothing.  They *are* leases as far as "this address is spoken for" goes, which
 //! is why they are rows and not skipped.
 //!
+//! ## A table nobody is writing must not read like a quiet network
+//!
+//! `expired` rows are a real state and `max_left=-1` deliberately shows them, so
+//! the table can be *full* and *worthless* at the same time.  That is not
+//! hypothetical: from 2026-10-28 20:51 to 2026-10-31 14:28 this box served 56
+//! rows, every one of them already lapsed, while dnsmasq's live database held 92
+//! leases — the file had been replaced under the daemon's open fd and nothing
+//! could reach the disk copy again (`machines/gw/lease-reader.nix` has the
+//! mechanism and the receipts).  A page that says "56 leases (56 lapsed)" is a
+//! page that says "nobody is renewing", which is a different lie from "I have no
+//! data".  So `read` stats the file and [`stale`] judges the pair, and `/api/leases`
+//! answers `stale` with a reason: `"all-expired"` when every row has lapsed (a
+//! serving DHCP server always has at least one that has not), and `"unwritten"`
+//! when the file is older than two lease lengths (dnsmasq rewrites it on every
+//! lease event, so a lease length is the most a live one can go quiet).  The page
+//! turns either into a banner.  Neither rule can fire on an empty table: zero
+//! leases with a dead writer and zero leases with a healthy one look the same
+//! from here, and only the first is a fault.
+//!
 //! ## Reading the file is a decision, not an accident
 //!
 //! On `gw` the file is `0640 root:root`.  `machines/gw/lease-reader.nix` is what
@@ -64,6 +83,17 @@ pub struct Leases {
     /// mid-write.  Counted so the page can say "49 leases, 2 lines ignored"
     /// rather than quietly losing them.
     pub(crate) skipped: usize,
+    /// When the file was last written, as the filesystem says, in unix seconds.
+    /// `None` when the file would not say (no mtime on this platform, or the
+    /// stat failed under a read that somehow succeeded).
+    ///
+    /// This is a fact about the *channel*, not about any lease, and it is here
+    /// because the channel dies silently: dnsmasq writes this file in place on
+    /// the descriptor it opened when it started, so anything that replaces the
+    /// path — `install`, `mv`, `rsync`, an editor's save-replace — leaves the
+    /// daemon writing to an orphan and the page serving whatever was on disk at
+    /// the moment of the swap, forever (module header).
+    pub(crate) source_mtime: Option<i64>,
 }
 
 /// Read the lease file.  `Err` is the file being unopenable, which the endpoint
@@ -71,7 +101,18 @@ pub struct Leases {
 pub fn read(path: &str) -> Result<Leases, String> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| format!("{path}: {e}"))?;
-    let mut out = Leases::default();
+    // Stat it too, and do not fail the read if that fails: the table is worth
+    // serving without the freshness fact, and an error here would replace data
+    // with a 503 over a filesystem that will not report an mtime.
+    let source_mtime = std::fs::metadata(path)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64);
+    let mut out = Leases {
+        source_mtime,
+        ..Default::default()
+    };
     for line in text.lines() {
         match lease_line(line) {
             Some(lease) => out.rows.push(lease),
@@ -81,6 +122,35 @@ pub fn read(path: &str) -> Result<Leases, String> {
         }
     }
     Ok(out)
+}
+
+/// Why this table cannot be the truth right now, if it cannot be.
+///
+/// `expired` and `mtime_ago` are what the caller already counted (`expired` as
+/// the endpoint reports it, so the verdict and the number beside it cannot
+/// disagree).  `ttl` is the lease length the endpoint was handed, which is the
+/// longest a live dnsmasq can go without rewriting the file while it still has
+/// clients.  See the module header for what each reason means and for why an
+/// empty table is never called stale.
+pub fn stale(
+    leases: usize,
+    expired: usize,
+    mtime_ago: Option<i64>,
+    ttl: i64,
+) -> Option<&'static str> {
+    if leases == 0 {
+        return None;
+    }
+    if expired == leases {
+        return Some("all-expired");
+    }
+    // Two lease lengths, not one: a single length is reachable honestly on a
+    // network whose clients all went quiet at the top of a lease, and a reason
+    // this box prints wrongly is a reason it stops being believed.
+    if ttl > 0 && mtime_ago.is_some_and(|age| age > 2 * ttl) {
+        return Some("unwritten");
+    }
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -427,11 +497,18 @@ pub fn json(
 
     let body: Vec<String> = kept.iter().map(|r| r.json(now)).collect();
     let vlans: Vec<String> = local.vlan_labels();
+    let age = file.source_mtime.map(|m| now.saturating_sub(m));
+    let stale = stale(rows.len(), expired, age, ttl);
 
     Ok(format!(
         concat!(
             r#"{{"now":{},"lease_ttl":{},"file":{},"total":{},"skipped":{},"matched":{},"#,
             r#""returned":{},"expired":{},"unknown_ttl":{},"generated":{},"max_left":{},"#,
+            // The channel, not the leases: when the file was written, and what
+            // that plus the rows say about whether either can still be true
+            // (module header).  `stale` is a reason string or null, and the page
+            // banners on it rather than comparing timestamps itself.
+            r#""source_mtime":{},"source_age":{},"stale":{},"#,
             // The two counts are JSON *objects* (`{"vlan226":12}`) rather than
             // arrays of pairs: the key is the name, and an array here would make
             // the SPA look the name up in a list for every cell.
@@ -450,6 +527,15 @@ pub fn json(
         unknown,
         generated,
         farthest,
+        // The channel, not the leases, and deliberately last: the `concat!` above
+        // puts these three keys after `max_left`, and a placeholder list that
+        // drifts from the key list shifts every value beside it — which is exactly
+        // what `the_json_keys_carry_the_values_they_are` is there to notice.
+        file.source_mtime
+            .map(|m| m.to_string())
+            .unwrap_or_else(|| "null".into()),
+        age.map(|a| a.to_string()).unwrap_or_else(|| "null".into()),
+        opt_str(stale),
         counts(&by_vlan),
         vlans
             .iter()
@@ -554,6 +640,125 @@ mod tests {
     fn an_unreadable_file_is_an_error_not_an_empty_table() {
         let err = read("/nonexistent/dnsmasq.leases").expect_err("no such file");
         assert!(err.contains("dnsmasq.leases"), "{err}");
+    }
+
+    /// Write `text` to a temp path and read it back, returning what was read and
+    /// how old the file thinks it is.
+    fn read_back(name: &str, text: &str, now: i64) -> (Leases, Option<i64>) {
+        let path = std::env::temp_dir().join(name);
+        std::fs::write(&path, text).expect("temp file");
+        let file = read(path.to_str().expect("utf-8 path")).expect("readable");
+        let age = file.source_mtime.map(|m| now - m);
+        let _ = std::fs::remove_file(&path);
+        (file, age)
+    }
+
+    #[test]
+    fn reading_a_file_also_learns_when_it_was_written() {
+        // A file written this second is not "unwritten", and its age is this
+        // second — which is the whole of what the freshness verdict rests on.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock is past 1970")
+            .as_secs() as i64;
+        let (file, age) = read_back(
+            "network-status-leases-fresh",
+            "1800000000 aa:bb:cc:dd:ee:ff 10.3.2.50 laptop *\n",
+            now,
+        );
+        assert_eq!(file.rows.len(), 1);
+        assert!(file.source_mtime.is_some(), "the stat has to work here");
+        assert!(age.is_some_and(|a| a.abs() <= 5), "just written: {age:?}");
+        assert_eq!(
+            stale(file.rows.len(), 0, age, 86_400),
+            None,
+            "a live table is not stale"
+        );
+    }
+
+    #[test]
+    fn a_table_of_nothing_but_lapsed_leases_is_stale() {
+        // The real thing: the frozen file `/api/leases` served on 2026-10-31, at
+        // the clock it served it.  56 rows, every one past its expiry, the file
+        // 2 d 16 h unwritten, while dnsmasq's live database held 92 leases — see
+        // the module header.
+        assert_eq!(
+            stale(56, 56, Some(232_200), 86_400),
+            Some("all-expired"),
+            "a serving DHCP server always has one lease that has not lapsed"
+        );
+    }
+
+    #[test]
+    fn a_file_older_than_two_lease_lengths_is_stale_even_with_live_rows() {
+        let age = |days: i64| days * 86_400;
+        // Some leases still have most of their length left, but the file has not
+        // been written in three days: the rows cannot be the whole truth.
+        assert_eq!(stale(92, 3, Some(age(3)), 86_400), Some("unwritten"));
+        // One lease length is a network that went quietly, not a broken channel.
+        assert_eq!(stale(92, 3, Some(age(1)), 86_400), None);
+        // And an unknown mtime is evidence of nothing.
+        assert_eq!(stale(92, 3, None, 86_400), None);
+    }
+
+    #[test]
+    fn an_empty_table_is_never_called_stale() {
+        // Zero leases with a dead writer and zero with a healthy one are the same
+        // number from here, and only one of them is a fault (module header).
+        assert_eq!(stale(0, 0, Some(1_000_000), 86_400), None);
+        assert_eq!(stale(0, 0, None, 86_400), None);
+    }
+
+    #[test]
+    fn the_json_keys_carry_the_values_they_are() {
+        // `concat!` matches keys to arguments **by position**: a key list and an
+        // argument list that drift apart still compile, and every value after the
+        // insertion is simply somebody else's.  That is what happened on this
+        // endpoint on 2026-10-31, when `stale` answered `86389` — a `max_left`
+        // — and the leases page bannered a reason out of a countdown.  So the
+        // adjacency is pinned, with the fixture's own numbers, rather than the
+        // payload: a shift by one breaks it, a reordering of keys has to be said
+        // here out loud.
+        let path = std::env::temp_dir().join("network-status-leases-json");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock is past 1970")
+            .as_secs() as i64;
+        // Two live leases, one inside a labelled block and one outside every
+        // block, plus dnsmasq's own header line: `total` 2, `skipped` 1,
+        // `unknown_ttl` 1, nothing lapsed, nothing generated.
+        std::fs::write(
+            &path,
+            format!(
+                "duid 00:01:00:01:32:6b:9c:78:00:25:90:d3:f0:ea\n\
+                 {} aa:bb:cc:dd:ee:ff 10.3.2.50 laptop *\n\
+                 {} aa:bb:cc:dd:ee:01 100.64.0.9 tailnet *\n",
+                now + 1_000,
+                now + 200
+            ),
+        )
+        .expect("temp file");
+        let q = Query::default();
+        let body = json(
+            path.to_str().expect("utf-8 path"),
+            &q,
+            &q,
+            now,
+            &local(),
+            86_400,
+            500,
+        )
+        .expect("the fixture reads");
+        let _ = std::fs::remove_file(&path);
+
+        assert!(
+            body.contains(r#""total":2,"skipped":1,"matched":2,"returned":2,"expired":0,"unknown_ttl":1,"generated":0,"#),
+            "{body}"
+        );
+        // Fresh by construction, so the three channel keys are these values and
+        // no one else's.
+        assert!(body.contains(r#""stale":null"#), "{body}");
+        assert!(body.contains(r#""source_age":0"#), "{body}");
     }
 
     #[test]
