@@ -264,6 +264,18 @@
     macs = ["3c:52:a1:48:fa:b2"];
     clientIds = [];
   };
+  # Pinned 2026-10-31, when cam8 came back into production on thingino: it had
+  # been arriving on a *dynamic* lease at 10.3.2.112, which is inside VLAN 226's
+  # range (./vlans.nix, 10.3.2.100-253) — i.e. an address the router is entitled
+  # to hand to somebody else.  .11 keeps the cameras in one run (.6, .10, .11,
+  # .12, .17) and out of the dynamic range.
+  cam8 = {
+    vlan = 226;
+    ipv4 = "10.3.2.11";
+    ipv6 = [];
+    macs = ["3c:52:a1:49:01:05"];
+    clientIds = [];
+  };
   cam7 = {
     vlan = 226;
     ipv4 = "10.3.2.12";
