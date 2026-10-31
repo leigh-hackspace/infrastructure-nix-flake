@@ -369,6 +369,16 @@ The reasoning that got there, including what this file and its author believed b
 measurement, is **[`../docs/camera-firmware-audit-2026-10-25.md`](../docs/camera-firmware-audit-2026-10-25.md)**.
 What follows is only what a person touching a camera must know without opening either.
 
+* **Building the thingino image, and getting a built one onto a camera, is owned by
+  [`../docs/camera-thingino-build-deploy-2026-10-31.md`](../docs/camera-thingino-build-deploy-2026-10-31.md)**
+  — the pins (`ssc333-infinity6b0` @ `1286efbd3`, buildroot `727b904c`), the artifact hashes
+  (`cameras/thingino-manifest.sh` is that table), `just cam-fw-build`/`cam-fw-verify`, and the
+  two deploy ceremonies: `sudo just cam-rescue-card /dev/sdX` for a payload update on a
+  thingino unit (card + power cycle; **never** an ssh write of mtd3 under a thingino root —
+  that is the watchdog reset), and `MIG_PASS=… GO=1 just cam-migrate <cam> all` for an
+  OpenIPC→thingino changeover, which backs up every mtd and wipes the data partition before
+  it writes anything. The remaining bullets describe the OpenIPC route (cam7/cam9).
+
 * **thingino is not an option for this fleet, and that question is closed** (measured
   2026-10-25) — **re-opened and flipped 2026-10-31: a bench-built port runs on these boards
   and `cam5`/`cam8` now ship it, see
@@ -493,6 +503,22 @@ the half a flash needs.
   reflash overwrites them; this is the record that lets `cam-push` put them back.
   Credentials are held as md5s in the report, and one file (cam7's crontab) is
   redacted where the vendor example leaked a token.
+* **`cameras/thingino-manifest.sh`** — DATA: the build pins (branch, commit,
+  buildroot, geometry) and the size+md5+sha256 of the five artifacts of the image
+  `cam5`/`cam8` run, plus the migration script's own hashes. The build, verify,
+  card and migrate recipes read only this table; moving a pin means moving the
+  narrative with it (`../docs/camera-thingino-build-deploy-2026-10-31.md` §5).
+* **`cameras/thingino-build.sh` / `-verify.sh` / `-rescue-card.sh`** — the build
+  driver (container Buildroot behind the manifest's commit, refuses dirty/moved
+  trees), the artifact+geometry verifier, and the RESCUE card writer that re-reads
+  its md5s off the finished card. Host-side bash; the on-camera scripts above stay
+  busybox-ash.
+* **`cameras/thingino-migrate.sh`** — the proven two-phase OpenIPC→thingino
+  changeover (sha-verified mtd backups, target-map carve, RAM-resident musl
+  writer, data-partition wipe, env+u-boot phase 2). A byte-identical copy of the
+  bench-rehearsed script; `cam-migrate` checks its md5 against the manifest
+  before it runs, so this file and the bench original move together or not at
+  all.
 
 ## Rules for these devices, in the house's terms
 

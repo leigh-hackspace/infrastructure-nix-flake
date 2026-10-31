@@ -963,6 +963,11 @@ cam-keytest name:
 # it, and a tool that pretends otherwise is how the fleet loses a device.  The
 # update itself stays a human decision, taken in a window, with `cam-probe` before
 # and after, once 1–4 are green and read.
+#
+# 2026-10-31: that still describes every *OpenIPC* unit (cam7, cam9), and it is the
+# policy the thingino side grew around rather than broke — the thingino build/verify
+# and the two deploy ceremonies (rescue card, changeover) are the section at the end
+# of this file, and neither reflashes anything without a human reading its output.
 cam-preflight name:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -1161,3 +1166,93 @@ cam-card name:
     # and `ssh -n` replaces it with /dev/null, which runs an empty script and prints nothing.
     ssh -i "{{ env_var('HOME') }}/.ssh/agent-hop-key" -oBatchMode=yes -oConnectTimeout=6 \
         root@"${a}" 'sh -s' < cameras/sd-card-check.sh
+
+# ------------------------------------------------- thingino firmware: build and deploy
+#
+# cam5 and cam8 run the bench-built SigmaStar thingino port (the endpoints, the
+# geometry, the data-partition rule: docs/camera-thingino-migration-2026-10-31.md).
+# These four recipes are this repo's half of owning that: the pins and hashes the
+# image has to match (`cameras/thingino-manifest.sh`), the build, the card, and the
+# one changeover ceremony — the full story of what each gate is for is
+# docs/camera-thingino-build-deploy-2026-10-31.md.  What has NOT changed is the
+# policy above: these deploy things a human watched through a rehearsal; there is
+# still no recipe that reflashes a camera unattended, and on a thingino unit a
+# payload update is a card and a power cycle, never ssh (erasing mtd3 under a
+# thingino root is the watchdog reset that killed the first restore at 92 %).
+#
+#   just cam-fw-build                    containerised Buildroot run of the pinned
+#                                        branch, ends in cam-fw-verify or a failure
+#   just cam-fw-verify                   artifacts + geometry vs the manifest
+#   sudo just cam-rescue-card /dev/sdX   RESCUE.KRN/RESCUE.RFS card, md5s re-read
+#                                        off the card, then power-cycle the unit
+#   MIG_PASS=... GO=1 just cam-migrate <cam> <1|2|all>   the OpenIPC→thingino
+#                                        changeover, sha-verified mtd backups first
+cam-fw-build: _build-host-guard
+    #!/usr/bin/env bash
+    set -euo pipefail
+    exec cameras/thingino-build.sh
+
+# Verify an images dir against cameras/thingino-manifest.sh (bytes + md5 + sha256
+# per artifact, geometry and the rescue gate from the build's own uenv.txt).  With
+# no argument it checks the bench tree's current output; pass a directory to check
+# a staged copy.  Exit 0 is the only honest precondition for the card and migrate
+# recipes, so both run it again rather than trusting that you ran this one.
+cam-fw-verify dir="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    d={{ quote(dir) }}
+    exec cameras/thingino-verify.sh ${d:+"$d"}
+
+# Write the SD-rescue card for flashed thingino units: FAT32, RESCUE.KRN (uImage)
+# + RESCUE.RFS (rootfs), nothing else — the flashed bootcmd's gate loads exactly
+# those two names, rewrites kernel and rootfs, falls through to boot, and S98
+# eats the markers only inside a Linux that booted, so the card is one-shot and
+# self-retrying.  It re-reads both files off the finished card because the copy
+# chain (cp → vfat → flash) is only trusted where it has been hashed; CAM_CARD_YES=1
+# skips the type-the-device-name prompt for scripted use, which is exactly as
+# careful as it sounds — the prompt exists because the whole device is destroyed.
+cam-rescue-card device:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # No -n and no just-env trickery with the confirm flag: this recipe exists to
+    # be typed by someone holding a card reader.
+    sudo cameras/thingino-rescue-card.sh --device {{ quote(device) }} ${CAM_CARD_YES:+--yes}
+
+# The changeover OpenIPC → thingino, for the units still on OpenIPC (cam7, cam9 —
+# the table in cameras/README.md is the authority, check the MAC before anything
+# writes).  GO=1 and MIG_PASS are both required; the backups land under
+# $HOME/camera-backups before the first byte of flash changes, because the script
+# sha-verifies all five mtd dumps and refuses on any miss.  Phase 2 is idempotent
+# from a thingino side; `all` is what the cam8 rehearsal ran in one session.
+cam-migrate name phase:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{ phase }}" in 1|2|all) ;; *) echo "phase is 1, 2 or all" >&2; exit 2 ;; esac
+    a=$(grep -A4 "^  {{ name }} = {" common/dns-records.nix | grep -oE '10\.3\.[0-9]+\.[0-9]+' | head -1)
+    [ -n "$a" ] || { echo "no {{ name }} row in common/dns-records.nix" >&2; exit 1; }
+    . cameras/thingino-manifest.sh
+    # Two provenance gates before any camera sees a byte: the images must be the
+    # manifest's, and the script must be the rehearsed one (docs §5: its hashes
+    # move only with a fresh end-to-end rehearsal, bench and repo together).
+    cameras/thingino-verify.sh >/dev/null
+    md5=$(md5sum cameras/thingino-migrate.sh | cut -d' ' -f1)
+    if [ "$md5" != "$MIGRATE_MD5" ]; then
+        echo "cameras/thingino-migrate.sh is md5 $md5, rehearsed was $MIGRATE_MD5 — refusing" >&2
+        exit 1
+    fi
+    [ -n "${MIG_PASS:-}" ] || { echo "MIG_PASS=<camera root password> is required: password ssh is the transport this script was proven with" >&2; exit 1; }
+    [ "${GO:-}" = 1 ] || { echo "GO=1 required: this rewrites u-boot, env, kernel, rootfs and ERASES the data partition of {{ name }} ($a)" >&2; exit 1; }
+    if [ -z "${THINGINO_MIGRATE_RESUME:-}" ] && \
+        ssh -i "{{ env_var('HOME') }}/.ssh/agent-hop-key" -oBatchMode=yes -oConnectTimeout=6 \
+        root@"${a}" 'grep -qi thingino /etc/os-release' 2>/dev/null; then
+        echo "{{ name }} already runs thingino — payload updates are a rescue card (just cam-rescue-card), never this flow" >&2
+        echo "(resuming an interrupted changeover at phase 2 is the one exception: THINGINO_MIGRATE_RESUME=1)" >&2
+        exit 1
+    fi
+    dir="$HOME/camera-backups/{{ name }}-thingino-$(date -u +%Y%m%dT%H%M%SZ)"
+    mkdir -p "$dir"; chmod 700 "$dir"
+    echo "=== {{ name }} ($a): phase {{ phase }}, backups+log in $dir"
+    MIG_PASS="$MIG_PASS" cameras/thingino-migrate.sh \
+        --target "$a" --images "${THINGINO_IMAGES:-$FW_TREE_DEFAULT/$FW_IMAGES_SUBDIR}" \
+        --backup "$dir" --phase "{{ phase }}" --go
+

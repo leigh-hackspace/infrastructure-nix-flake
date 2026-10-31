@@ -1,0 +1,80 @@
+# DATA — pins and hashes for the thingino SigmaStar port: the one table the build,
+# verify and rescue-card scripts read.  Nothing below is a guess: every hash is
+# `md5sum`/`sha256sum` of the artifact in the bench tree on 2026-10-31, cross-read
+# against the flashed state of cam5/cam8 as recorded in
+# docs/camera-thingino-migration-2026-10-31.md §1, and the bench narrative in
+# ~/Projects/tapo/docs/thingino-c110-execution.md (§2 pins, §5k layout, §7d).
+#
+# What a hash is FOR: `just cam-fw-verify` refuses to stage an image the fleet has
+# never run, `cam-migrate` refuses to flash what it cannot verify, and the rescue
+# card re-reads the two payload files back off the card after writing them.  A
+# rebuilt firmware changes FW_COMMIT and every artifact hash together — the pin
+# table is where a "works on my bench" build becomes a deployable one, so a commit
+# that touches firmware source moves FW_COMMIT in the same commit that moves
+# hashes here, and the story goes into docs/camera-thingino-build-deploy-2026-10-31.md.
+#
+# The port itself lives on the operator's bench tree (branch `ssc333-infinity6b0`
+# of a themactep/thingino-firmware clone at ~/Projects/tapo/thingino-c110) and is
+# NOT pushed anywhere — see docs/follow-ups.md.  Until it is, a second machine
+# cannot fetch these pins; it can only check them on the bench.
+
+# --- the build tree -----------------------------------------------------------
+FW_GIT_URL="git@github.com:themactep/thingino-firmware.git"   # the fork's origin; the branch is local-only for now
+FW_BRANCH="ssc333-infinity6b0"
+FW_COMMIT="1286efbd3b5a348ea49f27fba8dea7b62e71e222"          # "c110 overlay: bake Leighhack as a second Wi-Fi network"
+FW_COMMIT_SHORT="1286efbd3"
+FW_TREE_DEFAULT="$HOME/Projects/tapo/thingino-c110"
+FW_CAMERA="tplink_tapo_c110_ssc333_sc3338_ssw101b"
+FW_IMAGES_SUBDIR="output/ssc333-infinity6b0/${FW_CAMERA}-4.9-musl/images"
+
+# Buildroot is a submodule pinned by the tree, not by this file; the pin commit is
+# what `git submodule update --init --recursive` must land on.  NEVER `--remote`
+# (the fork's Makefile rule runs `git submodule update --remote` and the C110 work
+# deliberately pins against it — bench AGENTS tip 4).
+BUILDROOT_PIN="727b904c13bbc2a9a7a530b1f8e47d7d180c2768"
+
+# --- the flash geometry the image is built for --------------------------------
+# From the build's own uenv.txt (not retyped from prose); the layout is
+# 256k(boot),64k(env),1984k(kernel),5376k(rootfs),512k(data) on the 8 MiB chip.
+# data < 512 KB is a boot-looping jffs2 unit (four erase blocks is not five —
+# bench AGENTS tip 21), and post-image.sh in the tree hard-errors below it.
+GEOM_KERNADDR=0x50000
+GEOM_KERNSIZE=0x1f0000
+GEOM_ROOTADDR=0x240000
+GEOM_ROOTSIZE=0x540000
+GEOM_DATAADDR=0x780000
+GEOM_DATASIZE=0x80000
+
+# --- artifacts, as built from FW_COMMIT on 2026-10-31 --------------------------
+# "filename|bytes|md5|sha256" — verify.sh checks all three per line and says which
+# one disagreed; the rescue-card and migrate flows refuse on any FAIL.
+#
+# uImage      -> kernel (4.9.84 + the Infinity6B0 MIIC I2C fixes, without which the
+#              sensor bus never writes — bench execution log §5q)
+# rootfs      -> squashfs; bakes Wi-Fi for Leighhack + The Lab 2.4GHz (the U-Boot
+#              env credential channel is OpenIPC-only), raptor rvd/rsd, dropbear
+# u-boot      -> SPL+U-Boot container, fleet-identical (sha256 c10ea860… on every
+#              dump read), carries the hush parser + the SD-rescue bootcmd once
+#              u-boot-env.bin is in flash with it
+# u-boot-env  -> the rescue env (RESCUE.KRN/RESCUE.RFS gate, bootdelay 3 on bench)
+# full bin    -> boot+env+kernel+rootfs, 7,864,320 B = up to the data partition,
+#              the sysupgrade full-write payload; NOT an 8 MiB chip image
+ARTIFACTS="
+uImage|1924064|cb14c981d97ffcc465949d8a44f93a5c|e2aa122b9fb5df9d4a10dd8c65d299abef65d713d1e00c8f127736a64349c208
+rootfs.squashfs|5300224|ce3b7ef995453e757e851e0cbc192fd1|a5e0cc0c452dd116ea4eb9c1f7d9bc834d653e1d73d49ffe0da87443a43ebddc
+u-boot-ssc333-nor.bin|244668|7a8643b8d0e895b58f4f7663e629d345|c10ea8609dc09550a5605a984b3f644272e3b32329786dd020344dfecf29d212
+u-boot-env.bin|65536|f40290110d26970d7efc060090031fd2|b536662d905e23fec033458722015b0e6494ffc24c3b382c7c61834378a9f112
+thingino-${FW_CAMERA}.bin|7864320|e75c95145d3a57322c7aab61f4252be0|933a2fae513c609b317ff55b24e70f19e3a2a1ee8c9da2e7d6a868c293265ed9
+"
+
+# --- the migration tool --------------------------------------------------------
+# cameras/thingino-migrate.sh is a byte-identical copy of the script proven on
+# cam8 2026-10-31 (~/Projects/tapo/docs/openipc-migration.sh, bench execution log
+# §7d): two phases over one ssh session, sha-verified backup of every mtd first,
+# data partition wiped inside the writer by construction.  cam-migrate re-checks
+# this hash before it lets the script near a camera — the provenance IS the
+# evidence, so a hand-edit here or there must show up as a FAIL, and the fix is a
+# fresh rehearsal plus both hashes moving together.
+MIGRATE_BYTES=14431
+MIGRATE_MD5="e8e4f5351babecef37f85f19bdc9a91b"
+MIGRATE_SHA256="894cf665b4f8aa1a4c492ee981fb5b8d1c967758dc9d48b65a8081361ea9361c"
