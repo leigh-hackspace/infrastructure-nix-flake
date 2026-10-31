@@ -1812,17 +1812,25 @@ that **need an owner or a decision** rather than another measurement.
   *2026-10-31 update: the flow is a verb now — `MIG_PASS=… GO=1 just cam-migrate <cam> all`,
   gated by `just cam-fw-verify` and the migration script's rehearsed-hash check
   (`docs/camera-thingino-build-deploy-2026-10-31.md`).*
-- **The thingino port branch is pushed nowhere.** `just cam-fw-build` builds
-  `ssc333-infinity6b0` (the cam5/cam8 image: `cameras/thingino-manifest.sh` carries the
-  commit and every artifact hash) out of the bench tree at `~/Projects/tapo/thingino-c110`
-  because that branch exists on no remote — not `themactep/thingino-firmware`, not the
-  `johnchia` fork the tree also carries. **Blocks:** building the fleet's firmware anywhere
-  but the bench — aibox could take it (it is podman/10 GB, not nix), and a lost bench disk
-  loses the only copy of the work upstream PRs were drafted from but never submitted.
-  **Needs:** push the branch to a fork the fleet can name, or land the submissions queued in
-  the bench tree's `docs/upstream/`; then move `FW_GIT_URL` in the manifest and this item
-  retires. **Re-verify with:** `git -C ~/Projects/tapo/thingino-c110 ls-remote --heads origin`
-  plus `just cam-fw-verify`.
+- **The thingino port is on GitHub now — the open item moved from *push it* to *rotate
+  the PSKs it leaked*** (2026-10-31: SSOT `cjdell/thingino-firmware`, private; the
+  branch + the flashed artifacts as release assets + the bench docs bundle + the
+  `c110-1.bin` stock dump; the build verified from a fresh clone). The overlay commits
+  the raw PMKs for Leighhack and The Lab 2.4GHz, and for ~half an hour the port was a
+  **fork**, whose commits are readable anonymously through the public parent repo even
+  after the fork goes private — the exposure window is what forces rotation, not just
+  discretion. **Blocks:** nothing running; Leighhack and The Lab PSKs and the baked
+  credentials on every thingino camera are all in scope. **Needs:** rotate both PSKs,
+  re-bake the overlay (a changeover-sized event — credentials are baked), keep the repo
+  private until then; the full story and the fork-network trap:
+  `./camera-thingino-build-deploy-2026-10-31.md` §7. **Deleting the fork did not
+  revoke the exposure** — anonymous by-SHA reads through the public parent were still
+  serving the PMK blob an hour later (fork-network object purge is a GitHub support
+  action; deleted repos stay restorable for 90 days). **Also needs:** the support
+  request, and until it lands treat this as a completed leak, not a contained one.
+  Still-open upstream half: the
+  patch drafts the bench tree carried in `docs/upstream/` (inside the release's docs
+  bundle now) were never submitted.
 
 ## UPS and the power-cut path (gw) — opened 2026-10-28, `docs/ups-and-fleet-shutdown.md` owns it
 

@@ -33,8 +33,9 @@ here=$(cd "$(dirname "$0")" && pwd)
 TREE=${THINGINO_TREE:-$FW_TREE_DEFAULT}
 [ -d "$TREE/.git" ] || {
     echo "no thingino tree at $TREE" >&2
-    echo "  the port lives on branch $FW_BRANCH of a clone of $FW_GIT_URL," >&2
-    echo "  and that branch is on the bench only — clone the tree there or point THINGINO_TREE at it." >&2
+    echo "  clone the SSOT and its pinned submodule:" >&2
+    echo "    git clone -b $FW_BRANCH $FW_GIT_URL $TREE" >&2
+    echo "    git -C $TREE submodule update --init --recursive    # plain, never --remote" >&2
     exit 1
 }
 

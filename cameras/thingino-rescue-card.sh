@@ -60,9 +60,20 @@ fi
 
 # Never write a card from an unverified build: the whole value of the rescue flow
 # is that md5s match through the copy chain, and it starts at the source files.
-"$here/thingino-verify.sh" "$IMAGES" >/dev/null
-md5_k=$(printf '%s\n' "$ARTIFACTS" | awk -F'|' '$1 == "uImage" {print $3}')
-md5_r=$(printf '%s\n' "$ARTIFACTS" | awk -F'|' '$1 == "rootfs.squashfs" {print $3}')
+# THINGINO_CARD_ALLOW_OTHER_BUILD=1 replaces that gate with a loud banner + the
+# build's own hashes — for verifying a fresh build (fork SSOT, reproducibility
+# work) rather than restaging the manifest bytes, where the re-read of the
+# finished card still compares against what is actually being written.
+if [ -z "${THINGINO_CARD_ALLOW_OTHER_BUILD:-}" ]; then
+    "$here/thingino-verify.sh" "$IMAGES" >/dev/null
+    md5_k=$(printf '%s\n' "$ARTIFACTS" | awk -F'|' '$1 == "uImage" {print $3}')
+    md5_r=$(printf '%s\n' "$ARTIFACTS" | awk -F'|' '$1 == "rootfs.squashfs" {print $3}')
+else
+    md5_k=$(md5sum "$IMAGES/uImage" | cut -d' ' -f1)
+    md5_r=$(md5sum "$IMAGES/rootfs.squashfs" | cut -d' ' -f1)
+    echo "!! UNPINNED BUILD: writing a card from $IMAGES (not checked against" >&2
+    echo "!! cameras/thingino-manifest.sh).  KRN md5 $md5_k  RFS md5 $md5_r" >&2
+fi
 
 echo "=== repartitioning $DEV (single FAT32 LBA partition, type 0C, starts at 4 MiB)"
 wipefs -a "$DEV" >/dev/null

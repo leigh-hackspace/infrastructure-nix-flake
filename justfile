@@ -1183,6 +1183,8 @@ cam-card name:
 #   just cam-fw-build                    containerised Buildroot run of the pinned
 #                                        branch, ends in cam-fw-verify or a failure
 #   just cam-fw-verify                   artifacts + geometry vs the manifest
+#   just cam-fw-fetch                    restage the flashed bytes of record from the
+#                                        SSOT release and verify them (no build needed)
 #   sudo just cam-rescue-card /dev/sdX   RESCUE.KRN/RESCUE.RFS card, md5s re-read
 #                                        off the card, then power-cycle the unit
 #   MIG_PASS=... GO=1 just cam-migrate <cam> <1|2|all>   the OpenIPC→thingino
@@ -1202,6 +1204,16 @@ cam-fw-verify dir="":
     set -euo pipefail
     d={{ quote(dir) }}
     exec cameras/thingino-verify.sh ${d:+"$d"}
+
+# The bytes cam5/cam8 actually flash are not reproducible from the tree (docs §2),
+# so they live as assets of the SSOT release; this downloads exactly the payload
+# files and runs the same manifest verify every flow already demands.  With the
+# bench scratchpad retired this is how a fresh machine gets a flashable image
+# without waiting 40 minutes on a build it cannot byte-match anyway.
+cam-fw-fetch:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    exec cameras/thingino-fetch.sh
 
 # Write the SD-rescue card for flashed thingino units: FAT32, RESCUE.KRN (uImage)
 # + RESCUE.RFS (rootfs), nothing else — the flashed bootcmd's gate loads exactly

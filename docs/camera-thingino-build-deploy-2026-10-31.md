@@ -17,13 +17,27 @@ not the build the flashed units are running.
 | branch | `ssc333-infinity6b0` | the SigmaStar port: new `tplink_tapo_c110_ssc333_sc3338_ssw101b` target, MIIC I2C driver fixes (without them the sensor bus never wrote a byte — bench §5q), ric IR-cut polarity, hush + SD-rescue u-boot, pinned `256k/64k/1984k/5376k/512k` layout, baked Wi-Fi (Leighhack + The Lab 2.4GHz) |
 | tree commit | `1286efbd3` | what `cam5` and `cam8` run today, per the migration doc §1 table (kernel md5 `cb14c981…`, rootfs md5 `ce3b7ef9…`) |
 | buildroot | submodule pinned at `727b904c` | restore with plain `git submodule update --init --recursive` — **never `--remote`**: the fork's Makefile rule moves it, and the work is pinned against it |
-| bench narrative | `~/Projects/tapo/docs/thingino-c110-execution.md` | hashes, failure stories, §5k (rescue design) and §7d (migration rehearsal) — read it before changing the port, not before using these recipes |
+| bench narrative | tag `c110-fleet-20261031`, asset `tapo-bench-docs.tar.gz` (was `~/Projects/tapo/docs/`) | hashes, failure stories, §5k (rescue design) and §7d (migration rehearsal) — read it before changing the port, not before using these recipes |
 
-**The branch lives on the bench only.** It is not pushed to `themactep/thingino-firmware`
-or to the `johnchia` fork the tree also carries as a remote, so `cam-fw-build` works on
-a machine that has the tree — today, the bench. Filing in `docs/follow-ups.md`: push the
-branch (or land the upstream PRs), which is what lets aibox or a second box build the
-fleet's firmware at all.
+**The branch has its own home now: SSOT `cjdell/thingino-firmware`, branch
+`ssc333-infinity6b0` — and the repo is PRIVATE, read §7 before anyone touches that
+visibility.** The bench tree at `~/Projects/tapo/thingino-c110` is just the first
+checkout; the scratchpad it grew in was retired on 2026-10-31. `cam-fw-build` was
+verified end-to-end from a fresh GitHub clone the same day (§2), so any machine with
+the repo and podman — aibox included — can build the fleet's firmware. **The exact
+bytes the units flash are preserved as release assets** of tag `c110-fleet-20261031`,
+because a rebuild reproduces equivalents, not those bytes (§2). The bench narrative
+with every hash and failure story (`thingino-c110-execution.md`, §5k and §7d included,
+retired with the scratchpad directory) rides along in that release as a docs bundle,
+alongside `c110-1.bin` — the stock 8 MiB dump that is the only undo button — since
+2026-10-31 both are on GitHub too.
+
+**With the scratchpad gone, a machine joins the fleet in two commands:**
+`git clone -b ssc333-infinity6b0 git@github.com:cjdell/thingino-firmware.git
+~/Projects/thingino-firmware && git submodule update --init --recursive` (plain —
+never `--remote`) for the tree `FW_TREE_DEFAULT` now points at, and
+`just cam-fw-fetch` to restage the exact flashed bytes into it and verify them
+against the manifest — no 40-minute build needed to be able to build a rescue card.
 
 ## 2. Building: `just cam-fw-build`
 
@@ -55,6 +69,23 @@ artifact inside is bench tip 13, and it has bitten this fleet's neighbour twice)
 `just cam-fw-verify [images-dir]` runs `cameras/thingino-verify.sh` alone: bytes, md5
 and sha256 for all five artifacts, the geometry out of the build's own `uenv.txt`, and
 the presence of the `RESCUE.KRN` gate in its bootcmd.
+
+**The fork-clone verification, 2026-10-31.** A fresh `git clone -b ssc333-infinity6b0`
+of the SSOT plus `git submodule update --init --recursive` (buildroot landed on the pin,
+`727b904c`) plus `cam-fw-build` produced the complete image: post-image's hard asserts
+all passed — `compiled-in table verified in u-boot.bin`, the 512 KB jffs2 floor, size
+slack printed — and the artifact set came out **content-identical to the release bytes
+the units run**: zero files added or removed; every config byte-identical
+(`thingino.json`, `raptor.conf`, `wpa_supplicant.conf`, the rescue scripts); dropbear,
+libcurl and uhttpd byte-identical; busybox differs in 6 bytes and every raptor binary
+in 5 — the embedded `__DATE__`/`__TIME__` stamps, with zero difference in their
+date-stripped `strings`; `uImage` and the u-boot container differ only where the build
+stamp rides into the compressed kernel / container padding. `cam-fw-verify` correctly
+FAILed the rebuild — that is the pin doing its job against a non-reproducible build, not
+a broken build. What this verification does NOT yet cover: booting the rebuilt bytes on
+hardware, which needs a card in the reader:
+`sudo THINGINO_CARD_ALLOW_OTHER_BUILD=1 cameras/thingino-rescue-card.sh --device /dev/sdX --images <fresh-images-dir>`,
+then the power cycle in §4b.
 
 **What a rebuild does not preserve, measured the hard way 2026-10-31.** A warm
 incremental `cam-fw-build` at the pinned commit finished in about a minute and produced
@@ -156,8 +187,45 @@ provenance).
 
 ```
 just cam-fw-verify                              # artifacts + geometry vs manifest
+just cam-fw-fetch                               # release bytes -> tree images dir -> verify
 bash -n cameras/thingino-*.sh                   # the scripts themselves
 md5sum cameras/thingino-migrate.sh              # vs MIGRATE_MD5 in the manifest
-git -C ~/Projects/tapo/thingino-c110 rev-parse HEAD    # vs FW_COMMIT
+git -C ~/Projects/thingino-firmware rev-parse HEAD    # vs FW_COMMIT
+gh release view c110-fleet-20261031 --repo cjdell/thingino-firmware   # the bytes of record
 just cam-probe cam7                             # the OpenIPC side is still OpenIPC
 ```
+
+## 7. Why the SSOT is private, and what was exposed on 2026-10-31
+
+**Read this before changing the repo's visibility, its remote, or anything about it.**
+
+The port commits its baked Wi-Fi credentials: `configs/cameras/tplink_tapo_c110_…/
+overlay/etc/wpa_supplicant.conf` carries the **raw PMK hashes** for Leighhack and
+The Lab 2.4GHz (a 64-hex `psk=` is the Pairwise Master Key itself — anyone holding it
+decrypts captured traffic with only the handshake nonces, no passphrase needed). They
+entered the tree in `3243628a1` and `1286efbd3`, and they are inside the shipped
+rootfs, so they stay in git history forever unless someone rewrites it.
+
+On 2026-10-31 the port was published by **forking** `themactep/thingino-firmware` —
+which GitHub wires into the parent's fork network: commits pushed to the fork stay
+**readable anonymously through the public parent's API by SHA, even after the fork is
+made private**. That was true for roughly half an hour before the fork was deleted and
+the SSOT recreated as a standalone (non-fork) private repo — the only supported way to
+leave a fork network. Both PMKs must be treated as **known to whoever crawls public
+API traffic**: rotate the PSKs on both APs, re-bake the overlay (that also moves
+FW_COMMIT and every artifact, and is a changeover-sized event for cam5/cam8/cam7/cam9 —
+the credentials are *baked*, §1 of the migration doc), and keep the repo private until
+that rotation has happened and the history has been rewritten or knowingly accepted.
+The release assets (rootfs/full-bin) contain the same baked file — the release is
+private only because the repo is.
+
+`cameras/thingino-manifest.sh` pins hashes only, the infra docs say nothing that
+identifies the PSKs, and nothing here repeats their values — this is rule 13 applied
+to our own commit. **Measured after the fact: deleting the fork did NOT close it** —
+an hour on, anonymous by-SHA reads through `themactep/thingino-firmware` still served
+the commit, its tree and the `wpa_supplicant.conf` blob (API and web). GitHub keeps a
+deleted repo restorable for 90 days, and fork-network object purges are a support
+action. **Needs: a support request to purge the deleted fork's objects, and rotation
+regardless** — an exposure that survived deletion is an exposure that happened.
+**Open item (follow-ups):** rotate + re-bake, or record the
+decision not to, with the threat named.

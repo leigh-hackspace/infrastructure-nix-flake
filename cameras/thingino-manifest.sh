@@ -13,19 +13,30 @@
 # that touches firmware source moves FW_COMMIT in the same commit that moves
 # hashes here, and the story goes into docs/camera-thingino-build-deploy-2026-10-31.md.
 #
-# The port itself lives on the operator's bench tree (branch `ssc333-infinity6b0`
-# of a themactep/thingino-firmware clone at ~/Projects/tapo/thingino-c110) and is
-# NOT pushed anywhere — see docs/follow-ups.md.  Until it is, a second machine
-# cannot fetch these pins; it can only check them on the bench.
+# The exact bytes hashed below are NOT reproducible from this tree (timestamps in
+# the squashfs, in the raptor/busybox binaries' 5-byte __DATE__ strings, and in the
+# kernel's compressed build stamp — docs §2), so they are ALSO preserved as assets
+# of FW_RELEASE: that release is the artifact of record, and the bench tree and any
+# fresh clone are ways to *rebuild equivalents*, not these bytes.
 
 # --- the build tree -----------------------------------------------------------
-FW_GIT_URL="git@github.com:themactep/thingino-firmware.git"   # the fork's origin; the branch is local-only for now
+# SSOT: cjdell/thingino-firmware (private), branch ssc333-infinity6b0.  PRIVATE ON
+# PURPOSE: the overlay commits the baked Wi-Fi PMK hashes, and they stay in git
+# history — see docs/camera-thingino-build-deploy-2026-10-31.md §7 before ever
+# flipping this public (and rotate both PSKs before that day).
+FW_GIT_URL="git@github.com:cjdell/thingino-firmware.git"
 FW_BRANCH="ssc333-infinity6b0"
 FW_COMMIT="1286efbd3b5a348ea49f27fba8dea7b62e71e222"          # "c110 overlay: bake Leighhack as a second Wi-Fi network"
 FW_COMMIT_SHORT="1286efbd3"
-FW_TREE_DEFAULT="$HOME/Projects/tapo/thingino-c110"
+FW_REPO="cjdell/thingino-firmware"
+# The bench scratchpad that grew the port is retired; the fleet's checkout of the
+# SSOT lives outside it.  THINGINO_TREE overrides per invocation.
+FW_TREE_DEFAULT="$HOME/Projects/thingino-firmware"
 FW_CAMERA="tplink_tapo_c110_ssc333_sc3338_ssw101b"
 FW_IMAGES_SUBDIR="output/ssc333-infinity6b0/${FW_CAMERA}-4.9-musl/images"
+# The artifact bytes live on live units are preserved as release assets:
+FW_RELEASE="c110-fleet-20261031"
+FW_RELEASE_URL="https://github.com/cjdell/thingino-firmware/releases/tag/${FW_RELEASE}"
 
 # Buildroot is a submodule pinned by the tree, not by this file; the pin commit is
 # what `git submodule update --init --recursive` must land on.  NEVER `--remote`
