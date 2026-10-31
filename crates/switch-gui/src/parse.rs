@@ -454,8 +454,13 @@ pub fn port_names(out: &str) -> BTreeMap<String, String> {
 /// `show vlan <id>` reports `Down` for a missing cable identically — so without
 /// the running config the GUI cannot tell "nobody is plugged in" from "an
 /// operator turned this port off", and cannot show the state its own
-/// `disable`/`enable` writes produce (the CLI spells the setting `shutdown` in the
-/// running config and `disable` on the command line).
+/// `disable`/`enable` writes produce.
+///
+/// **The firmwares spell it differently** — `shutdown` on the 2824, `disable` on
+/// the 2510G (measured on switch1, 2026-10-31) — and the running config is the
+/// only place it appears at all.  Reading just `shutdown` made the shadow report
+/// a port the GUI had disabled as *up*, so its own `enable` diffed to nothing;
+/// both spellings are accepted below and the tests have a case for each.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PortSettings {
     pub name: String,
@@ -490,7 +495,7 @@ pub fn port_settings(out: &str) -> BTreeMap<String, PortSettings> {
             if let Some(name) = unquoted(rest) {
                 entry.name = name;
             }
-        } else if body == "shutdown" {
+        } else if body == "shutdown" || body == "disable" {
             entry.enabled = false;
         }
     }
@@ -874,6 +879,19 @@ username operator password <REDACTED-IN-THIS-REPO>
         assert!(!s.get("9").map(|p| p.enabled).unwrap_or(true));
         // A VLAN block is not a port block, and its `name` is not a port name.
         assert!(!s.contains_key("225"), "the VLAN block leaked: {s:?}");
+    }
+
+    /// The other firmware's spelling of the same setting: the 2510G writes
+    /// `disable` where the 2824 fixture above writes `shutdown`.  Measured on
+    /// switch1, 2026-10-31 — and until this test existed the parser reported a
+    /// port it had just shut as up, so the GUI's own `enable` diffed to nothing.
+    #[test]
+    fn the_2510g_spells_a_shut_port_disable() {
+        let text = "hostname \"switch1\" \ninterface 25 \n   disable\nexit\ninterface 26 \n   name \"AP1\" \n   disable\nexit\n";
+        let s = port_settings(text);
+        assert!(!s.get("25").map(|p| p.enabled).unwrap_or(true), "{s:?}");
+        assert_eq!(s.get("26").map(|p| p.name.as_str()), Some("AP1"));
+        assert!(!s.get("26").map(|p| p.enabled).unwrap_or(true), "{s:?}");
     }
 
     /// A port the running config never mentions is not in the map at all, which

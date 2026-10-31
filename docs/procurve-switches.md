@@ -68,12 +68,14 @@ row, never silently swallowed.
 
 ## Two firmwares, one parser
 
-The 2824 is not the same firmware and three things bite a client written against
+The 2824 is not the same firmware and four things bite a client written against
 the 2510G: `show vlan` has an extra `Voice` column (so the number of trailing
 columns must come from the header), `show spanning-tree` puts
-`Cost/Priority/State` in the same `|`-block as the port, and its banner ends with
-`Press any key to continue`. All three are caught by fixtures taken from the live
-devices — see `crates/switch-gui/README.md` ("Two firmwares, one parser").
+`Cost/Priority/State` in the same `|`-block as the port, its banner ends with
+`Press any key to continue`, and the running config spells a shut port
+`shutdown` on the 2824 where the 2510G writes `disable` (measured on switch1,
+2026-10-31). All four are caught by fixtures taken from the live devices — see
+`crates/switch-gui/README.md` ("Two firmwares, one parser").
 
 ## "Can't reach RADIUS server." means the login was refused
 

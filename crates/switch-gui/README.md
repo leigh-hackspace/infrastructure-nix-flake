@@ -236,6 +236,15 @@ VLAN tables likewise show the group, not the members. So a member port inherits
 its group's state — and the page says so in a tooltip rather than implying the
 port was measured (`switch::inherit_trunk_states`).
 
+**The two firmwares spell a shut port differently in the running config.** The
+2824 writes `shutdown`, the 2510G writes `disable` — and the `interface` block of
+`show running-config` is the only place the setting appears at all (every other
+read shows a shut port as `Down`, exactly like an unplugged one). The parser
+accepts both; reading only `shutdown` made the shadow copy report a port the GUI
+had just disabled as *up*, so its `enable` intent diffed to nothing and the port
+stayed down. Measured on switch1, 2026-10-31 (`docs/procurve-switches.md` has the
+firmware comparison).
+
 **Numbers are truncated with `...`** when a column is too narrow
 (`2,993,652...`), so counters are kept as strings. A port's real total is not
 recoverable from this view.
