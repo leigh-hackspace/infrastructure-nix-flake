@@ -1,8 +1,23 @@
 # `cam8` cannot stream: its WiFi transmit is ~350 kbit/s (measured 2026-10-29)
 
-**Status: diagnosed, not fixed.** One fault, measured from both ends; the cause is either the
-2026 `ssw101b` driver or the board's transmit chain, and the test that separates them is at
-the bottom. `cam8` is the bench spare, so nothing in the fleet depends on this.
+**Status: superseded at its headline, still useful at its measurements — read this box before
+using anything below.** The ~350 kbit/s ceiling, the bitrate ladder that proved it was a bandwidth
+wall, and the measurement method are all sound and were reused on 2026-10-31. Two things are not.
+**The attribution: the fault was never behind the camera's antenna — it was the access point and
+its channel**, and `cam8` was a client of AP1's original unit on channel 6, the channel three of
+this network's four APs were also sitting on. That unit failed and was replaced on 2026-10-31 by
+one that auto-selected channel 11, where `cam8` is now the only 2.4 GHz client; it streams properly
+from that moment on, under a firmware this file does not mention and without the driver swap it was
+waiting for. **And the one-directional framing that produced the attribution**: "transmit is
+~350 kbit/s, receive is 716 KB/s" is what made a hardware PA look plausible, and the download
+direction was never re-measured on the *failing* camera after the ceiling appeared.
+Receipts, the AP-side retry counters, and the survey that counts 26 BSSs where `cam5` sits against
+4 where `cam8` sits: **`docs/camera-wifi-cells-2026-10-31.md`**.
+
+For the rule this file taught: a per-camera throughput ceiling is not a per-camera *fault* until
+the AP's retry counters and a second client on the same radio have been read, and an asymmetry
+claim needs the download direction measured too — which the table below never did, and which is
+the single measurement that would have named the channel on 2026-10-29.
 
 ## What was asked, and the answer nobody expected
 
@@ -62,6 +77,15 @@ For scale, the same laptop, same minute, pulled `cam5` at **1.38× real time** (
 7.23 s). The laptop is fine; `cam8` is the outlier.
 
 ## The two candidates, and the test that separates them
+
+> **Answered 2026-10-31, and the answer is neither.** Kept as written, because "we thought it was
+> the driver or the PA" is the lesson. The discriminator that was missing is in the new doc: a
+> broken transmit chain is *asymmetric*, and the failing camera's **download** was capped as hard
+> as its upload (76 KB/s down, 61 KB/s up on `cam5`), with the AP retrying **50 %** of its own
+> frames to a −47 dBm client, and the client's physical rate holding at 23–39 Mbit while its
+> throughput sat at 0.49 Mbit/s. **Do not run the module swap below**: it changes a variable that
+> is not in the fault, and one side of it risks a board oops to test what the controller's own
+> counters had already excluded.
 
 `cam8` runs `Linux 4.9.84 … Oct 10 2026` with the **2026** `ssw101b` driver
 (md5 `e7b171da8ce5069fa67cab48b419257f`) and the **2024** `sc3338` sensor module

@@ -7,6 +7,43 @@ change runs into.
 
 Still-open items live in `docs/follow-ups.md`.
 
+## 2026-10-31 — "cam8 works great but cam5 is terrible": it was the channel, and
+proving it cost cam5
+
+**Asked:** why one thingino camera streams and the other crawls.
+
+The cameras were exonerated by being identical — same `Thingino 2`, same kernel, same
+`ssw101b_wifi_usb`, same `sensor_sc3336_mipi`, byte-identical `/etc/raptor.conf`, −47 dBm and
+−46 dBm to their respective APs — and then the 22× throughput gap (61 KB/s vs 1.38 MB/s, in
+**both** directions) was explained entirely by which radio each had joined: cam5 on AP2's
+channel-6 BSS with a −79 dBm client on it and 26 BSSs audible at the camera, cam8 alone on AP1,
+which had been replaced that morning and auto-selected channel 11. Three things came out of that
+beside the channel plan:
+
+1. **`docs/camera-wifi-tx-2026-10-29.md`'s "its WiFi transmit is ~350 kbit/s" was never the
+   camera's transmit chain.** The missing measurement was the *download* direction: a weak PA is
+   asymmetric, and this was not. cam8 "recovered under thingino" in the same window its AP was
+   replaced, and cam5 inherited the identical ceiling on the channel it stayed on — so the
+   proposed 2024-vs-2026 driver swap would have burned a bench afternoon (and maybe a board) on a
+   variable that was not in the fault, and the migration doc's "the driver question may just have
+   been answered" is answered *neither*.
+2. **A per-cell average can impersonate a per-camera measurement.** "cam5's position is marginal:
+   −63 dBm" was AP2's `client_signal_avg`, dominated by a doorbell at −79; the AP sees cam5 at
+   −47. Two docs repeated the number and one of them had said "measured on the box".
+3. **The test that produced the answer took the camera with it.** Forcing a BSSID into
+   `/etc/wpa_supplicant.conf` over ssh is not revertible: the ssw101b client will not join a pinned
+   BSS, `bssid=` forbids falling back, the armed `sleep 150; restore &` died with the ssh session
+   because dropbear reaps the session's process group, and the bad file sits in the **persistent**
+   overlay so a power cycle does not remove it. cam5 is off the air awaiting a serial console, and
+   the runbook (`rm /overlay/root/etc/wpa_supplicant.conf`, which is safe because `/rom` still holds
+   the pristine copy) is written. **The rule: never change a device's association over the
+   association you are changing, and never trust a detached timer across an ssh session that is
+   about to end.**
+
+Measurement, AP/BSSID map, controller-stats recipe, and the DECIDE-gated fixes: that is
+`docs/camera-wifi-cells-2026-10-31.md`; faults 14 and the corrected table live in
+`cameras/README.md`.
+
 ## 2026-10-31 — a mains blip, a reverted switch config, and a console session that
 never came back
 

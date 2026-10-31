@@ -53,8 +53,11 @@ never sees the gate.
 `rtsp://…cam5…:554/stream=0`, and was **404'd** for two days until 2026-10-31 19:49, when
 `/srv/frigate/config/config.yaml` on services1 was changed to `/stream0` (a first attempt
 that evening had set it to `/ch0`, which is also a 404 on thingino); it now reports
-`camera=~3.5 of 5 fps`, `quality=fair`, 2-3 stalls/hour — that is cam5's **marginal RF**
-(`docs/camera-wifi-tx-2026-10-29.md`), not the URL. `cam8` was added to frigate the same
+`camera=~3.5 of 5 fps`, `quality=fair`, 2-3 stalls/hour — that is cam5's **cell, not the URL**:
+re-measured that night the feed was at `camera_fps 1.31` with 138 frigate watchdog restarts in 20
+minutes, and the cause is AP2 on channel 6 rather than the camera or its corner of the room
+(`docs/camera-wifi-cells-2026-10-31.md`, whose §6 retires the −63 dBm figure this sentence leaned
+on). `cam8` was added to frigate the same
 evening (camera `cam8`, `rtsp://cam8.int.leighhack.org:554/stream0`) while the device was
 **off the air**, and it came back on its new pinned address `10.3.2.11` before the session
 ended: 5.1 camera / 5.0 process fps, `quality=fair` — i.e. the thingino path works, and
@@ -140,10 +143,20 @@ root password reset — plan a console for it.
 
 * **cam5** — thingino, `10.3.2.10` (the router held its old lease), sensor **sc3336**
   autodetected from silicon (`ipcinfo -s`) despite the OpenIPC `sensor=sc3338` hint;
-  overlay wiped, password gate closed, `rvd` streaming 2304×1296@20. **RF at its position
-  is marginal: −63 dBm, TCP cam→host 73 KB/s, the 2 Mbit/s main arrives at ~17% real time**
-  — the known bad-corner physics (`docs/camera-wifi-tx-2026-10-29.md`), placement or
-  bitrate action needed before it is a useful feed. Backups: all five pre-mtds + env dump
+  overlay wiped, password gate closed, `rvd` streaming **1920x1080@20 at 2 Mbit/s** (the
+  2304x1296 figure was OpenIPC-era geometry; `cat /etc/raptor.conf` on either unit is the
+  authority, and the two files are byte-identical). **Its throughput problem is the radio cell,
+  not its position: 61 KB/s up, 76 KB/s down, 5-10 % loss and 331 ms average RTT to its own
+  gateway, on an AP2 2.4 GHz BSS that also carries a -79 dBm client, while the camera hears its
+  own AP at only -52 dBm.** The -63 dBm this bullet used to quote is AP2's *average client*
+  signal and the 73 KB/s was the cell's ceiling, so "bad corner" was a per-cell average read as
+  a per-camera fact; `docs/camera-wifi-cells-2026-10-31.md` has the receipts and the fix options.
+  Later the same evening cam5 was left **off the air for want of a console**, by a BSSID pin
+  written into `/etc/wpa_supplicant.conf` over ssh while testing exactly that conclusion - the
+  pin, why the ssw101b driver makes it fatal, and the recovery: §8 there.
+  **Both thingino units also lost the fleet hop key at the changeover, so every `cam-*` recipe
+  fails on them until it is re-keyed** (done 2026-10-31 for cam5 and cam8; cam5's
+  `authorized_keys` also holds three operator keys, which is the re-check §3 asked for). Backups: all five pre-mtds + env dump
   + serial transcripts on the operator bench.
 * **cam8** — thingino, **10.3.2.11 since 2026-10-31** (the router now reserves it by MAC:
   `3c:52:a1:49:01:05`, `common/dns-records.nix`). It had been arriving on a *dynamic*
@@ -154,9 +167,11 @@ root password reset — plan a console for it.
   `quality=fair`. Its `authorized_keys` is gone (the changeover wipes the data partition),
   so ssh needs `just cam-key cam8` — the one recipe that asks for the device password —
   before any `cam-*` recipe will work on it. joined Leighhack seconds after
-  boot; its OpenIPC-era TX fault (`docs/camera-wifi-tx-2026-10-29.md`, <45 KB/s) needs a
-  fresh measurement under thingino now that the MIIC fixes and a matched driver ship —
-  the doc's driver-vs-hardware question may just have been answered.
+  boot; its OpenIPC-era TX fault (`docs/camera-wifi-tx-2026-10-29.md`, <45 KB/s) **was not the
+  firmware**: it streams because the AP it is joined to was replaced that morning and chose
+  channel 11, where cam8 is the only 2.4 GHz client. The driver-vs-hardware question is answered
+  *neither*, and cam5 has inherited the same fault on channel 6
+  (`docs/camera-wifi-cells-2026-10-31.md` §3).
 * **cam7, cam9** — untouched OpenIPC. The bench tree's docs carry a stale habit of calling
   cam9 "the sealed unit at 10.3.2.17"; **this repo's table is the authority: cam9 is an
   ordinary fleet camera**, no special sealing or protection. Anyone touching a camera
@@ -175,3 +190,9 @@ units** (no `majestic.yaml`, no `/tmp/webui/signature.txt`) until they grow a th
 mode — filed. The thingino-evaluation doc's one enduring asset turned out to be its
 purchase note: the v3 C110 line is the Ingenic one; ours are, and remain, the SigmaStar
 ones — they just aren't unbuildable for thingino any more.
+
+`docs/camera-wifi-cells-2026-10-31.md` (same day) leaves all of the above standing and
+changes two of its conclusions: which AP each camera is on explains the remaining throughput
+difference between the two thingino units - and the 2026-10-29 `cam8` fault - better than driver
+or hardware does, and the -63 dBm / 2304x1296 / sc3338 facts in this file were wrong in ways
+named there. Its §8 is the rule about changing a camera's association over the association itself.

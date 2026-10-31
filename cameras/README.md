@@ -73,6 +73,17 @@ reserves the address by MAC (`dhcp-host=3c:52:a1:49:24:0a,set:vlan226,10.3.2.12,
 There is **no second copy of the addresses** in this directory: `just cam-list`
 and `just cam-addr` read that table, so there is nothing to drift.
 
+**What this table cannot tell you is which radio a camera is on, and on 2026-10-31 that was the
+whole difference between a working camera and a 1.3 fps one.**  The addresses are pinned; the
+association is not - a camera joins whichever AP it felt like at the time, and on this network
+the four APs are one SSID across three channels with wildly different cells.  Measured that
+evening: **cam5 -> AP2 Pi Room, ch 6** (3 clients, one at -79 dBm; 61 KB/s up), **cam8 -> AP1
+Main Space, ch 11** (cam8 alone; 1.38 MB/s up), **cam7 -> AP3 Fabrication, ch 6**, **cam9 ->
+AP4 Social, ch 8**.  Both cameras at -47/-46 dBm to their APs, both on identical firmware and
+identical encoder config, 22x apart in throughput.  How to measure it (`wpa_cli scan`, the
+controller's mongo stats DB, the two-direction `dd` ceiling test), the AP/BSSID offset
+convention, the channel plan and the fix options: **`../docs/camera-wifi-cells-2026-10-31.md`**.
+
 The other three feeds in frigate's table — `main_space`, `woodwork`, `workshop`
 — belong to **other devices**: `common/dns-records.nix` reserves 10.3.14.12 /
 .13 / .11 on VLAN 227 (the workshop's own block) under those names.  They are
@@ -94,9 +105,16 @@ just cam-keytest cam5        # is key-only ssh working
 ```
 
 Every recipe is key-only (`BatchMode=yes`, so an unkeyed device fails in
-seconds rather than hanging a call — rule 11).  **All three are keyed as of
-2026-10-25** (`just cam-check` reports `authorized_keys_note=present`, 1 line, on each), so
-every recipe here works unattended now.  They were unkeyed when this directory was written,
+seconds rather than hanging a call — rule 11).  **All three were keyed as of
+2026-10-25** (`just cam-check` reported `authorized_keys_note=present`, 1 line, on each), and
+every recipe here worked unattended.  **Re-verify that sentence on a thingino unit rather than
+trusting it:** a changeover wipes the data partition, and both thingino units were found unkeyed
+on 2026-10-31 - cam5's `authorized_keys` instead held three *operator* keys (bench and laptop,
+not the fleet hop key) - so re-keying belongs on the migration checklist.  cam5 needs one further
+step before any recipe works: the operator account's `known_hosts` still carries the **pre-reflash
+OpenIPC host key**, so every recipe dies there until `ssh-keygen -R 10.3.2.10` is run and the new
+key accepted.  A reflashed dropbear really is a new host, and accepting its key is a TOFU
+decision: notched in `../docs/follow-ups.md` rather than done quietly by an agent.  They were unkeyed when this directory was written,
 and the claim that keying needed an operator at a terminal because *"the password is not
 named anywhere in this repo"* was **also wrong**: the cameras' admin password is the RTSP
 password, and the RTSP passwords are written into services1's frigate config
@@ -354,6 +372,22 @@ camera's config before the repo can hold it (`cam-pull` → `cam-diff` →
     `ffmpeg:` transcode still pulls it, so frigate is fed by an anonymous stream today), then
     credentials on the device or the VLAN rule that makes 10.3.2.6 reachable only from
     services1. Nobody should "fix" it by editing frigate: read the fault, then decide.
+
+14. **A camera's feed is a property of the AP it happens to join, and nothing in this repo can
+    see or pin that.**  Measured 2026-10-31: cam5 (AP2, ch 6, three clients on the BSS, one at
+    -79 dBm, 26 BSSs audible where the camera sits) delivers **61 KB/s up / 76 KB/s down** at
+    -47 dBm signal; cam8 (AP1, ch 11, alone on its BSS) delivers **1.38 MB/s** at -46 dBm, on
+    identical firmware, identical driver and byte-identical `/etc/raptor.conf`.  cam5's 2 Mbit/s
+    main stream therefore arrives at ~25 % of real time and frigate's watchdog restarts its reader
+    ~7x a minute.  **Blocks:** any claim that a camera is "broken" before its cell has been read,
+    and the `pi_room` feed's usability.  **Needs:** the channel-plan decision in
+    `../docs/camera-wifi-cells-2026-10-31.md` section 7 (AP2's 2.4 GHz radio, AP4's
+    config-versus-measured channel, and whether the Pi Room camera gets a wire).  **Also needs:**
+    never change a camera's *association* over ssh - the only way back to the device is the
+    association being changed, and dropbear reaps a detached revert along with the session.  That
+    is how cam5 went off the air on 2026-10-31; section 8 of that doc is the recovery runbook
+    (`rm /overlay/root/etc/wpa_supplicant.conf` - rebooting does not undo it; neither does
+  `wlan reset`, which removes a path this build does not use).
 
 ## Firmware updates — the procedure lives elsewhere; this is the summary
 

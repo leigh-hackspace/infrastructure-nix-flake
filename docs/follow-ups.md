@@ -1784,26 +1784,45 @@ that **need an owner or a decision** rather than another measurement.
 
 **Opened 2026-10-31 by the thingino migration (`cam5` + `cam8`), `docs/camera-thingino-migration-2026-10-31.md` owns the detail:**
 
-- **`pi_room`'s feed is 404-ing right now.** frigate's config still asks cam5 for
-  `/stream=0`; thingino's `rsd` only knows `/streamN` and answers **404 Unknown stream
-  endpoint**. **Needs:** `/srv/frigate/config/config.yaml` on services1 — `pi_room` →
-  `rtsp://cam5.int.leighhack.org:554/stream0` — and while there, the URL's `user:pass` is
-  **decorative**: thingino RTSP is unauthenticated by default, so the feed is open to
-  anything on VLAN 226 until auth is enabled on the camera or a firewall row fences it.
-  Both ends are off-flake (fault 8); this is also the concrete case for that fix.
-- **Pin `cam8`.** Back in production at `10.3.2.112` (MAC `3c:52:a1:49:01:05`) but with no
-  row in `common/dns-records.nix` — the lease is DHCP-dynamic. **Needs:** a `cam8` row
-  (vlan226, 10.3.2.112) through the normal `machines/gw` deploy; until then every runbook
-  naming "the bench camera" means the lease page, not the table.
-- **cam5's position is RF-marginal**: −63 dBm, camera→host TCP measured **73 KB/s**, the
-  2 Mbit/s main stream lands at ~17% of real time — the bad-corner physics of
-  `camera-wifi-tx-2026-10-29.md`, now on a healthy radio. **Needs:** move the camera/AP or
-  reprofile `rsd`'s streams to the link before anyone calls `pi_room` dead; re-measure with
-  the `dd | nc` recipe in the migration doc, no console needed.
-- **Re-measure cam8's TX fault under thingino.** The <45 KB/s ceiling was measured on the
-  2026-10-29 OpenIPC build, whose kernel predates the MIIC/I2C fixes and shipped a mismatched
-  WiFi module; if the ceiling survives the port it is hardware, if it does not,
-  `camera-wifi-tx-2026-10-29.md` needs its conclusion corrected.
+- **`pi_room`'s feed: URL fixed 2026-10-31 19:49, exposure open.** The `/stream=0` 404 is closed -
+  `/srv/frigate/config/config.yaml` now asks `rtsp://cam5.int.leighhack.org:554/stream0` (`/ch0` is
+  also a 404). What remains: thingino RTSP is **unauthenticated by default**, so the feed is open to
+  anything on VLAN 226 until auth is enabled on the camera or a firewall row fences it; and **the
+  pre-migration fleet root password still authenticates as root over ssh on both thingino units**,
+  while that same value sits in plaintext in a *commented-out* RTSP URL in the config named two
+  lines above (measured 2026-10-31; deliberately unquoted, rule 13). **And it is not merely a tidying
+  item:** cam8's data partition *was* wiped by the migration flow, and cam8 still takes that password -
+  so the credential is baked into the image, which puts it in the same exposure and the same rotation as
+  the PMKs in the item below (the fork window, not just the frigate file), and any rotation has to
+  re-bake rather than re-key. **Blocks:** nothing running; both exposures are passive. **Needs:** that
+  rotation, sequenced with the PSK one below it because both are changeover-sized; a decision on where a
+  camera root password belongs afterwards (sops, rendered to `/run/secrets`, never in frigate's runtime
+  bind mount); and neither end of this pipe is in the flake (fault 8), which is the concrete case for
+  that fix.
+- **~~Pin `cam8`~~ - closed 2026-10-31, same evening.** `common/dns-records.nix` reserves
+  `10.3.2.11` by MAC `3c:52:a1:49:01:05` (the dynamic `.112` was inside VLAN 226's own pool, so that
+  was correctness and not tidying), and frigate and the gatus rows follow the table.
+- **cam5 is not RF-marginal - it is on the wrong AP. Corrected 2026-10-31, same evening, and the
+  correction is the item.** The -63 dBm above is **AP2's average client signal**, not cam5's: the AP
+  sees cam5 at **-47 dBm** and the camera hears that AP at -52. Measured ceiling **61 KB/s up /
+  76 KB/s down**, 5-10 % loss and 331 ms mean RTT *to its own gateway*, on a 2.4 GHz BSS that also
+  carries a -79 dBm client, where 26 BSSs are audible and one on ch 5 is louder than the serving AP.
+  cam8 at -46 dBm on an unshared ch-11 BSS does 1.38 MB/s on byte-identical firmware and encoder
+  config. **Blocks:** calling `pi_room` dead, and any camera diagnosis that stops at the camera.
+  **Needs:** section 7 of `docs/camera-wifi-cells-2026-10-31.md` (AP2's 2.4 GHz radio, AP4's
+  config-versus-measured channel, whether the Pi Room gets a wire or 5 GHz). Re-measure with the
+  two-direction `dd` ceiling test in its section 5 - no console needed - and read the AP's retry
+  counters with it, because a per-cell average read as a per-camera fact is what started this.
+- **~~Re-measure cam8's TX fault under thingino~~ - answered, and the answer is neither candidate.**
+  Measured 2026-10-31: the fault is the **cell**, not the driver and not the board. cam8 recovered
+  when AP1's failed unit was replaced and the replacement auto-selected channel 11, where cam8 is now
+  the only 2.4 GHz client; cam5 carries the identical ceiling on the channel it stayed on. Read that
+  with the caveat in section 3 of the new doc - cam5 measured *healthy* on that same channel on
+  2026-10-29, so it is the cell's load and neighbours that are fatal, not the channel number. The tell
+  the 2026-10-29 write-up never took is that **both directions are capped** (a weak transmit chain is
+  asymmetric), while the AP retries 50 % of its own frames to a -47 dBm client. That doc is corrected
+  at its headline, and **the 2024-vs-2026 `ssw101b_wifi_usb` module swap it proposes must not be
+  run**. Receipts: `docs/camera-wifi-cells-2026-10-31.md`.
 - **The `cam-*` verbs assume OpenIPC `/etc`** (`majestic.yaml`, `/tmp/webui/signature.txt`,
   the env credential mask): `cam-check`/`cam-pull`/`cam-diff` on cam5/cam8 will report
   misleading absence until `inventory.sh` grows a thingino mode (raptor conf,
@@ -1836,6 +1855,37 @@ that **need an owner or a decision** rather than another measurement.
   Still-open upstream half: the
   patch drafts the bench tree carried in `docs/upstream/` (inside the release's docs
   bundle now) were never submitted.
+- **cam5 is off the air and needs a hand, not a deploy.** A BSSID pin written into its
+  `/etc/wpa_supplicant.conf` over ssh to test the conclusion above: the ssw101b client will not join
+  a pinned BSS and will not fall back to the AP it was using, the detached self-revert died with the
+  ssh session (dropbear tears down the process group), and the bad file lives in the **persistent**
+  overlay - so a power cycle does not undo it. **Blocks:** the `pi_room` feed (which was running at
+  1.3 fps before the test). **Needs:** either the console fix
+  (`rm /overlay/root/etc/wpa_supplicant.conf` then `kill -HUP $(pidof wpa_supplicant)`), or - with no
+  serial rig to hand - a FAT SD card carrying `uenv.txt` (`wlan_ssid=`, `wlan_pass=`), because
+  `S38wpa_supplicant`'s `credentials_from_card()` hook rewrites the whole config at boot.
+  **`wlan reset` does not work on this build** (it removes `/overlay/etc/...` and the upper dir here
+  is `/overlay/root`, so it deletes nothing and exits 0). If the payload rather than the credentials is
+  the suspect, `just cam-rescue-card /dev/sdX` is the verb that writes the one-shot reflash card
+  (`docs/camera-thingino-build-deploy-2026-10-31.md`) - heavier than a credentials card and it should
+  not be needed for this. Runbook, why `/rom` makes the `rm` sufficient, why a power cycle does not, and
+  the rule (never change an association over the association): section 8 of
+  `docs/camera-wifi-cells-2026-10-31.md`.
+- **`just cam-*` fails on cam5 for a second, unrelated reason:** the operator account's
+  `known_hosts` still holds the pre-reflash OpenIPC host key for `10.3.2.10`, so every recipe dies
+  at `Host key verification failed`. **Needs:** `ssh-keygen -R 10.3.2.10` and a *human* accepting the
+  reflashed key - an agent pinning a new host identity is not TOFU, which is why this is an item and
+  not a done thing. (The hop key itself is re-installed on both thingino units as of 2026-10-31;
+  cam5's `authorized_keys` also holds three operator keys, which is the re-check the migration doc
+  asked for.)
+- **The wireless access layer has no owner in this repo and is now the camera fleet's binding
+  constraint.** Four APs, one SSID, three channels, `auto` on three of them and a *pinned* channel on
+  AP4 that disagrees with the frequency its own BSSID is heard on (config `6`, measured 2447 = ch 8);
+  which radio a camera joins is invisible to the flake and unpinable from it. **Blocks:** every
+  "camera X is bad" report until the cell has been read. **Needs:** someone to decide the 2.4 GHz
+  plan in the controller UI and record it here - the AP/BSSID map and the measurement recipe are
+  sections 4 and 5 of `docs/camera-wifi-cells-2026-10-31.md` - plus a decision on whether the Pi Room
+  camera stays on Wi-Fi at all.
 
 ## UPS and the power-cut path (gw) — opened 2026-10-28, `docs/ups-and-fleet-shutdown.md` owns it
 
