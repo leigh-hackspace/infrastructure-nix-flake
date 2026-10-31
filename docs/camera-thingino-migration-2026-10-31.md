@@ -55,9 +55,11 @@ never sees the gate.
 that evening had set it to `/ch0`, which is also a 404 on thingino); it now reports
 `camera=~3.5 of 5 fps`, `quality=fair`, 2-3 stalls/hour — that is cam5's **marginal RF**
 (`docs/camera-wifi-tx-2026-10-29.md`), not the URL. `cam8` was added to frigate the same
-evening (camera `cam8`, `rtsp://cam8.int.leighhack.org:554/stream0`) and is `unusable`
-because the device is **off the air** as of 20:00 — the config is in place for when it
-comes back. (2) thingino's
+evening (camera `cam8`, `rtsp://cam8.int.leighhack.org:554/stream0`) while the device was
+**off the air**, and it came back on its new pinned address `10.3.2.11` before the session
+ended: 5.1 camera / 5.0 process fps, `quality=fair` — i.e. the thingino path works, and
+**`/ch0` on the same camera is a 404** just like `/stream=0`, so neither is a thingino
+endpoint whatever a bench shell's history says. (2) thingino's
 stream answers **without credentials** — a `200` from `:554` was this directory's definition
 of a finding, and on thingino it is the default, so either enable auth on the camera or
 keep the VLAN rule that fences VLAN 226 in. `rsd` serves **2 clients max** and stale
@@ -147,8 +149,11 @@ root password reset — plan a console for it.
   `3c:52:a1:49:01:05`, `common/dns-records.nix`). It had been arriving on a *dynamic*
   10.3.2.112 — inside VLAN 226's range (`10.3.2.100-253`), so an address the router was
   entitled to hand to someone else, which makes this a correctness fix and not tidying.
-  It is a **frigate camera now** (name `cam8`, `:554/stream0`), added while the device is
-  powered off; joined Leighhack seconds after
+  It is a **frigate camera now** (name `cam8`, `:554/stream0`): it was added while the
+  device was off the air and came back on `.11` minutes later, streaming 5.1/5.0 fps at
+  `quality=fair`. Its `authorized_keys` is gone (the changeover wipes the data partition),
+  so ssh needs `just cam-key cam8` — the one recipe that asks for the device password —
+  before any `cam-*` recipe will work on it. joined Leighhack seconds after
   boot; its OpenIPC-era TX fault (`docs/camera-wifi-tx-2026-10-29.md`, <45 KB/s) needs a
   fresh measurement under thingino now that the MIIC fixes and a matched driver ship —
   the doc's driver-vs-hardware question may just have been answered.

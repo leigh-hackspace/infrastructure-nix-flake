@@ -1568,9 +1568,10 @@ that **need an owner or a decision** rather than another measurement.
   **Closed 2026-10-31:** `cam8` joins the fleet properly — it has a `cam8` row in
   `common/dns-records.nix` (MAC `3c:52:a1:49:01:05`, vlan 226, **10.3.2.11**; it had been
   arriving on a *dynamic* 10.3.2.112, inside VLAN 226's own range), deployed through
-  `machines/gw` normally, and a frigate camera of its own. It was **off the air** when that
-  was done, so the reservation takes effect the next time it boots (udhcpc DISCOVERs on
-  start, and the router's answer for that MAC is now `.11`).
+  `machines/gw` normally, and a frigate camera of its own. It was **off the air** while
+  that was done and came back on `.11` minutes later — 5/5 fps in frigate — so the
+  reservation is confirmed on a real boot, not just in `dnsmasq.leases`. Its ssh is not
+  keyed (the changeover wipes the data partition): `just cam-key cam8` first.
 
   **Which build to use, measured 2026-10-28.** The `ssw101b` gate is necessary but not
   sufficient on its own — **it has to be run on the image you are about to flash, and only
