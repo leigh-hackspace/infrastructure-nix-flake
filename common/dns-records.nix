@@ -195,11 +195,22 @@
   # The Wi-Fi access points that sit in the wired block because they were
   # installed on the wired run, not the wireless one.  Their names say which
   # part of the space each one serves; do not rename them to match VLAN 226.
+  #
+  # A port being untagged 227 does not stop one of these getting a 225 lease:
+  # a UniFi AP that the controller has given a management VLAN tags its own
+  # management traffic with it, so the AP1 replacement was served on `vlan225`
+  # from switch1 port 25 while that port stayed untagged 227 for everything else
+  # on the run (measured 2026-10-31).  The reservation here is what makes that
+  # tagged lease land on the address below.
+  # AP1's original unit (44:d9:e7:90:69:11) failed on 2026-10-31 and was
+  # replaced by one that keeps this name and this address.  Only the new MAC is
+  # listed on purpose: two MACs on one reservation would let a repaired original
+  # unit take the replacement's lease back and answer for the same address.
   AP1-MainSpace = {
     vlan = 225;
     ipv4 = "10.3.1.41";
     ipv6 = [];
-    macs = ["44:d9:e7:90:69:11"];
+    macs = ["fc:ec:da:34:5a:14"];
     clientIds = [];
   };
   AP2-PiRoom = {

@@ -348,6 +348,34 @@ proxy GET request: ztp/consoles/auto-adoptions` lines in `server.log` are the
 cloud auto-adoption poll failing because there is no Ubiquiti account; harmless,
 and expected for this install.
 
+## How a new device finds the controller
+
+An AP that is already adopted carries its inform URL in its own config
+(`http://10.3.1.20:8080/inform`), so it needs nothing from the network. A
+**factory-default or replaced** one does, and this network gives it exactly one
+route: `machines/gw/dns.nix` puts the controller's address in DHCP **vendor
+option 43** on VLAN 225 (`tag:vlan225,43,01:04:0a:03:01:14`, built from
+`common/hosts.nix`'s `services1`). UniFi's encoding is sub-option 1, a length
+byte, then the four address octets.
+
+There is deliberately no `unifi` DNS name to go with it, and the AP's other two
+discovery routes do not work here: it asks for `unifi.` and
+`unifi.int.leighhack.org.` (measured on the AP1 replacement, 2026-10-31 — both
+NXDOMAIN), and it multicasts its discovery to `ff02::1:10001`, which the
+controller does not answer. Without option 43 the AP cycles DHCP → NTP →
+NXDOMAIN → link-local multicast and never appears in the UI.
+
+What a device was offered is a fact about the lease, not about the device:
+
+```console
+ssh -i ~/.ssh/agent-hop-key leigh-admin@10.3.1.1 \
+  'grep 43,01:04 /etc/dnsmasq.d/network.conf'
+```
+
+and what it did next is the controller's log (the same `/inform` check as the
+cutover above, from the same container). Adoption itself is the controller's —
+the UI's pending-devices list — and not something the flake can do.
+
 ## Taking it back out
 
 The appliance is additive: delete the `./unifi-os-server.nix` line from

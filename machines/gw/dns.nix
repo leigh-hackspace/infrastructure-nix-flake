@@ -41,6 +41,24 @@
   INT = import ../../common/int-dns.nix;
   TABLES = import ./lib/network-tables.nix;
 
+  # A factory-default UniFi AP has one way to find this network's controller:
+  # DHCP vendor option 43.  There is no `unifi` DNS name here (the AP1
+  # replacement asked for `unifi.` and `unifi.int.leighhack.org.` and got
+  # NXDOMAIN, measured 2026-10-31) and its own discovery traffic is link-local
+  # multicast to ff02::1:10001, which the controller on services1 does not
+  # answer.  Payload layout is UniFi's (`01:04:<four octets>`: sub-option 1, the
+  # controller's address, then its length and value), hex-encoded because that is
+  # what dnsmasq reads for an option it has no type for, and derived from
+  # common/hosts.nix so the controller is not a second copy of an address.
+  unifiControllerLine = let
+    hexByte = s: let
+      n = lib.toInt s;
+    in
+      lib.optionalString (n < 16) "0" + lib.toHexString n;
+  in "${TABLES.matchTag 225},43,01:04:${
+    builtins.concatStringsSep ":" (map hexByte (lib.splitString "." HOSTS.services1))
+  }";
+
   # The interfaces dnsmasq answers on: the VLANs, and nothing else.  The uplink
   # is deliberately not in the list — the old box's generated conf listed every
   # interface OPNsense knew about, including the WAN, because it was generated
@@ -291,7 +309,18 @@ in {
       # wireless VLAN being sent at the wired LAN's gateway would get a lease it
       # cannot use, and hand-writing five lines that say "the interface's own
       # address" is how that happens.
-      dhcp-option = TABLES.dnsOptionLines VLANS ++ ["option6:23,[::]"];
+      #
+      # The UniFi option 43 line is tagged to VLAN 225 only: that is the VLAN
+      # every access point is reserved on (common/dns-records.nix's AP1–AP4), and
+      # a vendor blob sent to cameras and printers is noise in everyone else's
+      # lease.  `unifiControllerLine` above says where the address comes from and
+      # why this mechanism rather than a DNS name.
+      dhcp-option =
+        TABLES.dnsOptionLines VLANS
+        ++ [
+          unifiControllerLine
+          "option6:23,[::]"
+        ];
 
       # Router advertisements on every VLAN that has `ra` ranges in
       # common/vlans.nix (the generated `ra-only`/`ra-param` lines are in the conf
