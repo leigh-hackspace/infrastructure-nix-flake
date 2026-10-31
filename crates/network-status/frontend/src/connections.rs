@@ -85,7 +85,7 @@ pub fn ConnectionsPanel(store: Store) -> Element {
             rsx! {
                 div {
                     class: "conn-summary mono",
-                    span { class: "pill bad", "no connection data" }
+                    span { class: "pill err", "no connection data" }
                     span { class: "muted", "{e}" " — the table will appear as soon as the router answers." }
                 }
             }
@@ -214,7 +214,7 @@ pub fn ConnectionsPanel(store: Store) -> Element {
             // fresh one, and a table this page last heard about three minutes ago is exactly
             // the thing an operator would act on.
             if err.is_some() {
-                span { class: "pill bad", "last attempt failed" }
+                span { class: "pill err", "last attempt failed" }
                 span { class: "muted", "{err.clone().unwrap_or_default()}" }
             }
         }

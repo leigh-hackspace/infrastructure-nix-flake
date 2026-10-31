@@ -60,7 +60,7 @@ carries the `now` it read, `state.rs` keeps the offset from the browser's clock,
 `Store::router_now` is the only place either is read. A browser whose clock is hours fast
 would otherwise draw every lease as already lapsed.
 
-## What the port preserved, and the two things it changed
+## What the port preserved, and the three things it changed
 
 Preserved, because these are the behaviours the imperative version guaranteed and a
 reactive rewrite loses first:
@@ -68,6 +68,10 @@ reactive rewrite loses first:
 - a failed fetch keeps the last data and names the panel that failed;
 - a draw waits for the mount, then re-runs on every data change, and reads the tab so a
   chart in a hidden panel is not left at the size it had when it was hidden;
+- the lease table's freshness verdict is the **backend's**: `stale` is decided in
+  `crates/network-status/src/leases.rs`, and this page only translates the reason it chose
+  (`STALE_WHY` in `leases.rs`) into a banner, plus `written Ns ago` in the healthy case. The
+  two must not be able to disagree, so there is no second definition of freshness here.
 - device-supplied strings (lease hostnames) are text, not markup — the old files needed an
   `esc()` because they built HTML, and the vnode layer escapes text nodes;
 - "moving now" is a **backend** filter (`min_bps`), applied before the row limit, so the
@@ -84,6 +88,13 @@ Changed on purpose:
    Activation is the click, and `app.rs`'s `choose` is what writes the fragment. The old
    page activated on arrow keys because it had its own tab implementation, so the port is a
    small behaviour change — a keyboard user activates with Enter/Space on the focused tab.
+
+3. **The markup uses the names the stylesheet defines.** The port carried `class="pill bad"`
+   over from the SolidJS page, where `.pill.bad` had been defined in `styles.css`; the
+   stylesheet here defines `.pill.err`, so every error pill — "router unreachable", "last
+   attempt failed", "not live" — rendered in the neutral pill colour, which is a failure that
+   looks like a label. Now the markup and the stylesheet name the same thing, and `.warn-text`
+   (which was also undefined) is defined.
 
 ## Build
 

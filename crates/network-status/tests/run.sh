@@ -131,7 +131,7 @@ fi
 
 # 4. the suite
 cd tests
-export NS_TEST_PORT="$PORT" NS_TEST_BROWSER="${NS_TEST_BROWSER:-}"
+export NS_TEST_PORT="$PORT" NS_TEST_BROWSER="${NS_TEST_BROWSER:-}" NS_TEST_LEASES="$LEASES"
 [ -d node_modules ] || npm install --no-audit --no-fund
 set +e
 node suite.mjs

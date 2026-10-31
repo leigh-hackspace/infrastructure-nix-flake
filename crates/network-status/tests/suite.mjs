@@ -8,7 +8,9 @@
 // render, and the three things the imperative version guaranteed are exactly the three things
 // a reactive rewrite loses first — the per-panel error, the canvas redraw, and the tab/URL
 // being the same fact. Each check here is one of those, plus the two library primitives the
-// page now depends on (`common_ui::tabs` and `common_ui::checkbox`).
+// page now depends on (`common_ui::tabs` and `common_ui::checkbox`), plus the lease panel's
+// freshness banner — which is not a reactive concern at all and is the check that exists
+// because of a real incident (see check 9).
 //
 // Two choices about what the page is pointed at, because both are assertions:
 //
@@ -27,6 +29,7 @@
 
 import { chromium } from 'playwright';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 
 const PORT = Number(process.env.NS_TEST_PORT || 18091);
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -233,6 +236,47 @@ await run('an unreachable router shows the banner and keeps the data it already 
   // The next poll succeeds, so the banner is not a latch: it goes away with the error.
   await until('the banner to clear on the next poll', async () => ((await page.locator('.banner').count()) === 0 ? true : null));
   assert.ok(before.length > 0, 'the data was never lost while the router was unreachable');
+});
+
+// 9 — the channel, not the table. This check exists because of a real incident: a device was
+// live and the page showed a table of lapsed leases for two and a half days, because `install`
+// had replaced `/var/lib/dnsmasq/dnsmasq.leases` and dnsmasq went on writing the orphan inode it
+// opened at startup. The verdict is the backend's (`stale` in crates/network-status/src/leases.rs);
+// what is checked here is that the page shows it — and that a healthy file is shown as freshness
+// rather than as silence, because "is this live?" is the first question a lease table answers.
+//
+// Only the mtime changes. The rows are the same rows, so the panel's numbers cannot be what
+// this check is measuring: it is measuring whether the page can tell a quiet network from a
+// dead writer, which is the whole reason the backend reports the pair.
+await run('a lease file that stopped being written banners as a snapshot, not as a quiet network', async () => {
+  const leasesPath = process.env.NS_TEST_LEASES;
+  if (!leasesPath) throw new Error('run.sh must export NS_TEST_LEASES for this check');
+  await page.goto(`${BASE}/#leases`);
+
+  const healthy = await until('the summary naming how fresh the fixture file is', async () => {
+    const t = await panelText();
+    return /written \d+m \d+s ago/.test(t) ? t : null;
+  });
+  assert.equal(await page.locator('.panel-error').count(), 0, 'a file being written is not bannered');
+  assert.match(healthy, /10\.3\.2\.99/, 'and the healthy case still shows the lease');
+
+  // Past two lease lengths (the backend's `unwritten` threshold), on a file that has one live row.
+  const old = Math.floor(Date.now() / 1000) - 3 * 86400;
+  fs.utimesSync(leasesPath, new Date(old * 1000), new Date(old * 1000));
+
+  const bannered = await until('the panel to banner the backend\u2019s verdict', async () => {
+    const t = await panelText();
+    return t.includes('not live') ? t : null;
+  }, 15000);
+  assert.match(bannered, /has not been written for longer than two of these leases last/, 'the page translates the reason the backend chose, it does not invent one');
+  assert.match(bannered, /not evidence that a device is absent/, 'and says what this table does not prove');
+  assert.match(bannered, /written 3d 0h 0m ago/, 'with the age of the last write');
+  assert.match(bannered, /lease-reader\.nix/, 'and points at the module that owns the file');
+  assert.match(bannered, /10\.3\.2\.99/, 'the rows are still there — the table is not empty, it is old');
+
+  // Put the file back, so a failing check does not leave the fixture stamped as stale for the
+  // next run, and so the healthy path is what the suite ends on.
+  fs.utimesSync(leasesPath, new Date(), new Date());
 });
 
 await browser.close();

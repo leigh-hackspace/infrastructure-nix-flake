@@ -51,6 +51,31 @@ fn plural(n: usize) -> &'static str {
     }
 }
 
+/// Why the backend thinks this table cannot be the truth, in the page's words.
+///
+/// The verdict is the backend's (`crates/network-status/src/leases.rs::stale`), so the reason
+/// and the counts beside it cannot disagree; this only translates the reason it chose. An
+/// unknown reason still banners — a verdict this file does not know is still a verdict that
+/// something is wrong with the channel.
+const STALE_WHY: [(&str, &str); 2] = [
+    (
+        "all-expired",
+        "every lease in it has already lapsed, and a DHCP server that is serving always has one that has not",
+    ),
+    (
+        "unwritten",
+        "it has not been written for longer than two of these leases last, and dnsmasq rewrites it on every lease event",
+    ),
+];
+
+fn stale_why(code: &str) -> String {
+    STALE_WHY
+        .iter()
+        .find(|(k, _)| *k == code)
+        .map(|(_, v)| (*v).to_string())
+        .unwrap_or_else(|| format!("the router reported the lease file as {code}"))
+}
+
 #[component]
 pub fn LeasesPanel(store: Store) -> Element {
     let data_ref = store.leases.read();
@@ -67,7 +92,7 @@ pub fn LeasesPanel(store: Store) -> Element {
             rsx! {
                 div {
                     class: "conn-summary mono",
-                    span { class: "pill bad", "no lease data" }
+                    span { class: "pill err", "no lease data" }
                     span { class: "muted", "{e}" }
                 }
             }
@@ -180,6 +205,23 @@ pub fn LeasesPanel(store: Store) -> Element {
             }
         }
 
+        if let Some(code) = &d.stale {
+            // The verdict is the backend's; this is the sentence that makes it readable and
+            // says what it does *not* mean. A table of lapsed leases is not a network with no
+            // clients — it is a file nobody is writing to.
+            div {
+                class: "panel-error",
+                span { class: "pill err", "not live" }
+                " this table is a snapshot, not the network: {stale_why(code)}"
+                if let Some(age) = d.source_age {
+                    ", and it was last written {fmt_dur(Some(age))} ago"
+                }
+                ". dnsmasq is not writing to {d.file}, so what is missing from here is not evidence that a device is absent — the router still holds the real leases. "
+                code { "machines/gw/lease-reader.nix" }
+                " is what owns that file."
+            }
+        }
+
         div {
             class: "conn-summary mono",
             span { class: "mono", "{d.total}" }
@@ -198,13 +240,19 @@ pub fn LeasesPanel(store: Store) -> Element {
             }
             " "
             span { class: "muted", "· {d.file}" }
+            // Freshness in the healthy case too: "is this live?" is the first question a lease
+            // table has to answer, and the banner above is only the half where it is not.
+            if let Some(age) = d.source_age {
+                " "
+                span { class: "muted", "· written {fmt_dur(Some(age))} ago" }
+            }
             // Same rule as the connection panel: keeping the last data is only half of it. A
             // table that is still on screen while its endpoint is failing has to be named as
             // last-known, or "these are the current leases" is an assumption the page makes on
             // the operator's behalf.
             if err.is_some() {
                 " "
-                span { class: "pill bad", "last attempt failed" }
+                span { class: "pill err", "last attempt failed" }
                 span { class: "muted", "{err.clone().unwrap_or_default()}" }
             }
         }

@@ -319,6 +319,20 @@ pub struct LeaseResponse {
     pub unknown_ttl: usize,
     pub generated: usize,
     pub max_left: i64,
+    /// Unix seconds when the lease file was last written, or null when the OS would not
+    /// say. A fact about the *channel*, not about any lease: dnsmasq rewrites the file on
+    /// the descriptor it opened at startup, so a path that is replaced leaves the daemon
+    /// writing to an orphan and this table serving whatever was on disk at the swap.
+    #[serde(default)]
+    pub source_mtime: Option<i64>,
+    /// Seconds between that write and `now`; null when the mtime is unknown.
+    #[serde(default)]
+    pub source_age: Option<i64>,
+    /// Why this table cannot be the truth, if it cannot be: `"all-expired"` or
+    /// `"unwritten"`. The verdict is the backend's (`crates/network-status/src/leases.rs::stale`),
+    /// so the reason and the counts beside it cannot disagree — this page only translates it.
+    #[serde(default)]
+    pub stale: Option<String>,
     /// Lease count per VLAN device name.
     #[serde(default)]
     pub vlans: BTreeMap<String, usize>,

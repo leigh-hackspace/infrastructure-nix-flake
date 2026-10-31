@@ -51,6 +51,12 @@ A suite that read them would report a result that depends on which box it ran on
   refusing. Showing the reason only when there is no data would leave a stale table reading
   as a current one — which is the failure mode the rule exists to prevent, and the one the
   SolidJS page had.
+- **the fixture's mtime is back-dated by the suite** (`fs.utimesSync` on `NS_TEST_LEASES`).
+  That is the only way to drive the `stale` verdict without a dead dnsmasq, and it changes
+  nothing about the rows — the numbers stay the same, only the channel changes. So the check
+  measures exactly the thing the incident turned on: whether the page can tell a quiet
+  network from a file nobody is writing to, and whether it says so before an operator
+  concludes a device is absent.
 
 ## The one thing the suite asserts against the library, not the app
 
@@ -80,4 +86,4 @@ suite tested a page nobody can deploy), `NS_TEST_RELEASE=1`.
   panel, so a selector like `[role="tabpanel"] canvas` must select the tab the canvas is in.
 - `just network-status-test` is a build-shaped recipe, so it refuses on `gw` (`_build-host-guard`).
 
-Ran 2026-10-30: nine checks, all pass.
+Ran 2026-10-31: ten checks, all pass.
