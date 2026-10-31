@@ -182,3 +182,14 @@ holding, and treat `sdrecover/wifi.txt` as the PSK it is — the repo's rotation
   and why `fw_setenv` is forbidden (§7, §12).
 - `cameras/README.md` — the fleet table and how to reach a camera.
 - `cameras/sd-recovery/sdconf.sh` — the payload.
+
+## 10. Addendum, 2026-10-31 — on a thingino camera, "no WiFi" is not this doc's failure
+
+This document is OpenIPC's: credentials in the U-Boot env, the `sdconf.sh` card channel. The
+migrated units (`cam5`, `cam8`) have neither — no `wlanssid` env var, no `wlan_conf`,
+credentials baked in the image (two SSIDs), plus an SD **rescue** path (`RESCUE.KRN`/
+`RESCUE.RFS`, retry-on-power-loss, markers eaten only after a successful boot). A thingino
+camera that associates (`wpa_cli status` → `COMPLETED`) but takes no lease is almost always
+the **OpenIPC data partition left in place by a payload-only flash**, shadowing
+`/etc/network/interfaces.d/wlan0` and friends — diagnose with `ls /overlay/root/etc`, fix by
+wiping it. The procedure, forensics and prevention rule: **`docs/camera-thingino-migration-2026-10-31.md` §3**.

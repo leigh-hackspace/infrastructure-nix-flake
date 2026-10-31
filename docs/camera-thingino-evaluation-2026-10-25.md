@@ -1,5 +1,14 @@
 # thingino, measured against this fleet: it is Ingenic-only, and our cameras are not Ingenic
 
+> **Superseded at the headline, 2026-10-31.** A port of thingino to these boards' SigmaStar
+> silicon was built on the operator's bench, and `cam5` + `cam8` were migrated onto it:
+> **[`camera-thingino-migration-2026-10-31.md`](camera-thingino-migration-2026-10-31.md)**.
+> Everything below measured true of upstream `themactep/thingino-firmware` at `f083382` and
+> is kept whole — including the four commands that re-answer the question, which still
+> describe *upstream*. Do not repeat "thingino is not an option for these cameras" without
+> re-reading the migration doc first; do not delete this file, it is the only record of what
+> upstream said and why the port had to be ours.
+
 Asked on 2026-10-25: *should the cameras run **thingino** instead of OpenIPC?*
 
 **Answer: no, and not "not yet" — the question does not type-check against this hardware.**

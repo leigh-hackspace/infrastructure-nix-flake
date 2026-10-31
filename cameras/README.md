@@ -2,7 +2,13 @@
 
 `cam5` `cam7` `cam9` (10.3.2.10 / 10.3.2.12 / 10.3.2.17) are **Buildroot/OpenIPC
 surveillance cameras**, and `cam1` (10.3.2.6) is a device on the same VLAN that
-is **not** OpenIPC.  None of them runs NixOS, none has systemd, none is a module
+is **not** OpenIPC.  **Update 2026-10-31: `cam5` and `cam8` (10.3.2.112, back in production)
+now run thingino** on a SigmaStar port built on the operator's bench — new endpoints
+(`rtsp://…:554/streamN`, unauthenticated by default), and the changeover rule that the data
+partition **must** be wiped, all in
+**[`../docs/camera-thingino-migration-2026-10-31.md`](../docs/camera-thingino-migration-2026-10-31.md)**;
+`cam7`/`cam9` remain OpenIPC and everything below that names a firmware describes them
+unless restated there.  None of them runs NixOS, none has systemd, none is a module
 in the flake: their entire state is files under `/etc` sitting on a **jffs2 volume on the
 flash's own settings partition** (`/dev/mtdblock4 on /overlay type jffs2`, 704 KB, 244 KB
 used; `/` is an `rw` overlay whose upper half is `/overlay/root`) — **so a write to a camera
@@ -56,9 +62,10 @@ identity, not by guesswork (verified below).  VLAN 226's `dhcp-mode` is `gateway
 
 | device | address (reserved by MAC) | VLAN | MAC (device == DNS row) | firmware / majestic | board (self-reported) | signature line | frigate camera | feed (go2rtc) |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `cam5` | 10.3.2.10 | 226 | `3c:52:a1:48:fa:b2` ✓ | 2.4.08.22 / build 2024.02.1 / `master+9371591, 2024-08-21` | `INFINITY6B0 SSC009A-S01A QFN88` | `ssc337 (infinity6b0 family), sc3338, 8 MB nor flash, 2.4.08.22-lite, cam5, …` | `pi_room` | `rtsp://cam5.int.leighhack.org:554/stream=0` |
+| `cam5` | 10.3.2.10 | 226 | `3c:52:a1:48:fa:b2` ✓ | **thingino since 2026-10-31** (was 2.4.08.22 / `master+9371591`; raptor `rvd`/`rsd`, sensor autodetected **sc3336**) | `INFINITY6B0 SSC009A-S01A QFN88` | — (thingino MOTD prints u-boot `ssc333-infinity6b0+1286efb`) | `pi_room` | **thingino path `rtsp://cam5.int.leighhack.org:554/stream0`** — frigate's `/stream=0` URL 404s until services1's config is updated |
 | `cam7` | 10.3.2.12 | 226 | `3c:52:a1:49:24:0a` ✓ | **2.3.11.22** / build 2023.02.7 (no sysinfo at all) | `INFINITY6B0 SSC009A-S01A QFN88` | `ssc333 (infinity6b0 family), sc3338, …, 2.3.11.22-lite, cam7, …` | `cnc` | `rtsp://cam7.int.leighhack.org:554/stream=0` |
 | `cam9` | 10.3.2.17 | 226 | `3c:52:a1:49:1b:f7` ✓ | 2.4.08.22 / build 2024.02.1 / `master+9371591, 2024-08-21` | (sysinfo present, **no board line**) | `ssc337 (infinity6b0 family), sc3338, …, openipc-ssc337, …` | `social_space` | `rtsp://cam9.int.leighhack.org:554/stream=0` |
+| `cam8` | 10.3.2.112 — **dynamic, pinning filed** | 226 | `3c:52:a1:49:01:05` | **thingino since 2026-10-31** (was OpenIPC `nightly-20261010-a40b399`); in production, bench-built u-boot `I61286efbd` with SD-rescue bootcmd | C110 v1, `INFINITY6B0 SSC009A-S01A QFN88` | — | (none) | — |
 | `cam1` | 10.3.2.6 | 226 | `10:a4:be:03:0d:36` | **not OpenIPC, and not Ingenic either** — Xiongmai-family application firmware, by its own banners (2026-10-25) | SoC still unknown; `:23` **open** (telnet), `:80` open (302 → `/index.asp`, `/login.cgi` → `401`), `:85 :8080 :8000 :10554 :37777` closed | RTSP `Server: TAS-Tech Streaming Server V100R001`, HTTP `Server: Ginatex-HTTPServer`; `DESCRIBE /0/av0` and `/1/1` → **`200` with no credentials** (fault 13) | `rack_corridor` | `rtsp://cam1.int.leighhack.org:554` with `ffmpeg:` transcode (its go2rtc line asks `:554/0/av0`, the Novastorm path — commented out, see faults) |
 
 All four rows above are also rows in `common/dns-records.nix`; the router
@@ -363,7 +370,11 @@ measurement, is **[`../docs/camera-firmware-audit-2026-10-25.md`](../docs/camera
 What follows is only what a person touching a camera must know without opening either.
 
 * **thingino is not an option for this fleet, and that question is closed** (measured
-  2026-10-25): it is a firmware for **Ingenic** SoC cameras — 252 device configs, 176 release
+  2026-10-25) — **re-opened and flipped 2026-10-31: a bench-built port runs on these boards
+  and `cam5`/`cam8` now ship it, see
+  [`../docs/camera-thingino-migration-2026-10-31.md`](../docs/camera-thingino-migration-2026-10-31.md)**.
+  What follows was true of upstream and stands as history: it is a firmware for **Ingenic**
+  SoC cameras — 252 device configs, 176 release
   images, zero SigmaStar — and cam5/cam9 are `ssc337`, cam7 is `ssc333`, cam1 is Xiongmai-family.
   Its August-2026 SigmaStar seam offers one model (`ssc30kq`, family `infinity6e`) and its
   platform PR #1424 was closed unmerged saying "nothing builds this board yet". **[`../docs/camera-thingino-evaluation-2026-10-25.md`](../docs/camera-thingino-evaluation-2026-10-25.md)**

@@ -1777,6 +1777,39 @@ that **need an owner or a decision** rather than another measurement.
   table, in one place both `just cam-probe` and the gatus rows can read; until then, treat any
   feed name quoted in prose as suspect and re-read it off `/srv/frigate/config/config.yaml`.
 
+**Opened 2026-10-31 by the thingino migration (`cam5` + `cam8`), `docs/camera-thingino-migration-2026-10-31.md` owns the detail:**
+
+- **`pi_room`'s feed is 404-ing right now.** frigate's config still asks cam5 for
+  `/stream=0`; thingino's `rsd` only knows `/streamN` and answers **404 Unknown stream
+  endpoint**. **Needs:** `/srv/frigate/config/config.yaml` on services1 — `pi_room` →
+  `rtsp://cam5.int.leighhack.org:554/stream0` — and while there, the URL's `user:pass` is
+  **decorative**: thingino RTSP is unauthenticated by default, so the feed is open to
+  anything on VLAN 226 until auth is enabled on the camera or a firewall row fences it.
+  Both ends are off-flake (fault 8); this is also the concrete case for that fix.
+- **Pin `cam8`.** Back in production at `10.3.2.112` (MAC `3c:52:a1:49:01:05`) but with no
+  row in `common/dns-records.nix` — the lease is DHCP-dynamic. **Needs:** a `cam8` row
+  (vlan226, 10.3.2.112) through the normal `machines/gw` deploy; until then every runbook
+  naming "the bench camera" means the lease page, not the table.
+- **cam5's position is RF-marginal**: −63 dBm, camera→host TCP measured **73 KB/s**, the
+  2 Mbit/s main stream lands at ~17% of real time — the bad-corner physics of
+  `camera-wifi-tx-2026-10-29.md`, now on a healthy radio. **Needs:** move the camera/AP or
+  reprofile `rsd`'s streams to the link before anyone calls `pi_room` dead; re-measure with
+  the `dd | nc` recipe in the migration doc, no console needed.
+- **Re-measure cam8's TX fault under thingino.** The <45 KB/s ceiling was measured on the
+  2026-10-29 OpenIPC build, whose kernel predates the MIIC/I2C fixes and shipped a mismatched
+  WiFi module; if the ceiling survives the port it is hardware, if it does not,
+  `camera-wifi-tx-2026-10-29.md` needs its conclusion corrected.
+- **The `cam-*` verbs assume OpenIPC `/etc`** (`majestic.yaml`, `/tmp/webui/signature.txt`,
+  the env credential mask): `cam-check`/`cam-pull`/`cam-diff` on cam5/cam8 will report
+  misleading absence until `inventory.sh` grows a thingino mode (raptor conf,
+  `fw_printenv bootcmd` for the rescue armament, `/overlay/root/etc` upper-listing — the
+  one command that would have saved two hours on cam5, migration doc §3).
+- **Decide cam7 + cam9.** Both still OpenIPC, both with open faults of their own (cam7's
+  unauthenticated admin plane, cam9's disputed sensor identity); if they follow, use the
+  **network two-phase flow** (it wipes the data partition by construction) and confirm the
+  target **MAC** from the fleet table before writing — today's near-miss on addresses was
+  doc rot in the bench tree, and the table is the authority.
+
 ## UPS and the power-cut path (gw) — opened 2026-10-28, `docs/ups-and-fleet-shutdown.md` owns it
 
 Deployed 2026-10-28 and drilled the same evening: a Back-UPS XS 1400U on `gw`'s USB
