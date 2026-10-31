@@ -90,27 +90,30 @@ needed for the target**. `lld` is included because the wasm target links with `w
 from it (the flake sets `CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_LINKER=wasm-ld` and
 passes `pkgs.lld`).
 
-## The four Dioxus SPAs
+## The five Dioxus SPAs
 
 `crates/frigate-monitor/frontend/`, `crates/filestore/frontend/`,
-`crates/gocardless-dashboard/frontend/`, `crates/switch-gui/frontend/`. Each is
+`crates/gocardless-dashboard/frontend/`, `crates/network-status/frontend/`,
+`crates/switch-gui/frontend/`. Each is
 **its own cargo workspace**, not a member of the native one (the reason is written
 out at the top of `crates/Cargo.toml`: a workspace resolves one version graph for
 host and wasm, so a host-only feature unification would move `wasm-bindgen` out
 from under the pinned CLI). Each has its own `Cargo.lock`, is built to wasm and is
-embedded into its service as `frontendDist` (see
+embedded into its service through `CRANE.spaApp` (see
 `machines/aibox/frigate-monitor.nix`,
 `machines/services1/services/filestore.nix`,
 `machines/services1/services/gocardless-dashboard.nix`,
-`machines/services1/services/switch-gui.nix`).
+`machines/services1/services/switch-gui.nix`,
+`machines/gw/network-status.nix`).
 
 **Their `dist/` directories are git-ignored and never committed** — the flake
-rebuilds them at deploy time. The one exception is
-`crates/network-status/frontend/` (SolidJS + npm), whose `dist/` **is** committed;
-see `docs/services.md`.
+rebuilds them at deploy time. All five are Dioxus since 2026-10-30; `crates/network-status`
+was the exception for a year (its SolidJS bundle was committed because npm could not be
+resolved offline) and now follows the same rule as the rest. See `docs/services.md`.
 
-A SPA shares code with its server (the `dto` crates, `common-rs/preview`) through
-a path dependency, and cargo insists a package belongs to exactly one workspace, so
+A SPA shares code with its server (the `dto` crates, `common-rs/preview`, the vendored
+component library `common-rs/ui`) through a path dependency, and cargo insists a package
+belongs to exactly one workspace, so
 those are *copied* into the SPA's directory: locally by a git-ignored symlink
 (`frontend/dto -> ../dto`, filestore's `frontend/common-rs`) that `just shared-rs`
 or entering `nix develop` creates, and in Nix by a real materialisation via

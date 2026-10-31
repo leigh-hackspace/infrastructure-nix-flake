@@ -456,8 +456,8 @@
         # the flake's `formatter` instead, which is why `just fmt` and `just check`
         # work with no shell at all.
         pkgs.alejandra
-        # node is needed by the headless-browser test suites and by
-        # `just network-status-frontend` (the one committed dist/, built with esbuild).
+        # node is needed by the headless-browser test suites (Playwright is driven by node;
+        # its browser binaries come from nixpkgs, not from Playwright's own download).
         pkgs.nodejs
         # handy for debugging (zip/struct inspection of generated archives, etc.)
         pkgs.python3

@@ -1,81 +1,79 @@
-//! Serving the prebuilt SPA: extension → MIME, containment inside
-//! `--static-dir`, and the fallback page for when nobody has built it.
+//! Serving the embedded SPA bundle.
+//!
+//! The bundle itself is embedded by `build.rs` (`common-rs/build-spa`), so this is the
+//! delivery half: name → asset, and the page shown when nothing has been built. `find_asset`
+//! is generated into `OUT_DIR` and included here. MIME types are not decided here: `build.rs`
+//! labels every asset when it writes the table (`mime_of`, including `application/wasm`), so a
+//! second extension→MIME map in this file would be a second answer to the same question
+//! (rule 2).
+//!
+//! ## Why the body is bytes, not a String
+//!
+//! This crate used to serve a prebuilt SolidJS bundle out of `--static-dir`, and the
+//! response plumbing it shared took a `String` body. That was harmless while every asset
+//! was text — HTML, CSS, JS — and stopped being harmless the day the bundle became a
+//! `.wasm`: a `String` cannot hold a binary file, and a bundle decoded as UTF-8 is either
+//! an error or a mangled one. `common_web::Reply` carries `Vec<u8>` for exactly this
+//! reason (`crates/common-rs/web/src/lib.rs`, "a server that also serves a compiled SPA
+//! bundle wants the opposite for its assets"), so nothing on this path reinterprets the
+//! bundle's bytes as text.
+//!
+//! ## Path containment
+//!
+//! The old `--static-dir` path rejected any `..` by walking the request path component by
+//! component. Serving an embedded asset cannot traverse, because there is no directory to
+//! traverse into: `find_asset` matches a name against the table `build.rs` wrote at compile
+//! time, so a `..` in a request can only fail to match. Same guarantee, now structural
+//! rather than a loop — which is why there is no `within_dir` here any more.
 
-/// `<!doctype html>` for a build that has not happened, so the backend is still
-/// self-explanatory when run without `--static-dir`.
-pub(crate) const FALLBACK_HTML: &str = r#"<!doctype html>
+use common_web::Reply;
+
+include!(concat!(env!("OUT_DIR"), "/assets_gen.rs"));
+
+/// The page shown when the SPA has not been built: the API is still useful on its own, so
+/// a missing bundle should say so rather than 404.
+pub(crate) fn fallback_html(title: &str) -> String {
+    format!(
+        r#"<!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><title>__TITLE__</title></head>
+<head><meta charset="utf-8"><title>{title}</title></head>
 <body style="font:16px system-ui;background:#0d1117;color:#d7e0e8;padding:40px">
-<h1>__TITLE__</h1>
-<p>The frontend has not been built yet. Build it and point <code>--static-dir</code> at the output:</p>
-<pre>cd network-status/frontend &amp;&amp; npm install &amp;&amp; npm run build</pre>
-<p>The dashboard will appear once the static files are served.</p>
+<h1>{title}</h1>
+<p>The frontend has not been built yet. Build it and rebuild the binary:</p>
+<pre>just build-frontend network-status</pre>
+<p>The dashboard will appear once the bundle is embedded.</p>
 </body>
-</html>
-"#;
-
-/// MIME type for a URL path (best-effort, by extension).
-pub(crate) fn static_content_type(path: &str) -> &'static str {
-    let ext = path.rsplit('.').next().unwrap_or("").to_lowercase();
-    match ext.as_str() {
-        "html" | "htm" => "text/html; charset=utf-8",
-        "css" => "text/css; charset=utf-8",
-        "js" | "mjs" => "text/javascript; charset=utf-8",
-        "map" | "json" => "application/json; charset=utf-8",
-        "svg" => "image/svg+xml",
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "gif" => "image/gif",
-        "ico" => "image/x-icon",
-        "webp" => "image/webp",
-        "woff2" => "font/woff2",
-        "woff" => "font/woff",
-        "ttf" => "font/ttf",
-        _ => "application/octet-stream",
-    }
+</html>"#,
+    )
 }
 
-/// Join `path` onto `dir`, refusing any `..` that would escape the directory.
-pub(crate) fn within_dir(dir: &std::path::Path, path: &str) -> Option<std::path::PathBuf> {
-    let mut out = std::path::PathBuf::from(dir);
-    for comp in path.split(['/', '\\']) {
-        match comp {
-            "" | "." => {}
-            ".." => return None,
-            c => out.push(c),
-        }
+/// Serve one embedded asset by name.
+pub(crate) fn serve_asset(name: &str) -> Option<Reply> {
+    let asset = find_asset(name)?;
+    let mut reply = Reply::new(200, asset.mime, asset.data.to_vec());
+    // A megabyte of wasm re-fetched on every page load is not "instant". Only the assets
+    // are cached: index.html is the file that names them, so caching it would pin a page
+    // to a bundle it no longer refers to.
+    if !asset.mime.starts_with("text/html") {
+        reply.headers.push((
+            "Cache-Control".to_string(),
+            "public, max-age=604800, immutable".to_string(),
+        ));
     }
-    Some(out)
+    Some(reply)
 }
 
-/// Serve a path from `static_dir`, with SPA fallback to index.html.
-/// Returns `None` when no static dir is configured.
-pub(crate) fn serve_static(static_dir: &Option<String>, path: &str) -> Option<(u16, String, String)> {
-    let dir = std::path::Path::new(static_dir.as_ref()?);
-    // Drop any query string.
-    let clean = path.split('?').next().unwrap_or("/");
-    let mut file = within_dir(dir, clean)?;
-    if file.is_dir() {
-        file.push("index.html");
-    }
-    match std::fs::read(&file) {
-        Ok(bytes) => Some((
-            200,
-            static_content_type(&file.to_string_lossy()).to_string(),
-            String::from_utf8_lossy(&bytes).into_owned(),
-        )),
-        Err(_) => {
-            // SPA fallback: hand back index.html for unrecognised routes.
-            match std::fs::read(dir.join("index.html")) {
-                Ok(bytes) => Some((
-                    200,
-                    "text/html; charset=utf-8".to_string(),
-                    String::from_utf8_lossy(&bytes).into_owned(),
-                )),
-                Err(_) => None,
-            }
-        }
-    }
+/// How many assets this binary was built with. 1 is the placeholder `build.rs` writes
+/// when there is no bundle, which is the difference between "the UI is not built" and
+/// "the UI is built and this request is broken" — and the startup line prints it.
+pub(crate) fn embedded_count() -> usize {
+    ASSETS.len()
 }
 
+/// The SPA shell, or the "not built yet" page when there is no bundle to serve.
+pub(crate) fn page(title: &str) -> Reply {
+    match serve_asset("index.html") {
+        Some(r) => r,
+        None => Reply::html(200, &fallback_html(title)),
+    }
+}

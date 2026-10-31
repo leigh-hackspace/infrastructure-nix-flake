@@ -43,17 +43,24 @@
 //! `common/frontend-build-spa.sh` emits only the wasm, its glue and `index.html`.
 //! A SPA that wants `dialog` has to add that asset to the build recipe first.
 //!
-//! ## The one deviation
+//! ## The deviations
 //!
 //! `use_unique_id` below is upstream's, minus the `fullstack!` block. That block is
 //! the SSR half of a client/server split: on a plain wasm build it is inert, and
 //! keeping it would need the `fullstack` feature, which drags `axum`/`reqwest` into
-//! a wasm bundle for nothing. None of these SPAs render on a server.
+//! a wasm bundle for nothing. None of these SPAs render on a server. The same is
+//! true of `use_effect_cleanup`, which upstream gates with `client!`: here it is the
+//! plain `use_drop`, which is what the gated call expands to on a client build.
 
 use dioxus::prelude::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub mod checkbox;
+// `tabs` is not self-contained: it needs the roving-focus state below, which is what
+// every focus-trap component in upstream is built on. Vendoring a component means
+// vendoring the hooks it calls — `tabs` is three lines of rsx plus this.
+pub mod collection;
+pub mod tabs;
 
 /// Generate a runtime-unique id.
 fn use_unique_id() -> Signal<String> {
@@ -67,6 +74,35 @@ fn use_unique_id() -> Signal<String> {
     });
 
     use_signal(|| initial_value)
+}
+
+/// Use a caller's id if it gave one, otherwise the generated one. Upstream's
+/// (`primitives/src/lib.rs`), needed by `tabs` for `aria-controls`.
+fn use_id_or<T: Clone + PartialEq + 'static>(
+    mut gen_id: Signal<T>,
+    user_id: ReadSignal<Option<T>>,
+) -> Memo<T> {
+    let has_user_id = use_memo(move || user_id().is_some());
+
+    use_effect(move || {
+        if let Some(id) = user_id() {
+            gen_id.set(id);
+        }
+    });
+
+    use_memo(move || {
+        if has_user_id() {
+            user_id().unwrap()
+        } else {
+            gen_id.peek().clone()
+        }
+    })
+}
+
+/// Run cleanup when the component is unmounted. Upstream gates this with `client!`;
+/// on a wasm build `client!(crate::dioxus_core::use_drop(cleanup))` is exactly this.
+fn use_effect_cleanup<F: FnOnce() + 'static>(#[allow(unused)] cleanup: F) {
+    use_drop(cleanup);
 }
 
 /// Allows some state to be either controlled or uncontrolled.

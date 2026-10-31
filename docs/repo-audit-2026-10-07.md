@@ -253,6 +253,11 @@ network-status-frontend` is the rebuild. The exception is stated once, in the
 justfile comment, and `AGENTS.md` points at it. Ran it: the committed `dist/`
 currently matches a fresh build.
 
+**Closed 2026-10-30:** that exception is gone. The frontend is Dioxus, its `dist/` is
+git-ignored and built by the flake like the other four, and both recipes were deleted —
+`just network-status-test` is what checks it now (`docs/component-library.md`,
+`crates/network-status/tests/README.md`).
+
 ### 3.4 Hardcoded key paths and TOFU host keys
 
 - ~~`machines/services1/network-status.nix:80` hardcodes

@@ -2,6 +2,7 @@
 name = "network-status"
 version = "0.1.0"
 edition = "2021"
+build = "build.rs"
 
 [[bin]]
 name = "network-status"
@@ -10,3 +11,7 @@ path = "src/main.rs"
 [dependencies]
 common-json = { path = "../common-rs/json" }
 common-web = { path = "../common-rs/web" }
+
+# Shared build.rs helper that embeds the SPA bundle (common-rs/build-spa).
+[build-dependencies]
+common-build-spa = { path = "../common-rs/build-spa" }

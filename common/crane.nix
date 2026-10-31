@@ -123,6 +123,7 @@
     "filestore/frontend"
     "frigate-monitor/frontend"
     "gocardless-dashboard/frontend"
+    "network-status/frontend"
     "switch-gui/frontend"
   ];
 
@@ -402,7 +403,7 @@
   #
   # The shape every browser-served app in this fleet shares, so that adding one is a
   # name, a version and its crate lists.  `name` is the directory under `crates/`, the
-  # cargo package name and the workspace member — the same string for all four — and the
+  # cargo package name and the workspace member — the same string for all five — and the
   # SPA's directory, its lock file, its underscored wasm target and the environment
   # variable its `build.rs` reads are all derived from it.
   #

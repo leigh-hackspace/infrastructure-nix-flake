@@ -19,7 +19,6 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 /// has never in living memory taken a tenth of it.
 pub(crate) const SSH_TIMEOUT: Duration = Duration::from_secs(20);
 
-
 /// Collection script, fed to `ssh ... 'sh -s'` on the router.  gw is NixOS, so
 /// this is POSIX sh reading `/proc` and `/sys` — no platform commands, no root,
 /// and no sudo: every file here is world-readable.
@@ -75,7 +74,12 @@ pub(crate) fn now_ts() -> i64 {
 /// buffer.  A parent that waited for the child to exit before reading would
 /// watch `cat` block on a full pipe forever and then report a probe timeout —
 /// and a timeout, unlike this bug, looks like the router's fault.
-pub(crate) fn run_probe(mut command: Command, script: &str, what: &str, hint: &str) -> Result<String, String> {
+pub(crate) fn run_probe(
+    mut command: Command,
+    script: &str,
+    what: &str,
+    hint: &str,
+) -> Result<String, String> {
     let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -160,7 +164,12 @@ cat /proc/net/nf_conntrack 2>/dev/null || true
 "#;
 
 /// Run the collection script on another box over ssh; returns its stdout.
-pub(crate) fn fetch_router(ssh_key: &str, known_hosts: &str, router: &str, script: &str) -> Result<String, String> {
+pub(crate) fn fetch_router(
+    ssh_key: &str,
+    known_hosts: &str,
+    router: &str,
+    script: &str,
+) -> Result<String, String> {
     let mut command = Command::new("ssh");
     command
         .arg("-i")
@@ -276,11 +285,11 @@ pub(crate) fn parse_output(raw: &str) -> Parsed {
                     let (user, nice, system) = (toks[0], toks[1], toks[2]);
                     let (idle, iowait, irq, softirq) = (toks[3], toks[4], toks[5], toks[6]);
                     let steal = toks.get(7).copied().unwrap_or(0);
-                    let total_f = (user + nice + system + idle + iowait + irq + softirq + steal) as f64;
+                    let total_f =
+                        (user + nice + system + idle + iowait + irq + softirq + steal) as f64;
                     if total_f > 0.0 {
                         p.cpu_user = Some((user + nice) as f64 * 100.0 / total_f);
-                        p.cpu_sys =
-                            Some((system + irq + softirq + steal) as f64 * 100.0 / total_f);
+                        p.cpu_sys = Some((system + irq + softirq + steal) as f64 * 100.0 / total_f);
                         p.cpu_idle = Some((idle + iowait) as f64 * 100.0 / total_f);
                     }
                 }
@@ -494,7 +503,6 @@ pub(crate) struct Sample {
     pub(crate) conns: Option<String>,
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -538,7 +546,10 @@ vlan225 1
         // right offsets in /proc/net/dev.
         assert!(!p.ifaces.contains_key("lo"));
         assert_eq!(p.ifaces.get("ppp0"), Some(&(41152642209, 927347146, 0, 0)));
-        assert_eq!(p.ifaces.get("vlan225"), Some(&(78197913655, 31484006958, 0, 0)));
+        assert_eq!(
+            p.ifaces.get("vlan225"),
+            Some(&(78197913655, 31484006958, 0, 0))
+        );
 
         assert_eq!(p.uptime_secs, Some(11736));
         assert_eq!(p.load, Some([1.04, 0.39, 0.22]));
@@ -584,7 +595,10 @@ ipv6     10 icmpv6   58 29 src=2001:08b0:1d14:0225:0000:0000:0000:0001 dst=2606:
         assert_eq!(unparsed, 0, "every row parsed: {:?}", p.conns);
         assert_eq!(rows.len(), 4);
         assert_eq!(p.ncpu, Some(4));
-        assert!(!p.conns.contains("NCPU"), "the section ends at the next marker");
+        assert!(
+            !p.conns.contains("NCPU"),
+            "the section ends at the next marker"
+        );
 
         assert_eq!(rows[0].proto, "udp");
         assert_eq!(rows[0].state, None, "udp has no state word");

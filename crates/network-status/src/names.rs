@@ -349,14 +349,16 @@ mod tests {
         assert_eq!(name, "AP1-Fast.int.leighhack.org");
 
         // IPv6 records are as good as IPv4 ones, padded or not.
-        let (ip, _) = hosts("2001:8b0:1d14:227d::1001 PI-ROOM-01.int.leighhack.org PI-ROOM-01").unwrap();
+        let (ip, _) =
+            hosts("2001:8b0:1d14:227d::1001 PI-ROOM-01.int.leighhack.org PI-ROOM-01").unwrap();
         assert!(ip.is_ipv6());
         assert!(hosts("2001:08b0:1d14:227d:0000:0000:0000:1001 x y").is_some());
     }
 
     #[test]
     fn a_lease_uses_the_hostname_and_skips_the_ones_without() {
-        let (ip, name) = leases("1795000000 3c:7c:3f:11:22:33 10.3.14.190 laptop-vivaheri *").unwrap();
+        let (ip, name) =
+            leases("1795000000 3c:7c:3f:11:22:33 10.3.14.190 laptop-vivaheri *").unwrap();
         assert_eq!(ip.to_string(), "10.3.14.190");
         assert_eq!(name, "laptop-vivaheri");
 
@@ -372,11 +374,23 @@ mod tests {
     #[test]
     fn ports_and_icmp_types_get_words() {
         assert_eq!(service_name("tcp", 443), Some("https"));
-        assert_eq!(service_name("udp", 443), Some("quic"), "UDP/443 is not https");
-        assert_eq!(service_name("tcp", 554), Some("rtsp"), "the cameras' feed port");
+        assert_eq!(
+            service_name("udp", 443),
+            Some("quic"),
+            "UDP/443 is not https"
+        );
+        assert_eq!(
+            service_name("tcp", 554),
+            Some("rtsp"),
+            "the cameras' feed port"
+        );
         assert_eq!(service_name("udp", 51820), Some("wireguard"));
         assert_eq!(service_name("tcp", 41641), None, "that one is UDP-only");
-        assert_eq!(service_name("tcp", 54117), None, "an unlisted port stays a number");
+        assert_eq!(
+            service_name("tcp", 54117),
+            None,
+            "an unlisted port stays a number"
+        );
 
         // Type 3 means two different things, and picking one by protocol number
         // would have been wrong half the time.
@@ -432,7 +446,10 @@ mod tests {
     fn a_missing_name_file_is_not_an_error() {
         // The lease file is `0640 root:root` on gw, so the deployed unit cannot
         // read it at all and the whole feature has to degrade to numbers.
-        let names = Names::open(&["/nonexistent/hosts".into()], Some("/nonexistent/leases".into()));
+        let names = Names::open(
+            &["/nonexistent/hosts".into()],
+            Some("/nonexistent/leases".into()),
+        );
         assert_eq!(names.get("10.3.1.20".parse().unwrap()), None);
     }
 }

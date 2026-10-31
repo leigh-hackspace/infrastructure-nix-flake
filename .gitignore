@@ -18,9 +18,9 @@ result-fd
 # crate.  The wasm SPAs are separate workspaces and ignore their own.
 /crates/target/
 
-# network-status' SPA is the one frontend built with npm; its dependencies are
-# regenerated with `npm install` and never committed.
-/crates/network-status/frontend/node_modules/
+# Playwright for the headless-browser test suites (installed by each tests/run.sh);
+# the browser binaries themselves come from nixpkgs, not from Playwright's download.
+tests/node_modules/
 
 !.env.sample
 *.ignore

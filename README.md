@@ -9,7 +9,7 @@ infrastructure.
 crates/        every Rust crate; one cargo workspace (crates/Cargo.toml)
   common-rs/     the shared in-tree crates (json, oidc, web, pg, service, …)
   <program>/     one directory per service or tool; its Dioxus SPA in frontend/
-                 (five are not workspace members: the four SPAs' `frontend/`s,
+                 (six are not workspace members: the five SPAs' `frontend/`s,
                  which are wasm, and `whisper-ws/`, which is packaged on its own)
 common/        Nix modules shared by every machine (crane helpers, hosts, nginx)
                (every file in here starts by saying what kind of file it is:
@@ -95,9 +95,9 @@ Two things bite, and both are load-bearing:
   "Closed 2026-10-25", has the class, the honest detector, and the decision not to buy the
   dependency wiring that would close it. The build-shaped recipes
   (`just check-build`, `just test`, `just clippy`, `just build-frontend`,
-  `just filestore-*`, `just switch-gui-test`, `just build-remote`) refuse to run on
+  `just filestore-*`, `just switch-gui-test`, `just network-status-test`, `just build-remote`) refuse to run on
   `gw` via `_build-host-guard`. `nix develop` itself now builds nothing — the pinned
-  wasm-bindgen-cli that the four Dioxus bundles need lives in `nix develop .#wasm`,
+  wasm-bindgen-cli that the five Dioxus bundles need lives in `nix develop .#wasm`,
   which is a cargo build on a cold box — so `nix develop` at least is safe on the router.
 - **Confirm in the same shell invocation as the switch.** Every deployable machine
   sets `system.autoRollback.enable = true`: activating arms a five-minute timer that

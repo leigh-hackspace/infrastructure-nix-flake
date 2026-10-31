@@ -88,6 +88,21 @@ Only the modules a SPA actually uses are vendored. That is what keeps files insi
    `crates/Cargo.toml`, so `cargo build --workspace` never compiles it for the host — which
    also means `just test` and `just clippy` do not see it. **The gate for this crate is the
    Playwright suite**, not cargo.
+9. **Roving focus is not activation.** `collection`'s `focus_next` moves focus; it does not
+   select. A tab that had its own key handling before the library (network-status) activated
+   on ArrowRight, so converting to `common_ui::tabs` is a behaviour change: keyboard users
+   now move with the arrows and activate with Enter/Space on the focused trigger. Its suite
+   asserts the two halves separately (`crates/network-status/tests/suite.mjs`) rather than
+   asserting the old combined behaviour, so a change upstream shows up as a failure instead
+   of a passing test that no longer matches the primitive.
+
+## What a vendored component drags in
+
+A component is not a file: it is the file plus the hooks it calls. `tabs` needs `collection`
+(the roving-focus state every focus-trap component upstream is built on), `use_id_or` (for
+`aria-controls`) and `use_effect_cleanup`; `checkbox` needs `use_controlled` and
+`use_unique_id`. That is why `collection.rs` is here even though no SPA uses a collection
+widget directly — vendoring `tabs` alone would have been a file that does not compile.
 
 ## What stays app-specific
 
@@ -101,8 +116,12 @@ stays on the app side and is handed to `aria-label` / `aria-describedby`.
 
 1. `switch-gui` — done (matrix cell, accessibility assertions, the suite's a11y test).
 2. `filestore`
-3. `network-status` — its SolidJS frontend is still the last non-Dioxus SPA, and it has
-   tab ARIA attributes with no keyboard handling, which is exactly what the library adds.
+3. `network-status` — **done 2026-10-30**: it was the last non-Dioxus SPA, converted and
+   wired to `common_ui::tabs` (the `tabs` and `collection` modules exist because of it) and
+   `common_ui::checkbox` for the "moving now" control. It had tab ARIA attributes with no
+   keyboard handling, which is exactly what the library adds — and `crates/network-status/tests/`
+   was added with the conversion so the primitives can be asserted through the path a user
+   takes, not through a type check.
 4. `gocardless-dashboard`
 5. `frigate-monitor`
 
@@ -115,4 +134,5 @@ curl -s https://raw.githubusercontent.com/DioxusLabs/dioxus-components/9a758255e
 
 # the gate for a component change — not on the router, which cannot build
 just build-frontend switch-gui && just switch-gui-test
+just build-frontend network-status && just network-status-test
 ```

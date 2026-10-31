@@ -3,8 +3,10 @@
 # This is gw's /proc and /sys rendered as charts: per-interface bandwidth, the
 # nftables conntrack table, CPU/memory/load and "potential issues", plus the
 # same data as Prometheus metrics.  The crate is `crates/network-status` (zero
-# external crates); the SPA in its `frontend/` is prebuilt and its `dist/` is
-# committed (see `crates/network-status/frontend/README.md`).
+# external crates); its Dioxus SPA in `frontend/` is built by the flake and
+# **embedded in the binary** (`build.rs`, `common-rs/build-spa`) rather than served
+# out of a directory, so there is no `dist/` to commit — see
+# `crates/network-status/frontend/README.md`.
 #
 # It used to run on services1 and ssh to gw as `root`, first talking to the
 # OPNsense box and then briefly to gw.  Hosting it here is the last step of that
@@ -45,27 +47,27 @@
   VLANS = import ../../common/vlans.nix;
   TABLES = import ./lib/network-tables.nix;
 
-  # Prebuilt SolidJS/TypeScript SPA.  dist/ is committed to the git tree (Nix
-  # builds run offline and the npm deps are not nixpkgs-cached), so this only
-  # copies it into the store.  Rebuild with `just network-status-frontend`.
-  frontend = pkgs.stdenv.mkDerivation {
-    pname = "network-status-frontend";
-    version = "0.1.0";
-    src = ../../crates/network-status/frontend;
-    dontConfigure = true;
-    dontBuild = true;
-    installPhase = ''
-      mkdir -p $out/share/network-status
-      cp -r dist/. $out/share/network-status/frontend
-    '';
-  };
-
-  networkStatus = CRANE.crate {
-    pname = "network-status";
-    version = "0.1.0";
-    member = "network-status";
-    sharedCrates = ["json" "web"];
-  };
+  # The SPA and the binary that embeds it — `CRANE.spaApp`, the one shape every
+  # browser-served app in this fleet shares (common/crane.nix has the recipe, the pinned
+  # wasm-bindgen-cli and why the bundle is a build-hook input rather than a cargo
+  # dependency; common/frontend-build-spa.sh is the one recipe the flake and
+  # `just build-frontend` both run).  This crate is the last one converted to it: its
+  # frontend used to be SolidJS, its npm deps were not nixpkgs-cached, so the flake could
+  # not rebuild it offline and `dist/` was committed — which is why `--static-dir` and the
+  # `pkgs.stdenv.mkDerivation` above it are gone.  What is specific to this app:
+  # `sharedCrates` are the ones its manifest reads (`json` for the JSON emitter, `web` for
+  # the request/response plumbing and `build-spa` for build.rs), and `ui` is not a Rust
+  # dependency of the binary at all — it is a manifest path dependency of the *frontend*
+  # (`common-rs/ui` through the git-ignored symlink), so it has to be copied into the
+  # frontend's source tree as `spaSharedCrates`, because a symlink cannot travel in a flake
+  # source. The tabs are the library's, not written here.
+  networkStatus =
+    (CRANE.spaApp {
+      name = "network-status";
+      version = "0.1.0";
+      sharedCrates = ["json" "web" "build-spa"];
+      spaSharedCrates = ["ui"];
+    }).binary;
 
   # The prefixes the connection view counts as "ours", which is what decides
   # whether a flow is a device downloading something (`out`), something arriving
@@ -144,8 +146,6 @@ in {
           "10.3.1.1"
           "--port"
           "8091"
-          "--static-dir"
-          "${frontend}/share/network-status/frontend"
           "--local"
           "--interval"
           "5"

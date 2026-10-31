@@ -224,15 +224,24 @@ impl Flow {
         format!(
             r#"{{"proto":{},"state":{},"kind":{},"assured":{},"offloaded":{},"host":{},"host_name":{},"host_port":{},"peer":{},"peer_name":{},"peer_port":{},"service":{},"age":{},"first_seen":{},"samples":{},"bytes_down":{},"bytes_up":{},"down_bps":{},"up_bps":{},"accounted":{},"timeout":{}}}"#,
             quoted(&self.proto),
-            self.state.as_deref().map(quoted).unwrap_or_else(|| "null".into()),
+            self.state
+                .as_deref()
+                .map(quoted)
+                .unwrap_or_else(|| "null".into()),
             quoted(self.kind.as_str()),
             self.assured,
             self.offloaded,
             quoted(&self.host.to_string()),
-            names.get(self.host).map(quoted).unwrap_or_else(|| "null".into()),
+            names
+                .get(self.host)
+                .map(quoted)
+                .unwrap_or_else(|| "null".into()),
             jopt_u16(self.host_port),
             quoted(&self.peer.to_string()),
-            names.get(self.peer).map(quoted).unwrap_or_else(|| "null".into()),
+            names
+                .get(self.peer)
+                .map(quoted)
+                .unwrap_or_else(|| "null".into()),
             jopt_u16(self.peer_port),
             self.service().map(quoted).unwrap_or_else(|| "null".into()),
             self.age_at(now),
@@ -260,7 +269,6 @@ pub(crate) fn delta(cur: Option<u64>, prev: Option<u64>, dt: f64) -> Option<f64>
         _ => None,
     }
 }
-
 
 /// The tracker: every connection the table held at the last sample, plus what
 /// this service has watched it do since.
@@ -303,8 +311,7 @@ impl Flows {
             match self.flows.get_mut(&key) {
                 Some(flow) => flow.observe(sample_ts, &row),
                 None => {
-                    self.flows
-                        .insert(key, Flow::new(sample_ts, &row, local));
+                    self.flows.insert(key, Flow::new(sample_ts, &row, local));
                 }
             }
         }
@@ -393,7 +400,10 @@ impl Flows {
             jnum(q.min_bps),
             opt_str(q.kind.map(|k| k.as_str())),
             quoted(q.sort.as_str()),
-            q.needle.as_deref().map(quoted).unwrap_or_else(|| "null".into()),
+            q.needle
+                .as_deref()
+                .map(quoted)
+                .unwrap_or_else(|| "null".into()),
             q.limit,
             defaults.min_age,
             defaults.min_bytes,
@@ -444,11 +454,7 @@ impl Flows {
 /// to whole bytes per second cannot reorder two flows that differ by more than
 /// half a byte per second, which is not a distinction the table makes.
 pub(crate) fn sort_key(a: &Flow, sort: Sort) -> (i64, i64, i64, String) {
-    let rate = |o: Option<f64>| {
-        o.unwrap_or(0.0)
-            .clamp(0.0, i64::MAX as f64)
-            .round() as i64
-    };
+    let rate = |o: Option<f64>| o.unwrap_or(0.0).clamp(0.0, i64::MAX as f64).round() as i64;
     let bytes = |o: Option<u64>| o.unwrap_or(0).min(i64::MAX as u64) as i64;
     let total_rate = |f: &Flow| rate(f.down_bps()) + rate(f.up_bps());
     let total_bytes = |f: &Flow| bytes(f.bytes_down()) + bytes(f.bytes_up());
@@ -543,4 +549,3 @@ impl Agg {
         )
     }
 }
-

@@ -33,7 +33,13 @@ pub(crate) fn snapshot_json(s: &Snapshot, args: &Args) -> String {
     let issues: Vec<String> = s
         .issues
         .iter()
-        .map(|i| format!(r#"{{"level":{},"message":{}}}"#, quoted(&i.level), quoted(&i.message)))
+        .map(|i| {
+            format!(
+                r#"{{"level":{},"message":{}}}"#,
+                quoted(&i.level),
+                quoted(&i.message)
+            )
+        })
         .collect();
     let load = match s.load {
         Some([a, b, c]) => format!("[{a},{b},{c}]"),
@@ -43,7 +49,10 @@ pub(crate) fn snapshot_json(s: &Snapshot, args: &Args) -> String {
         r#"{{"ts":{},"ok":{},"error":{},"router":{{"hostname":{},"uptime_secs":{},"load":{},"ncpu":{},"cpu":{{"user":{},"system":{},"idle":{}}},"mem":{{"free":{},"total":{}}},"conntrack":{},"own_tcp":{},"retrans_rate":{}}},"ifaces":[{}],"issues":[{}]}}"#,
         s.ts,
         s.ok,
-        s.error.as_deref().map(quoted).unwrap_or_else(|| "null".into()),
+        s.error
+            .as_deref()
+            .map(quoted)
+            .unwrap_or_else(|| "null".into()),
         quoted(&args.hostname),
         jopt_u64(s.uptime_secs),
         load,
@@ -97,25 +106,35 @@ pub(crate) fn metrics_text(s: &Snapshot) -> String {
     ] {
         gauge(&mut out, name, v);
     }
-    gauge(
-        &mut out,
-        "router_ncpu",
-        s.ncpu.map(|n| n as f64),
-    );
+    gauge(&mut out, "router_ncpu", s.ncpu.map(|n| n as f64));
     for (mode, v) in [
         ("user", s.cpu_user),
         ("system", s.cpu_sys),
         ("idle", s.cpu_idle),
     ] {
-        labeled(&mut out, "router_cpu_percent", &format!("mode=\"{mode}\""), v);
+        labeled(
+            &mut out,
+            "router_cpu_percent",
+            &format!("mode=\"{mode}\""),
+            v,
+        );
     }
     for (state, v) in [
         ("free", s.mem_free.map(|b| b as f64)),
         ("total", s.mem_total.map(|b| b as f64)),
     ] {
-        labeled(&mut out, "router_mem_bytes", &format!("state=\"{state}\""), v);
+        labeled(
+            &mut out,
+            "router_mem_bytes",
+            &format!("state=\"{state}\""),
+            v,
+        );
     }
-    gauge(&mut out, "router_conntrack_entries", s.conntrack.map(|n| n as f64));
+    gauge(
+        &mut out,
+        "router_conntrack_entries",
+        s.conntrack.map(|n| n as f64),
+    );
     gauge(&mut out, "router_tcp_sockets", s.own_tcp.map(|n| n as f64));
     gauge(
         &mut out,
@@ -130,7 +149,12 @@ pub(crate) fn metrics_text(s: &Snapshot) -> String {
     for i in &s.ifaces {
         // Linux interface names (alphanumerics, -, _, .) are safe inside a
         // label value as-is; /proc/net/dev does not include iproute's @parent.
-        labeled(&mut out, "router_interface_up", &format!("interface=\"{}\"", i.name), Some(if i.active { 1.0 } else { 0.0 }));
+        labeled(
+            &mut out,
+            "router_interface_up",
+            &format!("interface=\"{}\"", i.name),
+            Some(if i.active { 1.0 } else { 0.0 }),
+        );
         labeled(
             &mut out,
             "router_interface_bytes_total",
@@ -175,8 +199,24 @@ pub(crate) fn history_json(history: &[&HistoryPoint]) -> String {
     }
     let mut ifaces_json = Vec::new();
     for n in &names {
-        let up: Vec<String> = history.iter().map(|h| h.rates.get(n).map(|(u, _)| jopt_num(*u)).unwrap_or_else(|| "null".into())).collect();
-        let down: Vec<String> = history.iter().map(|h| h.rates.get(n).map(|(_, d)| jopt_num(*d)).unwrap_or_else(|| "null".into())).collect();
+        let up: Vec<String> = history
+            .iter()
+            .map(|h| {
+                h.rates
+                    .get(n)
+                    .map(|(u, _)| jopt_num(*u))
+                    .unwrap_or_else(|| "null".into())
+            })
+            .collect();
+        let down: Vec<String> = history
+            .iter()
+            .map(|h| {
+                h.rates
+                    .get(n)
+                    .map(|(_, d)| jopt_num(*d))
+                    .unwrap_or_else(|| "null".into())
+            })
+            .collect();
         ifaces_json.push(format!(
             r#"{}:{{"up":[{}],"down":[{}]}}"#,
             quoted(n),
@@ -194,4 +234,3 @@ pub(crate) fn history_json(history: &[&HistoryPoint]) -> String {
         load.join(",")
     )
 }
-

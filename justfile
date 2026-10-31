@@ -194,7 +194,7 @@ clippy: _build-host-guard
       exit $status
     '
 
-# --- frontend (the four Dioxus SPAs) ---
+# --- frontend (the five Dioxus SPAs) ---
 
 # Rebuild a Dioxus SPA into its frontend/dist using the wasm devShell
 # (`nix develop .#wasm`: cargo/rustc/lld + the pinned wasm-bindgen-cli).  Same recipe the
@@ -202,7 +202,7 @@ clippy: _build-host-guard
 # the one it embeds; those dist/ directories are git-ignored and rebuilt at
 # deploy time, so this is only for local iteration.
 #
-#   just build-frontend                 # all four
+#   just build-frontend                 # all five
 #   just build-frontend filestore       # one of them
 # (just 1.51 passes any extra argument straight into the single parameter, so
 # there are no flags here — a bad name just fails the whitelist check.)
@@ -212,49 +212,17 @@ build-frontend crate="all": _build-host-guard
     # The parameter arrives through just's quote() — shell-quoted, and the case
     # below is a whitelist anyway.
     case {{ quote(crate) }} in
-        all) crates="frigate-monitor filestore gocardless-dashboard switch-gui" ;;
+        all) crates="frigate-monitor filestore gocardless-dashboard network-status switch-gui" ;;
         *) crates={{ quote(crate) }} ;;
     esac
     for c in $crates; do
         if [ ! -f "crates/$c/frontend/build.sh" ]; then
-            echo "no crates/$c/frontend/build.sh — expected one of: frigate-monitor filestore gocardless-dashboard switch-gui all" >&2
+            echo "no crates/$c/frontend/build.sh — expected one of: frigate-monitor filestore gocardless-dashboard network-status switch-gui all" >&2
             exit 2
         fi
         echo "=== build-frontend $c"
         nix develop .#wasm --command bash -c "exec ./crates/$c/frontend/build.sh"
     done
-
-# network-status' SPA is the exception: it is SolidJS + esbuild, not Dioxus, and
-# its npm deps are not nixpkgs-cached, so the flake cannot rebuild it offline and
-# crates/network-status/frontend/dist is COMMITTED (see the note in
-# machines/gw/network-status.nix, where the service has run since 2026-10-21).  Build
-# it with npm, then commit the
-# result; `just network-status-dist-check` catches a bundle that has drifted from
-# src/.
-network-status-frontend:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    cd crates/network-status/frontend
-    npm install
-    npm run build
-
-# Fails if the committed network-status bundle is not what `npm run build`
-# produces from the current src/ — the one drift the committed dist/ allows.
-network-status-dist-check:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    cd crates/network-status/frontend
-    if [ ! -d node_modules ]; then
-        echo "node_modules missing — run 'npm install' here once (or 'just network-status-frontend')" >&2
-        exit 2
-    fi
-    npm run build >/dev/null
-    if ! git diff --quiet -- dist; then
-        echo "crates/network-status/frontend/dist has drifted from src/ — commit the rebuild:" >&2
-        git --no-pager diff --stat -- dist
-        exit 1
-    fi
-    echo "network-status dist/ matches a fresh build"
 
 # --- the router's ssh host keys
 
@@ -760,6 +728,17 @@ switch-gui-test: _build-host-guard
     #!/usr/bin/env bash
     set -euo pipefail
     nix develop .#wasm --command bash -c 'exec crates/switch-gui/tests/run.sh'
+
+# The network-status headless-browser suite: builds the SPA + binary, starts the service on a
+# loopback bind with `--local` and with the connection table and the lease file switched off,
+# and drives the page with headless Chromium.  Nothing can reach the router: the two files
+# that would make a result depend on the box are the router's group-read files
+# (`machines/gw/conntrack-reader.nix`, `machines/gw/lease-reader.nix`), so the panels' error
+# path is what is under test.  See crates/network-status/tests/README.md.
+network-status-test: _build-host-guard
+    #!/usr/bin/env bash
+    set -euo pipefail
+    nix develop .#wasm --command bash -c 'exec crates/network-status/tests/run.sh'
 
 # Install the shared age key (used to edit secrets) so sops-nix can
 # decrypt at runtime and build time on this machine. Run after a fresh

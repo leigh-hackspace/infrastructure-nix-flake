@@ -138,14 +138,20 @@ pub(crate) fn parse_row(line: &str) -> Option<ConnRow> {
             }
             continue;
         }
-        let Some((k, v)) = t.split_once('=') else { continue };
+        let Some((k, v)) = t.split_once('=') else {
+            continue;
+        };
         if k == "src" {
             tuple += 1;
             if tuple > 2 {
                 return None;
             }
         }
-        let t = if tuple == 2 { &mut row.reply } else { &mut row.orig };
+        let t = if tuple == 2 {
+            &mut row.reply
+        } else {
+            &mut row.orig
+        };
         match k {
             "src" => t.src = v.parse().ok(),
             "dst" => t.dst = v.parse().ok(),
@@ -230,13 +236,22 @@ mod tests {
         let r = row(DOWNLOAD);
         assert_eq!(r.proto, "tcp");
         assert_eq!(r.orig.src.map(|i| i.to_string()), Some("10.3.1.20".into()));
-        assert_eq!(r.orig.dst.map(|i| i.to_string()), Some("104.16.246.239".into()));
+        assert_eq!(
+            r.orig.dst.map(|i| i.to_string()),
+            Some("104.16.246.239".into())
+        );
         assert_eq!(r.orig.sport, Some(58506));
         assert_eq!(r.orig.dport, Some(443));
         // The reply tuple shows the masqueraded address, which is why the
         // *original* tuple is the one that says who the connection belongs to.
-        assert_eq!(r.reply.src.map(|i| i.to_string()), Some("104.16.246.239".into()));
-        assert_eq!(r.reply.dst.map(|i| i.to_string()), Some("81.187.223.123".into()));
+        assert_eq!(
+            r.reply.src.map(|i| i.to_string()),
+            Some("104.16.246.239".into())
+        );
+        assert_eq!(
+            r.reply.dst.map(|i| i.to_string()),
+            Some("81.187.223.123".into())
+        );
         assert_eq!(r.orig.bytes, Some(51_878));
         assert_eq!(r.reply.bytes, Some(2_382_711));
         assert_eq!(r.reply.packets, Some(1828));
@@ -315,7 +330,10 @@ mod tests {
         let other_host = DOWNLOAD.replace("src=10.3.1.20", "src=10.3.1.21");
         assert_ne!(flow_key(&base), flow_key(&row(&other_host)));
         // A ping's request and reply entries must not collide.
-        assert_ne!(flow_key(&row(PING)), flow_key(&row(&PING.replace("type=8", "type=4"))));
+        assert_ne!(
+            flow_key(&row(PING)),
+            flow_key(&row(&PING.replace("type=8", "type=4")))
+        );
         assert_ne!(flow_key(&row(PING)), flow_key(&row(DNS)));
     }
 
@@ -329,7 +347,10 @@ mod tests {
         assert_eq!(unparsed, 2, "the junk line and the half-written tuple");
         // The truncated line has one complete tuple and no reply tuple, so it is
         // refused rather than shown as a connection with no reply.
-        assert_eq!(row(INBOUND).orig.src.map(|i| i.to_string()), Some("192.168.49.1".into()));
+        assert_eq!(
+            row(INBOUND).orig.src.map(|i| i.to_string()),
+            Some("192.168.49.1".into())
+        );
     }
 
     #[test]

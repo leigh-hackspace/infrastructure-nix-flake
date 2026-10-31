@@ -1,0 +1,54 @@
+[package]
+name = "network-status-web"
+version = "0.1.0"
+edition = "2021"
+
+# Web (wasm) SPA for network-status (network-info.int.leighhack.org), served by `gw`.
+# Built with `./build.sh` into dist/ (git-ignored), embedded into the network-status
+# binary by its build.rs — the flake compiles it from source
+# (machines/gw/network-status.nix, `CRANE.spaApp`).
+#
+# This was a SolidJS + TypeScript SPA, and it was the one frontend whose `dist/` was
+# committed, because its npm dependencies were not nixpkgs-cached and the flake could not
+# rebuild it offline (AGENTS.md rule 19). It is a Dioxus SPA now, built by the same recipe
+# as the other four, so that exception is closed.
+[lib]
+name = "network_status_web"
+crate-type = ["cdylib", "rlib"]
+
+# This SPA is its own cargo workspace, deliberately: it is built for
+# wasm32-unknown-unknown against a wasm-bindgen pinned to match the CLI the flake uses, and
+# it must not share the native workspace's lock file (one graph would unify host and wasm
+# deps and move wasm-bindgen out from under that CLI). The reason is written out in
+# crates/Cargo.toml; the empty table below is what keeps cargo from adopting this directory
+# into the native workspace.
+[workspace]
+
+[dependencies]
+dioxus = { version = "0.7.10", features = ["web"] }
+serde = { version = "1", features = ["derive"] }
+# The component library — a pruned vendored copy of dioxus-components' `primitives`
+# (docs/component-library.md). Reached through the git-ignored `common-rs` symlink here and
+# by `spaSharedCrates = ["ui"]` in the flake build. The tabs are upstream's, not ours.
+common-ui = { path = "./common-rs/ui" }
+gloo-net = "0.6"
+gloo-timers = { version = "0.3", features = ["futures"] }
+js-sys = "0.3"
+wasm-bindgen = "0.2"
+# CanvasRenderingContext2d is what the charts draw with: this dashboard is the one app in
+# here that renders to a bitmap rather than to DOM nodes.
+web-sys = { version = "0.3", features = [
+  "Window",
+  "Location",
+  "Document",
+  "Element",
+  "HtmlCanvasElement",
+  "CanvasRenderingContext2d",
+  "CanvasGradient",
+] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true

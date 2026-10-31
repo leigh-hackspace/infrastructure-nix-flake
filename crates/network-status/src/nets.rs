@@ -116,7 +116,9 @@ impl Localness {
     /// at startup rather than by silently classifying half the network as
     /// external.
     pub fn new(specs: &[String]) -> Self {
-        let mut local = Self { entries: Vec::new() };
+        let mut local = Self {
+            entries: Vec::new(),
+        };
         for spec in specs {
             match parse_spec(spec, false) {
                 Some(e) => local.entries.push(e),
@@ -140,7 +142,9 @@ impl Localness {
                     self.entries.push(e);
                     ok += 1;
                 }
-                None => eprintln!("network-status: ignoring --vlan {spec:?}: expected VLAN=10.3.1.0/24"),
+                None => {
+                    eprintln!("network-status: ignoring --vlan {spec:?}: expected VLAN=10.3.1.0/24")
+                }
             }
         }
         ok
@@ -186,11 +190,7 @@ impl Localness {
     /// options the lease table's VLAN filter offers, including a VLAN whose
     /// leases have all aged out and so appears in no row.
     pub fn vlan_labels(&self) -> Vec<String> {
-        let mut names: Vec<String> = self
-            .entries
-            .iter()
-            .flat_map(|e| e.vlan.clone())
-            .collect();
+        let mut names: Vec<String> = self.entries.iter().flat_map(|e| e.vlan.clone()).collect();
         names.sort();
         names.dedup();
         names
@@ -212,7 +212,8 @@ mod tests {
     }
 
     fn ip(s: &str) -> IpAddr {
-        s.parse().unwrap_or_else(|_| panic!("{s} should be an address"))
+        s.parse()
+            .unwrap_or_else(|_| panic!("{s} should be an address"))
     }
 
     fn specs(list: &[&str]) -> Vec<String> {
@@ -224,7 +225,10 @@ mod tests {
         let lan = net("10.3.1.0/24");
         assert!(lan.matches(ip("10.3.1.1")));
         assert!(lan.matches(ip("10.3.1.254")));
-        assert!(!lan.matches(ip("10.3.2.1")), "the wireless VLAN is not the wired one");
+        assert!(
+            !lan.matches(ip("10.3.2.1")),
+            "the wireless VLAN is not the wired one"
+        );
         assert!(!lan.matches(ip("10.3.0.1")));
         assert!(!lan.matches(ip("192.168.2.1")));
     }
@@ -262,7 +266,14 @@ mod tests {
     fn single_addresses_and_bad_prefixes() {
         assert!(net("10.3.1.1/32").matches(ip("10.3.1.1")));
         assert!(!net("10.3.1.1/32").matches(ip("10.3.1.2")));
-        for bad in ["10.3.1.0", "10.3.1.0/33", "not-an-ip/8", "10.3.1.0/-1", "/24", "10.3.1.0/"] {
+        for bad in [
+            "10.3.1.0",
+            "10.3.1.0/33",
+            "not-an-ip/8",
+            "10.3.1.0/-1",
+            "/24",
+            "10.3.1.0/",
+        ] {
             assert!(Net::parse(bad).is_none(), "{bad} should be refused");
         }
     }
@@ -281,29 +292,50 @@ mod tests {
     fn a_named_prefix_is_the_same_prefix_and_a_vlan_name() {
         // The `--vlan` form, as gw is handed it: dnsmasq's own VLAN tag plus the
         // block that range is handed out of.
-        let named: Vec<String> =
-            ["vlan225=10.3.1.0/24", "vlan226=10.3.2.0/24", "vlan225=2001:8b0:1d14:225::/64"]
-                .iter()
-                .map(|s| s.to_string())
-                .collect();
+        let named: Vec<String> = [
+            "vlan225=10.3.1.0/24",
+            "vlan226=10.3.2.0/24",
+            "vlan225=2001:8b0:1d14:225::/64",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
         let mut local = Localness::new(&[]);
         assert_eq!(local.add_named(&named), 3, "every one of those parses");
-        assert!(local.is_local(ip("10.3.1.55")), "a VLAN block is inside the network whatever it is called by");
+        assert!(
+            local.is_local(ip("10.3.1.55")),
+            "a VLAN block is inside the network whatever it is called by"
+        );
         assert!(local.is_local(ip("2001:8b0:1d14:225::9")));
         assert_eq!(local.vlan_of(ip("10.3.2.200")), Some("vlan226".to_string()));
-        assert_eq!(local.vlan_of(ip("2001:8b0:1d14:225::1")), Some("vlan225".to_string()));
-        assert_eq!(local.vlan_of(ip("192.168.2.5")), None, "a tailnet or uplink address has no VLAN of its own");
+        assert_eq!(
+            local.vlan_of(ip("2001:8b0:1d14:225::1")),
+            Some("vlan225".to_string())
+        );
+        assert_eq!(
+            local.vlan_of(ip("192.168.2.5")),
+            None,
+            "a tailnet or uplink address has no VLAN of its own"
+        );
         assert_eq!(local.vlan_labels(), vec!["vlan225", "vlan226"]);
-        assert_eq!(local.specs(), vec!["10.3.1.0/24", "10.3.2.0/24", "2001:8b0:1d14:225::/64"]);
+        assert_eq!(
+            local.specs(),
+            vec!["10.3.1.0/24", "10.3.2.0/24", "2001:8b0:1d14:225::/64"]
+        );
     }
 
     #[test]
     fn a_bad_named_prefix_is_refused_not_guessed() {
-        let named: Vec<String> =
-            ["=10.3.1.0/24", "vlan 225=10.3.1.0/24", "vlan225=10.3.1.0", "vlan225", "vlan227=10.3.14.0/24"]
-                .iter()
-                .map(|s| s.to_string())
-                .collect();
+        let named: Vec<String> = [
+            "=10.3.1.0/24",
+            "vlan 225=10.3.1.0/24",
+            "vlan225=10.3.1.0",
+            "vlan225",
+            "vlan227=10.3.14.0/24",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
         let mut local = Localness::new(&[]);
         local.add_named(&named);
         assert_eq!(local.vlan_labels(), vec!["vlan227"]);
@@ -314,14 +346,20 @@ mod tests {
         // Synthetic on purpose (no real network puts a /28 and a /24 on two
         // VLANs) but the rule is the one a real overlap would hit: the more
         // specific prefix is the better answer, not whichever flag came first.
-        let named: Vec<String> = ["wide=10.3.1.0/24", "narrow=10.3.1.16/28"].iter().map(|s| s.to_string()).collect();
+        let named: Vec<String> = ["wide=10.3.1.0/24", "narrow=10.3.1.16/28"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         let mut local = Localness::new(&[]);
         local.add_named(&named);
         assert_eq!(local.vlan_of(ip("10.3.1.20")), Some("narrow".to_string()));
         assert_eq!(local.vlan_of(ip("10.3.1.4")), Some("wide".to_string()));
         // The plain-prefix view is the CIDR either way: `--vlan` adds a name,
         // it does not change what counts as inside the network.
-        assert_eq!(local.prefix_of(ip("10.3.1.20")), Some("10.3.1.16/28".to_string()));
+        assert_eq!(
+            local.prefix_of(ip("10.3.1.20")),
+            Some("10.3.1.16/28".to_string())
+        );
         assert_eq!(local.prefix_of(ip("192.168.2.5")), None);
     }
 }

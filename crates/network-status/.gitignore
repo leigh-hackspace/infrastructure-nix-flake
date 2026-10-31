@@ -2,5 +2,15 @@
 # the times someone points CARGO_TARGET_DIR at the crate instead.
 /target/
 
-# Frontend build dependencies (regenerated with `npm install`; never committed)
-frontend/node_modules/
+# The wasm SPA bundle: built by the flake (or frontend/build.sh) and embedded by
+# build.rs, never committed.
+/frontend/target/
+/frontend/dist/
+
+# The SPA is its own cargo workspace and reaches the shared crates through a
+# symlink a developer creates with `just shared-rs` and the Nix build replaces
+# with a real copy (see common/shared-rs-links.sh and common/crane.nix).
+/frontend/common-rs
+
+# Playwright for the headless browser suite (installed by tests/run.sh).
+/tests/node_modules/

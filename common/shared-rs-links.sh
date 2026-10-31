@@ -37,5 +37,6 @@ ln -sfn ../dto "$root/crates/gocardless-dashboard/frontend/dto"
 ln -sfn ../dto "$root/crates/switch-gui/frontend/dto"
 ln -sfn ../../common-rs "$root/crates/filestore/frontend/common-rs"
 ln -sfn ../../common-rs "$root/crates/switch-gui/frontend/common-rs"
+ln -sfn ../../common-rs "$root/crates/network-status/frontend/common-rs"
 
 echo "SPA path-dependency symlinks are in place"

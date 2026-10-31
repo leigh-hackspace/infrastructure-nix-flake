@@ -32,11 +32,11 @@
 //!
 //! Endpoints (served behind nginx at network-info.int.leighhack.org):
 //!
-//!   GET  /               SPA shell (index.html) from --static-dir, or a
-//!                        minimal embedded page if none is configured
-//!   GET  /{asset}        static SPA assets (bundle.js, bundle.css, ...) from
-//!                        --static-dir, with SPA fallback to index.html for
-//!                        unknown client-side routes
+//!   GET  /               SPA shell (the embedded index.html), or a minimal
+//!                        "not built yet" page if there is no bundle
+//!   GET  /assets/{name}  the embedded SPA bundle (index.html, the wasm, its glue
+//!                        module), with SPA fallback to index.html for unknown
+//!                        client-side routes
 //!   GET  /api/config     the knobs the SPA reads: wan, title, sample interval,
 //!                        and the connection view's defaults
 //!   GET  /api/snapshot   latest snapshot as JSON
@@ -52,9 +52,12 @@
 //!                        machines/services1/services/monitoring-dashboards.nix)
 //!
 //! Zero external crates (house style, see status-dashboard/): ssh goes
-//! through the `ssh` binary, JSON is hand-rolled, and the frontend is a
-//! prebuilt SolidJS + TypeScript SPA served as static files (--static-dir).
-//! The request/response plumbing is the shared in-repo `common-rs/web`.
+//! through the `ssh` binary, JSON is hand-rolled, and the frontend is a Dioxus SPA
+//! compiled to wasm and **embedded in this binary** by `build.rs`
+//! (`common-rs/build-spa`, `common/frontend-build-spa.sh`) — served as bytes, so the
+//! `.wasm` is not decoded as text. It used to be a prebuilt SolidJS SPA served from
+//! `--static-dir`, which is why the response path here took a `String` body; that flag is
+//! gone. The request/response plumbing is the shared in-repo `common-rs/web`.
 //!
 //! # Where things are
 //!
@@ -72,7 +75,8 @@
 //!   * `names` — addresses → names, from the router's DNS records and leases,
 //!     plus the port and ICMP-type labels
 //!   * `render` — the snapshot/history/metrics text formats
-//!   * `serve` — the static SPA files and their path containment
+//!   * `serve` — the embedded SPA bundle, its MIME types, and the page shown when
+//!     nothing has been built
 //!   * `json` — the handful of JSON output primitives this crate hand-rolls
 //!
 //! `main.rs` is left with the argument contract, the routing table and the
@@ -95,7 +99,7 @@ use model::{HistoryPoint, Snapshot, State};
 use nets::Localness;
 use probe::{local_hostname, router_host, sample_once, Sample};
 use render::{history_json, metrics_text, snapshot_json};
-use serve::{serve_static, FALLBACK_HTML};
+use serve::{page, serve_asset};
 use std::collections::{BTreeMap, HashMap};
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
@@ -126,10 +130,6 @@ struct Args {
     interval: Duration,
     wan: String,
     title: String,
-    /// Directory of pre-built static SPA files (SolidJS/Vite build). When set,
-    /// the binary serves those files; when None a minimal embedded page is
-    /// returned so the backend still runs standalone (e.g. local dev).
-    static_dir: Option<String>,
     /// Read `/proc/net/nf_conntrack` as well as the rest, and serve
     /// `/api/connections`.  Off with `--no-conns` for a probe target whose
     /// conntrack table is not this box's (or not there at all).
@@ -192,12 +192,11 @@ fn route(
     query: &HashMap<String, String>,
     state: &State,
     args: &Args,
-) -> (u16, String, String) {
+) -> common_web::Reply {
     match (method, path) {
-        ("GET", "/api/config") => (
+        ("GET", "/api/config") => common_web::Reply::json(
             200,
-            "application/json".to_string(),
-            format!(
+            &format!(
                 r#"{{"wan":{},"title":{},"interval":{},"connections":{{"enabled":{},"min_age":{},"min_bytes":{},"max_rows":{},"stale":{},"local_prefixes":{}}},"leases":{{"enabled":{},"ttl":{},"max_rows":{},"vlans":{}}}}}"#,
                 quoted(&args.wan),
                 quoted(&args.title),
@@ -217,67 +216,62 @@ fn route(
         ("GET", "/api/snapshot") => {
             let g = state.last.lock().unwrap();
             match g.as_ref() {
-                Some(s) => (200, "application/json".to_string(), snapshot_json(s, args)),
-                None => (
+                Some(s) => common_web::Reply::json(200, &snapshot_json(s, args)),
+                None => common_web::Reply::json(
                     503,
-                    "application/json".to_string(),
-                    r#"{"error":"no data yet (first router probe in progress)"}"#.to_string(),
+                    r#"{"error":"no data yet (first router probe in progress)"}"#,
                 ),
             }
         }
         ("GET", "/metrics") => {
             let g = state.last.lock().unwrap();
+            let ctype = "text/plain; version=0.0.4; charset=utf-8";
             match g.as_ref() {
-                Some(s) => (
+                Some(s) => common_web::Reply::new(
                     200,
-                    "text/plain; version=0.0.4; charset=utf-8".to_string(),
-                    metrics_with_conns(s, state, args),
+                    ctype,
+                    metrics_with_conns(s, state, args).into_bytes(),
                 ),
-                None => (
-                    503,
-                    "text/plain; version=0.0.4; charset=utf-8".to_string(),
-                    "no data yet (first router probe in progress)".to_string(),
+                None => common_web::Reply::new(
+                    200,
+                    ctype,
+                    "no data yet (first router probe in progress)"
+                        .as_bytes()
+                        .to_vec(),
                 ),
             }
         }
         ("GET", "/api/history") => {
             let g = state.history.lock().unwrap();
             let points: Vec<&HistoryPoint> = g.iter().collect();
-            (200, "application/json".to_string(), history_json(&points))
+            common_web::Reply::json(200, &history_json(&points))
         }
         ("GET", "/api/connections") => {
             if !args.conns {
-                return (
+                return common_web::Reply::json(
                     404,
-                    "application/json".to_string(),
-                    r#"{"error":"connection table disabled (started with --no-conns)"}"#.to_string(),
+                    r#"{"error":"connection table disabled (started with --no-conns)"}"#,
                 );
             }
             let defaults = conn_query(args);
             let q = flows::parse_query(query, &defaults);
             let g = state.flows.lock().unwrap();
-            (
-                200,
-                "application/json".to_string(),
-                g.json(&q, &defaults, args.interval.as_secs()),
-            )
+            common_web::Reply::json(200, &g.json(&q, &defaults, args.interval.as_secs()))
         }
         ("GET", "/api/leases") => {
             // Three ways this can be off, each said out loud rather than answered
             // with an empty table: the operator disabled it, no lease file was
             // configured, or the file exists and this process may not read it.
             if !args.leases {
-                return (
+                return common_web::Reply::json(
                     404,
-                    "application/json".to_string(),
-                    r#"{"error":"lease table disabled (started with --no-leases)"}"#.to_string(),
+                    r#"{"error":"lease table disabled (started with --no-leases)"}"#,
                 );
             }
             let Some(path) = args.leases_file.as_deref() else {
-                return (
+                return common_web::Reply::json(
                     404,
-                    "application/json".to_string(),
-                    r#"{"error":"lease table disabled (no --leases-file)"}"#.to_string(),
+                    r#"{"error":"lease table disabled (no --leases-file)"}"#,
                 );
             };
             let defaults = lease_query(args);
@@ -291,24 +285,26 @@ fn route(
                 args.lease_ttl,
                 args.lease_max_rows,
             ) {
-                Ok(body) => (200, "application/json".to_string(), body),
+                Ok(body) => common_web::Reply::json(200, &body),
                 // The file is root-only unless `machines/gw/lease-reader.nix`
                 // has put this account in its group; a 503 with the OS's own
                 // words is the receipt for that, not a table that reads empty.
-                Err(e) => (
-                    503,
-                    "application/json".to_string(),
-                    format!(r#"{{"error":{}}}"#, quoted(&e)),
-                ),
+                Err(e) => common_web::Reply::json(503, &format!(r#"{{"error":{}}}"#, quoted(&e))),
             }
         }
-        // Anything else is a SPA route: serve the static asset if present,
-        // otherwise fall back to index.html (client-side routing).
-        ("GET", _) => match serve_static(&args.static_dir, path) {
+        // The SPA. `/assets/…` is the embedded bundle; anything else is a page route,
+        // which a single-page app answers with its own index.html — that is why a bookmark
+        // of `/#leases` or a stray `/favicon.ico` still opens the page instead of 404ing.
+        ("GET", "/") => page(&args.title),
+        ("GET", p) if p.starts_with("/assets/") => match serve_asset(&p[8..]) {
             Some(r) => r,
-            None => (200, "text/html; charset=utf-8".to_string(), FALLBACK_HTML.replace("__TITLE__", &args.title)),
+            None => page(&args.title),
         },
-        _ => (404, "application/json".to_string(), r#"{"error":"not found"}"#.to_string()),
+        ("GET", p) => match serve_asset(p.trim_start_matches('/')) {
+            Some(r) => r,
+            None => page(&args.title),
+        },
+        _ => common_web::Reply::json(404, r#"{"error":"not found"}"#),
     }
 }
 
@@ -333,12 +329,7 @@ fn lease_query(args: &Args) -> leases::Query {
 
 /// `args.local` as a JSON array of the prefix strings as given.
 fn local_prefixes_json(args: &Args) -> String {
-    let inner: Vec<String> = args
-        .local_nets
-        .specs()
-        .iter()
-        .map(|s| quoted(s))
-        .collect();
+    let inner: Vec<String> = args.local_nets.specs().iter().map(|s| quoted(s)).collect();
     format!("[{}]", inner.join(","))
 }
 
@@ -360,12 +351,14 @@ fn handle_client(mut stream: TcpStream, state: &State, args: &Args) {
         None => return,
     };
 
-    // request.path() drops any query string so static routes resolve by path;
+    // request.path() drops any query string so asset routes resolve by path;
     // /api/connections is the one route that reads the query string, and it
     // reads it off the raw path through the shared parser.
     let query = common_web::query_params(&request.raw_path);
-    let (status, ctype, body) = route(&request.method, request.path(), &query, state, args);
-    let _ = common_web::respond(&mut stream, status, &ctype, &body);
+    let reply = route(&request.method, request.path(), &query, state, args);
+    // `send`, not `respond`: an asset needs a `Cache-Control` of its own, and the body is
+    // bytes because one of them is a wasm binary.
+    let _ = reply.send(&mut stream);
 }
 
 // ---------------------------------------------------------------------------
@@ -377,7 +370,8 @@ fn handle_client(mut stream: TcpStream, state: &State, args: &Args) {
 /// empty is that empty means every connection is classified as neither-end-
 /// internal, which looks like a router with no LAN rather than a misconfigured
 /// dashboard.
-const DEFAULT_LOCAL_PREFIXES: [&str; 4] = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7"];
+const DEFAULT_LOCAL_PREFIXES: [&str; 4] =
+    ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7"];
 
 /// A numeric flag value, or the current default with a word on stderr.
 ///
@@ -405,7 +399,6 @@ fn main() {
     let mut interval_secs: u64 = 5;
     let mut wan = "ppp0".to_string();
     let mut title = "network-info".to_string();
-    let mut static_dir: Option<String> = None;
     let mut conns = true;
     let mut local_prefixes: Vec<String> = Vec::new();
     let mut conn_min_age: u64 = 5;
@@ -467,12 +460,6 @@ fn main() {
             "--title" => {
                 if let Some(v) = argv.get(i + 1) {
                     title = v.clone();
-                    i += 1;
-                }
-            }
-            "--static-dir" => {
-                if let Some(v) = argv.get(i + 1) {
-                    static_dir = Some(v.clone());
                     i += 1;
                 }
             }
@@ -597,7 +584,6 @@ fn main() {
         interval: Duration::from_secs(interval_secs),
         wan,
         title,
-        static_dir,
         conns,
         local_nets,
         conn_min_age,
@@ -620,8 +606,12 @@ fn main() {
             std::process::exit(1);
         }
     };
+    // The count the binary was built with, not a directory it will go and look at: 1 means
+    // build.rs found no bundle, which is what a missed `just build-frontend` looks like from
+    // the outside — so say it rather than let the page say it.
+    let assets = format!("{} embedded", serve::embedded_count());
     eprintln!(
-        "network-status listening on {}:{} (probe: {}, wan: {}, interval: {}s, static_dir: {}, conns: {})\n  local prefixes: {}\n  names from: {}{}",
+        "network-status listening on {}:{} (probe: {}, wan: {}, interval: {}s, assets: {}, conns: {})\n  local prefixes: {}\n  names from: {}{}",
         args.bind,
         args.port,
         if args.local {
@@ -631,7 +621,7 @@ fn main() {
         },
         args.wan,
         interval_secs,
-        args.static_dir.as_deref().unwrap_or("<embedded>"),
+        assets,
         if args.conns {
             format!(
                 "/proc/net/nf_conntrack, min age {}s, max {} rows, stale {}s",
@@ -724,7 +714,6 @@ fn main() {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -734,6 +723,12 @@ mod tests {
         let mut args = test_args();
         args.conns = conns;
         args
+    }
+
+    /// A `Reply` body is bytes, because one of the things this server answers is a wasm
+    /// binary; the tests read it as text because the assertions are about sentences.
+    fn body_of(r: &common_web::Reply) -> String {
+        String::from_utf8_lossy(&r.body).to_string()
     }
 
     #[test]
@@ -746,17 +741,25 @@ mod tests {
         let on = args_with(true);
         let empty = HashMap::new();
 
-        let (status, _, body) = route("GET", "/api/connections", &empty, &state, &off);
-        assert_eq!(status, 404, "{body}");
-        let (status, _, _) = route("GET", "/api/connections", &empty, &state, &on);
-        assert_eq!(status, 200);
-        let (status, _, body) = route("GET", "/api/snapshot", &empty, &state, &off);
-        assert_eq!(status, 503, "no snapshot before the first probe: {body}");
+        let r = route("GET", "/api/connections", &empty, &state, &off);
+        assert_eq!(r.status, 404, "{}", body_of(&r));
+        let r = route("GET", "/api/connections", &empty, &state, &on);
+        assert_eq!(r.status, 200);
+        let r = route("GET", "/api/snapshot", &empty, &state, &off);
+        assert_eq!(
+            r.status,
+            503,
+            "no snapshot before the first probe: {}",
+            body_of(&r)
+        );
 
         // The config is what the SPA reads its min-age default out of, so it has
         // to say the same thing the filter will.
-        let (_, _, cfg) = route("GET", "/api/config", &empty, &state, &on);
-        assert!(cfg.contains(&format!("\"min_age\":{}", on.conn_min_age)), "{cfg}");
+        let cfg = body_of(&route("GET", "/api/config", &empty, &state, &on));
+        assert!(
+            cfg.contains(&format!("\"min_age\":{}", on.conn_min_age)),
+            "{cfg}"
+        );
         assert!(cfg.contains("\"enabled\":true"), "{cfg}");
         assert!(cfg.contains("\"interval\":5"), "{cfg}");
     }
@@ -782,24 +785,33 @@ mod tests {
         let mut off = args_with(true);
         off.leases = false;
         off.leases_file = Some("/tmp/does-not-matter".into());
-        let (status, _, body) = route("GET", "/api/leases", &empty, &state, &off);
-        assert_eq!(status, 404, "{body}");
-        assert!(body.contains("--no-leases"), "{body}");
+        let r = route("GET", "/api/leases", &empty, &state, &off);
+        assert_eq!(r.status, 404, "{}", body_of(&r));
+        assert!(body_of(&r).contains("--no-leases"), "{}", body_of(&r));
 
         let no_file = args_with(true);
         assert!(no_file.leases_file.is_none());
-        let (status, _, body) = route("GET", "/api/leases", &empty, &state, &no_file);
-        assert_eq!(status, 404, "{body}");
-        assert!(body.contains("no --leases-file"), "{body}");
+        let r = route("GET", "/api/leases", &empty, &state, &no_file);
+        assert_eq!(r.status, 404, "{}", body_of(&r));
+        assert!(body_of(&r).contains("no --leases-file"), "{}", body_of(&r));
 
         let unreadable = {
             let mut a = args_with(true);
             a.leases_file = Some("/nonexistent/dnsmasq.leases".into());
             a
         };
-        let (status, _, body) = route("GET", "/api/leases", &empty, &state, &unreadable);
-        assert_eq!(status, 503, "an unreadable file is an error, not a table: {body}");
-        assert!(body.contains("dnsmasq.leases"), "the OS's own reason is the receipt: {body}");
+        let r = route("GET", "/api/leases", &empty, &state, &unreadable);
+        assert_eq!(
+            r.status,
+            503,
+            "an unreadable file is an error, not a table: {}",
+            body_of(&r)
+        );
+        assert!(
+            body_of(&r).contains("dnsmasq.leases"),
+            "the OS's own reason is the receipt: {}",
+            body_of(&r)
+        );
     }
 
     #[test]
@@ -831,9 +843,10 @@ mod tests {
 
         let mut q = HashMap::new();
         q.insert("sort".to_string(), "name".to_string());
-        let (status, ctype, body) = route("GET", "/api/leases", &q, &state, &args);
-        assert_eq!(status, 200, "{body}");
-        assert_eq!(ctype, "application/json");
+        let r = route("GET", "/api/leases", &q, &state, &args);
+        let body = body_of(&r);
+        assert_eq!(r.status, 200, "{body}");
+        assert_eq!(r.content_type, "application/json");
         assert!(body.contains("\"skipped\":1"), "{body}");
         assert!(body.contains("\"total\":2"), "{body}");
         assert!(body.contains("\"name\":\"laptop\""), "{body}");
@@ -842,5 +855,40 @@ mod tests {
         assert!(!body.contains("\"name\":\"*\""), "{body}");
         assert!(body.contains("\"generated\":true"), "{body}");
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn an_asset_name_cannot_escape_and_the_shell_is_not_cacheable() {
+        // The response path returns `Reply` rather than a (status, content-type, String)
+        // triple for one reason: a `String` cannot hold a wasm binary, and the asset this page
+        // loads is one. What is testable without a bundle in this build is the two rules that
+        // do not depend on which bundle was embedded.
+        let args = args_with(true);
+        let state = Arc::new(State::new(&[], None));
+        let empty = HashMap::new();
+
+        // An embedded asset has no directory to escape into, so `..` can only fail to
+        // match — which is the SPA fallback, not a file outside the bundle.
+        assert!(serve_asset("../index.html").is_none());
+        let r = route("GET", "/assets/../../etc/passwd", &empty, &state, &args);
+        assert_eq!(r.status, 200);
+        assert_eq!(
+            r.content_type,
+            "text/html; charset=utf-8",
+            "{}",
+            body_of(&r)
+        );
+
+        // index.html is the file that names the bundle, so caching it pins a page to a bundle
+        // it no longer refers to. The assets are cacheable and the shell is not.
+        let shell = serve_asset("index.html").expect("build.rs always writes an index.html entry");
+        assert_eq!(shell.content_type, "text/html; charset=utf-8");
+        assert!(
+            !shell
+                .headers
+                .iter()
+                .any(|(k, _)| k.eq_ignore_ascii_case("cache-control")),
+            "the shell must not be served with a Cache-Control"
+        );
     }
 }

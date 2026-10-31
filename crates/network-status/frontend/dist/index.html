@@ -1,13 +1,104 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <link rel="stylesheet" href="/bundle.css" />
-    <title>network-info</title>
-  </head>
-  <body>
-    <div id="app"></div>
-    <script type="module" src="/bundle.js"></script>
-  </body>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>network-status</title>
+<!--
+  Inlined, as in the other three Dioxus SPAs (AGENTS.md rule 19): `dist/` is no
+  longer a committed pair of files — the flake builds the bundle here, so a plain
+  `index.html` + `bundle.css` would be a second request the browser has to make for
+  nothing.  One stylesheet, no framework: the page is one document and a few tables.
+-->
+<style>
+:root {
+  --bg: #0d1117; --panel: #161d26; --panel2: #1c2530; --border: #2a3542;
+  --text: #d7e0e8; --muted: #8b98a5;
+  --good: #2ecc71; --bad: #e74c3c; --warn: #f1c40f; --inactive: #7f8c8d;
+  --up: #2dd4bf; --down: #60a5fa;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
+header { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--border); background: var(--panel); flex-wrap: wrap; }
+header h1 { font-size: 15px; margin: 0; letter-spacing: .5px; }
+.pill { font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); }
+.pill.ok { color: var(--good); border-color: #1e4636; }
+.pill.err { color: var(--bad); border-color: #4b2420; }
+.meta { color: var(--muted); font-size: 12px; }
+main { padding: 16px; max-width: 1100px; }
+.banner { margin: 12px 0; padding: 8px 10px; border: 1px solid #4b2420; border-left: 4px solid var(--bad); background: #1a1113; color: #f0b8b4; font-size: 12px; }
+.controls { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+.controls label { color: var(--muted); font-size: 12px; display: inline-flex; align-items: center; gap: 6px; }
+.controls input[type=text], .controls select { background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 5px 7px; font: inherit; font-size: 12px; }
+.controls input[type=text] { min-width: 210px; }
+
+/* Tabs: the primitive is the library's (common_ui::tabs), so the roles, the keyboard
+   and the activation state belong to it.  This is only the styling, keyed on what it
+   emits — `data-state` is the state the library announces. */
+.tabs { display: flex; gap: 4px; flex-wrap: wrap; margin: 4px 0 14px; }
+[role="tablist"] [role="tab"] {
+  background: var(--panel2); color: var(--muted); border: 1px solid var(--border);
+  border-radius: 4px; padding: 6px 12px; font: inherit; font-size: 13px; cursor: pointer;
+}
+[role="tablist"] [role="tab"][data-state="active"] { color: var(--text); border-color: #3d4c5c; background: #202c38; }
+[role="tablist"] [role="tab"]:focus-visible, .checkbox [role="checkbox"]:focus-visible { outline: 1px solid #4a6b8a; outline-offset: 2px; }
+
+/* The connections panel's "moving now" control is the library's checkbox; the element
+   carrying role="checkbox" is the control, not the hidden input it mirrors. */
+.checkbox { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; color: var(--muted); font-size: 12px; }
+.checkbox [role="checkbox"] {
+  width: 15px; height: 15px; border: 1px solid var(--border); border-radius: 3px;
+  background: var(--panel2); color: var(--text); font: inherit; font-size: 11px;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.checkbox [role="checkbox"][data-state="checked"] { border-color: #2f6b4f; background: #16281f; color: var(--good); }
+.checkbox [role="checkbox"][data-disabled="true"] { opacity: .5; cursor: not-allowed; }
+
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 14px; }
+.card { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; }
+.card .k { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .6px; }
+.card .v { font-size: 16px; margin-top: 4px; }
+.row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.row .spacer { flex: 1; }
+.panel-error { margin: 0 0 12px; padding: 8px 10px; border: 1px solid #4b2420; border-left: 4px solid var(--bad); background: #1a1113; color: #f0b8b4; font-size: 12px; }
+canvas { display: block; width: 100%; background: var(--panel); border: 1px solid var(--border); border-radius: 6px; }
+.chip { padding: 3px 8px; border-radius: 999px; border: 1px solid var(--border); background: var(--panel2); color: var(--muted); font-size: 11px; }
+table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid #202a34; white-space: nowrap; }
+th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .5px; }
+tbody tr:nth-child(odd) { background: #131a22; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.kind { font-size: 11px; padding: 1px 7px; border-radius: 4px; background: var(--panel2); border: 1px solid var(--border); color: var(--muted); }
+.kind.out { color: var(--bad); }
+.kind.in { color: var(--down); }
+.kind.lan { color: var(--good); }
+.kind.wan { color: var(--warn); }
+.bar { height: 4px; background: #22303c; border-radius: 2px; overflow: hidden; }
+.bar i { display: block; height: 100%; background: var(--up); }
+.up { color: var(--up); } .down { color: var(--down); } .muted { color: var(--muted); }
+.empty { color: var(--muted); font-size: 12px; padding: 10px; }
+.issues { list-style: none; margin: 0; padding: 0; }
+.issues li { padding: 6px 10px; border-left: 3px solid var(--muted); margin-bottom: 6px; background: var(--panel); font-size: 12.5px; }
+.issues li.warn { border-left-color: var(--warn); }
+.issues li.error { border-left-color: var(--bad); }
+.spark-wrap { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px; }
+.note { color: var(--muted); font-size: 12px; margin: 10px 0 0; }
+h2 { font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: .6px; margin: 18px 0 10px; }
+</style>
+</head>
+<body>
+  <div id="main"></div>
+  <script type="module">
+    // Absolute, as in the other SPAs: this document is served for `/` and for every
+    // unknown client-side route, and a relative `./network_status_web.js` would resolve
+    // against whatever that route was. The binary serves the bundle under `/assets/`
+    // (`crates/network-status/src/serve.rs`), and the glue fetches its `.wasm` relative to
+    // its own URL, so both land in the same table.
+    import init from '/assets/network_status_web.js';
+    init().catch((e) => {
+      document.getElementById('main').textContent = 'failed to start: ' + e;
+      console.error(e);
+    });
+  </script>
+</body>
 </html>

@@ -99,8 +99,7 @@ pub struct Leases {
 /// Read the lease file.  `Err` is the file being unopenable, which the endpoint
 /// reports rather than answering with an empty table (module header).
 pub fn read(path: &str) -> Result<Leases, String> {
-    let text = std::fs::read_to_string(path)
-        .map_err(|e| format!("{path}: {e}"))?;
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
     // Stat it too, and do not fail the read if that fails: the table is worth
     // serving without the freshness fact, and an error here would replace data
     // with a 503 over a filesystem that will not report an mtime.
@@ -590,7 +589,12 @@ mod tests {
 
     #[test]
     fn a_lease_inside_a_labelled_block_is_known_and_has_a_bar() {
-        let r = row(1_000_000 + 43_200, "10.3.2.50", "laptop", "aa:bb:cc:dd:ee:ff");
+        let r = row(
+            1_000_000 + 43_200,
+            "10.3.2.50",
+            "laptop",
+            "aa:bb:cc:dd:ee:ff",
+        );
         assert_eq!(r.vlan.as_deref(), Some("vlan226"));
         assert_eq!(r.net, "10.3.2.0/24");
         assert!(r.known);
@@ -777,18 +781,31 @@ mod tests {
         let q = parse(&p, &defaults);
         assert_eq!(q.limit, defaults.limit, "clamped to what was allowed");
         assert_eq!(q.sort, Sort::Name);
-        assert!(q.reverse, "^ is the connection table's spelling of backwards");
+        assert!(
+            q.reverse,
+            "^ is the connection table's spelling of backwards"
+        );
         assert_eq!(q.needle.as_deref(), Some("laptop"));
         assert_eq!(q.vlan.as_deref(), Some("vlan226"));
     }
 
     #[test]
     fn the_sort_names_round_trip() {
-        for s in [Sort::Expires, Sort::Issued, Sort::Name, Sort::Vlan, Sort::Addr] {
+        for s in [
+            Sort::Expires,
+            Sort::Issued,
+            Sort::Name,
+            Sort::Vlan,
+            Sort::Addr,
+        ] {
             assert_eq!(Sort::parse(s.as_str()), s);
         }
         assert_eq!(Sort::parse("^issued"), Sort::Issued);
-        assert_eq!(Sort::parse("nonsense"), Sort::Expires, "an unknown sort is the default, not an error");
+        assert_eq!(
+            Sort::parse("nonsense"),
+            Sort::Expires,
+            "an unknown sort is the default, not an error"
+        );
     }
 
     #[test]
@@ -797,7 +814,10 @@ mod tests {
         let b = row(1_000_000, "10.3.2.8", "same", "bb");
         let mut rows = [a.clone(), b.clone()];
         rows.sort_by(|x, y| x.cmp(y, Sort::Name));
-        assert_eq!(rows[0].lease.ip, b.lease.ip, "same name: the lower address wins");
+        assert_eq!(
+            rows[0].lease.ip, b.lease.ip,
+            "same name: the lower address wins"
+        );
         let mut rows = [a.clone(), b.clone()];
         rows.sort_by(|x, y| x.cmp(y, Sort::Addr));
         assert_eq!(rows[0].lease.ip, b.lease.ip);

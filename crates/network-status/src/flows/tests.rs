@@ -12,7 +12,6 @@ fn local() -> Localness {
     )
 }
 
-
 /// Rows as gw printed them on 2026-10-25, with the two byte counters made
 /// writable: `counted` substitutes them, and each placeholder ends in a space so
 /// that no real counter value can contain it.
@@ -71,10 +70,19 @@ fn a_download_shows_who_and_how_fast() {
     let out = api(&flows, &q());
     let rows = rows_out(&out);
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].get("host").and_then(|v| v.as_str()), Some("10.3.1.20"));
-    assert_eq!(rows[0].get("peer").and_then(|v| v.as_str()), Some("104.16.246.239"));
+    assert_eq!(
+        rows[0].get("host").and_then(|v| v.as_str()),
+        Some("10.3.1.20")
+    );
+    assert_eq!(
+        rows[0].get("peer").and_then(|v| v.as_str()),
+        Some("104.16.246.239")
+    );
     assert_eq!(rows[0].get("kind").and_then(|v| v.as_str()), Some("out"));
-    assert_eq!(rows[0].get("service").and_then(|v| v.as_str()), Some("https"));
+    assert_eq!(
+        rows[0].get("service").and_then(|v| v.as_str()),
+        Some("https")
+    );
     assert_eq!(field(&rows[0], "bytes_down"), Some(1_000_000.0));
     assert_eq!(field(&rows[0], "bytes_up"), Some(1_000.0));
     assert_eq!(field(&rows[0], "age"), Some(0.0));
@@ -96,7 +104,10 @@ fn a_download_shows_who_and_how_fast() {
     assert_eq!(field(&out, "interval"), Some(5.0));
     // The totals block is the same sum, which is how the page can say
     // "the network is pulling 1 MB/s" without adding rows up itself.
-    assert_eq!(field(out.at(&["totals"]).unwrap(), "down_bps"), Some(1_000_000.0));
+    assert_eq!(
+        field(out.at(&["totals"]).unwrap(), "down_bps"),
+        Some(1_000_000.0)
+    );
 }
 
 #[test]
@@ -138,10 +149,18 @@ fn a_reused_tuple_starts_its_history_again() {
     let out = api(&flows, &q());
     let rows = rows_out(&out);
     assert_eq!(rows.len(), 1);
-    assert_eq!(field(&rows[0], "age"), Some(0.0), "a new connection, not an old one");
+    assert_eq!(
+        field(&rows[0], "age"),
+        Some(0.0),
+        "a new connection, not an old one"
+    );
     assert_eq!(field(&rows[0], "samples"), Some(1.0));
     assert!(rows[0].get("down_bps").unwrap().as_f64().is_none());
-    assert_eq!(field(&rows[0], "bytes_down"), Some(2_000.0), "the new connection's own total");
+    assert_eq!(
+        field(&rows[0], "bytes_down"),
+        Some(2_000.0),
+        "the new connection's own total"
+    );
 }
 
 #[test]
@@ -166,10 +185,13 @@ fn down_is_always_peer_to_host_whichever_way_the_connection_ran() {
         ],
     );
 
-    let out = api(&flows, &Query {
-        sort: Sort::Host,
-        ..q()
-    });
+    let out = api(
+        &flows,
+        &Query {
+            sort: Sort::Host,
+            ..q()
+        },
+    );
     let rows = rows_out(&out);
     assert_eq!(rows.len(), 2);
 
@@ -185,10 +207,24 @@ fn down_is_always_peer_to_host_whichever_way_the_connection_ran() {
     // `in` is the tailnet peer's request arriving: the *original* tuple is
     // the download from this router's point of view, which is the one case
     // where "down" is not the reply tuple.
-    assert_eq!(in_row.get("host").and_then(|v| v.as_str()), Some("10.3.1.1"));
-    assert_eq!(in_row.get("peer").and_then(|v| v.as_str()), Some("192.168.49.1"));
-    assert_eq!(field(in_row, "down_bps"), Some(20.0), "peer→host: (181-81)/5");
-    assert_eq!(field(in_row, "up_bps"), Some(200.0), "host→peer: (1137-137)/5");
+    assert_eq!(
+        in_row.get("host").and_then(|v| v.as_str()),
+        Some("10.3.1.1")
+    );
+    assert_eq!(
+        in_row.get("peer").and_then(|v| v.as_str()),
+        Some("192.168.49.1")
+    );
+    assert_eq!(
+        field(in_row, "down_bps"),
+        Some(20.0),
+        "peer→host: (181-81)/5"
+    );
+    assert_eq!(
+        field(in_row, "up_bps"),
+        Some(200.0),
+        "host→peer: (1137-137)/5"
+    );
     assert_eq!(in_row.get("service").and_then(|v| v.as_str()), Some("dns"));
 
     assert_eq!(field(out_row, "down_bps"), Some(1_000_000.0));
@@ -201,10 +237,7 @@ fn both_sides_local_is_lan_and_neither_is_wan() {
     update(
         &mut flows,
         1000,
-        &[
-            counted(DNS, 128, 251),
-            counted(TUNNEL, 56_154, 20_096_487),
-        ],
+        &[counted(DNS, 128, 251), counted(TUNNEL, 56_154, 20_096_487)],
     );
     let out = api(&flows, &q());
     let kinds: Vec<(&str, &str)> = rows_out(&out)
@@ -237,9 +270,15 @@ fn a_connection_the_kernel_is_not_counting_has_null_totals_not_zero() {
     let rows = rows_out(&out);
     assert_eq!(rows.len(), 1);
     assert!(rows[0].get("bytes_down").unwrap().as_u64().is_none());
-    assert_eq!(rows[0].get("accounted").and_then(|v| v.as_bool()), Some(false));
+    assert_eq!(
+        rows[0].get("accounted").and_then(|v| v.as_bool()),
+        Some(false)
+    );
     assert_eq!(field(&out, "unaccounted"), Some(1.0));
-    assert_eq!(field(out.at(&["totals"]).unwrap(), "unaccounted"), Some(1.0));
+    assert_eq!(
+        field(out.at(&["totals"]).unwrap(), "unaccounted"),
+        Some(1.0)
+    );
 
     // A counted connection in the same table is counted, not tainted, and
     // the uncounted one still contributes nothing to the byte totals.
@@ -253,7 +292,11 @@ fn a_connection_the_kernel_is_not_counting_has_null_totals_not_zero() {
     assert_eq!(field(&out, "unaccounted"), Some(1.0), "one of the two");
     let totals = out.at(&["totals"]).unwrap();
     assert_eq!(field(totals, "unaccounted"), Some(1.0));
-    assert_eq!(field(totals, "bytes_down"), Some(1.0), "only the counted flow's byte");
+    assert_eq!(
+        field(totals, "bytes_down"),
+        Some(1.0),
+        "only the counted flow's byte"
+    );
     let rows = rows_out(&out);
     let flag = |svc: &str| {
         rows.iter()
@@ -319,25 +362,42 @@ fn hosts_roll_up_every_active_connection_not_just_the_page() {
     let hosts = out.get("hosts").unwrap().as_array().unwrap();
     assert_eq!(hosts.len(), 2, "one entry per host, ranked by rate");
     let first = &hosts[0];
-    assert_eq!(first.get("addr").and_then(|v| v.as_str()), Some("10.3.1.20"));
-    assert_eq!(field(first, "conns"), Some(2.0), "both of its connections counted");
+    assert_eq!(
+        first.get("addr").and_then(|v| v.as_str()),
+        Some("10.3.1.20")
+    );
+    assert_eq!(
+        field(first, "conns"),
+        Some(2.0),
+        "both of its connections counted"
+    );
     assert_eq!(
         field(first, "down_bps"),
         Some(2_200_000.0),
         "and their rates summed: 2 MB/s + 200 KB/s"
     );
-    assert_eq!(hosts[1].get("addr").and_then(|v| v.as_str()), Some("10.3.1.30"));
+    assert_eq!(
+        hosts[1].get("addr").and_then(|v| v.as_str()),
+        Some("10.3.1.30")
+    );
     assert_eq!(field(&hosts[1], "conns"), Some(1.0));
 
     // Turning the age filter up must hide rows, not the answer to "who is
     // the biggest talker", so the roll-up ignores it.
-    let out = api(&flows, &Query {
-        min_age: 9_999,
-        ..q()
-    });
+    let out = api(
+        &flows,
+        &Query {
+            min_age: 9_999,
+            ..q()
+        },
+    );
     assert!(rows_out(&out).is_empty(), "the page is filtered…");
     let hosts = out.get("hosts").unwrap().as_array().unwrap();
-    assert_eq!(hosts[0].get("addr").and_then(|v| v.as_str()), Some("10.3.1.20"), "…the ranking is not");
+    assert_eq!(
+        hosts[0].get("addr").and_then(|v| v.as_str()),
+        Some("10.3.1.20"),
+        "…the ranking is not"
+    );
     assert_eq!(field(&hosts[0], "conns"), Some(2.0));
 }
 
@@ -348,7 +408,10 @@ fn sorting_is_by_current_rate_and_the_limit_makes_the_page() {
     update(
         &mut flows,
         1000,
-        &[dl("104.16.246.239", 1_000, 1_000_000), dl("104.16.247.239", 1_000, 1_000_000)],
+        &[
+            dl("104.16.246.239", 1_000, 1_000_000),
+            dl("104.16.247.239", 1_000, 1_000_000),
+        ],
     );
     update(
         &mut flows,
@@ -372,10 +435,13 @@ fn sorting_is_by_current_rate_and_the_limit_makes_the_page() {
 
     // Sorting by bytes rather than rate puts the long-tailed connection on
     // top instead, which is a different question and why both exist.
-    let out = api(&flows, &Query {
-        sort: Sort::Bytes,
-        ..q()
-    });
+    let out = api(
+        &flows,
+        &Query {
+            sort: Sort::Bytes,
+            ..q()
+        },
+    );
     assert_eq!(
         rows_out(&out)[0].get("peer").and_then(|v| v.as_str()),
         Some("104.16.247.239")
@@ -383,10 +449,7 @@ fn sorting_is_by_current_rate_and_the_limit_makes_the_page() {
 
     // `limit` truncates the page and says so, rather than pretending the
     // table was that short.
-    let out = api(&flows, &Query {
-        limit: 1,
-        ..q()
-    });
+    let out = api(&flows, &Query { limit: 1, ..q() });
     assert_eq!(rows_out(&out).len(), 1);
     assert_eq!(field(&out, "returned"), Some(1.0));
     assert_eq!(field(&out, "matched"), Some(2.0));
@@ -457,7 +520,11 @@ fn a_query_string_defaults_and_clamps() {
     assert_eq!(q.needle, None, "a blank search is no search");
 
     params.insert("limit".into(), "0".into());
-    assert_eq!(parse_query(&params, &defaults).limit, 1, "and not zero rows either");
+    assert_eq!(
+        parse_query(&params, &defaults).limit,
+        1,
+        "and not zero rows either"
+    );
 
     params.insert("kind".into(), "in".into());
     assert_eq!(parse_query(&params, &defaults).kind, Some(Kind::In));
@@ -498,7 +565,10 @@ fn an_empty_table_is_a_valid_empty_answer() {
     assert!(rows_out(&out).is_empty());
     assert_eq!(field(&out, "tracked"), Some(0.0));
     assert!(out.get("hosts").unwrap().as_array().unwrap().is_empty());
-    assert_eq!(out.get("filter").unwrap().get("sort").unwrap().as_str(), Some("rate"));
+    assert_eq!(
+        out.get("filter").unwrap().get("sort").unwrap().as_str(),
+        Some("rate")
+    );
     assert_eq!(field(out.at(&["defaults"]).unwrap(), "min_age"), Some(5.0));
 }
 

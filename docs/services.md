@@ -268,20 +268,30 @@ contains a Rust crate, but nothing compiles on gw for it: the box delegates to a
 with `max-jobs = 0`, so `just deploy gw` (or `just switch` on the box) builds the crate
 on aibox and copies it back — AGENTS.md, "Never build on the router".
 
-The frontend is **SolidJS + TypeScript** (`frontend/`, esbuild +
-`esbuild-plugin-solid`, no router/state/chart libraries) and is the **one SPA
-whose `dist/` is committed** — Nix builds are offline and the npm deps are not
-nixpkgs-cached, so the flake copies `frontend/dist/` into the store rather than
-building it (`machines/gw/network-status.nix`). **After editing the SPA
-run `npm install && npm run build` in `frontend/` and commit the result** (or
-`just network-status-frontend`). See `crates/network-status/frontend/README.md`.
+The frontend is a **Dioxus (wasm) SPA** (`frontend/`, dioxus 0.7 + gloo-net + plain
+`canvas` charts, no router/state/chart libraries). Its `dist/` is **git-ignored and built by
+the flake** like the other four, and `build.rs` (`common-rs/build-spa`) embeds it in the
+binary — the bundle is served as **bytes** (`common_web::Reply` carries `Vec<u8>`), because
+one of the assets is a wasm binary and a bundle decoded as UTF-8 is either an error or a
+mangled one. It used to be the repo's one exception: SolidJS + esbuild with a **committed**
+`dist/`, because its npm deps were not nixpkgs-cached and Nix builds run offline. That ended
+with the port on 2026-10-30; `just build-frontend network-status` is the rebuild now, and
+`just network-status-test` is its suite. See `crates/network-status/frontend/README.md`.
 
 It is **tabbed** (`Overview`, `Connections`, `DHCP leases`, `Interfaces & issues`)
 since 2026-10-26, because one column of cards holding two tables and a chart grid had
 got long enough that finding a lease meant scrolling past everything else. The tabs are
-by question, not by widget, all four panels stay mounted (a chart torn down is a chart
-that is blank until its next sample), and the active tab lives in the URL fragment
-(`#leases`) so a reload keeps it and a link can point at one.
+by question, not by widget, and the active tab lives in the URL fragment (`#leases`) so a
+reload keeps it and a link can point at one.
+
+Two things the port changed about the tabs, both asserted by the suite:
+`TabContent` renders only the selected panel — a chart in a hidden tab has no node to draw
+on — so each draw effect reads the tab and redraws when it becomes visible, which is the
+same guarantee the old always-mounted panels gave by construction; and the tabs are
+`common_ui::tabs`, so the roles, `aria-selected` and the roving focus are the primitive's,
+not written here. The arrow keys move the roving focus and no longer activate, so a
+keyboard user activates with Enter/Space on the focused tab (`docs/component-library.md`,
+trap 9). The "moving now" control is `common_ui::checkbox`.
 
 ## `crates/filestore/` — file browser over the NAS `filestore` share
 

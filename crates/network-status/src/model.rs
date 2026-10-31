@@ -6,7 +6,6 @@
 //! failure mode (a reboot or a reused tuple takes the counter backwards) and
 //! the two call sites must not disagree about what that means.
 
-
 use crate::flows::Flows;
 use crate::Args;
 use crate::MAX_HISTORY;
@@ -179,15 +178,20 @@ pub(crate) fn compute_issues(args: &Args, snap: &mut Snapshot) {
 
     // Router unreachable (set by the sampler on ssh failure).
     if !snap.ok {
-        let msg = snap.error.clone().unwrap_or_else(|| "cannot reach router".into());
+        let msg = snap
+            .error
+            .clone()
+            .unwrap_or_else(|| "cannot reach router".into());
         if !snap.issues.iter().any(|i| i.message == msg) {
-            snap.issues.insert(0, Issue {
-                level: "bad".into(),
-                message: format!("cannot reach router: {msg}"),
-            });
+            snap.issues.insert(
+                0,
+                Issue {
+                    level: "bad".into(),
+                    message: format!("cannot reach router: {msg}"),
+                },
+            );
         }
     }
-
 }
 
 /// Human byte formatting for issue messages (server-side, only for warnings).
@@ -207,7 +211,6 @@ pub(crate) fn fmt_bytes(b: u64) -> String {
     }
 }
 
-
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -226,7 +229,7 @@ pub(crate) mod tests {
             interval: Duration::from_secs(5),
             wan: "ppp0".into(),
             title: "network-info".into(),
-            static_dir: None,
+
             conns: true,
             local_nets: Localness::new(
                 &"10.3.1.0/24 10.3.2.0/24 10.3.14.0/24"
@@ -272,7 +275,9 @@ pub(crate) mod tests {
         };
         compute_issues(&args, &mut snap);
         assert!(
-            snap.issues.iter().any(|i| i.level == "bad" && i.message.contains("not present")),
+            snap.issues
+                .iter()
+                .any(|i| i.level == "bad" && i.message.contains("not present")),
             "missing WAN should be an issue: {:?}",
             snap.issues.iter().map(|i| &i.message).collect::<Vec<_>>()
         );
@@ -284,7 +289,10 @@ pub(crate) mod tests {
             ..Default::default()
         };
         compute_issues(&args, &mut snap);
-        assert!(snap.issues.iter().any(|i| i.level == "bad" && i.message.contains("no link")));
+        assert!(snap
+            .issues
+            .iter()
+            .any(|i| i.level == "bad" && i.message.contains("no link")));
 
         // A failed probe already reports "cannot reach router"; it must not
         // also claim the WAN is missing.
@@ -294,6 +302,9 @@ pub(crate) mod tests {
             ..Default::default()
         };
         compute_issues(&args, &mut snap);
-        assert!(!snap.issues.iter().any(|i| i.message.contains("not present")));
+        assert!(!snap
+            .issues
+            .iter()
+            .any(|i| i.message.contains("not present")));
     }
 }
