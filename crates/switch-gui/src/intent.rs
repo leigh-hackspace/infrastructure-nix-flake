@@ -474,27 +474,38 @@ fn vlan_id(intent: &Intent) -> R<u32> {
 
 /// The revert of a change that has already been through the queue.
 ///
-/// Built from the stored `before` map, never from the current shadow copy: by now
-/// the switch may have been changed again by someone else, and "undo" that reads
-/// the current state would undo *their* change too.  Where `before` does not hold
-/// enough to reverse something, this says so rather than guessing.
-/// Turn a stored change back into a plan, using the pool for the one thing the
-/// row cannot say on its own.
-///
-/// [`revert_plan`] is pure and handles every kind whose `before` map records its
-/// own undo. `vlan-delete` is the exception: its map stores the members as two
-/// comma-joined strings, which is enough to re-issue the CLI lines but not enough
-/// to *describe* the undo — and a revert whose summary says "its members" where
-/// the original change named them is an audit log that gets vaguer with age. So
-/// this reads the VLAN back and hands the row to the pure path unchanged.
+/// The **state to go back to** comes from the stored `before` map, never from the
+/// current shadow copy: by now the switch may have been changed again by someone
+/// else, and an "undo" that reads the current state would restore whatever that
+/// someone left rather than what this change replaced.  The **delta** is a
+/// different question — the CLI takes commands, not states, so a membership revert
+/// has to know what the port carries now in order to remove what this change added
+/// — and that is what the pool is for.  Where `before` does not hold enough to
+/// reverse something, this says so rather than guessing.
 pub async fn revert(
     pool: &sqlx::PgPool,
     change: &crate::dto::Change,
 ) -> R<Planned> {
     if change.kind != "vlan-delete" {
-        return revert_plan(change);
+        // A `port-members` revert needs the port **as the switch has it now** to
+        // know what to remove, not just what to put back: `before` says the wanted
+        // row, and the CLI takes a diff.  Without this the plan was built against
+        // an empty port, so it re-added the memberships that were there before and
+        // never removed the one the change had added — measured on switch1 on
+        // 2026-10-31: reverting "tagged 228 on port 23" sent only
+        // `vlan 1 untagged 23` and left the port in 228.
+        let current = match change.ports.first() {
+            Some(id) => shadow::port(pool, &change.switch_name, id).await?,
+            None => None,
+        };
+        return revert_plan(change, current.as_ref());
     }
     let id = change_vlan_id(change)?;
+    // `vlan-delete`'s map stores its members as two comma-joined strings, which is
+    // enough to re-issue the CLI lines but not enough to *describe* the undo — and a
+    // revert whose summary says "its members" where the original change named them
+    // is an audit log that gets vaguer with age.  So the membership is read back
+    // from the shadow copy and handed to the pure path.
     let (untagged, tagged) = shadow::vlan_membership(pool, &change.switch_name, id).await?;
     let mut change = change.clone();
     let join = |v: &Vec<String>| v.join(",");
@@ -502,12 +513,22 @@ pub async fn revert(
         .before
         .insert("untagged-members".into(), join(&untagged));
     change.before.insert("tagged-members".into(), join(&tagged));
-    revert_plan(&change)
+    revert_plan(&change, None)
 }
 
 /// Turn a stored change back into a plan: the commands, the summary and the
 /// `before` map for the new row.
-pub fn revert_plan(change: &crate::dto::Change) -> R<Planned> {
+///
+/// `current` is the port as the shadow copy holds it now, and it is only needed
+/// where the undo is a **diff** rather than a whole value: `commands::port_members`
+/// computes removals from what the port currently has, so a `port-members` revert
+/// without it can only add.  The wanted state still comes from `before` — that is
+/// what "undo this change" means — but the delta has to be taken against reality or
+/// the switched CLI is never told to remove anything.
+pub fn revert_plan(
+    change: &crate::dto::Change,
+    current: Option<&crate::model::Port>,
+) -> R<Planned> {
     let b = &change.before;
     let port = change
         .ports
@@ -558,12 +579,14 @@ pub fn revert_plan(change: &crate::dto::Change) -> R<Planned> {
                     }
                 ),
                 vec![commands::port_members(
-                    // The diff needs *a* port to compare against; the shadow
-                    // copy's current row is right for that (what is on the switch
-                    // now), and the wanted values come from `before`.  Only the
-                    // trunk-group check reads the port, and a port that has since
-                    // been added to a trunk is exactly the case to refuse on.
-                    &crate::model::Port::new(&port),
+                    // The diff needs the port as it is now (what is on the switch
+                    // this instant, from the shadow copy), and the wanted values
+                    // come from `before`.  The trunk-group check reads the port,
+                    // and a port that has since been added to a trunk is exactly
+                    // the case to refuse on.
+                    &current
+                        .cloned()
+                        .unwrap_or_else(|| crate::model::Port::new(&port)),
                     &tagged
                         .split(',')
                         .filter(|s| !s.is_empty())
@@ -765,7 +788,7 @@ mod tests {
             before,
             ..Default::default()
         };
-        let p = revert_plan(&c).unwrap();
+        let p = revert_plan(&c, None).unwrap();
         assert_eq!(p.kind, "port-name");
         assert_eq!(
             p.commands,
@@ -781,7 +804,7 @@ mod tests {
             before,
             ..Default::default()
         };
-        let p = revert_plan(&c).unwrap();
+        let p = revert_plan(&c, None).unwrap();
         assert_eq!(
             p.commands,
             vec![vec!["interface 9 enable".to_string()]]
@@ -796,11 +819,27 @@ mod tests {
             before,
             ..Default::default()
         };
-        let p = revert_plan(&c).unwrap();
+        // Against a port that has nothing of its own left to say: every wanted
+        // membership is an addition, which is the easy half.
+        let p = revert_plan(&c, None).unwrap();
         let joined = p.commands.concat().join(" ");
         assert!(joined.contains("vlan 9 untagged 7"), "{joined}");
         assert!(joined.contains("vlan 7 tagged 7"), "{joined}");
         assert!(joined.contains("vlan 20 tagged 7"), "{joined}");
+
+        // And the half that matters: the change to undo *added* VLAN 228, so the
+        // current port still carries it and the revert has to take it away.  Built
+        // against an empty port this produced no removal at all, which is how
+        // "revert" left the membership the change had just made in place.
+        let mut now = crate::model::Port::new("7");
+        now.untagged_vlan = Some(9);
+        now.tagged_vlans = vec![7, 20, 228];
+        let p = revert_plan(&c, Some(&now)).unwrap();
+        assert_eq!(
+            p.commands.concat(),
+            vec!["no vlan 228 tagged 7".to_string()],
+            "a revert must remove what the change added"
+        );
     }
 
     /// A deleted VLAN comes back with the members it had, because `before` holds
@@ -817,7 +856,7 @@ mod tests {
             before,
             ..Default::default()
         };
-        let p = revert_plan(&c).unwrap();
+        let p = revert_plan(&c, None).unwrap();
         let joined = p.commands.concat().join(" ");
         assert!(joined.starts_with("vlan 225 name \"Cameras\""), "{joined}");
         assert!(joined.contains("vlan 225 untagged 5"), "{joined}");
@@ -851,7 +890,7 @@ mod tests {
                 kind: kind.into(),
                 ..Default::default()
             };
-            let e = revert_plan(&c).unwrap_err();
+            let e = revert_plan(&c, None).unwrap_err();
             assert!(e.contains("cannot be reverted"), "{kind}: {e}");
         }
     }

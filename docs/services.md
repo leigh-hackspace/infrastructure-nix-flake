@@ -417,6 +417,14 @@ removed) and moving the native VLAN off a ticked VLAN unticks it.
 asks for it, **because a refusal the operator cannot see looks exactly like a dead
 button.**
 
+**An applied batch is followed by `write memory`.** The switches keep
+`running-config` in RAM and load `startup-config` at boot, so a change was undone by
+the next reboot — which a mains blip on 2026-10-31 did to all three. The command is
+opt-in in the code (`Config::save_command`, i.e. `SWITCH_GUI_SAVE_COMMAND`) and set
+in `machines/services1/services/switch-gui.nix`; a failed save is reported on the
+switch's row rather than swallowed, because "applied" and "will still be there
+after a reboot" are different claims.
+
 The Telnet client, the parsers and the command generator are still **crate-free on
 purpose**; what took crates is the other half (sqlx + sea-query + tokio + reqwest,
 and `common-rs/{json,web,oidc,pg,build-spa}`).

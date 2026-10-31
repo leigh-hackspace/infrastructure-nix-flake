@@ -166,12 +166,32 @@ pub fn run(job: Job, device: &Device) -> Outcome {
     out.privilege = Some(sw.privilege.slug().to_string());
 
     // --- writes -------------------------------------------------------------
+    let mut save_error: Option<String> = None;
     if !job.writes.is_empty() {
         // Flatten the batch into one list of plans: `apply_groups` enters config
         // mode once for all of them, which is the point of batching.
         let plans: Vec<Vec<String>> = job.writes.iter().flat_map(|(_, p)| p.clone()).collect();
         match sw.apply_groups(&plans) {
-            Ok(()) => out.applied = job.writes.iter().map(|(id, _)| *id).collect(),
+            Ok(()) => {
+                out.applied = job.writes.iter().map(|(id, _)| *id).collect();
+                // Persist, once for the batch.  Until this succeeds the change
+                // lives in RAM, and a reboot reverts RAM — which is exactly what
+                // the 2026-10-31 mains blip did to every switch, silently undoing
+                // the day's edits.  `save_command` is `None` unless the deployment
+                // asked for it (`SWITCH_GUI_SAVE_COMMAND`).
+                if let Err(e) = sw.save() {
+                    let msg = format!(
+                        "{} was applied, but saving it to startup-config failed, so a reboot \
+                         will undo it: {e}",
+                        match sw.cfg.save_command.as_deref() {
+                            Some(cmd) if !cmd.trim().is_empty() => format!("`{cmd}`"),
+                            _ => "the save command".to_string(),
+                        }
+                    );
+                    eprintln!("switch-gui: {} {msg}", sw.cfg.name);
+                    save_error = Some(msg);
+                }
+            }
             Err(e) => {
                 // The CLI has no transaction: whatever ran before the refusal is
                 // applied, and the rest was not.  The whole batch is marked
@@ -204,10 +224,44 @@ pub fn run(job: Job, device: &Device) -> Outcome {
         }
     }
 
+    // A session whose socket died mid-pass read nothing worth keeping: its
+    // "snapshot" is a list of warnings and zero ports, which would blank the
+    // page.  Drop it instead — the last good rows stay, the switch's own error
+    // explains why they are stale, and the session is not reused below.
+    if sw.dead() {
+        if let Some(snap) = out.snapshot.take() {
+            out.warnings.extend(snap.warnings);
+        }
+        let msg = "the switch closed the console connection (a reboot or an idle \
+                   reap does this); reconnecting on the next pass"
+            .to_string();
+        out.error = Some(match out.error.take() {
+            Some(existing) => format!("{existing}; {msg}"),
+            None => msg,
+        });
+    }
+
+    // A save that failed is the pass's news too: the change is real and applied,
+    // but the next reboot will not believe it.  Kept as a warning on the snapshot
+    // when there is one (the page shows those), and as the pass's error
+    // otherwise, which is also what drops the session.
+    if let Some(msg) = save_error {
+        if let Some(snap) = out.snapshot.as_mut() {
+            snap.warnings.push(msg.clone());
+        }
+        out.error = Some(match out.error.take() {
+            Some(existing) => format!("{existing}; {msg}"),
+            None => msg,
+        });
+    }
+
     // A session that failed anywhere is dropped rather than kept: the next pass
     // starts from a known state, which is the only way a half-read console (left
     // inside `config` by a refused command, say) cannot poison the pass after it.
-    let usable = out.error.is_none();
+    // `dead()` is included because a read can "succeed" with every command failed
+    // — those are warnings, not an error, so `out.error` alone kept a socket the
+    // switch had already closed (2026-10-31).
+    let usable = out.error.is_none() && !sw.dead();
     *guard = if usable { Some(sw) } else { None };
     out.privilege = if usable {
         out.privilege

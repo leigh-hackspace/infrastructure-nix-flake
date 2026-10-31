@@ -261,12 +261,28 @@ would make the next *read* look like a parser bug. On the 2824 the config-mode
 prompt is `switch3(config)#` — the same shape, so the prompt matcher works for
 both.
 
-Nothing here writes NVRAM (no `write`, no `copy running-config startup-config`),
-so **every change is in RAM and a reboot undoes it**. Say that out loud before
-trusting one. If it is ever changed: on Y.11.44 the command is `write`, whose own
-help line is "Write current command set to memory", and `write ?` already answers
-`Invalid input: ?` — so `wr mem`/`write memory` is the *other* firmware's spelling
-and should not be assumed here.
+**A change is saved, once per batch, after it is applied.** `write memory` copies
+`running-config` to `startup-config`, and until it runs a change lives in **RAM**
+and a reboot reverts it. That is not hypothetical: on 2026-10-31 a mains blip
+rebooted all three switches and undid the day's edits, so the sync now follows a
+successful `apply_groups` with one save for the whole batch (`Switch::save`). If
+the save fails the change still says *applied* — it is — and the switch's row
+carries a warning that the next reboot will not believe it.
+
+It is **opt-in code-wise and on in the deployment**: `Config::save_command` is
+`None` unless `SWITCH_GUI_SAVE_COMMAND` is set, which
+`machines/services1/services/switch-gui.nix` does, because this repo's rule is that
+nothing writes switch NVRAM unless asked. A local run leaves it unset and says so
+on startup. `write memory` is the *same command on both firmwares*: measured on
+2026-10-31 at Manager level, Y.11.44 (switch1, switch2) and I.10.107 (switch3) both
+echo it, print nothing, and return the prompt. The earlier note here claimed
+`wr mem`/`write memory` was "the other firmware's spelling" and should not be
+assumed — it is the one spelling that works on both, and the note is what a guess
+looks like after it has been repeated.
+
+Hand edits over a console are still RAM-only: the tool saves what *it* applied, and
+nothing else. `write memory` needs the Manager context, which is why a refused
+`enable` also means no save.
 
 ## The write path, and what was wrong with it
 
@@ -339,6 +355,30 @@ the per-VLAN `tagged` endpoint), which have never been sent at all.
 Anything the switch does refuse comes back as its own `Invalid input:` text,
 surfaced verbatim — that part is tested, and a refusal is no longer reported as
 a success.
+
+## A session whose socket dies is dropped, not kept
+
+The console session is held between passes (the CLI is one console per device),
+and a read that fails on **every** command is a snapshot full of *warnings* rather
+than an error — deliberately, so one unreadable table costs a column and not the
+whole page. Those two facts together latched a dead session: after the 2026-10-31
+mains blip rebooted all three switches, each pass re-sent its six commands on a
+socket that was already closed, every one failed with `Broken pipe (os error 32)`,
+the read "succeeded" with zero ports, the session was kept because the pass had no
+`error`, and the page served an empty matrix until the service was restarted — while
+a fresh login worked the whole time.
+
+So the transport is tracked separately from the console:
+
+* `telnet::ReadFail` carries `io` — EOF, a reset, a broken pipe — which is *not* the
+  same as a timeout. A quiet console can be waited out; a closed socket cannot.
+* Every write goes through `Switch::send_line`/`send_raw`, which mark the session
+  dead on failure, and a command that fails with `io` is never resent (a resend is a
+  second application on this firmware).
+* `sync::run` drops the session when `Switch::dead()`, discards the snapshot that
+  dead read produced instead of storing an empty one over the last good rows, and
+  reports why on the switch's row. The next pass reconnects; the suite's `POST /drop`
+  (sockets die, listener stays) is the switch reboot this is tested against.
 
 ## Reading names out of the running config
 
@@ -498,17 +538,22 @@ twenty closed ones, and offers three actions on a row:
 * **Discard** — delete a row that has not been written.  Only a row that has not
   been written: `applied` and `failed` are history, and history that can be deleted
   is not an audit trail.
-* **Revert** — queue the opposite change, built from the row's stored `before` map
-  rather than from the switch's current state, because by the time anyone clicks it
-  the switch may have moved again and "undo" has to mean the state this change
-  replaced.
+* **Revert** — queue the opposite change. The state it restores comes from the
+  row's stored `before` map rather than from the switch's current state, because by
+  the time anyone clicks it the switch may have moved again and "undo" has to mean
+  the state this change replaced. The **delta** is taken against the shadow copy all
+  the same — the CLI takes commands, not states — and that distinction is the bug
+  that hid here: with no current row to diff against, a `port-members` revert could
+  only *add* the memberships `before` named, so undoing "tagged 228 on port 23" left
+  port 23 in 228. `revert_plan` now takes the port and the removal comes out.
 
 Refusals are rows too (`--read-only` denials included, failed by the sync with the
 reason), so the log answers "did anything happen to switch2 at 14:10?" without
-needing the journal.  It is in RAM on the switch's side and in Postgres on ours:
-nothing here writes to NVRAM, so a reboot of a switch undoes the configuration
-while the log still says it was applied — which is why the log is evidence about
-*this tool*, not about the device.
+needing the journal.  It is in RAM on the switch's side and in Postgres on ours,
+and the save that follows an applied batch is what stops the two from disagreeing
+after a reboot; a *hand* edit over a console is still RAM-only, so a reboot can
+undo that while the log still says it was applied — which is why the log is
+evidence about *this tool*, not about the device.
 
 ## The queue and the shadow copy: three bugs that all looked like "nothing happened"
 

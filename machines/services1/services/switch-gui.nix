@@ -74,10 +74,16 @@
 # commands; the prompt matcher could not see a prompt painted on the same row as
 # the echo, so every write "timed out" after applying).  Proven end to end on a
 # dead port of switch1 on 2026-10-13 — see switch-gui/README.md, "The write path".
-# Configuration applies inside config mode (`Switch::apply` enters it), and nothing
-# here saves to NVRAM, so a change is in RAM until someone writes it.  `--read-only`
-# is still the escape hatch if the write path ever misbehaves: dropping that flag
-# is a one-line change and a switch.
+# Configuration applies inside config mode (`Switch::apply` enters it), and then
+# **`write memory`** copies the running configuration to startup-config — because
+# otherwise a change lives in RAM and a reboot reverts it, which is exactly what
+# happened on 2026-10-31: a mains blip rebooted all three switches and undid the
+# day's edits.  That is the one place in this repo that writes switch NVRAM, and it
+# does so because the switch's own RAM/startup split leaves no other way to keep a
+# change; see docs/procurve-switches.md.  `SWITCH_GUI_SAVE_COMMAND` in the unit's
+# environment is the switch, so removing it puts the tool back to RAM-only writes,
+# and `--read-only` is still the escape hatch if the write path ever misbehaves:
+# dropping that flag is a one-line change and a switch.
 {
   config,
   lib,
@@ -155,6 +161,14 @@ in {
     # network, so it must not resolve anything.
     environment = {
       SWITCH_GUI_SWITCHES = lib.strings.concatStringsSep "," switches;
+      # Copy the running configuration to startup-config after every batch this
+      # tool applies.  The switches keep a change in RAM until it is written, so
+      # without this an Apply survives until the next reboot and no longer — a
+      # mains blip on 2026-10-31 reverted a day of edits, which is what this line
+      # exists to stop.  `write memory` is the same text on Y.11.44 (switch1,
+      # switch2) and I.10.107 (switch3), measured at Manager level on 2026-10-31 by
+      # running it on all three.  Unset it to go back to RAM-only writes.
+      SWITCH_GUI_SAVE_COMMAND = "write memory";
     };
 
     serviceConfig = {

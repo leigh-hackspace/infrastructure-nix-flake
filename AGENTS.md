@@ -78,7 +78,13 @@ X first", X has already cost someone a day.
     either default (`docs/router-front-door-migration.md` has the two near-misses).
 15. **Read the linked doc before creating an OIDC provider**, and keep new clients on
     the existing PKCE contract.
-16. **Nothing writes switch NVRAM unless asked.** A reboot is the only undo.
+16. **Nothing writes switch NVRAM unless asked.** A reboot is the only undo, and
+    for a change made by hand at a console it is still the only way back. The one
+    program that saves is `switch-gui`, which follows every batch it applied with
+    `write memory` because a switch keeps a change in RAM and a mains blip on
+    2026-10-31 reverted a day of edits; that is asked for by
+    `SWITCH_GUI_SAVE_COMMAND` in `machines/services1/services/switch-gui.nix`, not
+    by the code's default (`docs/procurve-switches.md`).
 17. **`--no-auth` / `--dev-user` are test hooks**, never production, and the loopback
     gate parses an `IpAddr` rather than string-matching `127.`.
 18. **Do not move the wasm-bindgen pin to "fix" a mismatch** — all three copies move
@@ -592,8 +598,9 @@ listed here is in the doc named for it.
   `Can't reach RADIUS server.` **on a successful login** — it is this firmware's generic
   "authentication failed" message, and it is noise, not an incident
   (`docs/procurve-switches.md`). `agent` is a **Manager**: `enable` is a second login,
-  writes run inside config mode, and **nothing writes NVRAM**, so a reboot undoes any
-  change. `crates/switch-gui/` wraps them; its README is the CLI's trap list.
+  writes run inside config mode, and the running configuration is saved only by
+  `switch-gui`, once per batch it applied (rule 16) — so a hand edit is still undone by
+  a reboot. `crates/switch-gui/` wraps them; its README is the CLI's trap list.
 - **Router** is `machines/gw/` — the flake's own NixOS box at **10.3.1.1**, cut over
   from the OPNsense appliance on 2026-10-21 (the appliance is retired). DNS/DHCP come
   from `common/vlans.nix` + `common/dns-records.nix`, nftables from `common/config.nix`,
@@ -837,7 +844,8 @@ there is declarative. **Root SSH is keyed here** (unlike the flake machines):
   outside the share is reachable".
 - Media responses carry `nosniff` and `default-src 'none'` CSP: an `<img>` cannot run
   script, but the same URL opened as a document can — that is the SVG case.
-- **Switches: nothing writes NVRAM** unless someone asks explicitly.
+- **Switches: nothing writes NVRAM** unless someone asks explicitly — the exception
+  being `switch-gui`'s post-apply `write memory`, which the module asks for (rule 16).
 - **All five SPA `dist/`s are git-ignored and built by the flake** (rule 19), and `build.rs`
   embeds the bundle into the binary — so a rebuilt `dist/` alone still serves the bundle that
   was compiled in. Build the crate, or run the suite. `crates/network-status/frontend/dist/`
@@ -857,6 +865,15 @@ there is declarative. **Root SSH is keyed here** (unlike the flake machines):
   form parses to an empty host and sqlx refuses it. The shipped default was once the
   refused form and the unit could not start — `the_default_dsn_is_one_sqlx_can_parse`
   keeps it true.
+- **A closed socket is not a quiet console, and a read can "succeed" with every
+  command failed.** `switch-gui` keeps its console session between passes, and a
+  failed command is a *warning* rather than an error — so when the switches rebooted
+  on 2026-10-31 every command afterwards failed with `Broken pipe (os error 32)`,
+  the read returned a snapshot of zero ports with warnings, the session was kept
+  because the pass had no `error`, and the page served an empty matrix until the
+  service was restarted. `telnet::ReadFail` now says whether the failure was the
+  socket (EOF/reset/broken pipe) or a timeout, and only the latter may be waited out.
+  `crates/switch-gui/README.md`, "A session whose socket dies is dropped, not kept".
 - **A UI that refuses an edit must say so.** A refusal that only appears in a banner above
   fifty rows, or only in the journal, is indistinguishable from a dead button — and the
   form should not offer a state the server will refuse.

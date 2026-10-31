@@ -59,9 +59,39 @@ pub struct ReadFail {
     pub message: String,
     /// Everything received before the failure, protocol bytes already removed.
     pub text: String,
+    /// The **socket** failed, not the console: EOF, a reset, a broken pipe.  A
+    /// timeout is deliberately not this — a quiet console can be waited out, a
+    /// closed socket cannot, and the difference decides whether the caller may
+    /// keep the session.
+    ///
+    /// It matters because of how a read is reported: `read_snapshot` records a
+    /// failed command as a *warning* and still returns a snapshot, so "every
+    /// command failed" used to look like a healthy pass with zero ports, and the
+    /// dead session was kept.  Measured 2026-10-31: the mains blipped, all three
+    /// switches rebooted, every later command failed with `Broken pipe (os error
+    /// 32)` and the page showed an empty matrix until the service was restarted.
+    pub io: bool,
 }
 
 impl ReadFail {
+    /// A console that went quiet.  The session may still be usable.
+    pub fn quiet(message: String, text: String) -> ReadFail {
+        ReadFail {
+            message,
+            text,
+            io: false,
+        }
+    }
+
+    /// A socket that is gone.  Nothing may be sent on it again.
+    pub fn gone(message: String, text: String) -> ReadFail {
+        ReadFail {
+            message,
+            text,
+            io: true,
+        }
+    }
+
     /// The failure on its own, for a caller that cannot use the partial text.
     pub fn into_message(self) -> String {
         self.message
@@ -125,9 +155,8 @@ impl Telnet {
     ) -> Result<String, ReadFail> {
         let deadline = Instant::now()
             .checked_add(timeout)
-            .ok_or_else(|| ReadFail {
-                message: "timeout out of range".to_string(),
-                text: String::new(),
+            .ok_or_else(|| {
+                ReadFail::quiet("timeout out of range".to_string(), String::new())
             })?;
         let mut out: Vec<u8> = Vec::new();
         let mut buf = [0u8; 1024];
@@ -138,41 +167,38 @@ impl Telnet {
             }
             let now = Instant::now();
             if now >= deadline {
-                return Err(ReadFail {
-                    message: format!(
+                return Err(ReadFail::quiet(
+                    format!(
                         "timed out after {}s waiting for a prompt; last {} bytes: {:?}",
                         timeout.as_secs(),
                         out.len(),
                         tail_for_error(&text)
                     ),
                     text,
-                });
+                ));
             }
             self.stream
                 .set_read_timeout(Some(deadline - now))
-                .map_err(|e| ReadFail {
-                    message: format!("set_read_timeout: {e}"),
-                    text: text.clone(),
-                })?;
+                .map_err(|e| ReadFail::gone(format!("set_read_timeout: {e}"), text.clone()))?;
             match self.stream.read(&mut buf) {
+                // EOF: the switch ended the session (`exit`, an idle reap, a
+                // reboot).  The socket is not coming back.
                 Ok(0) => {
-                    return Err(ReadFail {
-                        message: "the switch closed the connection".to_string(),
+                    return Err(ReadFail::gone(
+                        "the switch closed the connection".to_string(),
                         text,
-                    })
+                    ))
                 }
-                Ok(n) => self.feed(&buf[..n], &mut out).map_err(|e| ReadFail {
-                    message: e,
-                    text: text.clone(),
-                })?,
+                Ok(n) => self
+                    .feed(&buf[..n], &mut out)
+                    // `feed`'s only failure is a negotiation reply that could not
+                    // be written — a dead socket, not a console that is quiet.
+                    .map_err(|e| ReadFail::gone(e, text.clone()))?,
                 // read_until owns the deadline, so a per-read timeout just
                 // means "loop again and re-check it".
                 Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
                 Err(e) => {
-                    return Err(ReadFail {
-                        message: format!("read failed: {e}"),
-                        text,
-                    })
+                    return Err(ReadFail::gone(format!("read failed: {e}"), text))
                 }
             }
         }

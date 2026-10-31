@@ -78,6 +78,8 @@ const deviceFail = (cmds) => post(`${DEVICE}/fail`, cmds);
 /** The device vanishes: no console sessions, existing ones die. */
 const deviceOffline = () => post(`${DEVICE}/offline`, {});
 const deviceOnline = () => post(`${DEVICE}/online`, {});
+/** The device reboots: open console sockets die, connecting still works. */
+const deviceDrop = () => post(`${DEVICE}/drop`, {});
 
 /**
  * Forget every change still queued, so one test cannot leave the next one a
@@ -571,14 +573,50 @@ test('a dead console does not swallow the queue', async () => {
   await deviceOnline();
 });
 
-test('nothing writes NVRAM', async () => {
-  // `write` is this firmware's save-to-flash, and the tool must never send it: a
-  // change that reaches flash survives a reboot, which is a decision the
-  // operator makes, not the GUI.
-  const meta = await deviceMeta();
-  assert.equal(meta.wroteToNvram, false);
-  const cmds = (await deviceLog()).map((c) => c.cmd);
-  assert.ok(!cmds.includes('write'), 'the console was told to write to flash');
+test('a change is written to startup-config, not left in RAM', async () => {
+  // 2026-10-31: the mains blipped, all three switches rebooted, and that day's
+  // edits were simply gone — a change applied over the console lives in RAM until
+  // it is written to flash, and the firmware's startup-config is what a reboot
+  // loads.  So an applied batch is followed by the save command, once, after it.
+  const before = await devicePort(SAFE_2);
+  assert.ok(!before.tagged.includes(ADD), 'fixture: the safe port starts out of that VLAN');
+  await setTagged(SAFE_2, ADD, true);
+  await until('the device never received the change', async () => {
+    const p = await devicePort(SAFE_2);
+    return p.tagged.includes(ADD) ? p : null;
+  });
+  await until('the console was never told to write to flash', async () => {
+    const m = await deviceMeta();
+    return m.saves > 0 ? m : null;
+  });
+  // Order matters: a save *before* the change would persist the state the change
+  // was replacing, so the device would boot into the old configuration with the
+  // page insisting the new one was applied.
+  const cmds = (await deviceLog()).map((c) => `${c.mode} ${c.cmd}`);
+  const changed = cmds.findIndex((c) => new RegExp(`^config vlan ${ADD} (tagged|untagged) `).test(c));
+  const saved = cmds.findIndex((c) => c === 'exec write memory');
+  assert.ok(changed >= 0, `the change never reached the console: ${cmds.join(' · ')}`);
+  assert.ok(saved > changed, `write memory did not follow the change: ${cmds.join(' · ')}`);
+});
+
+test('a console that dies mid-session is replaced, not kept', async () => {
+  // 2026-10-31, the other half of the same outage: the switches rebooted, every
+  // command on the *kept* session failed with `Broken pipe (os error 32)`, and a
+  // read whose commands all fail is a snapshot with **warnings**, not an error —
+  // so the dead session was never dropped.  The page served zero ports until the
+  // service was restarted, while a fresh login worked the whole time.
+  await waitForRead();
+  const sessions = (await deviceMeta()).sessions;
+  await deviceDrop();
+  await until('the dead session was never replaced', async () => {
+    const m = await deviceMeta();
+    return m.sessions > sessions ? m : null;
+  }, 30000);
+  // And the read that follows is a real one: the row count comes from the
+  // device, not from a snapshot built out of the dead socket's failures.
+  await waitForRead();
+  const s = (await api('/api/state')).json.switches.find((x) => x.name === SWITCH);
+  assert.equal(s.ports, Object.keys((await device()).ports).length, 'the port count came back');
 });
 
 test('session: the page never talks to a switch while serving a request', async () => {

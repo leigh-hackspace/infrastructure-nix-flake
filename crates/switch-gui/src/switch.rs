@@ -99,11 +99,23 @@ pub struct Config {
     /// are still drained and failed with this reason, so the page never shows a
     /// pending notice that cannot clear.
     pub read_only: bool,
+    /// The command that copies the running configuration to startup-config, or
+    /// `None` to leave the switch's NVRAM alone.
+    ///
+    /// The switches' RAM/startup split is the reason this exists: a change applied
+    /// over this session lives in RAM, and a reboot — which is what the 2026-10-31
+    /// mains blip did to all three — silently reverts it.  It is opt-in because
+    /// writing NVRAM is the one action here that survives a reboot, and that is a
+    /// decision the deployment makes (this repo's rule: nothing writes switch NVRAM
+    /// unless asked), not something a page's Apply button should discover.
+    pub save_command: Option<String>,
 }
 
 pub struct Switch {
     tn: Telnet,
-    cfg: Config,
+    /// `pub` because the sync reports which save command a failed save used, and
+    /// reads the switch's name into that message (see `sync::run`).
+    pub cfg: Config,
     pub privilege: Privilege,
     /// What the login said that is worth showing on the page without failing the
     /// session — the RADIUS noise, see [`check_auth`].
@@ -113,9 +125,50 @@ pub struct Switch {
     /// an Exec prompt.  [`Switch::leave_config`] needs it because `exit` at an
     /// Exec prompt does not go up a level, it *closes the session*.
     context: Option<String>,
+    /// The socket is gone (EOF, reset, broken pipe) and nothing may be sent on it
+    /// again.  Set by [`Switch::send_line`]/[`Switch::send_raw`] and by any
+    /// [`ReadFail`] whose `io` field says the failure was the socket, so the sync
+    /// can drop the session instead of keeping it.
+    ///
+    /// It has to be tracked, because a read that fails on *every* command is a
+    /// snapshot with warnings rather than an error, and the session was
+    /// therefore kept: measured 2026-10-31, the switches rebooted on a mains blip
+    /// and this page served an empty matrix until the service was restarted.  A
+    /// quiet console (a timeout) is not this — see [`ReadFail::io`].
+    dead: bool,
 }
 
 impl Switch {
+    /// Write one line to the console, and remember if the socket is gone.
+    ///
+    /// A send failure is by definition the socket: the console cannot have read
+    /// a line that never left.  Every write goes through here so the session
+    /// knows it is dead before the next command tries to use it.
+    fn send_line(&mut self, s: &str) -> R<()> {
+        match self.tn.send_line(s) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                self.dead = true;
+                Err(e)
+            }
+        }
+    }
+
+    fn send_raw(&mut self, s: &str) -> R<()> {
+        match self.tn.send_raw(s) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                self.dead = true;
+                Err(e)
+            }
+        }
+    }
+
+    /// The socket is gone; the session may not be used again.  See [`Switch::dead`].
+    pub fn dead(&self) -> bool {
+        self.dead
+    }
+
     /// Connect, log in, and `enable` if manager credentials were supplied.
     pub fn connect(cfg: &Config) -> R<Switch> {
         let mut tn = Telnet::connect(&cfg.host, cfg.port, cfg.timeout)?;
@@ -153,6 +206,7 @@ impl Switch {
             privilege: Privilege::default(),
             note: None,
             context: None,
+            dead: false,
         };
         if intro.contains(LOGIN_PROMPT) {
             sw.login()?;
@@ -179,21 +233,21 @@ impl Switch {
     }
 
     fn login(&mut self) -> R<()> {
-        self.tn.send_line(&self.cfg.login)?;
+        let login = self.cfg.login.clone();
+        self.send_line(&login)?;
+        let login_timeout = self.cfg.login_timeout;
         self.tn
             .read_until(
                 |raw| strip_ansi(raw).contains(PASSWORD_PROMPT),
-                self.cfg.login_timeout,
+                login_timeout,
             )
             .map_err(ReadFail::into_message)?;
-        self.tn.send_line(&self.cfg.password)?;
+        let password = self.cfg.password.clone();
+        self.send_line(&password)?;
         let out = strip_ansi(
             &self
                 .tn
-                .read_until(
-                    |raw| ends_at_prompt(&strip_ansi(raw)),
-                    self.cfg.login_timeout,
-                )
+                .read_until(|raw| ends_at_prompt(&strip_ansi(raw)), login_timeout)
                 .map_err(ReadFail::into_message)?,
         );
         self.note_auth(&out)?;
@@ -222,7 +276,7 @@ impl Switch {
             .unwrap_or_else(|| "manager".to_string());
         let password = self.cfg.enable_password.clone().unwrap_or_default();
 
-        self.tn.send_line("enable")?;
+        self.send_line("enable")?;
         let out = strip_ansi(
             &self
                 .tn
@@ -238,7 +292,7 @@ impl Switch {
                 .map_err(ReadFail::into_message)?,
         );
         if out.contains(LOGIN_PROMPT) {
-            self.tn.send_line(&login)?;
+            self.send_line(&login)?;
             self.tn
                 .read_until(
                     |raw| strip_ansi(raw).contains(PASSWORD_PROMPT),
@@ -246,7 +300,7 @@ impl Switch {
                 )
                 .map_err(ReadFail::into_message)?;
         }
-        self.tn.send_line(&password)?;
+        self.send_line(&password)?;
         let out = strip_ansi(
             &self
                 .tn
@@ -269,6 +323,34 @@ impl Switch {
             ));
         }
         Ok(())
+    }
+
+    /// Persist the running configuration to startup-config, so a reboot stops
+    /// undoing what this tool just did.
+    ///
+    /// `write memory` is the command on **all three** switches, measured on
+    /// 2026-10-31 at Manager level against Y.11.44 (switch1, switch2) and I.10.107
+    /// (switch3) — the same text, echoed, with no output and the prompt back.  It
+    /// runs at the Exec prompt, i.e. after [`Switch::apply_groups`] has left
+    /// config mode, and a refusal (`Invalid input:`) comes back through
+    /// [`check_cli_error`] like any other command's.
+    ///
+    /// It is opt-in: `cfg.save_command` is `None` unless the deployment sets
+    /// `SWITCH_GUI_SAVE_COMMAND`, because a tool that saves on its own would be
+    /// a tool that turns one operator's mistake into a permanent one.  The
+    /// service sets it, so every applied change survives a reboot; a local run
+    /// does not, and says so on the page.
+    pub fn save(&mut self) -> R<()> {
+        let Some(cmd) = self.cfg.save_command.clone() else {
+            return Ok(());
+        };
+        if cmd.trim().is_empty() {
+            return Ok(());
+        }
+        if self.cfg.read_only {
+            return Err("the session is read-only, so nothing was saved".to_string());
+        }
+        self.command(&cmd).map(|_| ())
     }
 
     /// Like [`Switch::command`], for output that must never be quoted back.
@@ -308,7 +390,7 @@ impl Switch {
             if attempt > 0 {
                 thread::sleep(SETTLE);
             }
-            self.tn.send_line(cmd)?;
+            self.send_line(cmd)?;
             match self.read_response(cmd) {
                 // Echoed back: the console read it, so its response is real.
                 Ok(text) if text.contains(cmd) => {
@@ -323,6 +405,12 @@ impl Switch {
                     }
                 }
                 Err(fail) => {
+                    // A socket failure is not something the next command can
+                    // recover from, and resending on it would only hide that.
+                    if fail.io {
+                        self.dead = true;
+                        return Err(fail.message);
+                    }
                     // The line reached the console and then the prompt never
                     // came back.  The command may well have been applied, so
                     // resending it is the one thing not to do: it would apply a
@@ -395,18 +483,15 @@ impl Switch {
             }
             pages += 1;
             if pages > MAX_PAGES {
-                return Err(ReadFail {
-                    message: format!(
+                return Err(ReadFail::quiet(
+                    format!(
                         "gave up after {MAX_PAGES} pages of `{cmd}` — the CLI kept printing the \
                          `-- MORE --` marker"
                     ),
-                    text: acc,
-                });
+                    acc,
+                ));
             }
-            self.tn.send_raw(" ").map_err(|e| ReadFail {
-                message: e,
-                text: acc.clone(),
-            })?;
+            self.send_raw(" ").map_err(|e| ReadFail::gone(e, acc.clone()))?;
         }
         Ok(acc)
     }

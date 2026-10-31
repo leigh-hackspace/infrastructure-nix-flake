@@ -119,8 +119,13 @@ fi
 # The credentials are the fake's: it accepts any login, and `enable` is the
 # second login this firmware does. Nothing here can reach a real switch — the
 # only address the service is given is 127.0.0.1.
+#
+# `SWITCH_GUI_SAVE_COMMAND` is what the deployed unit sets, so the suite exercises
+# the save-to-flash path: a change applied to a switch lives in RAM, and a reboot
+# reverts it (2026-10-31). The fake counts the command instead of acting on it.
 SWITCH_GUI_SWITCHES="switch1=127.0.0.1:${SWITCH_PORT}" \
 SWITCH_GUI_LOGIN=agent SWITCH_GUI_PASSWORD=test-fixture-not-a-secret \
+SWITCH_GUI_SAVE_COMMAND="write memory" \
 "$BIN" --no-auth --bind "127.0.0.1:${PORT}" \
   --db-url "${DB_URL}?options=-csearch_path%3D${SCHEMA}" \
   --interval 2 > "$LOG_SERVER" 2>&1 &

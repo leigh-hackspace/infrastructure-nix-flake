@@ -155,7 +155,10 @@ fn usage() -> String {
          \x20 SWITCH_GUI_PASSWORD, SWITCH_GUI_OIDC_CLIENT_ID, SWITCH_GUI_OIDC_CLIENT_SECRET,\n\
          \x20 SWITCH_GUI_DB_URL; optional SWITCH_GUI_ENABLE_LOGIN/_PASSWORD, which\n\
          \x20 default to the login pair because `enable` is a second login for the\n\
-         \x20 same account on this firmware.\n",
+         \x20 same account on this firmware; and SWITCH_GUI_SAVE_COMMAND, the command\n\
+         \x20 that copies the running configuration to startup-config (`write memory`\n\
+         \x20 on all three switches), which is **unset by default** so that nothing\n\
+         \x20 writes the switch's NVRAM unless the deployment asks.\n",
         bind = o.bind,
         env = o.env_file,
         interval = o.interval,
@@ -234,6 +237,14 @@ fn run() -> R<()> {
         &login,
         &password,
     );
+
+    // Whether an applied change is written to the switch's startup-config, and
+    // with which command.  Opt-in on purpose (see `switch::Config::save_command`):
+    // the deployment asks for it, and the switches' own RAM/startup split is not
+    // something a page should paper over by default.  Empty means "never save".
+    let save_command = env_get("SWITCH_GUI_SAVE_COMMAND")
+        .map(|c| c.trim().to_string())
+        .filter(|c| !c.is_empty());
 
     // The testing escape hatches.  `--no-auth` treats every request as a local
     // session, which on a bind anyone else can reach is a switch with no login;
@@ -331,6 +342,7 @@ fn run() -> R<()> {
                     timeout: Duration::from_secs(20),
                     login_timeout: Duration::from_secs(45),
                     read_only: opt.read_only,
+                    save_command: save_command.clone(),
                     enable_login: enable_login.clone(),
                     enable_password: enable_password.clone(),
                 },
@@ -340,6 +352,15 @@ fn run() -> R<()> {
         .collect();
     if opt.read_only {
         eprintln!("switch-gui: --read-only, the queue will not be written to switches");
+    }
+    match &save_command {
+        Some(cmd) => eprintln!(
+            "switch-gui: applied changes are saved to startup-config with `{cmd}`"
+        ),
+        None => eprintln!(
+            "switch-gui: SWITCH_GUI_SAVE_COMMAND is not set, so an applied change lives in \
+             RAM only and a reboot of the switch undoes it"
+        ),
     }
 
     let shared = Arc::new(routes::Shared {

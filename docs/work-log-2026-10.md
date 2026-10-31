@@ -7,6 +7,49 @@ change runs into.
 
 Still-open items live in `docs/follow-ups.md`.
 
+## 2026-10-31 — a mains blip, a reverted switch config, and a console session that
+never came back
+
+**Asked:** "on switch.int.leighhack.org/switch/switch1 I see 'Some commands failed …
+Broken pipe'" and then "after the switch rebooted it reverted some settings. are we
+sure we're doing `wr mem` with every change?"
+
+One outage produced both, and each half was a separate assumption that had never
+been tested.
+
+1. **The mains dropped at 11:38** (`gw`'s UPS: `on battery`, restored 11:40:54), the
+   core switches rebooted, and every edit made through `switch-gui` was gone. Not a
+   bug in the tool: it never sent a save at all — `write`/`copy running-config
+   startup-config` was deliberately absent and documented as "every change is in RAM
+   and a reboot undoes it". That is a correct description of a switch and a wrong
+   default for a management UI: an Apply that survives only until the next power cut
+   is not an Apply. The sync now follows every batch it applied with one
+   **`write memory`** (`Switch::save`), opt-in via `SWITCH_GUI_SAVE_COMMAND` so the
+   "nothing writes NVRAM unless asked" rule is kept by the deployment asking rather
+   than by the code assuming.
+2. **The session latched dead.** The switches' reboot closed the console socket the
+   sync had been holding. Every later pass re-sent its six commands on that closed
+   socket, each failed with `Broken pipe (os error 32)`, `read_snapshot` turned those
+   six failures into *warnings* and returned a snapshot with zero ports, and
+   `sync::run` kept the session because the pass had no `error` — so the page served
+   an empty matrix for seven hours while a fresh login worked fine. Restarting the
+   service "fixed" it, which is the tell. `telnet::ReadFail` now distinguishes a
+   **socket** failure from a timeout, `Switch::dead()` tracks it, and the sync drops
+   the session and refuses to store the empty snapshot it produced.
+
+Both were measured on the live devices before the code changed: `write memory` is
+accepted by Y.11.44 and I.10.107 alike (echoed, no output, prompt back), and a manual
+login → `enable` → `show system` on switch1 worked throughout, which is what proved
+the switch was healthy and the *tool's* session was not. The suite grew two tests
+(`POST /drop` on the fake switch, and a save that must come after the change), and
+the README's "nothing writes NVRAM" and "`wr mem` is the other firmware's spelling"
+notes were both corrected — the second was a guess that had been repeated as fact.
+
+**Lesson:** a held resource needs a rule for "the far end went away", and it is not
+"the next poll will notice". Also: warnings that a read can survive are exactly the
+shape that hides a dead connection — the pass must be able to tell "one table was
+unreadable" from "nothing was readable".
+
 ## 2026-10-29 — `cam8` streams at half speed, and the fault is its transmit
 
 **Asked:** "are you actually able to get smooth video… I can't even get a picture in VLC."

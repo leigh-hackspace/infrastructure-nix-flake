@@ -675,7 +675,9 @@ run "finished but not upgraded":
   Full procedure: `docs/monster-powercut-runbook.md`.
 - **Printers**: nothing flake-managed; `moonraker-exporter` polls fixed IPv4s on
   purpose. If 3d-blue is still off-network, say so and leave it.
-- **Switches**: nothing. No NVRAM writes. Their RADIUS login goes to
+- **Switches**: nothing to deploy, and nothing this runbook changes. `switch-gui`
+  saves what *it* applies with `write memory` (`docs/procurve-switches.md`); an
+  upgrade applies no change, so it writes nothing. Their RADIUS login goes to
   authentik at 10.3.1.36 and falls back to the switch's local account database,
   which is why `Can't reach RADIUS server.` prints **on a successful login**
   (`docs/procurve-switches.md`) — noise, not an incident. Do not "fix" it.

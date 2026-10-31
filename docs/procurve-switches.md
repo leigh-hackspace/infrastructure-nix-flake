@@ -48,9 +48,23 @@ configuration command answers `Invalid input`, so `Switch::apply` sends `config`
 first, and `leave_config` exits until the prompt stops naming a context (one `exit`
 from `switch1(eth-23)#` only reaches `(config)#`).
 
-**Nothing saves to NVRAM, so a reboot undoes any change.** Keep it that way unless
-asked. `write` is this firmware's command — `wr mem` / `write memory` is the *other*
-firmware's spelling, and `write ?` is already `Invalid input` here.
+**A change over the console lives in RAM until it is written to NVRAM**, and these
+switches keep two copies: `running-config` (what you just changed) and
+`startup-config` (what a reboot loads). Nothing writes NVRAM by hand, and the one
+program that does is `switch-gui`, which follows every batch it applied with
+**`write memory`** — because a mains blip on 2026-10-31 rebooted all three switches
+and silently reverted the day's edits. That is deliberate and it is opt-in in the
+code: `SWITCH_GUI_SAVE_COMMAND` is unset by default and set in
+`machines/services1/services/switch-gui.nix`. Anything changed by hand at a console
+is still RAM-only.
+
+`write memory` is the **same command on both firmwares** — measured 2026-10-31 at
+Manager level, echoed with no output and the prompt on Y.11.44 and I.10.107 alike.
+(The earlier note here said `wr mem`/`write memory` was "the other firmware's
+spelling" and that `write ?` already answers `Invalid input` — the second half is
+true of `?` and the first half was wrong.) It needs the Manager context, so a
+refused `enable` means nothing is saved; a failed save is reported on the switch's
+row, never silently swallowed.
 
 ## Two firmwares, one parser
 

@@ -16,13 +16,17 @@
 //   * a configuration command paints its echo and the next prompt on the **same
 //     row**, which is why `is_prompt` matches a prompt as a suffix;
 //   * `enable` is a second *login*, not a password prompt;
-//   * nothing writes NVRAM, so the model is the whole truth and a reboot would
-//     undo it — here, a reconnect does not, which is what makes the model
-//     assertable between the queue's write and the sync's re-read.
+//   * `write memory` is the save-to-flash, and both spellings are accepted because
+//     both real firmwares did on 2026-10-31.  It is what makes a change survive a
+//     reboot, so the fake counts it (`saves` in `/meta`) rather than only noting
+//     that it happened; the model itself is unchanged by it, because in RAM the
+//     configuration is already what `write memory` copies.
 //
-// The HTTP side (GET /state, POST /reset, POST /fail) is the test's way of
-// reading what the "device" believes, which is the only end of the pipeline that
-// proves a write really went out.
+// The HTTP side (GET /state, POST /reset, POST /fail, POST /offline, POST /drop)
+// is the test's way of reading what the "device" believes, which is the only end
+// of the pipeline that proves a write really went out — and of taking the device
+// away in the two ways that matter: unreachable (`/offline`) and rebooted
+// (`/drop`: the sockets die, the listener stays).
 //
 // Run standalone: node fake-switch.mjs --telnet 22323 --state 22324 [--gate]
 
@@ -266,6 +270,8 @@ export function startFakeSwitch(opts = {}) {
     sessions: 0,
     sockets: new Set(),
     offline: false,
+    /// How many times the device was told to write its configuration to flash.
+    saves: 0,
   };
 
   const prompt = (phase) => {
@@ -321,9 +327,15 @@ export function startFakeSwitch(opts = {}) {
         session.socket.end();
         return "";
       case "write":
-        // The firmware's NVRAM command. The app must never send it; the suite
-        // asserts it never appears in the log.
+      case "write memory":
+        // The firmware's save-to-flash, and the one action here that survives a
+        // reboot.  The app sends it only when the deployment asks
+        // (`SWITCH_GUI_SAVE_COMMAND`), once per batch it applied — see
+        // `Switch::save`.  Both spellings are accepted because the real ones do:
+        // measured on Y.11.44 and I.10.107 on 2026-10-31, `write memory` is
+        // echoed back with no output and the prompt on both.
         state.wroteToNvram = true;
+        state.saves += 1;
         return `Writing current configuration to flash memory.\n${prompt(session.phase)}`;
       default: {
         const m = /^show vlan (\d+)$/.exec(cmd);
@@ -456,11 +468,16 @@ export function startFakeSwitch(opts = {}) {
     if (req.method === "GET" && req.url === "/state") return send(200, state.model);
     if (req.method === "GET" && req.url === "/log") return send(200, state.log);
     if (req.method === "GET" && req.url === "/meta")
-      return send(200, { sessions: state.sessions, wroteToNvram: Boolean(state.wroteToNvram) });
+      return send(200, {
+        sessions: state.sessions,
+        wroteToNvram: Boolean(state.wroteToNvram),
+        saves: state.saves,
+      });
     if (req.method === "POST" && req.url === "/reset") {
       state.log.length = 0;
       state.fail.clear();
       state.wroteToNvram = false;
+      state.saves = 0;
       // The model goes back to the fixture **in place**: the console sessions
       // close over this object, so replacing it would leave a live session
       // writing to a model nobody reads.  Every test therefore starts from the
@@ -487,6 +504,16 @@ export function startFakeSwitch(opts = {}) {
         send(200, state.model);
       });
       return undefined;
+    }
+    if (req.method === "POST" && req.url === "/drop") {
+      // A reboot, as the *client* sees it: every open console socket dies and the
+      // listener stays up.  Distinct from `/offline`, where nothing can connect
+      // either — this is the state that latched a dead session on 2026-10-31, the
+      // commands afterwards failing with `Broken pipe (os error 32)` while a fresh
+      // connect still worked.
+      for (const s of state.sockets) s.destroy();
+      state.sockets.clear();
+      return send(200, { dropped: true });
     }
     if (req.method === "POST" && req.url === "/offline") {
       // The device disappears: no more console sessions, and the ones already
