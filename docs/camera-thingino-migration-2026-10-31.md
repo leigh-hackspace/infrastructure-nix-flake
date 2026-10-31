@@ -6,8 +6,9 @@ builds only Ingenic SoCs. **As of today that is no longer true**: a build tree p
 thingino to the SigmaStar SSC333 / Infinity6B0 family exists on the operator's bench
 (`~/Projects/tapo/thingino-c110`, branch `ssc333-infinity6b0`, board
 `tplink_tapo_c110_ssc333_sc3338_ssw101b`), and two fleet cameras were migrated onto it
-today — **`cam5` (10.3.2.10)** and **`cam8` (10.3.2.112, back in production; its lease is
-still dynamic, pinning filed)**. `cam7` and `cam9` remain OpenIPC. The 2026-10-25
+today — **`cam5` (10.3.2.10)** and **`cam8` (10.3.2.112 dynamically that day; pinned to
+**10.3.2.11** by MAC the same evening, see §1's cam8 bullet, because 112 is inside VLAN
+226's own DHCP range)**. `cam7` and `cam9` remain OpenIPC. The 2026-10-25
 evaluation is superseded at its headline and stands as history at its receipts; re-read the
 four re-check commands there before repeating the old sentence to anyone.
 
@@ -48,9 +49,15 @@ never sees the gate.
 | web/admin | `:80`/`:85` majestic | `:80` webui + ONVIF (ws-discovery), `:443` |
 | ssh | dropbear 2022.82 | dropbear 2026.94 |
 
-**Consequences, both live right now:** (1) frigate's `pi_room` feed still points at
-`rtsp://…cam5…:554/stream=0` and is being **404'd** until `/srv/frigate/config/config.yaml`
-on services1 changes it to `/stream0` (fault 8 file, action item filed); (2) thingino's
+**Consequences, both live right now:** (1) frigate's `pi_room` feed pointed at
+`rtsp://…cam5…:554/stream=0`, and was **404'd** for two days until 2026-10-31 19:49, when
+`/srv/frigate/config/config.yaml` on services1 was changed to `/stream0` (a first attempt
+that evening had set it to `/ch0`, which is also a 404 on thingino); it now reports
+`camera=~3.5 of 5 fps`, `quality=fair`, 2-3 stalls/hour — that is cam5's **marginal RF**
+(`docs/camera-wifi-tx-2026-10-29.md`), not the URL. `cam8` was added to frigate the same
+evening (camera `cam8`, `rtsp://cam8.int.leighhack.org:554/stream0`) and is `unusable`
+because the device is **off the air** as of 20:00 — the config is in place for when it
+comes back. (2) thingino's
 stream answers **without credentials** — a `200` from `:554` was this directory's definition
 of a finding, and on thingino it is the default, so either enable auth on the camera or
 keep the VLAN rule that fences VLAN 226 in. `rsd` serves **2 clients max** and stale
@@ -136,12 +143,15 @@ root password reset — plan a console for it.
   — the known bad-corner physics (`docs/camera-wifi-tx-2026-10-29.md`), placement or
   bitrate action needed before it is a useful feed. Backups: all five pre-mtds + env dump
   + serial transcripts on the operator bench.
-* **cam8** — thingino, **10.3.2.112, back in production**; joined Leighhack seconds after
+* **cam8** — thingino, **10.3.2.11 since 2026-10-31** (the router now reserves it by MAC:
+  `3c:52:a1:49:01:05`, `common/dns-records.nix`). It had been arriving on a *dynamic*
+  10.3.2.112 — inside VLAN 226's range (`10.3.2.100-253`), so an address the router was
+  entitled to hand to someone else, which makes this a correctness fix and not tidying.
+  It is a **frigate camera now** (name `cam8`, `:554/stream0`), added while the device is
+  powered off; joined Leighhack seconds after
   boot; its OpenIPC-era TX fault (`docs/camera-wifi-tx-2026-10-29.md`, <45 KB/s) needs a
   fresh measurement under thingino now that the MIIC fixes and a matched driver ship —
-  the doc's driver-vs-hardware question may just have been answered. Lease **not yet
-  pinned**; filed: a `cam8` row in `common/dns-records.nix` (`3c:52:a1:49:01:05`, vlan226,
-  10.3.2.112) — router change, deploy through `machines/gw` normally.
+  the doc's driver-vs-hardware question may just have been answered.
 * **cam7, cam9** — untouched OpenIPC. The bench tree's docs carry a stale habit of calling
   cam9 "the sealed unit at 10.3.2.17"; **this repo's table is the authority: cam9 is an
   ordinary fleet camera**, no special sealing or protection. Anyone touching a camera

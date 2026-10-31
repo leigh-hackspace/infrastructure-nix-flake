@@ -1565,8 +1565,12 @@ that **need an owner or a decision** rather than another measurement.
   `docs/camera-sd-card-firmware-flash.md` §8, and §11-1/§11-2 (card socket; Enter
   interrupts autoboot) are closed by the same session.
 
-  **Still open:** whether `cam8` joins the fleet properly (a `dns-records.nix` row by MAC)
-  or stays a bench spare.
+  **Closed 2026-10-31:** `cam8` joins the fleet properly — it has a `cam8` row in
+  `common/dns-records.nix` (MAC `3c:52:a1:49:01:05`, vlan 226, **10.3.2.11**; it had been
+  arriving on a *dynamic* 10.3.2.112, inside VLAN 226's own range), deployed through
+  `machines/gw` normally, and a frigate camera of its own. It was **off the air** when that
+  was done, so the reservation takes effect the next time it boots (udhcpc DISCOVERs on
+  start, and the router's answer for that MAC is now `.11`).
 
   **Which build to use, measured 2026-10-28.** The `ssw101b` gate is necessary but not
   sufficient on its own — **it has to be run on the image you are about to flash, and only
