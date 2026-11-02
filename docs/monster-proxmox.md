@@ -52,3 +52,73 @@ Everything else is `onboot: 0` and started by hand: the GOAD lab
 needs ~24 GB of the host's 32 GB RAM** — leave the lab VMs alone unless there is
 room, and start them one at a time (each is a burst of random reads against the
 slow pool).
+
+## What runs inside `apps1` (109, 10.3.1.30) — and what is off
+
+`apps1` answers on **10.3.1.30** (`common/dns-records.nix` pins that address to the
+VM's MAC `92:99:29:be:af:95`, which is `qm config 109`'s `net0`), so the box at that
+address is this VM, not a look-alike. It is reached over ssh with the **machine-hop-key
+for `root` and for `cjdell`** — `ssh -i ~/.ssh/agent-hop-key root@10.3.1.30`. `leigh-admin`
+is **not** keyed there (measured 2026-11-01: `Permission denied (publickey,password)` for
+`leigh-admin@10.3.1.30` from services1 *and* from monster1, and monster1's own `id_rsa`
+is refused for every user tried). `qm terminal 109` is not an alternative either: it needs
+a serial device and `qm config 109` has none, so adding one would mean a reboot.
+
+Inside, `apps1` keeps its own hand-written docker+systemd services under `/srv`
+(`grafana`, `homeassistant`, `jenkins`, `mosquitto`, `prometheus`, `uptimekuma`,
+`usertweaker`, `vulcanbot`, `zigbee2mqtt`, `hackspaceapi`, `home`). None of it is
+declarative; the flake only points at this box.
+
+**Uptime Kuma is permanently disabled there (2026-11-01).** It was superseded on
+2026-09-24 (`e84f223`, "gatus: replace Uptime Kuma as the status page") — that change
+removed the `uptime-kuma.int` vhost and left the DNS record to be pruned — but the app
+was **still running and still answering**, unauthenticated, on
+`http://10.3.1.30:3001`, and its own dashboard was doing a second, older copy of gatus's
+job (`Cameras`, `Unifi Controller`, `3D-1..3`, …) alerting into the same Slack webhook.
+Off the network's side nothing pointed at it any more: `getent hosts
+uptime-kuma.int.leighhack.org` on services1 is empty, and no `.nix` in the tree mentions
+`kuma` or `3001` outside three historical comments in
+`machines/services1/services/{gatus,monitoring}.nix` and
+`common/monitoring-endpoints.nix`.
+
+The unit was `/etc/systemd/system/uptime-kuma.service`:
+
+```ini
+ExecStartPre=-/usr/bin/docker rm -f uptime-kuma
+ExecStartPre=/usr/bin/docker pull docker.io/louislam/uptime-kuma:latest
+ExecStart=/usr/bin/docker run -p 3001:3001 -v /srv/uptimekuma:/app/data -v /var/run/docker.sock:/var/run/docker.sock --name uptime-kuma docker.io/louislam/uptime-kuma:latest
+Restart=always; WantedBy=default.target; Requires=docker.service
+```
+
+Nothing had `RequiredBy` on it, so taking it down is one box-local decision. What was run
+(one ssh, in order — `mask` refuses while the unit file exists, so the file goes to the
+registry first):
+
+```bash
+systemctl stop uptime-kuma.service            # foreground docker run: the container stops with the unit
+systemctl disable uptime-kuma.service         # removes default.target.wants/<unit>
+rm /etc/systemd/system/uptime-kuma.service    # already copied to the registry below
+systemctl mask uptime-kuma.service            # -> symlink to /dev/null: nothing can start it, even by hand, even after a reboot
+```
+
+Measured after: `is-enabled` = `masked`, `is-active` = `inactive`, no listener on
+`:3001` (`ss -lntp`), no container (`docker ls`), and `curl -m 5 http://10.3.1.30:3001/`
+from services1 answers `rc=7` (connection refused). The replacement answers:
+`http://127.0.0.1:8999/` on services1 is 200, i.e. gatus is serving the status page.
+`/srv/uptimekuma` — the bind mount that holds `kuma.db` — was **left in place**, so the
+data is still there if it is ever wanted again.
+
+**The unit file is parked in a registry, not deleted**:
+`/var/lib/systemd/disabled-units/uptime-kuma.service.2026-11-01`, whose first line is
+`# DISABLED — <date> — <reason> — restore with: …`. That directory is the off-flake
+equivalent of this repo's rule-23 `# PARKED` habit:
+`grep -rl '^# DISABLED' /var/lib/systemd/disabled-units` *is* the list of what this box
+decided not to run. Un-masking alone would not bring kuma back — the unit file has to
+come back first.
+
+Left alone on the box, on purpose: the enabled nginx vhost
+`/etc/nginx/sites-enabled/uptime-kuma.int.leighhack.org.conf` and its
+`/etc/letsencrypt/renewal/uptime-kuma.int.leighhack.org.conf`. The name no longer
+resolves, so the vhost is inert and it is the app being gone that makes it serve nothing.
+`grafana.db` and Prometheus's segment indexes still contain the kuma strings — that is
+scraped history, not a dependency on the app.

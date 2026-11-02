@@ -731,6 +731,13 @@ there is declarative. **Root SSH is keyed here** (unlike the flake machines):
   non-HA autostart VMs (107 mx1, 132 Terraria) are `qm start`ed by hand.
 - Leave the `onboot: 0` lab VMs alone: ~24 GB of the host's 32 GB is already committed by
   the six infra VMs.
+- **The VMs run their own services, and "the flake no longer references it" is not "it is
+  off"** — uptime-kuma on `apps1` (10.3.1.30) is one example: superseded on 2026-09-24 but
+  still answering unauthenticated on `:3001` until it was masked off on 2026-11-01. `apps1`
+  takes the **hop key as `root` and as `cjdell`**, not as `leigh-admin`; a parked unit on an
+  off-flake box goes to `/var/lib/systemd/disabled-units/` with a `# DISABLED — <date> —
+  <reason> — restore with:` first line (the off-flake form of rule 23). Mechanism, receipts
+  and the four commands: `docs/monster-proxmox.md` ("What runs inside `apps1`").
 - Full procedure after an outage: **`docs/monster-powercut-runbook.md`**; inventory and
   storage: `docs/monster-proxmox.md`.
 
