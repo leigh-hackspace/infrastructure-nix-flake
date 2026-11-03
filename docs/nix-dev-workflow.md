@@ -696,14 +696,33 @@ sudo systemd-run --no-block --unit=deploy-build --collect --service-type=oneshot
        readlink -f /run/current-system /nix/var/nix/profiles/system >> /tmp/deploy.log'
 ```
 
-Five traps in that block — the first three hit for real on 2026-10-15 (first run of
-`docs/network-upgrade-runbook.md`), the last two on 2026-10-21 while running a
-`nix build` loop detached the same way. All of them are cheap to fix in a script file
-rather than inline — write `/tmp/nu-switch.sh` and `install -m 755 /dev/stdin`
-it onto the box:
+Seven traps in that block: three hit for real on 2026-10-15 (first run of
+`docs/network-upgrade-runbook.md`), two more on 2026-10-21 while running a `nix build` loop
+detached the same way (the shebang, and `BUILD_$m_EXIT`), and the two about *who runs the
+unit* and *where the log goes* on 2026-11-03 while deploying `gw` with it. All of them are
+cheap to fix in a script file rather than inline — write `/tmp/nu-switch.sh` and
+`install -m 755 /dev/stdin` it onto the box:
 
 - **`--setenv=HOME=/root` means `cd ~/Projects/…` is `/root/Projects/…`.** Use the
   absolute repo path.
+- **A deploy of *another* box belongs in a unit running as the operator, not as root:**
+  `--uid=leigh-admin --gid=users`, and no `--setenv=HOME`. Hit 2026-11-03 running
+  `just deploy gw` detached as root: it died in its first `git rev-parse --show-toplevel`
+  with `detected dubious ownership` (root + `HOME=/home/leigh-admin` is a combination git
+  refuses; see the next bullet), and with `HOME=/root` it would have died one step later on
+  `$HOME/.ssh/agent-hop-key`, which only exists in the operator's home. The recipe needs no
+  local root at all — its `sudo` runs over ssh, on the target — and the GOLDEN RULE is
+  unaffected, because `deploy` chains switch `&&` confirm **on the target** in one remote
+  shell either way.
+- **A unit that goes `inactive` in under a second has not started your job, and its log
+  file may not exist.** Read `journalctl -u <unit>` before reading the log: the two failures
+  that look like "the detached pattern is broken" both happen *before* the redirect
+  succeeds — a shebang that does not exist (below), and a `>` onto a file the unit's user
+  cannot open, which includes a stale log of that name left by an earlier human deploy
+  (`/tmp/deploy-gw.log` on services1 was one, and the unit exited 1 having written nothing).
+  Pick a fresh log path per run — `/var/tmp/deploy-<machine>-<date>.log` — and note that
+  `sudo journalctl -u <unit>` needs `-u` for the *unit name you passed*, since `--collect`
+  forgets it as soon as it exits.
 - **Confirm only if the switch exited 0.** Running `nixos-confirm` unconditionally
   marks the generation *currently in `/run/current-system`* good even when
   activation aborted halfway — and activation flips `/run/current-system` before it

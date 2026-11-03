@@ -711,52 +711,48 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   itself when the gitlab module is re-enabled (the guard moves it from `legacy` to
   `names` by refusing the other way). `mqtt.int` was checked on 2026-11-02 and **cannot** be
   deleted — three clients dial its socket — and it left `legacy` that same day into the
-  table's new `answeredBy` group, so it is no longer parked; `tailscale.int` still
+  table's new `answeredBy` group, deployed 2026-11-03, so it is no longer parked;
+  `tailscale.int` still
   wants the same check. `nginx.int` stays — it is the CNAME
   target of every public `*.int` record in DigitalOcean. And `ldap.int` belongs with the
   authentik decision below, not with DNS.
 
 - **`mqtt.int` answered with the front door while the broker's socket does not live at the
-  front door — decided and half-implemented on 2026-11-02; one deploy and three client
-  edits remain** (found 2026-11-02; the three clients retargeted by hand that day, the
-  table landed the same day). Home Assistant's MQTT config entry (`apps1`'s runtime
+  front door — closed 2026-11-03** (found 2026-11-02; the three clients retargeted by hand
+  that day; the table, the renderer, the guards and the deploy landed by 2026-11-03 01:09,
+  the dials followed at 01:12–01:14). Home Assistant's MQTT config entry (`apps1`'s runtime
   `.storage/core.config_entries`), Frigate's publisher (`/srv/frigate/config/config.yaml`)
   and zigbee2mqtt's `server:` (`/srv/zigbee2mqtt/configuration.yaml`) all dialed
   `mqtt://mqtt.int.leighhack.org`, and the 2026-10-24 front-door move re-pointed that name at
   `gw`, where nothing listens on 1883 — so the MQTT link, and with it Home Assistant's Frigate
   *camera* entities (their `_available` flips only on a broker message), was dead for over a
-  week while the HTTP sensors kept counting. All three were retargeted to `10.3.1.20`, which is
-  the broker's address hardcoded three times on two boxes — exactly the drift
-  `common/int-dns.nix` exists to prevent. The declarative option — a **new group** in that
-  table answering the name with services1, because `legacy` answers with the door and
+  week while the HTTP sensors kept counting. All three were retargeted to `10.3.1.20` to stop
+  the bleeding, which is the broker's address hardcoded three times on two boxes — exactly the
+  drift `common/int-dns.nix` exists to prevent. The declarative option — a **new group** in
+  that table answering the name with services1, because `legacy` answers with the door and
   `machines/gw/int-dns.nix` asserts `names + exempt` is exactly the door-served vhost names,
-  so neither existing group fits — was **taken 2026-11-02**, and the other one, moving the
-  broker to `gw` so the name and the port agree again — **rejected** the same day: it would
-  put a podman container and its `/srv/mosquitto` state on the network's router, front door,
-  TLS terminator, dnsmasq and UPS host, for clients that live on services1 and apps1.
-  What (a) took, and where it is: a new `answeredBy` group in `common/int-dns.nix` (`mqtt.via
-  = "services1"`), a third branch in `machines/gw/lib/network-tables.nix`'s `intHosts` that
-  renders **one IPv4 line and no bare-name alias**, and three new assertions in
-  `machines/gw/lib/check-network-tables.nix` — an unknown `via` (the `"servics1"` typo), a
-  label that is also a record or in another group (a name with two answers), and a name that
-  does not render as exactly one line carrying that box's address — plus that file's line-
-  total assertion counting the group. All of it is in the tree and `just check-eval` is green;
-  what is not done is the deploy and the clients:
+  so neither existing group fits — was **taken**, and the other one, moving the broker to `gw`,
+  **rejected**: a podman container and its `/srv/mosquitto` state on the network's router,
+  front door, TLS terminator, dnsmasq and UPS host, for clients that live on services1 and
+  apps1. What landed: `answeredBy` in `common/int-dns.nix` (`mqtt.via = "services1"`), a third
+  branch in `machines/gw/lib/network-tables.nix`'s `intHosts` rendering **one IPv4 line and no
+  bare-name alias**, and three assertions in `machines/gw/lib/check-network-tables.nix` (an
+  unknown `via`, a label in two groups or in `dns-records.nix`, a name that is not exactly one
+  line carrying its box's address) plus that file's line total. Measured after the deploy:
+  `10.3.1.20  mqtt.int.leighhack.org` in the router's generated file, `dig` answering
+  `10.3.1.20` from services1 and apps1, a TCP probe through the name open, all three clients
+  re-CONNECTED inside two minutes, and all eight `camera.*` entities `recording` in HA's state
+  history. Receipts, the HA query, and the detour the deploy took through the router's
+  diverged checkout: `docs/mqtt-int-legacy-answer-2026-11-02.md` ("Deployed") and
+  `machines/gw/README.md`.
 
-  1. `just deploy gw` — one activation, and `int-dns` is a `restartTriggers` value, so the
-     new hosts file and the dnsmasq that reads it at startup land together. Then `sudo
-     systemctl start front-door-cert-check.service` and read the **issuer** (rule 22: minica's
-     fallback otherwise looks healthy), and look at the leases page afterwards (rule 29:
-     dnsmasq rewrites that file in place on the descriptor it opened at startup).
-  2. The three dials back on the **name** — `mqtt://mqtt.int.leighhack.org` in HA's config
-     entry, Frigate's `mqtt.host`, zigbee2mqtt's `server:` — removing the hardcoded
-     `10.3.1.20`s, one restart each. **After** the deploy and **after** proving the answer:
-     `dig +short @10.3.1.1 mqtt.int.leighhack.org` must say `10.3.1.20` and the broker must
-     log the CONNECT for a probe from apps1 before any of the three restarts. In the other
-     order this re-breaks all three at once.
+  **What is left in this class is one question, not a fault:** `tailscale.int` is still a
+  `legacy` row answered at the door, and headscale's UI is a **WebSocket** on :8085 rather
+  than a plain page. It works because headscale now runs *on* the door's box, so the socket
+  and the answer are the same box — the same fault shape, not currently a fault. No guard
+  would catch it moving: re-measure it the way this one was (the name's answer, a TCP probe
+  through the name, and what actually dials it) if headscale ever moves again.
 
-  Receipts, dated broker journal, the three dials, the repair and the decision:
-  `docs/mqtt-int-legacy-answer-2026-11-02.md`.
 
 - **Home Assistant on `apps1` runs whatever `:stable` meant today, and it moved on 2026-10-31
   (2026-11-02)**. Its hand-written `home-assistant.service` pulls

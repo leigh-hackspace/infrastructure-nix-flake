@@ -1,11 +1,14 @@
 # Home Assistant's Frigate cameras read "Unavailable": `mqtt.int` answers with the front door, and the broker's port does not live at the front door
 
-**Dated 2026-11-02, `services1`, with the three clients and the broker read on the boxes.**
-**Status: the outage is over** (all three dials retargeted to the broker's address by hand,
-22:21–22:33, and the broker's journal shows all three connected). **The declarative fix is
-half-done**: `common/int-dns.nix` now answers `mqtt.int` with services1 through its new
-`answeredBy` group, and what remains is the `gw` deploy and putting the three dials back on
-the name — see "The decision, taken 2026-11-02" near the end, and `docs/follow-ups.md`.
+**Dated 2026-11-02 and closed 2026-11-03, `services1` and `gw`, with the three clients and
+the broker read on the boxes.** **Status: closed.** The outage ended on 2026-11-02 with all
+three dials retargeted to the broker's address by hand; the declarative fix — `mqtt` in
+`common/int-dns.nix`'s new `answeredBy` group, answered with services1 — **deployed to `gw`
+at 01:09 on 2026-11-03**, and all three dials then went back to the **name** (01:12–01:14),
+so no client hardcodes an address any more and all eight Frigate camera entities are
+`recording` again (HA's own state history, §"Deployed"). Everything that was pending when
+this file was first written is done; what is left is the tail of `docs/follow-ups.md`
+(`tailscale.int`'s equivalent check, and Home Assistant's unpinned `:stable` tag).
 The symptom was in Home Assistant (apps1, 10.3.1.30): every Frigate **camera** entity —
 `camera.rack_corridor`, `camera.main_space`, `camera.social_space`, `camera.woodwork`,
 `camera.workshop`, `camera.pi_room`, `camera.cam8`, `camera.cnc` — rendered **Unavailable**,
@@ -136,6 +139,10 @@ MQTT on its own ports, not HTTP; this name has never been fronted"`*".
 
 ## The repair, 2026-11-02 22:2x
 
+*(This half is the emergency repair — an address hardcoded three times. It was reversed on
+2026-11-03 once the name answered correctly; see "Deployed" below. Nothing below this
+heading should be read as the end state.)*
+
 All three clients now dial the broker's address instead of the name — a line each in the three
 off-flake runtime files, then one restart each, restart and confirmation in the same
 invocation:
@@ -179,7 +186,7 @@ and Home Assistant's run logged **0** `Failed to connect to MQTT` and immediatel
 That is the end-to-end proof: Frigate publishes, Home Assistant receives, the availability
 flip (`__init__.py:746`) happens, and the camera entities stop being Unavailable.
 
-## The decision, taken 2026-11-02 — and the half of it that is still a deploy
+## The decision, taken 2026-11-02, deployed 2026-11-03
 
 **(a) chosen**: answer `mqtt.int` with the box that runs the socket. **(b) rejected**
 before it was attempted — moving the broker to `gw` would put a podman container and its
@@ -194,9 +201,9 @@ activation.
 | the answer | `common/int-dns.nix`'s new `answeredBy` group, `mqtt.via = "services1"` | landed 2026-11-02 |
 | the rendering | `machines/gw/lib/network-tables.nix`'s `intHosts`: a third branch, one IPv4 line per name, no bare-name alias | landed 2026-11-02 |
 | the guards | `machines/gw/lib/check-network-tables.nix`: `via` must be a machine in `common/hosts.nix`, the label must be in no other group and no record, the name must render as exactly one line carrying that address, and the file's total line count counts this group too | landed 2026-11-02, `just check-eval` green |
-| the deploy | `just deploy gw` — one activation; `int-dns` is a `restartTriggers` value, so the new file and the dnsmasq that reads it at startup land together | **pending** |
-| the clients | the three dials back on the *name*: `mqtt://mqtt.int.leighhack.org` in HA's config entry, Frigate's `mqtt.host`, zigbee2mqtt's `server:` — the hardcoded `10.3.1.20`s removed | pending, **after** the deploy |
-| the cert check | `sudo systemctl start front-door-cert-check.service` after any switch on gw, reading the issuer, and a look at the leases page afterwards | pending (rules 22, 29) |
+| the deploy | `just deploy gw` — one activation; `int-dns` is a `restartTriggers` value, so the new file and the dnsmasq that reads it at startup land together | **done 2026-11-03 01:09** (it took a detour: the router's checkout had diverged, see "Deployed") |
+| the clients | the three dials back on the *name*: `mqtt://mqtt.int.leighhack.org` in HA's config entry, Frigate's `mqtt.host`, zigbee2mqtt's `server:` — the hardcoded `10.3.1.20`s removed | **done 2026-11-03 01:12–01:14**, after the answer was proved, in that order |
+| the cert check | `sudo systemctl start front-door-cert-check.service` after any switch on gw, reading the issuer, and a look at the leases page afterwards | **done 2026-11-03 01:11**: `issuer=C=US, O=Let's Encrypt, CN=YE2`, `Result=success`, 44 leases in the file, `lease-reader-watch.timer` next fire 1 min 17 s out, dnsmasq advertising (7 `RTR-ADVERT(vlan225) 2001…` in 90 s) |
 
 The order is not cosmetic: the deploy first, then the dials. Flipping the clients to the
 name before the answer moves re-breaks all three at once; after the deploy the clients
@@ -215,6 +222,73 @@ the three things that can go wrong in a group no drift check reads: a typo in `v
 group (a name with two answers, which is the fault `check-network-tables.nix` names further
 up), and a rendering that is not exactly one line — the last being what makes the
 IPv4-only decision checkable rather than a comment.
+
+## Deployed, 2026-11-03 01:09–01:19, with the receipts
+
+The deploy went through `just deploy gw` **in a detached unit**, because the build of the
+router's toplevel outlives a tool call; `docs/nix-dev-workflow.md` ("Building in a detached
+unit") is the recipe and now carries the two traps this run added to it (the unit must run
+as the *operator*, since the recipe's ssh needs the hop key and git needs `safe.directory`;
+and a unit that exits in under a second has not started, so read its journal before its
+log). The GOLDEN RULE survived the detour: `deploy` chains `nixos-rebuild switch &&
+sudo nixos-confirm` **on gw** in one remote shell, and after it finished
+
+```
+readlink /run/current-system /nix/var/nix/profiles/system-good
+  → …-nixos-system-gw-26.11.20261014.319e4ce   (both, identical)
+git -C ~/Projects/infrastructure-nix-flake log --oneline -1 → e8f0a7e
+systemctl is-system-running → running
+```
+
+It did not start clean: `git merge --ff-only` refused, because this box's checkout carried
+three duplicated cam8 commits of its own — the story and the repair are
+`machines/gw/README.md`. Nothing was switched by the failed attempt, which is the whole
+value of the recipe refusing to merge.
+
+**The answer, as dnsmasq serves it** (`/etc/dnsmasq-int-vhosts.hosts` on gw, generated):
+
+```
+118:10.3.1.20	mqtt.int.leighhack.org
+100:10.3.1.1   zigbee2mqtt.int.leighhack.org      # the browser-facing ZigBee name, untouched
+101:2001:8b0:1d14:225::1 zigbee2mqtt.int.leighhack.org
+102:fd99:dead:beef:225d::1 zigbee2mqtt.int.leighhack.org
+
+dig +short @127.0.0.1 mqtt.int.leighhack.org      → 10.3.1.20
+dig +short @127.0.0.1 mqtt.int.leighhack.org AAAA → (nothing, on purpose)
+getent ahosts mqtt.int.leighhack.org              → 10.3.1.20      on services1 *and* apps1
+```
+
+and the probe that had to precede the three restarts — from apps1, the box whose client had
+been dead longest: `</dev/tcp/mqtt.int.leighhack.org/1883` → **OPEN**.
+
+**The three dials, back on the name** (runtime files, each with a timestamped `.bak`
+brought alongside, `20261103-011149` on services1):
+
+| Client | File | Broker log after the restart |
+| --- | --- | --- |
+| zigbee2mqtt | `/srv/zigbee2mqtt/configuration.yaml` → `server: mqtt://mqtt.int.leighhack.org:1883` | `01:12:03 New client connected from 10.88.0.1:43990 as mqttjs_8e0e7a4c (p4, c1, k60)` |
+| Frigate | `/srv/frigate/config/config.yaml` → `host: mqtt.int.leighhack.org` | `01:12:51 New client connected from 10.88.0.1:48603 as frigate (p4, c1, k60)` |
+| Home Assistant | apps1 `.storage/core.config_entries`, `data → entries → [mqtt].data.broker = mqtt.int.leighhack.org` (edited with HA **stopped**: it rewrites that file from memory on shutdown) | `01:14:01 New client connected from 10.3.1.30:48859 as 4ZDDcKseb0DEwMkpVGc1A8 (p5, c1, k60)` |
+
+**The end of the story is in HA's own state history**, which is the only place the original
+symptom was ever recorded — `states` joined to `states_meta` (in this schema `states.entity_id`
+is NULL; the id lives on the metadata row):
+
+```
+camera.cam8 / workshop / woodwork / social_space / main_space / rack_corridor   unavailable 01:12:51
+                                                              → recording                  01:14:42
+camera.cnc     recording 01:17:37        camera.pi_room  recording (by 01:19:15)
+# 01:19:15, every one of the eight: recording. Not one `Detected code that calls
+# device_registry…`, one `Error adding entity`, or one `Failed to connect to MQTT server`.
+```
+
+`frigate/available` is retained `online` on the broker (note: **one topic for the whole
+server**, not `frigate/<camera>/available` — the `+` in that subscription finds nothing, and
+`-t frigate/+/available` is a recipe that will mislead whoever reads this next). Two cameras
+flickered `unavailable` for a few minutes during their own restart window because their
+feeds were refusing connections at that moment (`dial tcp 10.3.2.10:554: connect: refused`
+is cam5, i.e. `pi_room`, the known marginal camera) — a camera fault, and now cleanly
+distinguishable from the MQTT one because the eight recovered and the MQTT error is gone.
 
 ## If it recurs
 

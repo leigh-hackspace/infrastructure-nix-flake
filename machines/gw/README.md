@@ -518,6 +518,35 @@ the flake. Three were set during the install; the fourth is a habit:
    admin's working tree, so a divergence from what was deployed cannot go unnoticed:
    `git log -1` here is the commit that built the running system.
 
+**But "normal checkout" is a claim about the future, and it was false from 2026-10-31 to
+2026-11-03.** This box has no GitHub key, so `deploy`'s first `git fetch -q origin` fails
+silently (`2>/dev/null`) and the recipe fetches from `infra` — services1's checkout — and
+`git merge --ff-only FETCH_HEAD`. On 2026-11-03 that merge refused, and the reason was that
+the three newest commits **here** (`3b2e424`, `a874d1f`, `21c7034`, the cam8 pin and its two
+doc follow-ups) were *duplicates*: same subjects, same content, different hashes, because
+the work was committed on this box and again on services1. Two histories with one content is
+not something a fast-forward can express, so the deploy exited 128 having touched nothing —
+which is the recipe being right, and the only reason the box was not silently switched onto
+a commit that is not the network's.
+
+The repair, in the order that keeps the proof rather than trusting it (all of it done
+2026-11-03, and worth repeating if `deploy` ever says `Not possible to fast-forward`):
+
+```bash
+cd ~/Projects/infrastructure-nix-flake
+git log --oneline main ^FETCH_HEAD                 # what only this box has
+git diff --stat <that> FETCH_HEAD                  # and is it content, or a rewrite?
+git tag gw-divergent-$(date +%Y%m%d) main          # keep the old line reachable
+git fetch infra main && git reset --hard FETCH_HEAD && git log --oneline -1
+```
+
+What makes `reset --hard` honest here rather than destructive: the tree diff between the two
+heads was **additive plus one rewrapped AGENTS.md line**, so this box held no work of its
+own — `git cherry FETCH_HEAD main` says which of the local commits have an equivalent
+upstream, and it said so for two of three, with the third's content arriving upstream under a
+later rewrite. Reading the tree diff is the check; the tag is the insurance. Then `deploy`
+fast-forwards from now on, and `git log -1` means what the claim above says it means.
+
 The push path (`--target-host`, retired 2026-10-25) had two gotchas worth keeping if it is
 ever reintroduced, both hit for real:
 

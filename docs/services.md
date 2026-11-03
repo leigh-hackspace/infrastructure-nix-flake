@@ -545,8 +545,8 @@ only on a broker message, and its person/fps **sensors** are plain HTTP) while t
 keep counting. `mqtt.int` now answers with this box — `answeredBy` in
 `common/int-dns.nix`, `via = "services1"`, one IPv4 line, guarded by
 `machines/gw/lib/check-network-tables.nix` rather than by either drift guard, because no
-vhost serves a socket — and the three dials are still to be put back on the name once that
-DNS is deployed (`docs/follow-ups.md`). Read the module header,
+vhost serves a socket — **deployed 2026-11-03**, and the three dials then went back to the
+name, so nothing now hardcodes this box's address. Read the module header,
 `docs/mqtt-int-legacy-answer-2026-11-02.md` and `docs/router-and-dns.md` before touching
 the name, the port, or any of the three config files.
 

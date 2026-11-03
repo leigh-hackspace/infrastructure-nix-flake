@@ -31,16 +31,17 @@ in {
   # answers (`docs/mqtt-int-legacy-answer-2026-11-02.md`).
   #
   # Measured 2026-11-02, and the clients were retargeted to this box's address in those
-  # three runtime files to stop the bleeding. The declarative answer landed the same day:
-  # `mqtt` is now in `common/int-dns.nix`'s `answeredBy` group with `via = "services1"`, so
-  # the name resolves here (one IPv4 line) rather than at the door, and
+  # three runtime files to stop the bleeding. The declarative answer landed the same day and
+  # is **deployed since 2026-11-03 01:09**: `mqtt` is in `common/int-dns.nix`'s `answeredBy`
+  # group with `via = "services1"`, gw renders one IPv4 line (`10.3.1.20
+  # mqtt.int.leighhack.org` in `/etc/dnsmasq-int-vhosts.hosts`), and
   # `machines/gw/lib/check-network-tables.nix` refuses a `via` that is not a machine, a
-  # label in two groups, and any rendering but exactly that one line. Two things are still
-  # outstanding and both are in `docs/follow-ups.md`: deploying `gw` (this is DNS — the
-  # answer only moves when the router's dnsmasq restarts with the new hosts file), and then
-  # putting the three dials back on the **name** rather than on `10.3.1.20`. Until the
-  # second of those is done, this box's address is written into three files the flake
-  # cannot see, which is the drift class `common/int-dns.nix` exists to prevent.
+  # label in two groups, and any rendering but exactly that one line. The three dials then
+  # went back to the **name** (01:12–01:14), so this box's address is no longer written into
+  # three files the flake cannot see — which was the drift class the table exists to prevent.
+  # If a client ever reads `Failed to connect to MQTT server … timed out` again, the name's
+  # answer is the first thing to check (`dig +short @10.3.1.1 mqtt.int.leighhack.org` must be
+  # `10.3.1.20`), and the broker's journal is the second.
   #
   # Read before editing anything here or in `/srv/mosquitto`: `docs/router-and-dns.md`
   # (what the router answers for a `legacy` name, and the PARTIAL half-answer trap)

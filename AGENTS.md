@@ -99,7 +99,11 @@ X first", X has already cost someone a day.
     `build.rs` embeds the bundle, so rebuilding `dist/` alone still serves the bundle
     already compiled into the binary — build the crate, or run the suite, which does both.
 20. **Check `git log -1` on a remote box before blaming a config change** for its
-    behaviour — boxes have run newer generations than their checkout.
+    behaviour — boxes have run newer generations than their checkout. The mirror-image
+    fault is a box that is **ahead on its own duplicated commits**: `just deploy` only
+    ever fast-forwards, so it refuses the divergence and switches nothing (2026-11-03, on
+    `gw`). Prove the trees are equivalent, tag the old line, `reset --hard` to upstream —
+    the recipe and the receipts are in `machines/gw/README.md`.
 21. **Never evaluate to find out what a change does** — deploy it and read the
     rendered file (`just switch`, then `/etc/nginx/nginx.conf` or
     `$SYS/etc/systemd/system/<unit>.service`). A `nix eval --impure --expr` against
