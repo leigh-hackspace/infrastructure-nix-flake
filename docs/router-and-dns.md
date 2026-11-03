@@ -244,16 +244,38 @@ deploy record.
 - **`switch1`/`switch2`/`switch3` answer themselves** (`common/hosts.nix`) without being
   DHCP clients, so they have no reservation to hang a record on — that is what
   `fromHosts` in the same table is for.
-- **Five names answer at the front door and are served by no vhost**: `nginx.int`,
-  `mqtt.int`, `tailscale.int`, `gitlab.int`, `ldap.int`. They are `legacy` in the
-  table, each with its reason, and they were kept rather than dropped so that the
-  deploy which made DNS declarative changed no answer. `nginx.int` is the one that
-  cannot go: it is the CNAME target of every public `*.int` record in DigitalOcean.
-  `gitlab.int` is a redirect vhost whose container is disabled; `mqtt.int` and
-  `ldap.int` have never been HTTP-fronted and 404; `tailscale.int` predates the
-  headscale UI's real name (`tailscale.leighhack.org`). The drift guard is what keeps
-  `legacy` from quietly becoming where you park a typo: a name in it is a name
-  *nothing serves*, by definition.
+- **Four names answer at the front door and are served by no vhost**: `nginx.int`,
+  `tailscale.int`, `gitlab.int`, `ldap.int`. They are `legacy` in the table, each with
+  its reason, and they were kept rather than dropped so that the deploy which made DNS
+  declarative changed no answer. `nginx.int` is the one that cannot go: it is the CNAME
+  target of every public `*.int` record in DigitalOcean. `gitlab.int` is a redirect
+  vhost whose container is disabled; `ldap.int` has never been HTTP-fronted and 404s;
+  `tailscale.int` predates the headscale UI's real name
+  (`tailscale.leighhack.org`). The drift guard is what keeps `legacy` from quietly
+  becoming where you park a typo: a name in it is a name *nothing serves*, by
+  definition.
+
+  **The 404 is only true of HTTP, and the one name this list used to own that is not an
+  HTTP client left it on 2026-11-02 for that reason.** Checked 2026-11-02: `mqtt.int`
+  is dialled over its socket by three things — Home Assistant's MQTT config entry
+  (`apps1`'s runtime `.storage/core.config_entries`), Frigate's publisher
+  (`/srv/frigate/config/config.yaml`) and zigbee2mqtt's `server:`
+  (`/srv/zigbee2mqtt/configuration.yaml`) — all three in files this flake only
+  bind-mounts, so no guard, no vhost list and no `git log` sees them. The 2026-10-24
+  deploy that moved the front door moved the name's answer with it, and nothing on `gw`
+  listens on 1883: a socket client is not 404ed, it is hung, for a week, silently,
+  hundreds of lines of code away from the DNS that caused it. A socket-backed name
+  therefore answers with the box that owns the socket, and that is a third shape in
+  `common/int-dns.nix` — `answeredBy`, whose `mqtt` entry answers with
+  `10.3.1.20` (`via = "services1"`) and renders as **one IPv4 line**, because this
+  group is the one name for which IPv4-only is a decision rather than an oversight:
+  `docs/router-and-dns.md`'s PARTIAL fault, below, is an IPv6 half that sends packets
+  somewhere they go nowhere, and the old `legacy` row handed this name the door's two
+  halves. It is **not** a deletion candidate — the three dials want the name to resolve
+  at an address with a socket on 1883, and the parked 2026-10-22 follow-up that said
+  "check what dials them and then delete the records" is the thing this measurement
+  refused. `docs/mqtt-int-legacy-answer-2026-11-02.md` owns the receipts; ask what
+  dials a name before you move it between groups.
 
 ### Adding, moving, removing a name
 
@@ -263,6 +285,7 @@ deploy record.
 | a device with a fixed address | `common/dns-records.nix` (its MAC or client-id, its address, its VLAN) | deploy gw |
 | a device that is not a DHCP client but whose name must resolve | `common/hosts.nix`, then its label in `common/int-dns.nix`'s `fromHosts` | deploy gw |
 | a name the front door serves but does not answer | `common/int-dns.nix`'s `exempt`, with the reason | deploy gw |
+| a name a **socket** is dialled through | `common/int-dns.nix`'s `answeredBy`: the label, and `via` naming the box in `common/hosts.nix` that runs the socket | deploy gw. This group is invisible to both drift guards *by design* — `machines/gw/int-dns.nix` compares only `names ++ exempt` against the door's vhost names, and no vhost serves MQTT — so `machines/gw/lib/check-network-tables.nix` is what keeps it honest: an unknown `via`, a label in two groups or in `dns-records.nix`, and a name that does not render as exactly one line carrying that box's IPv4 |
 
 Nothing in this list is a command that edits a running box. `nix eval --impure --raw -f
 machines/gw/lib/check-network-tables.nix` (run by `just check`) proves the tables agree
@@ -295,6 +318,19 @@ Three states worth recognising in that output, because each has its own cause:
 - **A device name answering with 10.3.1.20** — the name is in *both* tables. dnsmasq
   returns both answers and some client somewhere picks the wrong one; the check module
   refuses this combination rather than documenting it.
+- **A name answering with the front door to a client that dials a socket** — the name
+  moved with the front door (`common/int-dns.nix`'s `frontDoor`), and the door serves no
+  socket on that port. Nothing 404s: the client hangs, and the symptom shows up far away
+  from DNS (Home Assistant rendering Frigate cameras Unavailable because its availability
+  flip needs a message from a broker nobody is connected to). That is what the window from
+  the 2026-10-24 move to 2026-11-02 looked like for `mqtt.int`; the name answers with
+  `10.3.1.20` now, because it is in `answeredBy` rather than `legacy`, and `dig +short
+  @10.3.1.1 mqtt.int.leighhack.org` answering with the door's address is now a fault and
+  not a stage. The broker's own journal is the dated answer to "who is connected", whatever
+  the answer is:
+  `sudo journalctl -u podman-mqtt.service | grep -E "New client connected|disconnected"`
+  names the clients, the addresses they arrive from, and the moment each died
+  (`docs/mqtt-int-legacy-answer-2026-11-02.md`).
 
 ### The fourth source of answers, and the one that surprises people
 

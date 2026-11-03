@@ -690,15 +690,85 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
 
 ## DNS / monitoring
 
+- **`nix flake check --no-build` on services1 fails at this lock over an eval-time derivation
+  read (2026-11-02): `error: path 'w1qfxxfc0wwjzfqivfnqfqjf60dily0h-sops-secret-pg_pass.drv'
+  is not valid`** — `services.outline.databaseUrl` embeds `config.sopsSecretText "pg_pass"`, so
+  evaluating services1 needs that derivation realised, and `--no-build` declines to build it.
+  Verified against clean HEAD (`git stash`) the same day: it reproduces identically with none of
+  that day's edits present, so it is a baseline fact, not a finding of any change made that day —
+  and the AGENTS.md note that the *grafana* `…not valid` error "did not reproduce at the
+  2026-10-14 lock" is now stale in the same way the `docs/follow-ups.md` entry above says: at the
+  current lock it is the `pg_pass` one that does. Same class as the crane stubs
+  (`docs/nix-dev-workflow.md`, "Evaluation must not build anything"): the fix is the same — one
+  build/deploy realises it and the flake step turns warning-free again — so treat
+  `just check-eval` as the gate on services1 until then, and never read a red `just check` flake
+  step there as "my change broke it" without re-running the same command against clean HEAD.
+
 - **The router's DNS is three generated files now, so `common/int-dns.nix`'s `legacy`
-  set is a to-do list, not a design** (added 2026-10-22). `nginx.int`, `mqtt.int`,
+  set is a to-do list, not a design** (added 2026-10-22). `nginx.int`,
   `tailscale.int`, `gitlab.int` and `ldap.int` answer with the front door and are served
   by no enabled vhost; each carries its reason in the table. `gitlab.int` disappears by
   itself when the gitlab module is re-enabled (the guard moves it from `legacy` to
-  `names` by refusing the other way). `mqtt.int` and `tailscale.int` want someone to
-  check what dials them and then delete the records. `nginx.int` stays — it is the CNAME
+  `names` by refusing the other way). `mqtt.int` was checked on 2026-11-02 and **cannot** be
+  deleted — three clients dial its socket — and it left `legacy` that same day into the
+  table's new `answeredBy` group, so it is no longer parked; `tailscale.int` still
+  wants the same check. `nginx.int` stays — it is the CNAME
   target of every public `*.int` record in DigitalOcean. And `ldap.int` belongs with the
   authentik decision below, not with DNS.
+
+- **`mqtt.int` answered with the front door while the broker's socket does not live at the
+  front door — decided and half-implemented on 2026-11-02; one deploy and three client
+  edits remain** (found 2026-11-02; the three clients retargeted by hand that day, the
+  table landed the same day). Home Assistant's MQTT config entry (`apps1`'s runtime
+  `.storage/core.config_entries`), Frigate's publisher (`/srv/frigate/config/config.yaml`)
+  and zigbee2mqtt's `server:` (`/srv/zigbee2mqtt/configuration.yaml`) all dialed
+  `mqtt://mqtt.int.leighhack.org`, and the 2026-10-24 front-door move re-pointed that name at
+  `gw`, where nothing listens on 1883 — so the MQTT link, and with it Home Assistant's Frigate
+  *camera* entities (their `_available` flips only on a broker message), was dead for over a
+  week while the HTTP sensors kept counting. All three were retargeted to `10.3.1.20`, which is
+  the broker's address hardcoded three times on two boxes — exactly the drift
+  `common/int-dns.nix` exists to prevent. The declarative option — a **new group** in that
+  table answering the name with services1, because `legacy` answers with the door and
+  `machines/gw/int-dns.nix` asserts `names + exempt` is exactly the door-served vhost names,
+  so neither existing group fits — was **taken 2026-11-02**, and the other one, moving the
+  broker to `gw` so the name and the port agree again — **rejected** the same day: it would
+  put a podman container and its `/srv/mosquitto` state on the network's router, front door,
+  TLS terminator, dnsmasq and UPS host, for clients that live on services1 and apps1.
+  What (a) took, and where it is: a new `answeredBy` group in `common/int-dns.nix` (`mqtt.via
+  = "services1"`), a third branch in `machines/gw/lib/network-tables.nix`'s `intHosts` that
+  renders **one IPv4 line and no bare-name alias**, and three new assertions in
+  `machines/gw/lib/check-network-tables.nix` — an unknown `via` (the `"servics1"` typo), a
+  label that is also a record or in another group (a name with two answers), and a name that
+  does not render as exactly one line carrying that box's address — plus that file's line-
+  total assertion counting the group. All of it is in the tree and `just check-eval` is green;
+  what is not done is the deploy and the clients:
+
+  1. `just deploy gw` — one activation, and `int-dns` is a `restartTriggers` value, so the
+     new hosts file and the dnsmasq that reads it at startup land together. Then `sudo
+     systemctl start front-door-cert-check.service` and read the **issuer** (rule 22: minica's
+     fallback otherwise looks healthy), and look at the leases page afterwards (rule 29:
+     dnsmasq rewrites that file in place on the descriptor it opened at startup).
+  2. The three dials back on the **name** — `mqtt://mqtt.int.leighhack.org` in HA's config
+     entry, Frigate's `mqtt.host`, zigbee2mqtt's `server:` — removing the hardcoded
+     `10.3.1.20`s, one restart each. **After** the deploy and **after** proving the answer:
+     `dig +short @10.3.1.1 mqtt.int.leighhack.org` must say `10.3.1.20` and the broker must
+     log the CONNECT for a probe from apps1 before any of the three restarts. In the other
+     order this re-breaks all three at once.
+
+  Receipts, dated broker journal, the three dials, the repair and the decision:
+  `docs/mqtt-int-legacy-answer-2026-11-02.md`.
+
+- **Home Assistant on `apps1` runs whatever `:stable` meant today, and it moved on 2026-10-31
+  (2026-11-02)**. Its hand-written `home-assistant.service` pulls
+  `ghcr.io/home-assistant/home-assistant:stable` in `ExecStartPre` and runs the same tag in
+  `ExecStart`, so HA core went `2026.10.0` → `2026.10.4` on the box without anyone changing
+  anything, and 2026.10.4 turned the Frigate integration's deprecated `via_device` into a fatal
+  `RuntimeError` (12 failed camera-entity registrations on 2026-10-31; the HACS-installed 5.15.6
+  fixes it but only on the next restart). The unit is off-flake (apps1, Proxmox VM 109), so pinning
+  the tag is a deliberate choice on the box rather than a flake edit — pin to a *specific* version
+  and keep `systemctl status` in the same invocation as the restart, since a unit whose pinned tag
+  cannot start takes HA down. Measured state, receipts and the diagnostic order:
+  `docs/homeassistant-frigate-via-device-2026-11-02.md`.
 
 - **`nginx.int`'s AAAA record is a ULA, and now points at `gw`**
   (`fd99:dead:beef:225d::1`; `nginx.leighhack.org`'s AAAA is the public

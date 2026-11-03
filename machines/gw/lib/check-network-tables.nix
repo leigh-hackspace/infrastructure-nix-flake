@@ -708,6 +708,64 @@ in
         builtins.toJSON (builtins.filter (n: builtins.elem n (INT.names ++ INT.fromHosts ++ builtins.attrNames INT.legacy)) (builtins.attrNames INT.exempt))
       }''
   );
+  # A `answeredBy` name answers with one box's address because a **socket** on that
+  # box is what the caller dials through the name. Three things can go wrong, and
+  # none of them is visible anywhere else in the network, so all three are asserted
+  # here: a `via` that is not a machine (the typo that leaves the name answering a
+  # box that does not exist, which renders as nothing and fails open nowhere else —
+  # this group is invisible to `machines/gw/int-dns.nix`, which compares only `names
+  # ++ exempt` against the door's vhosts, because a vhost serves no MQTT); a label
+  # that is also in another group or a device record (a name answered twice, which is
+  # the fault the paragraph above names — a client picks one of two addresses hours
+  # later, over a valid certificate, and the file cannot tell the two apart); and a
+  # rendered line that is not exactly one line carrying the address `common/hosts.nix`
+  # promises for that box.  **One line only, and IPv4 only, is a decision here, not
+  # an oversight:** this is the one name in the file that is not answered with the
+  # door, and `docs/router-and-dns.md`'s PARTIAL fault is a name whose IPv6 half sends
+  # packets somewhere they go nowhere — which is precisely what the old `legacy` row
+  # used to hand this name, the door's two IPv6 halves, and what a dual-stack MQTT
+  # client then hangs on before it ever reaches the socket.
+  #
+  # What the assertions above are *not* doing is noticing a vhost that appears for one
+  # of these names, and that half needs no assertion here: a front-door row renders a
+  # vhost on `gw`, and `machines/gw/int-dns.nix` requires every name this box serves to
+  # be answered by `names` or `exempt`, so "front the broker" fails that guard with the
+  # name printed. Between the two, a socket-backed name is answered by exactly one box
+  # and by nothing at the door.
+  assert (
+    need
+    (builtins.all (n: builtins.hasAttr (INT.answeredBy.${n}.via or null) HOSTS) (builtins.attrNames INT.answeredBy))
+    ''a common/int-dns.nix `answeredBy` name whose `via` is not a machine in common/hosts.nix: ${
+        builtins.toJSON (builtins.filter (n: !builtins.hasAttr (INT.answeredBy.${n}.via or null) HOSTS) (builtins.attrNames INT.answeredBy))
+      }''
+  );
+  assert (
+    need
+    (
+      builtins.all
+      (n: !builtins.hasAttr n RECORDS && !builtins.elem n (INT.names ++ INT.fromHosts ++ builtins.attrNames INT.legacy ++ builtins.attrNames INT.exempt))
+      (builtins.attrNames INT.answeredBy)
+    )
+    ''a common/int-dns.nix name answered by more than one group (`answeredBy` and a front-door list, or a `fromHosts`/`exempt` row, or a device record): ${
+        builtins.toJSON (builtins.filter
+          (n: builtins.hasAttr n RECORDS || builtins.elem n (INT.names ++ INT.fromHosts ++ builtins.attrNames INT.legacy ++ builtins.attrNames INT.exempt))
+          (builtins.attrNames INT.answeredBy))
+      }''
+  );
+  assert (
+    need
+    (
+      builtins.all
+      (n: let
+        nameLines = builtins.filter (l: has "\t${n}.${CONFIG.LOCAL_DOMAIN}" l) (TABLES.lines INT_HOSTS);
+      in
+        builtins.length nameLines == 1 && builtins.all (l: hasPrefix "${HOSTS.${INT.answeredBy.${n}.via}}\t" l) nameLines)
+      (builtins.attrNames INT.answeredBy)
+    )
+    ''an `answeredBy` name that does not render as exactly one line carrying the address of the box it is dialled through: ${
+        builtins.toJSON (builtins.attrNames INT.answeredBy)
+      }''
+  );
   # The door has to resolve to at least one address, and to the *same* number of
   # them whatever it is: `frontDoor` names a box, and the two boxes in the network
   # keep their addresses in two different tables (a device in common/dns-records.nix,
@@ -769,16 +827,22 @@ in
     ''a generated int-vhost line that is not `<address><TAB><name>.${CONFIG.LOCAL_DOMAIN}`''
   );
   # And the line count is the whole table: once per name per address, plus once per
-  # own-address name.  Nothing extra, nothing missing.
+  # own-address name (`fromHosts`), plus once per socket-backed name (`answeredBy`,
+  # one line each by the decision asserted above).  Nothing extra, nothing missing.
   assert (
     need
     (
       builtins.length (builtins.filter (l: l != "") (TABLES.lines INT_HOSTS))
-      == builtins.length INT_DOOR_NAMES * builtins.length DOOR_ADDRS + builtins.length INT.fromHosts
+      == builtins.length INT_DOOR_NAMES
+      * builtins.length DOOR_ADDRS
+      + builtins.length INT.fromHosts
+      + builtins.length (builtins.attrNames INT.answeredBy)
     )
     ''the generated int-vhosts file is not one line per (name, address): ${
         toString (builtins.length (builtins.filter (l: l != "") (TABLES.lines INT_HOSTS)))
       } lines for ${toString (builtins.length INT_DOOR_NAMES)} names x ${
         toString (builtins.length DOOR_ADDRS)
-      } addresses + ${toString (builtins.length INT.fromHosts)} own-address names''
+      } addresses + ${toString (builtins.length INT.fromHosts)} own-address names + ${
+        toString (builtins.length (builtins.attrNames INT.answeredBy))
+      } socket-backed names''
   ); "ok\n"

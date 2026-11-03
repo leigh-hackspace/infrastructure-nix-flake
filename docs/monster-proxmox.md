@@ -69,6 +69,25 @@ Inside, `apps1` keeps its own hand-written docker+systemd services under `/srv`
 `usertweaker`, `vulcanbot`, `zigbee2mqtt`, `hackspaceapi`, `home`). None of it is
 declarative; the flake only points at this box.
 
+**Two of those are parked, and the thing that makes that look confusing is Home
+Assistant's MQTT dial (measured 2026-11-02).** `mosquitto.service` and `zigbee2mqtt.service`
+both read `is-enabled=disabled`, `is-active=inactive` on apps1, and nothing on apps1 listens
+on 1883 (`ss -lntp | grep 1883` is empty there): the live broker is services1's podman
+`eclipse-mosquitto` (`machines/services1/services/mqtt.nix`) and the live zigbee2mqtt is
+services1's podman container too. Home Assistant's MQTT config entry dials
+`mqtt.int.leighhack.org` — a `legacy` row in `common/int-dns.nix`, i.e. "answers with the
+front door, served by no vhost" — so since the 2026-10-24 front-door move it dials `gw`,
+where nothing listens on 1883, and every Frigate **camera** entity in HA renders Unavailable
+while Frigate's HTTP-fed **sensors** keep counting. The broker's own journal is the dated
+proof of who connected and when. Receipts, the repair (all three dials retargeted to the
+broker's address inside off-flake runtime files) and the still-open declarative decision:
+`docs/mqtt-int-legacy-answer-2026-11-02.md`. The *other* HA-on-apps1 fault of the same week —
+HA core `2026.10.4` turning the Frigate integration's deprecated `via_device` into a fatal
+error, and the unpinned `:stable` tag that moved the box there — is
+`docs/homeassistant-frigate-via-device-2026-11-02.md`. Both are runtime state no guard reads
+and no `git log` line touches: fix them on the box, and re-read this section's date before
+trusting which box's broker is which.
+
 **Uptime Kuma is permanently disabled there (2026-11-01).** It was superseded on
 2026-09-24 (`e84f223`, "gatus: replace Uptime Kuma as the status page") — that change
 removed the `uptime-kuma.int` vhost and left the DNS record to be pruned — but the app

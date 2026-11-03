@@ -200,11 +200,15 @@ in rec {
   # Each entry is `{name, addresses, alias}`.  `alias` is the extra hosts field a
   # device's line carries (`<addr> switch2.int.leighhack.org switch2`, so `ping
   # switch2` works in the workshop) and a vhost's does not — nothing queries
-  # `grafana` unqualified.  Both fields are set by the two branches below rather
-  # than passed in, because "vhost or device" is decided by which list the name is
-  # in.  The zone is passed in, and the addresses come out of the two tables that
-  # own them, so nothing here can say a name resolves at an address the flake does
-  # not already promise at it.
+  # `grafana` unqualified.  All three fields are set by the three branches below
+  # rather than passed in, because "vhost, box, or socket-name" is decided by which
+  # list the name is in: `names ++ legacy` answer with the door's addresses (three
+  # lines each, IPv4 and the two IPv6 halves, because a `*.int` vhost missing its
+  # IPv6 half is the PARTIAL fault `docs/router-and-dns.md` names), `fromHosts`
+  # answers with `hosts.<label>` (one IPv4, plus the bare-name alias), and
+  # `answeredBy` answers with `hosts.<via>` for the box that runs a *socket* the
+  # name is dialled through — one IPv4, no alias, because the thing that dials it
+  # is an MQTT client typing a name and a port, not a browser typing a zone.
   intHosts = zone: records: hosts: vlans: int:
     builtins.concatStringsSep "\n"
     (
@@ -224,6 +228,12 @@ in rec {
               addresses = [hosts.${name}];
             })
             int.fromHosts)
+          ++ (map (name: {
+              inherit name;
+              alias = "";
+              addresses = [hosts.${int.answeredBy.${name}.via}];
+            })
+            (builtins.attrNames int.answeredBy))
         )
       )
     );

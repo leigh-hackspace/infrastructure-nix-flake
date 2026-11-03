@@ -67,6 +67,14 @@
 #              the drift check can tell "answered elsewhere on purpose" from
 #              "forgotten" — a name here that resolves at the front door is a bug
 #              in whatever answers it, not in this table
+#   answeredBy names answered with *one* box's address, read as `via` out of
+#              `common/hosts.nix`, which the door does not serve and cannot: the
+#              thing dialling the name dials a **socket** on that box, not HTTP.
+#              `legacy` cannot hold such a name (it answers at the door) and
+#              `exempt` cannot (machines/gw/int-dns.nix asserts `names + exempt`
+#              is exactly the door-served vhost names), and `fromHosts` cannot
+#              because its label has to name a machine and a broker is not one
+#
 {
   # The box every `*.int` name resolves to.  It moved from `services1` to `gw` on
   # 2026-10-24 with the front door (`docs/router-front-door-migration.md`): the router
@@ -139,12 +147,23 @@
     # forty public records while changing nothing on the LAN.  It has answered at
     # 10.3.1.20 since before this repo had a word for that.
     nginx = "the CNAME target of every public *.int record in DigitalOcean; no vhost, and it must keep resolving";
-    # mosquitto (machines/services1/services/mqtt.nix) publishes 1883/8883 from the
-    # container and is not HTTP, so it is not fronted by nginx: the name resolves at
-    # the front door and 404s. Kept because an MQTT client config somewhere may
-    # dial the name, and a name that stops resolving fails more confusingly than
-    # one that answers wrong.
-    mqtt = "mosquitto speaks MQTT on its own ports, not HTTP; this name has never been fronted";
+    # `mqtt` is **not** here. It moved out of this list on 2026-11-02, into the
+    # `answeredBy` group below, and that move is the reason this list's 404-excuse
+    # stops being true of the table as a whole: `legacy` answers with the front door,
+    # and the one name here whose client dials a **socket** rather than a browser
+    # therefore lost its socket the day the 2026-10-24 move re-pointed the door at
+    # `gw` — nothing on this box listens on 1883, so the broker was not 404ed, it was
+    # unanswered, and an MQTT client given no SYN reply sits inside its own timeout
+    # rather than failing. Deleting the record was never the answer either: three
+    # clients dial this name (Home Assistant, Frigate, zigbee2mqtt), all of them off-
+    # flake runtime files this flake only bind-mounts. Read
+    # docs/mqtt-int-legacy-answer-2026-11-02.md before moving any other name out of
+    # here, and ask what dials a name before you decide which group it is in.
+    #
+    # ZigBee stays here because its client *is* a browser: `zigbee2mqtt.int` is
+    # served at this box's nginx (`machines/services1/services/zigbee2mqtt.nix`), and
+    # a 404 over HTTP is only an excuse for a name something loads into a tab.
+    #
     # The headscale admin UI lives at `tailscale.leighhack.org` (a front-door row,
     # served by machines/gw/headscale.nix); `tailscale.int` is the name from before
     # that, with no vhost behind it.
@@ -170,6 +189,57 @@
     # `ldapsam:` line. docs/authentik-container-migration.md is the thing to read
     # before this one goes.
     ldap = "historical name for the authentik LDAP outpost; the outpost answers \"authentik.int\" (and 10.3.1.36) on 389/636, and nothing serves HTTPS on this name";
+  };
+
+  # A third answer, and the only shape it can be.
+  #
+  # A `*.int` name here can answer with the door, with a device's reservation, or —
+  # this group — with the address of the box that runs what the caller reaches *through*
+  # the name. That third answer exists because of one measurement, taken 2026-11-02
+  # after the 2026-10-24 front-door move: `mqtt.int.leighhack.org` resolved at
+  # 10.3.1.1, and nothing on that box listens on 1883 — `nc -z 10.3.1.1 1883` times
+  # out in six seconds, while `10.3.1.20:1883` answers, and mosquitto logged each
+  # probe as a protocol error at *its own* address. Nothing HTTP-ish was wrong
+  # anywhere; the clients were Home Assistant's MQTT integration, Frigate's
+  # notification channel and zigbee2mqtt, and the symptom was three weeks away from
+  # DNS: Frigate cameras `Unavailable` because `FrigateCamera` is a
+  # `FrigateMQTTEntity` whose `available()` needs an `available` push from a broker
+  # nobody is connected to (docs/mqtt-int-legacy-answer-2026-11-02.md owns all of it,
+  # including the fact that this name is **not** deletable — those three clients are
+  # in runtime files this flake only bind-mounts, and a deleted record blacks them
+  # out silently, which is what the parked 2026-10-22 follow-up had nearly done).
+  #
+  # Why it is a group and not one of the other lists: `legacy` answers a name at the
+  # door, which is exactly what is wrong here, and `machines/gw/int-dns.nix` asserts
+  # that `names ++ attrNames exempt` is *exactly* the names a vhost serves — putting
+  # `mqtt` in `exempt` would claim the door serves MQTT, and no vhost does. `fromHosts`
+  # is the near miss that forces a group: it answers with `hosts.<label>`, and `mqtt`
+  # is a broker, not a machine. So this group is invisible to both drift guards, and
+  # `machines/gw/lib/check-network-tables.nix` is what keeps it honest instead: a
+  # `via` that is not a key of `common/hosts.nix`, a label that is also a device
+  # record or a member of another group, and a name that renders as other than
+  # exactly one line carrying its box's address are each refused.
+  #
+  # One address, IPv4 only, deliberately: the old `legacy` row handed this name the
+  # door's two IPv6 halves, and `docs/router-and-dns.md`'s PARTIAL fault is a name
+  # whose IPv6 half sends packets somewhere they go nowhere. A name answering with
+  # A records only is the safe direction, and the MQTT clients here take the IPv4
+  # route every time.
+  answeredBy = {
+    mqtt = {
+      via = "services1";
+      why = ''
+        The MQTT broker is `machines/services1/services/mqtt.nix`'s podman
+        `eclipse-mosquitto`, published on 0.0.0.0:1883 from services1. Three
+        clients dial this name, all in off-flake runtime state: Home
+        Assistant's MQTT config entry (apps1's `.storage/core.config_entries`),
+        Frigate's `mqtt.host` (`/srv/frigate/config/config.yaml`), and
+        zigbee2mqtt's `server:` (`/srv/zigbee2mqtt/configuration.yaml`).
+        Home Assistant's is the entry that makes the fault read as a camera
+        fault; the broker's journal is what shows the truth (`sudo journalctl
+        -u podman-mqtt.service | grep -E "New client connected|disconnected"`).
+      '';
+    };
   };
 
   exempt = {

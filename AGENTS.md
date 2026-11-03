@@ -25,6 +25,7 @@ X first", X has already cost someone a day.
 | touch NAS mounts, the NAS itself, or backups/borg | `docs/nas-and-borg.md` |
 | touch the UniFi controller, its backups, or UniFi OS Server | `docs/unifi-os-server.md` — the appliance is a *downgrade* of the running controller, and `.unf` backups are encrypted with a key that is not on disk |
 | touch a Proxmox VM on monster1 | `docs/monster-proxmox.md` (+ `docs/monster-powercut-runbook.md` if anything is stopped) |
+| ask why Home Assistant's Frigate cameras read **Unavailable**, or touch HA on `apps1`, its MQTT broker, or `mqtt.int` | `docs/mqtt-int-legacy-answer-2026-11-02.md` (the socket behind a `*.int` name: the broker's journal, the three dials in off-flake runtime files, the repair, and the `answeredBy` group that answers the name now) + `docs/homeassistant-frigate-via-device-2026-11-02.md` (HA core `2026.10.4` makes the deprecated `via_device` fatal) + `docs/monster-proxmox.md` (apps1 is off-flake) + `docs/router-and-dns.md` |
 | touch the 3D print servers | `docs/printer-servers.md` |
 | touch the UPS, the power-cut behaviour, the fleet shutdown, or ask what happens when the mains go | `docs/ups-and-fleet-shutdown.md` (+ `machines/gw/ups.nix` for the deployed policy: the 300 s grace, the notice texts, the target list). **The UPS is on the router**, HID-only, so nothing sees it but NUT; the countdown is `upssched`'s, not Rust's; the outage and the shutdown both `wall` every server first, and that notice is the only intervention window there is |
 | touch the cameras (`cam5`/`cam7`/`cam9`/`cam8`, 10.3.2.10/.12/.17/.11) or their feeds into frigate — **since 2026-10-31 `cam5`+`cam8` run thingino (a bench-built SigmaStar port), `cam7`/`cam9` are still OpenIPC** | `cameras/README.md` (+ `cameras/c110.md` — the Tapo C110 hardware and reflash story behind them) and **`docs/camera-thingino-migration-2026-10-31.md`** for the thingino units: the endpoints moved to `:554/streamN` and are **unauthenticated by default**, the data partition **must** be wiped on changeover, and the overlay-shadowing failure mode ("associated, no IP") is diagnosed there. A camera that boots but has **no WiFi** → `docs/camera-wifi-recovery.md` for OpenIPC, §3 of the migration doc for thingino. `docs/camera-thingino-evaluation-2026-10-25.md` ("thingino is Ingenic-only") is superseded at its headline by that port — its receipts and re-check commands remain valid history |
@@ -146,6 +147,18 @@ X first", X has already cost someone a day.
     `common/int-dns.nix` rather than a vhost list. Adding a name, moving one, why each guard
     is where it is, and what the deploy itself found:
     `docs/router-front-door-migration.md`.
+
+    **A third class of `*.int` name exists, and neither guard can see it: a name a
+    *socket* is dialled through** (an MQTT broker's 1883, a WebSocket). Such a name is
+    `answeredBy` in `common/int-dns.nix` — `via` names the box in `common/hosts.nix`
+    that runs the socket, and it is **not** a row in `common/front-door.nix`, because no
+    vhost serves it. `machines/gw/int-dns.nix` therefore must not be told about it (its
+    assertion is *equality* with the door's vhost names, and putting a socket there would
+    be a lie), and `machines/gw/lib/check-network-tables.nix` is its guard instead: an
+    unknown `via`, a label in two groups or also in `common/dns-records.nix`, and a name
+    that renders as other than exactly one IPv4 line carrying that box's address. Answer a
+    socket name with the door and nothing 404s — the client hangs, and the symptom appears
+    far from DNS (`docs/mqtt-int-legacy-answer-2026-11-02.md`).
 25. **The remote-build hop is the daemon's ssh, not the operator's.** nix runs it as uid 0
     out of `HOME=/root`, so a working `ssh -i ~/.ssh/agent-hop-key 10.3.1.32` from your own
     account proves nothing about it, and a delegating box whose root never visited the
@@ -885,6 +898,16 @@ there is declarative. **Root SSH is keyed here** (unlike the flake machines):
   service was restarted. `telnet::ReadFail` now says whether the failure was the
   socket (EOF/reset/broken pipe) or a timeout, and only the latter may be waited out.
   `crates/switch-gui/README.md`, "A session whose socket dies is dropped, not kept".
+- **A `*.int` name may be dialled by a socket rather than a browser, and then moving the
+  front door re-points it at a box with no such socket** — `mqtt.int` answered with the door
+  and 404ed over HTTP, but the 2026-10-24 move sent three MQTT dials to 10.3.1.1 where nothing
+  listens on 1883, and the symptom showed up as every Frigate camera entity in Home Assistant
+  reading Unavailable while its HTTP sensors kept counting
+  (`docs/mqtt-int-legacy-answer-2026-11-02.md`). It answers with the broker's box now, through
+  `common/int-dns.nix`'s `answeredBy` group — the third answer a `*.int` name can take, and the
+  one both drift guards are blind to by design (no vhost serves a socket), so
+  `machines/gw/lib/check-network-tables.nix` is its guard. **Ask what dials a name before you
+  move it between groups, and never treat a `legacy` row's 404 as harmless without asking.**
 - **A UI that refuses an edit must say so.** A refusal that only appears in a banner above
   fifty rows, or only in the journal, is indistinguishable from a dead button — and the
   form should not offer a state the server will refuse.
