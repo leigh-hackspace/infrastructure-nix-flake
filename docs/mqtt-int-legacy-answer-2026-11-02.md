@@ -303,3 +303,29 @@ distinguishable from the MQTT one because the eight recovered and the MQTT error
    which is where "Unavailable" comes from: `_available = False` until a broker message arrives.
 4. Only then suspect the camera, Frigate's fps, or the feed — this time all three were healthy
    throughout, and `podman ps` said so.
+5. To settle whether the *symptom* is gone rather than whether a log looks fine, read HA's own
+   history on apps1 — the `camera.*` states and the `unavailable → recording` transitions are
+   all in there, with timestamps. The join is the awkward part: in this schema
+   `states.entity_id` is NULL and the id lives on `states_meta`, and this HA has no `entities`
+   table at all (that is the error that makes people give up on the database and go back to
+   `.storage/*.json`, whose mtimes lie):
+
+   ```bash
+   sqlite3 -readonly /srv/homeassistant/home-assistant_v2.db "
+     select m.entity_id, s.state,
+            datetime(coalesce(s.last_reported_ts, s.last_updated_ts, s.last_changed_ts),
+                     'unixepoch') as reported
+     from states s join states_meta m on s.metadata_id = m.metadata_id
+     join (select metadata_id, max(state_id) mid from states group by metadata_id) x
+       on x.metadata_id = s.metadata_id and x.mid = s.state_id
+     where m.entity_id like 'camera.%' order by m.entity_id;"
+   ```
+
+   (`sqlite3` is on apps1 at `/usr/bin/sqlite3`; the `coalesce` is needed because
+   `last_reported_ts` is NULL on rows HA wrote without a re-report, which is most of the
+   history — measured, not guessed.) `recording` is available, and a `reported` timestamp in
+   the last few minutes is the liveness proof, since the camera platform re-reports. Drop the
+   `max(state_id)` subquery and add `order by s.state_id desc limit 40` to see the
+   `unavailable → recording` transitions themselves, which is what distinguishes a
+   restart-window flicker from a dead link. Do not trust `ss` on services1 as a liveness read
+   for the broker (`docs/services.md`, "Three reads that answer 'is it alive'").

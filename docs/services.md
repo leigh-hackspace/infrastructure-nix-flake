@@ -550,6 +550,20 @@ name, so nothing now hardcodes this box's address. Read the module header,
 `docs/mqtt-int-legacy-answer-2026-11-02.md` and `docs/router-and-dns.md` before touching
 the name, the port, or any of the three config files.
 
+**Three reads that answer "is it alive", and one that looks like an answer and is not.** The
+journal is the dated one — `sudo journalctl -u podman-mqtt.service | grep -E "New client
+connected|disconnected"` names each client, the address it arrives from and when it died,
+and `keepalive` is 60 s so a dead session becomes a `disconnected: exceeded timeout` within
+about two minutes: eighteen quiet minutes is therefore proof, not absence of evidence.
+`$SYS` answers the same question right now, and it has to be asked **inside** the container:
+`sudo podman exec mqtt mosquitto_sub -h 127.0.0.1 -p 1883 -t '$SYS/broker/clients/connected'
+-C 1 -W 5`. The read that misleads is `ss` on services1, which shows **no** sessions at all —
+podman's published port is forwarded by `conmon` and the accepted sockets live in the
+container's namespace (measured 2026-11-03: four clients connected, empty `ss`). And the
+availability payload a client depends on is **one topic for the whole server**, `frigate/available`
+→ `online`: there is no `frigate/<camera>/available`, so a subscription with a `+` in that
+position finds nothing and reads like a dead broker.
+
 ## `crates/ups-watchdog/` — the outage notices, and the power-off that goes gw last
 
 Not a service in the usual sense: four modes, no port, no listener, and two
