@@ -689,6 +689,22 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   (`machines/pi-room-sys/README.md`).
 
 ## DNS / monitoring
+- **`just check-build` cannot pass at the current lock, and it is not this repo's build: the
+  pinned `strata` input fails its own fetch (2026-11-03)**. `nixos-system-aibox` fails as
+  `error: hash mismatch importing path '…-strata-unstable'; specified: sha256:04hc…,
+  got: sha256:05rr…`, and `strata-unstable` is the upstream project's own path — nothing in
+  this tree names it (`grep -rn strata-unstable --include=*.nix .` is empty), so the
+  pinned rev (`5e8a4cca7d690ac60ca37eb09e7d0e010099ad6d`, `flake.lock`) no longer produces
+  what its pin says. Measured on `nixos-system-aibox`; `services2` builds the same engine's
+  CUDA flavour, so expect its toplevel the same way — **not re-measured here**, because
+  building it is a 30 GB detour. What *is* measured matters more: `services1`'s and `gw`'s
+  toplevel paths evaluated at the failing commit are byte-identical to the ones running, which
+  is how to tell an input fault from a config fault in a hurry. Fixing it is a decision, not a command — `nix flake update strata` moves
+  **both** engines (the `follows` rule at `flake.nix`'s `strata` input, `machines/aibox/STRATA.md`
+  and `machines/services2/STRATA.md` for what a bump involves) — so it belongs with whoever is
+  touching strata, not bolted onto an unrelated deploy. Until then `just check-build` is red for
+  a reason no change here can fix, and `just check-eval` plus a
+  targeted `nixos-rebuild dry-run --flake .#<machine>` are the gates that still mean something.
 
 - **`nix flake check --no-build` on services1 fails at this lock over an eval-time derivation
   read (2026-11-02): `error: path 'w1qfxxfc0wwjzfqivfnqfqjf60dily0h-sops-secret-pg_pass.drv'
@@ -703,6 +719,17 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   build/deploy realises it and the flake step turns warning-free again — so treat
   `just check-eval` as the gate on services1 until then, and never read a red `just check` flake
   step there as "my change broke it" without re-running the same command against clean HEAD.
+
+  **Turned green on services1 on 2026-11-03, exactly as predicted and for exactly the reason
+  written above:** a `just check-build` run realised the `pg_pass` sops derivation into this
+  box's store, and `nix flake check --no-build` now prints `all checks passed!` — so `just
+  check` is green here end to end for the first time in a fortnight. **Nothing was fixed** to
+  make that happen: the eval-time read is still there, the step is green because of *this
+  store's contents*, and a box that has never built this configuration (or a store that has GC'd
+  the stub) goes red again with the same message. So the rule stays and "treat `just check-eval`
+  as the gate on services1" is now a statement about a *fresh* box rather than this one — read
+  the step, do not inherit its state, which is the same lesson the 2026-10-14 grafana baseline
+  note already carried.
 
 - **The router's DNS is three generated files now, so `common/int-dns.nix`'s `legacy`
   set is a to-do list, not a design** (added 2026-10-22). `nginx.int`,
