@@ -688,6 +688,37 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   convenience on the Pi Room VLAN and still worth knowing about
   (`machines/pi-room-sys/README.md`).
 
+## Nightly units that are red on services1 (found 2026-11-03 while reading `is-system-running`)
+
+`systemctl is-system-running` on services1 says **degraded**, and it has been saying it for
+long enough that it stopped being news — which is the actual finding, because a permanently
+red box is where a real fault hides. Two units, neither to do with anything that moved on
+2026-11-02/03 (both timestamps predate the DNS deploy by an hour or more):
+
+- **`update-containers.service` has failed every night since at least 2026-10-24 — ten
+  consecutive nights.** `Error: unable to copy from source docker://uosserver:c9603dec9010:
+  reading manifest … in docker.io/library/uosserver: requested access to the resource is
+  denied`, exit 125. The image name is the bug: Ubiquiti does not publish UniFi OS Server
+  under `docker.io/library/`, so the nightly updater asks Docker Hub for a repository that
+  will never answer, and every container after it in the list is never looked at (the run dies
+  on the first failure). Read `docs/unifi-os-server.md` before touching the pin — that doc
+  already records the appliance as a *downgrade* of the running controller, so "update the
+  image" is not the fix; not pulling it may be.
+- **`borgbackup-job-backup-srv.service` failed 2026-11-01, -02 and -03 in a row** (6 failures
+  across the journal, so it is intermittent-but-current), always with
+  `/srv/frigate/config/frigate.db-wal: file changed while we backed it up`, exit 1. Borg's 1
+  is the *warning* class, so an archive is still created — but the thing inside it is a torn
+  copy of a live SQLite WAL, which is a backup of `frigate.db` that nobody has promised can be
+  restored. The honest fix is one of: stop backing the database up file-by-file (dump it first
+  with `sqlite3 .backup`, which is what the Frigate docs want anyway), or exclude `*.db-wal`
+  and take the whole directory as a consistent pair. Either is a backup-policy decision, so it
+  is written down rather than taken at 01:40.
+
+Both are nightly in the sense that matters for the rule this repo keeps about red things: they
+make `just switch` output and any `is-system-running` check start out-looking-bad, so the first
+thing to do with either is to date it (`journalctl -u … | grep "Failed with result" | awk
+'{print $1,$2}' | uniq -c`) before deciding it is today's fault.
+
 ## DNS / monitoring
 - **`just check-build` cannot pass at the current lock, and it is not this repo's build: the
   pinned `strata` input fails its own fetch (2026-11-03)**. `nixos-system-aibox` fails as
