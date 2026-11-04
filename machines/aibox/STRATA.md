@@ -1094,6 +1094,22 @@ compiles the block drafter in, but using it needs a `tools/dflash2_pack.py` pack
 not a switch. Answers move (the QSA-selector half of the table above), so the house rule —
 compare the *answer*, not the banner — applies to anything compared across this bump.
 
+### What the CUDA side of the same bump did (recorded here for the pair, measured on services2)
+
+The same input move put a **CUDA** engine on services2 as well (`nix flake check` on
+aibox still builds `packages.strata-cuda`, and the bump needed it to stay buildable). Verified
+there the same day: `strata.service` active, generation and `system-good` equal
+(`i571xinhbg6ccpwk3qsm9zaz21rq0mr8-nixos-system-services2-…`), the engine reports
+`session is up (engine 0.1.56)`, and `/v1/models` still answers one model
+(`qwen3.8-flash-next-coder-iq1m`, `n_ctx 131072`), i.e. the pack did not change shape.
+One `/v1/chat/completions` call at a 73-token prompt measured **23.4 tok/s** against that box's
+own logged band of **26.4-28.2 tok/s** — same order, slightly low, and its log carries the
+MTP acceptance lines (`accepted 344 of 512, 5 checkpoints`). **Its prefill was not
+re-measured at this bump**: the chat-path attempt at a 31 641-prompt-token read returned an
+empty answer and its `usage` numbers do not survive reading (a 1 100 tok/s prefill on a 3060
+is a misread, not a finding), so no prefill claim is made for the CUDA side, and the bench
+scripts that CUDA's ritual used are not in the repo (`machines/aibox/strata-tune/` is).
+
 ### Deploy record, 2026-11-04 (what a bump of this engine costs on THIS box)
 
 - **The engine job is one derivation** (`kry29l9i1qawdkz30kw4bxm1yn8jca8p-strata-unstable.drv`):
