@@ -258,7 +258,143 @@ receipt). Fix forward instead: keep the tree dirty-but-good, re-switch, and conf
 *that* (which is what happened here; the fixed engine came up 52 s after the new
 unit started).
 
-### Update: engine 0.1.52 (app 0.2.7) — 2026-10-27
+### Update: engine 0.1.56 (app 0.2.10) — 2026-11-04
+
+`nix flake update strata` moved the input `5e8a4cca7d690ac60ca37eb09e7d0e010099ad6d`
+→ **`ffa80d73133ea5c548aefe57889a16e8085a938f`** (engine **0.1.56**: `CMakeLists.txt:11
+project(strata VERSION 0.1.56 LANGUAGES CXX)`; app **0.2.10**: `apps/desktop/package.json:4`
+`"version": "0.2.10"`). **1,074 commits in six days** (`gh api repos/Niko1221/Strata/compare/5e8a4cca7…...ffa80d731…`:
+`total_commits` 1,074, base 2026-10-27, head 2026-11-02; GitHub's `files` list caps at
+300, so it is a floor, not a count) — **four app revisions in one bump** (there is no
+`release-notes-0.2.8/9/10` file yet; the newest notes file in the tree is still
+`docs/release-notes-0.2.7.md`, so upstream writes the notes late and the release line is
+the CMake `project(… VERSION …)` plus the app's `package.json`). **Measured on the two
+input trees** (`diff -rq` between the store source the deployed engine was built from and
+the new tree): **569 files differ, 408 entries appear only in the new tree (two of them
+directories), 0 entries are removed anywhere** — the biggest groups are `apps/` (the
+desktop app, not built here), `tests/terminal`, `sycl/`, `src/kernels/cuda`,
+`strata_control`, `serve`, `src/core`, `tools/`, and `src/dsv41` (the DeepSeek-V4.1
+engine, compiled only under `STRATA_BUILD_DSV41`, `CMakeLists.txt:934`, **OFF by
+default**, and we do not pass it).
+
+**One default that applies to this card changed, and it changed *off*:**
+
+| Switch | Gate, as coded at the new rev | What upstream measured / decided |
+|---|---|---|
+| `STRATA_ROUTE_PRIOR` — **now OFF on every card.** It was **on** here at the previous pin (`sm120_series.hpp:78` used to answer `kRoutePriorSmallCard = 1.5f` for one discrete NVIDIA card ≤13 GiB — this 12 GB RTX 3060 is that card class) | `sm120_series.hpp:78` `route_prior_default(…) { return 0.0f; }` for every card; the header keeps `kRoutePriorSmallCard` (line 73) and says "**OFF by default again**… **It stays an opt-in**" | Their owner decision of 2026-10-29, issue **#4402**: repetition loops and weaker results in long agent sessions; their 0.2.7 agent check passed **4.5 of 10 with it on against 5.6 of 10 with it off**. The speed it bought on that same card was story +15% / **code +37%** (`docs/release-notes-0.2.7.md`), i.e. this reversal gives that back and takes the reliability instead — which is the direction wanted *here*, since this box is the one pi answers from (`PI_PROVIDER=strata-services2`) |
+| `STRATA_PROMPT_ATTN_IMMA` — **unchanged, still on** for sm_86 | `sm120_series.hpp:96` `prompt_attn_imma_default(…) { return !v026 && !hip && cc >= 80; }`, same as the previous pin | +1.1 to +1.8% prompt; **another summation order**, so answers move at a near-tie |
+
+To pay the route prior back, the dial is `STRATA_ROUTE_PRIOR = "1.5"` in the unit's
+`extraEnv` — no rebuild, and answers move (upstream's own words: "any set value is the
+user's own and wins on every card", `sm120_series.hpp:82 route_prior_resolve`). Nobody
+has re-run either number on **this** pack (IQ1_M, 256 of 512 experts) at either revision;
+the figures above are upstream's, on their quant, and this box's own are the switch's
+journal.
+
+**What is new at 0.1.56 but does *not* apply here**, so a later `STRATA_*` grep does not
+mistake it for ours, each gate read where it is decided: the **sm_121 (GB10 / DGX Spark)
+perf table** (`nv_defaults.cpp:53`, `mj == 12 && mn == 1` — ours is `mj == 8 && mn == 6`);
+the **sm_86 exact-perf table is byte-identical** between the two input trees
+(`nv_defaults.cpp:26-40`, the same nine rows, same `STRATA_SM86_PERF` master switch), so
+what this box prints as "exact speed switches" does not move in the bump; `STRATA_GR_V3`
+still answers only for a **sm_120-class card above 13 GiB** (`sm120_series.hpp:89`);
+`STRATA_MMVQ_IL_89` is still `cc == 89` only; the **AMD and gfx12 work — new in
+this bump: `include/strata/core/amd_community.hpp` and `include/strata/core/gfx12_extra.hpp`
+(and their two tests) appear only in the new tree** (aibox's side, not this one); `--draft dflash2` (the DFlash2 block drafter
+for Qwen3.8-Flash-Next, **opt-in**: `--draft` is unset here and its usage line
+`generate.cpp:1157` says "the draft source (**default mtp**")", so `--mtp DIR` below still
+selects the MTP drafter, and DFlash2 would additionally need `--draft-model PACK`
+built by `tools/dflash2_pack.py`); `--resident-budget-gib N` and `--ram-keep-gib W` (both
+new, both inert at their defaults — `ram_keep_from_gib(0) = 0` and the fallback predicate
+`arena_ram_fallback_allowed(…)` answers *allowed* when its variable is unset, which is the
+old plan plus one extra pass, below); `strata-split` (`STRATA_BUILD_SPLIT`,
+`CMakeLists.txt:2947`, **OFF**).
+
+**The new memory mechanism is the one code path this box's start now takes differently.**
+`include/strata/core/ple_residency.hpp` grew a RAM verdict for the expert arena —
+`:58 arena_ram_verdict` (`Load` / `FallBack` / `Warn` / `Refuse`), `:68
+arena_ram_fallback_allowed`, `:109 fallback_headroom` — and `generate.cpp` now runs it as
+two passes at most: **load the arena, and if the RAM is still short after the wait and the
+give-back, read the experts from the file for that run instead** and say so
+(`strata generate: experts via mmap (not enough RAM for the expert arena: the same source
+as --mmap-experts; …)`). Its own reason is upstream's **#4846 / #4051**: an arena loaded
+into an already-full host pushed a 60 GiB machine into reclaim and it had to be power-cycled;
+the engine still starts, never refuses. A cgroup limit below the arena is the only
+`Refuse`. `STRATA_ARENA_RAM_FALLBACK = "0"` is the previous behaviour, and
+`STRATA_RAM_KEEP_GIB` / `--ram-keep-gib` trade RAM the owner wants left free for the
+arena's presence. `:43 ple_lock_blocks_cache` (#4518) is the other half: the PLE table's
+*mlock* is now given back when giving it back makes the automatic conversation cache
+bigger — inert here, because `--conversation-cache-mib 0` is pinned (0.1.52's note above
+is why) and an explicit 0 is never resized. This box is where the difference is visible:
+it has always been the short-of-RAM case, and the journal now carries the verdict line.
+
+**The two cmake dials that decide what a CUDA build of 0.1.56 *is*, and neither is ours:**
+`STRATA_WINDOW_MAX_T` defaults to `auto` = **8 rows for CUDA** and 16 for HIP
+(`CMakeLists.txt`, and its comment gives the reason: a CUDA engine loads every kernel of
+its binary at start, so the wide instantiations "would take VRAM from the expert cache of
+every card") — same window as before, so no flag is needed and nothing moved; and
+`STRATA_AMD_COMMUNITY_TUNING` (**ON by default**, `CMakeLists.txt:98`), which compiles the
+community-made **gfx1010 SDWA dot product** into *this* CUDA build as well (only
+`-DSTRATA_AMD_COMMUNITY_TUNING=OFF` puts the portable signed-byte dot back) — that switch's
+*runtime* half, `STRATA_AMD_COMMUNITY_TUNING=0`, is aibox's gfx1030 rocBLAS tables.
+
+**The contracts, re-checked against the new tree before deploying** (the two named in the
+ritual above, both of which have moved once, plus the four the install phase assumes):
+
+- **All 13 flag pairs in `engineArgs` still parse** at 0.1.56 in `src/program/generate.cpp`:
+  `--pack` 3302, `--max-context` 3322, `--ple-gguf` 3350, `--kv` 3357, `--native` 3377,
+  `--expert-cache` 3435, `--prefill` 3451, `--spec` 3485, `--mtp` 3500, `--spec-min-p` 3507,
+  `--conversation-cache-mib` 3518 (now one branch with `--conversation-cache-slots`),
+  `--expert-profile` 3639, `--resident-experts` 3647 — and `--resident-experts`'s own
+  block is **byte-identical** to 0.1.52's (`mmap_experts = resident_cpu_experts =
+  resident_pin = resident_soft = true`, `resident_headroom = 4 GiB`, same two A/B
+  variables), so the low-RAM mode this box runs means the same thing it meant before.
+- **The `configFile` keys are all still read** by `serve/server.py`, which still takes
+  `--engine` / `--config` / `--host` / `--port` (its argparse, lines 9504-9520).
+- **The API pi dials is still there**: `POST /v1/messages` (the Anthropic dialect,
+  `serve/server.py:6` endpoint list, 7828 handles the `?beta=true` form) and
+  `reasoning_content` (11 occurrences) are both still served, and `/health` still
+  answers `loaded` / `engine` / `cache_max_tokens`.
+- **The install phase's copy list still covers upstream**, and not by directory luck:
+  the transitive first-party import closure of `serve/server.py` — resolved against the
+  new tree with `ast` — is **15 files, all inside `serve/`, `strata_cli/` and
+  `strata_control/`**, and **no first-party name resolves outside the copied set**,
+  including the new `serve/webfiles`, `serve/mcp`, `serve/prometheus` and the
+  `strata_control` rows (`tls`, `vram_fit`, `vision_reader`, `gpu_roles`) that 0.2.8-0.2.10
+  added. The build-time guard's three modules (`serve/server.py`,
+  `strata_control/procs.py`, `strata_cli/client.py`) all exist, so a rename in the next
+  bump still fails the build in seconds rather than the model load.
+- **The installed binaries still exist**: `add_executable(strata src/program/generate.cpp)`
+  at `CMakeLists.txt:893` and `add_executable(strata-device …)` at 446.
+- **The pinned `llama.cpp` is unchanged**: `setup.py:237 LLAMA_CPP_COMMIT =
+  "3cf03257f219afbe7334045ff7c6a06ac68c627d"`, and `third_party/ggml/VERSION.txt` in the
+  new tree carries the same hash — so the vendored ggml half of the build is byte-for-byte
+  what it was at the previous pin, and `strata-package.nix:44` needs no move.
+- **IQ1_M is still readable at runtime**, which is what the hand-prepared pack of 2026-10-22
+  depends on: `include/strata/artifact/gguf_reader.hpp:223` still has `case 29: // IQ1_M`,
+  `include/strata/kernels/cpu/iq_avx2.hpp:28` still names it, and `setup.py:415` still says
+  "the Coder's IQ1_M shards … same source and form". What moved is the *native pack build*
+  for **DeepSeek-V4.1** (`IQ1_M` → `IQ1_T_M`, `IQ3_XXS` → `IQ3_S` as the native class), not
+  the Coder's read path — re-pack only if a later rev drops the read path, not on this one.
+- **The data files the unit points at are unchanged**: `data/draft_vocab.bin` md5
+  `4135aad364e18d71caec866dc37d34e7` and `data/expert-profile-coder.bin` md5
+  `a7ea5acbdff82c1e73ee023c0e818c6b`, **equal between the two input trees** (and equal to
+  the values recorded at the two earlier bumps), and `diff -rq data/` reports **three
+  entries, all inside the DeepSeek-V4.1's own `data/dsv41`** (`coder-set.json`,
+  `profile-coder.bin`, `profile-coder.bin.sha256` — not ours). So the pack, the MTP runtime
+  and the coder profile still mean the same thing.
+
+**The same input move dirties aibox's engine too** — `machines/aibox/strata-package.nix`
+takes this input, so its HIP/gfx1030 engine recompiles on the next switch there, and
+0.2.8-0.2.10 is where the **AMD** work landed (the gfx1010 SDWA dot above, the gfx12
+Wave32 decode switches, HIP's window of 16). Read `machines/aibox/STRATA.md` before that
+switch; the CUDA engine this box needs is built on aibox either way, so the two jobs share
+the checkout.
+
+What gated it, and what the switch showed: see the paragraph below the deploy — the
+four assertion evals, `just fmt-check` and `just check-source-size` pass, and `nix flake
+check --no-build` at this lock still dies with `sops-secret-pg_pass.drv is not valid`
+(the eval-time secret read, verified against a clean HEAD, so it is not this change).
 
 `nix flake update strata` moved the input `7ddc17a` (0.1.48.1 / app 0.2.6) →
 **`5e8a4cca7d690ac60ca37eb09e7d0e010099ad6d`** (Control and every engine package
