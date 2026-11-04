@@ -391,6 +391,14 @@ Wave32 decode switches, HIP's window of 16). Read `machines/aibox/STRATA.md` bef
 switch; the CUDA engine this box needs is built on aibox either way, so the two jobs share
 the checkout.
 
+**Landed on aibox the same day, 2026-11-04.** The HIP side of this bump — what turned on for
+its gfx1030 (the community-tuning log line, the simt2 QSA selector default, the 8→16
+compile-time verify window that costs nothing at `--spec 4`), the control measurement against
+the plateau band, and the deploy record including the fact that a plain `just switch` there
+fails on the busy netboot bind mount and rolls the box back — are in
+`machines/aibox/STRATA.md`, "Update: engine 0.1.52 → **0.1.56** (the flake input), deployed
+— 2026-11-04".
+
 What gated it, and what the switch showed: see the paragraph below the deploy — the
 four assertion evals, `just fmt-check` and `just check-source-size` pass, and `nix flake
 check --no-build` at this lock still dies with `sops-secret-pg_pass.drv is not valid`

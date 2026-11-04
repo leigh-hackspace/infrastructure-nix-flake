@@ -648,7 +648,15 @@ run "finished but not upgraded":
   file in the toplevel's `etc/systemd/system`), so activation's `systemctl restart`
   of it fails and `switch-to-configuration` exits **4** — on 2026-10-15 that was
   the only thing that failed aibox's switch, and it failed *after* `/run/current-system`
-  had been flipped and after nginx/sshd/immich/strata had restarted. The dance
+  had been flipped and after nginx/sshd/immich/strata had restarted. **What that cost from
+  2026-10-22 on is a reboot, not just a nonzero exit**: all four deployable boxes now carry
+  `system.autoRollback.enable = true`, so an activation that makes the new generation current
+  and then exits 4 arms the five-minute countdown, and the box **reboots itself back into the
+  previous generation**. Measured on aibox 2026-11-04: 16:13:30 the busy unmount, the new
+  generation current, 16:19:03 the rollback unit firing, 16:20:02 the old generation's mount
+  remounted — after which `/run/current-system` was the old system and `strata.service` was
+  running the *old* engine. So on aibox the umount dance is not an optional tidy-up: plan it
+  before the switch, and do the retry as one unit with the confirm chained in it. The dance
   `just switch-netboot` already documents is the fix, and it does **not** need the
   client reboot when you are only re-pointing the export:
 

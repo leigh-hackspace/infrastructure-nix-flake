@@ -419,6 +419,19 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   be measured for whichever runtime the unit actually loads — `strata-device --selftest`
   prints `driver / runtime` and is the one-line check of which that is.
 
+  **Addendum, 2026-11-04 (engine 0.1.56):** the loader now *names* the versions it holds
+  community tables for — the deployed unit prints, on every start,
+  `community rocBLAS tables for gfx1030 are loaded when the running rocBLAS is exactly
+  5.4.0.ad84daa81c or 5.2.0.dabb6df2b98-dirty and STRATA_ROCBLAS_TUNING points at them`,
+  and nixpkgs' rocBLAS is still **5.2.70203**, so both are still refused and the work above
+  still stands; what the same new block turned **on** for this card at 0.1.56 is its other
+  half — the **simt2 QSA selector is now the default** (#3073, "community-tested only",
+  `STRATA_SELECT_SIMT=0` puts the old selector back, no rebuild, answers move). Measured
+  receipts for the HIP side of the bump — the control bench against the plateau band, and
+  the fact that a plain `just switch` on aibox fails on the busy netboot bind mount and
+  auto-rolls the box back — are in `machines/aibox/STRATA.md`, "Update: engine 0.1.52 →
+  **0.1.56** (the flake input), deployed — 2026-11-04".
+
   **And try the one-line version first.** The engine prints, unprompted, on every start of
   the deployed unit (seen in `/var/lib/strata/strata.log` on 2026-10-28):
 

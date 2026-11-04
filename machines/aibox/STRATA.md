@@ -1012,6 +1012,140 @@ To make either the default, set in `~/.pi/agent/settings.json`:
 (and drop `llamaServerUrl` / the `pi-llama-cpp` package if llama-server stays
 displaced — it talks to llama.cpp's own endpoints, not Strata's).
 
+## Update: engine 0.1.52 → **0.1.56** (the flake input), deployed — 2026-11-04
+
+`nix flake update strata` moved the shared input `5e8a4cca7d690ac60ca37eb09e7d0e010099ad6d`
+→ **`ffa80d73133ea5c548aefe57889a16e8085a938f`** (engine **0.1.56**, `CMakeLists.txt:11
+project(strata VERSION 0.1.56 LANGUAGES CXX)`; app **0.2.10**, `apps/desktop/package.json:4`
+`"version": "0.2.10"`). This is the **HIP side** of the bump services2's CUDA engine took
+the same day; what changed on the CUDA side — including the one default that applies to
+that box's sm_86 and turned *off* — is `machines/services2/STRATA.md`, "Update: engine
+0.1.56 (app 0.2.10) — 2026-11-04".
+
+### What the HIP engine at 0.1.56 actually is (read off the compile lines, not the changelog)
+
+The build's own command line, from the running `aibox-hip-build` job:
+`-DSTRATA_VERSION="0.1.56"`, `-DSTRATA_HIP_ARCHS="gfx1030"`,
+**`-DSTRATA_VERIFY_MAX_T=16`**, `-DSTRATA_HAVE_DFLASH2=1`, `-DSTRATA_Q6K_EXPERTS=1`,
+`-x hip --offload-arch=gfx1030`, toolchain clang 22 / clr 7.2.4 / device-libs 22.0.0.
+The engine is `/nix/store/f0jwild16n6wjxjly1h1shslsrnw87x4-strata-unstable` and
+`strata --version` prints `strata 0.1.56`.
+
+Checked at the new rev **before** the switch, from the store source
+(`/nix/store/yr7fhrbwnb7hwjclcf535kc486rhy7k5-source`, i.e. the flake input, not a
+changelog):
+
+- **The pinned llama.cpp is unchanged** — `setup.py: LLAMA_CPP_COMMIT =
+  "3cf03257f219afbe7334045ff7c6a06ac68c627d"` and `third_party/ggml/VERSION.txt` names
+  the same rev — so the ggml / i-quant block-layout side of the build is the same bytes
+  every previous engine here built against.
+- **`data/` moved nothing we read**: `expert-profile.bin` (`8f59b4aa…`),
+  `expert-profile-coder.bin` (`a5146611…`) and `draft_vocab.bin` (`b1e1d3a7…`) hash
+  identically at the new rev. **No re-prep**: the pack under
+  `/home/leigh-admin/Strata/pack/iq2xs` and the MTP runtime under `…/mtp/rt` (prepared
+  2026-10-05) are still the right bytes for this engine.
+- **The install-phase contract guard ran and passed** (`import serve.server,
+  strata_control.procs, strata_cli.client`). That guard exists because a 0.1.5x tree
+  would otherwise have crash-looped this box in a `ModuleNotFoundError` — the identical
+  failure services2 met nine days before it bit here; "the build fails in two seconds"
+  is the point of it, and this bump exercised it.
+- **The arch gate is unchanged**: `strata-device --list-devices` run *without*
+  `HSA_OVERRIDE_GFX_VERSION=10.3.0` still refuses the card verbatim — "arch gfx1035 …
+  is not an architecture this Strata engine was compiled for (gfx1030)" — so the override
+  stays, and `--pcie-mode direct` is still gated by `strata-tune/alias-check.sh`: run
+  after the deploy it answers `alias 0x78da28fc8000 → the host pointer itself (unified
+  addressing)`, "a kernel reads the alias correctly **holds**", and the running engine
+  reports **+14.3 % / +14.4 % of routed experts over PCIe** — the same shape as before the
+  bump. (The one check it prints as "did not hold" is *the alias is a distinct device
+  address*, which does not hold on Linux by design; the script says a Windows host is
+  expected to fail some.)
+
+### The two switches the bump turns for this card, and what each one is worth
+
+| Dial | Gate, read where it is decided | What it costs here, measured |
+|---|---|---|
+| `STRATA_AMD_COMMUNITY_TUNING` (default **ON**) — the engine log now prints this line for this card **for the first time** | `include/strata/core/amd_community.hpp` — a file that does **not** exist in the 0.1.52 source still in this box's store (`/nix/store/vcaxcamli22j5frq81xbzxjl98lmc6g5-source`) and does exist in the new tree | Two halves that behave differently. **(a)** the community rocBLAS tables stay **inert**: the gate is an exact version match — "loaded when the running rocBLAS is exactly `5.4.0.ad84daa81c` or `5.2.0.dabb6df2b98-dirty` and `STRATA_ROCBLAS_TUNING` points at them" — and nixpkgs' rocBLAS reports **5.2.70203**. **(b)** the **simt2 QSA selector is now the default** (#3073, "community-tested only") — a different reduction order in the QSA layer, so **answers move slightly**. `STRATA_SELECT_SIMT = "0"` in `extraEnv` puts the old selector back with no rebuild. The log line, verbatim from `/var/lib/strata/strata.log`: `strata: AMD community tuning (STRATA_AMD_COMMUNITY_TUNING=0 turns it off): on: community rocBLAS tables for gfx1030 are loaded when the running rocBLAS is exactly 5.4.0.ad84daa81c or 5.2.0.dabb6df2b98-dirty and STRATA_ROCBLAS_TUNING points at them (#3343/#3924); the simt2 QSA selector is the default (STRATA_SELECT_SIMT=0 or 1 overrides) (#3073); community-tested only` |
+| `STRATA_VERIFY_MAX_T` **8 → 16** | `CMakeLists.txt`'s `STRATA_WINDOW_MAX_T` — the variable does **not exist** in the 0.1.52 source on this box (`grep -c WINDOW_MAX_T` there answers 0), and that source has **no `include/strata/kernels/window_limits.hpp` at all**, so 8 was the only window that ever got compiled; the new CMake's `auto` answers **16 for HIP** (8 for CUDA) | **Nothing at this config's runtime.** The engine's own line is still `strata verify: window up to 6 tokens, 58.3 MiB of device buffers` — `--spec 4` caps the window at draft+1, so the wide instantiations are extra *code*, not a wider dial. What it does change is that this box now carries the wide instantiations, i.e. the #267 verify-window crash zone this directory records has more compiled shapes in it than the box ran before; pinning it back to 8 is a rebuild (`-DSTRATA_WINDOW_MAX_T=8` in `strata-package.nix`'s `cmakeFlags`), not an env line. |
+
+### The control measurement (the plateau band is the control, per the ritual above)
+
+`machines/aibox/strata-tune/strata-bench.py` driven **through the front door**
+(`https://strata2.int.leighhack.org`; the door's `strataBearer` row injects
+`strata_api_key`, so the bench holds no secret), against the deployed 0.1.56 engine:
+
+```
+short-decode    prompt_n=70     prompt/s=16.1   decode_n=200  decode/s=9.3    draft=101/149  wall=26s
+long-prefill    prompt_n=6943   prompt/s=90.3   decode_n=30   decode/s=10.2   draft=18/25    wall=80s
+long-prefill-2  prompt_n=6953   prompt/s=90.1   decode_n=30   decode/s=10.8   draft=18/22    wall=80s
+```
+
+Decode at **9.3 tok/s** sits inside the plateau band this directory's control is
+(**9.4-9.6 tok/s = 225-231 ms per window** at 4096 slots), so the bump did not move decode
+on this card — and that is the only comparison the two eras have in common. **The two cold
+prefills at 90.1-90.3 tok/s are NOT comparable to the 82-84 tok/s recorded on 2026-10-28**
+("Prefill 2.2×"): that was a **13 069-token** cold read and these prompts are **6 943 /
+6 953 tokens**, and the per-token rate depends on the prompt length (the fixed start-up
+amortises over it). Read it as *no measured prefill regression*, not as +8 %.
+
+`draft=101/149` is MTP accepting; the start line says
+`Drafting: MTP (the DFlash2 drafter isn't downloaded yet)` — `-DSTRATA_HAVE_DFLASH2=1`
+compiles the block drafter in, but using it needs a `tools/dflash2_pack.py` pack and
+`--draft dflash2`, which is **not** ours to inherit silently: DFlash2 stays an open item,
+not a switch. Answers move (the QSA-selector half of the table above), so the house rule —
+compare the *answer*, not the banner — applies to anything compared across this bump.
+
+### Deploy record, 2026-11-04 (what a bump of this engine costs on THIS box)
+
+- **The engine job is one derivation** (`kry29l9i1qawdkz30kw4bxm1yn8jca8p-strata-unstable.drv`):
+  every ROCm/HIP dep was already in aibox's store, so unlike the 0.1.52 bump's 25-derivation
+  CUDA job this one costs the engine's own compiles and nothing else. Run as
+  `systemd-run --no-block --unit=aibox-hip-build` → `/tmp/aibox-hip-build.log`, exit 0.
+  **`systemctl stop strata` before it**, as the header says: measured during the job, 57 GiB
+  available / 2 GiB used; with the engine loaded the box has ~7-10 GiB and a HIP engine
+  build does not fit in that.
+- **A plain `just switch` on this box fails, and the failure reboots the box.** The netboot
+  export's `/exports/netboot-squashfs` bind mount is busy — activation stops and starts it
+  and the unmount answers `umount: /exports/netboot-squashfs: target is busy` (status 32)
+  — so `switch-to-configuration` exits **4** (`Failed to restart
+  exports-netboot\x2dsquashfs.mount`). Measured: 16:13:30 the failed unmount, the new
+  generation already current, and because the activation had made it current
+  **auto-rollback rebooted aibox back into the previous generation** (16:19:03 the rollback
+  unit, 16:20:02 the old mount remounting), after which `/run/current-system` was the old
+  generation and `strata.service` was running the **old** engine (`2i0ncx0s…`, 0.1.52).
+  This is `docs/network-upgrade-runbook.md`'s known trap ("The netboot export makes every
+  aibox switch fail, and the fix is the umount, not the reboot") — the fix is that doc's
+  dance, i.e. `just switch-netboot`'s first line, and not a new idea. What that doc did not
+  yet say is the consequence: a status-4 activation **arms the rollback countdown on a
+  deployable box**, so the retry has to be planned, not improvised under a reboot.
+- **The landing attempt, one unit, chained confirm** (`aibox-sw2`, script
+  `/tmp/aibox-sw2.sh`, log `/tmp/aibox-sw2.log`): `umount -f -l /exports/netboot-squashfs`
+  → `nixos-rebuild switch --flake .` (**exit 0**) → **`nixos-confirm` in the same invocation**
+  (exit 0) → `mount -a`. That switch built **1 154 derivations and copied 2 087 paths** — aibox
+  was behind on the SPA/wasm rebuilds, the pi-room netboot image (`nixos-system-pxeclient`,
+  `squashfs.drv`) and the CUDA-era packages — but the **engine derivation and the run config
+  were already in the store**, which is what makes a strata bump cheap on aibox once the
+  toplevel has been carried.
+- Landing numbers, from the switch's own journal: the new generation
+  `/nix/store/wgnqn5a1lnnd5xn5bmsgxjfs3bcyvxk5-nixos-system-aibox-26.11.20261014.319e4ce`
+  is **both** `/run/current-system` and `system-good`; **0 failed units**; the activation
+  restarted `strata.service`, which reloaded at **33.02 GiB at 4.30 GiB/s (14 s)**,
+  `filling the GPU's expert cache (4292 experts, 5.76 GiB of VRAM)`, `ready: http://10.3.1.32:8080/v1
+  … context 262144 tokens, API key required`, and the engine's log says `session is up
+  (engine 0.1.56)` with **9234 MiB of VRAM free with everything loaded**.
+- **The run config moved only where the engine moves.** Diffed the previous generation's
+  run config (`qb7bsqxc0id215sh6y0zpmdg51crysgg-strata-iq2xs.json`) against the new one
+  (`1ndcfbc6iq4hck44p5cgv2wyjybkq3h3-strata-iq2xs.json`): exactly two keys differ — `exe`
+  (the engine store path) and the `--expert-profile` path inside `args` (it lives *in the
+  engine package*). Every flag and every env line is byte-identical, so `STRATA_HIP_PROMPT_F16=1`,
+  `--pcie-mode direct`, `--conversation-cache-mib 1536` (+ slots/min-tokens), `--spec 4 --spec-min-p 0.5`,
+  `--expert-cache 4096`, 262 144 context, and the #884/#750 mitigations are **our dials, unchanged**
+  — the F16 prompt path is ours and was already on, not a new default from this bump.
+- **The pi Room clients were not rebooted.** The runbook's "don't" (rebooting ten clients
+  unprompted) is what stopped `just switch-netboot`'s client-reboot loop here; the switch did
+  rebuild the image and re-export it, so the clients take the new image on their next boot,
+  and nothing in `machines/pi-room-sys/` changed in this commit. Open, deliberately: the
+  clients are still booting the previous image's closure.
+
 ## Re-measuring
 
 `strata-tune/` in this directory: `sudo ./strata-exp.sh <expert-cache> <prefill>
