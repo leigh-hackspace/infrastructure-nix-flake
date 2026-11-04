@@ -1734,7 +1734,7 @@ that **need an owner or a decision** rather than another measurement.
 
   **Two things to check before flashing it.** (1) The image **prunes `sc3338`**: its
   exclusion list drops `/etc/sensors/sc3338.bin` and `sensor_sc3338_mipi.ko` (the board is
-  SC3336 per `cameras/c110.md`), leaving sc3335/sc3336/sc401ai — and `cam8`'s env says
+  SC3336 per `docs/archive/c110.md`), leaving sc3335/sc3336/sc401ai — and `cam8`'s env says
   `sensor=sc3338` and its current rootfs loads that module with no `insmod` error. So WiFi
   would come back and the *picture* is what needs proving; `ipcinfo -s` (a real probe, not
   the env) decides it. (2) The build's own kernel is 2 003 264 B of a 2 097 152 B partition,
@@ -1892,14 +1892,19 @@ that **need an owner or a decision** rather than another measurement.
   decision lands, not frigate's YAML. Read `cameras/README.md` fault 13 first: "fix it by editing
   frigate" is explicitly not the fix.
 - **thingino was looked at, and it is not a route off OpenIPC for this fleet** (measured
-  2026-10-25 — **`./camera-thingino-evaluation-2026-10-25.md`**, one command per claim). Short
+  2026-10-25 — **`./archive/camera-thingino-evaluation-2026-10-25.md`**, one command per claim;
+  **that answer is dead and the doc is archived**: the SigmaStar port exists, `cam5` and `cam8`
+  ship it, and the port's own repository is the SSOT — rule 30. The item is kept because the
+  purchase note at its end still stands and because "how did we come to think that?" is worth
+  being able to answer). Short
   form: thingino is firmware for **Ingenic** SoCs; 252 device configs and 176 release images
   contain no SigmaStar board, and our cameras are `ssc337` ×2 and `ssc333` ×1 (cam1 is
   Xiongmai-family, see the item above). Its August-2026 SigmaStar *seam* is real but its
   platform PR #1424 was closed unmerged on 2026-08-16 — "nothing builds this board yet" — and
   the one SigmaStar model its Kconfig knows (`ssc30kq`, `infinity6e`) is not our chip. The
   update these cameras can actually take is the OpenIPC one already staged and pre-flighted
-  (`./camera-sd-card-firmware-flash.md`). **Blocks:** nothing; it closes a question so it does
+  (`./camera-sd-card-firmware-flash.md`) — still true of `cam7`/`cam9`, which are the OpenIPC
+  units now. **Blocks:** nothing; it closes a question so it does
   not get re-asked from a forum post. **Needs:** re-open only against evidence, with the four
   commands in that doc's §8 — `Config.soc.in` naming `ssc333`/`ssc337`, *and* a `configs/**`
   defconfig for a board with that chip, *and* a release asset for it. Two of three is not
@@ -2014,7 +2019,37 @@ that **need an owner or a decision** rather than another measurement.
   reflashed key - an agent pinning a new host identity is not TOFU, which is why this is an item and
   not a done thing. (The hop key itself is re-installed on both thingino units as of 2026-10-31;
   cam5's `authorized_keys` also holds three operator keys, which is the re-check the migration doc
-  asked for.)
+  asked for.) **Re-measured 2026-11-04: `10.3.2.11` (cam8) is in the same state** — `ssh` to either
+  thingino unit dies at `Host key verification failed`, offending entries at `~/.ssh/known_hosts:51`
+  and `:54`, so nothing in this repo can currently read either unit, including its running payload
+  hashes (the next item). Whatever re-keys them, `cam-*` and that read are both closed by it.
+- **The thingino pin moved out from under this repo, and its hash table is now a statement
+  about a release rather than about the fleet** (measured 2026-11-04 while archiving the C110
+  docs — rule 30, `docs/archive/README.md`). Two separate things, both verified from a fresh
+  clone of the SSOT: **(a)** recreating that repo as a standalone (the fork-network fix, the
+  build-deploy doc §7) **replayed the branch**, so the pinned commit `1286efbd3` is on no branch
+  at all — `git merge-base --is-ancestor c110-fleet-20261031 ssc333-infinity6b0` exits 1, and its
+  tree survives as branch commit `46602f946` — so `git clone -b ssc333-infinity6b0` gets a head
+  the build gate refuses, and the range `c110-fleet-20261031..ssc333-infinity6b0` counts **30
+  commits, 10 of them genuinely new** (the speaker/audio bring-up and the `prudyntctl` shim, the
+  two night-latch fixes, the Wi-Fi reconnect watchdog, `docs/cameras/tapo-c110.md` itself, the
+  repack/container-trap docs, the patch re-sign; the other 20 are replays of work already in the
+  tag's lineage, since the re-creation rewrote every SHA and `A..B` compares reachability, not
+  content); **(b)** that guide's outcome log records a payload
+  pushed to `cam5` over ssh on **2026-11-02** whose `uImage`/`rootfs.squashfs` md5s are **not**
+  `cameras/thingino-manifest.sh`'s — a deploy path that never touched this repo, so the manifest
+  and §3 of the build-deploy doc describe the bytes of record and not any unit. Nothing is
+  broken: the units boot, frigate is fed, `cam-fw-verify` still guards the staged files. **This
+  is the drift the pin exists to catch, caught in the other direction.** **Blocks:** believing
+  `cameras/thingino-manifest.sh` about "what cam5/cam8 run", and re-keying the units (previous
+  item). **Needs:** a human to read the running hashes off both thingino units and then either
+  move the manifest + `FW_COMMIT` to what they run (one commit, narrative line included —
+  build-deploy §5) or record deliberately that this repo pins the release and the fleet drifts
+  from it; and decide whether payload pushes from the firmware repo are the way this is going to
+  work, because if they are, the manifest should say so instead of pretending to be the fleet.
+  Re-verify with `git -C ~/Projects/thingino-firmware log --oneline
+  c110-fleet-20261031..ssc333-infinity6b0`, `just cam-fw-verify`, and
+  `gh release view c110-fleet-20261031 --repo cjdell/thingino-firmware`.
 - **The wireless access layer has no owner in this repo and is now the camera fleet's binding
   constraint.** Four APs, one SSID, three channels, `auto` on three of them and a *pinned* channel on
   AP4 that disagrees with the frequency its own BSSID is heard on (config `6`, measured 2447 = ch 8);

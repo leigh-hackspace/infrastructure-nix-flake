@@ -6,12 +6,15 @@
 #   usage: THINGINO_ALLOW_OTHER_HEAD=1 ...      # build what the tree happens to hold
 #
 # The build is a containerised Buildroot run (ghcr.io/themactep/thingino-builder-image
-# via podman/docker); this recipe builds no Nix anything, so it works on any box
-# that holds the tree — in practice the bench, because the branch is local to it
-# (docs/camera-thingino-build-deploy-2026-10-31.md "What a build needs").
+# via podman/docker); this recipe builds no Nix anything, so it works on any box that
+# holds the tree.  The tree is the SSOT — cjdell/thingino-firmware, branch
+# ssc333-infinity6b0 — and how to build it is documented there (AGENTS.md, plus
+# Makefile.container and build-container.sh); what is documented here, in this repo, is
+# only which commit this fleet is allowed to flash.
 #
-# Every refusal below is a bench lesson turned into a gate; the receipts are that
-# doc and the bench execution log:
+# Every refusal below is a bench lesson turned into a gate; "bench tip N" and "the bench
+# execution log" are the retired scratchpad's own docs, preserved as
+# tapo-bench-docs.tar.gz among the assets of release c110-fleet-20261031:
 #   * `container-make` + `MAKECMDGOALS=br-all`, never a bare `all` — with no goal
 #     Makefile.container just pulls the builder image and exits 0 having built
 #     nothing, and `MAKECMDGOALS=all` on a SigmaStar camera dies at the end on the

@@ -759,12 +759,17 @@ edit-secrets:
 # `cam5` `cam7` `cam9` are Buildroot/OpenIPC boxes on VLAN 226 (10.3.2.10/.12/.17,
 # pinned by MAC in `common/dns-records.nix`, which is the table these recipes read —
 # there is no second copy of the addresses to drift).  They run no NixOS and no
-# systemd: their whole state is files under `/etc` in a tmpfs overlay (704 KB,
-# ~450 KB free) that a reboot re-reads and a firmware reflash overwrites, so
-# nothing in the flake sees them and a fault on one is invisible from the box
+# systemd: their whole state is files under `/etc` on a **jffs2 volume on the flash's
+# own settings partition** (`/dev/mtdblock4 on /overlay`, 704 KB) with `/` an `rw`
+# overlay on top of it — so a write to a camera persists, a reboot undoes nothing, and
+# a kernel/rootfs reflash leaves that partition alone (it is *not* a tmpfs re-read at
+# boot; this comment said so until 2026-10-25 and was wrong).  Nothing in the flake
+# sees them and a fault on one is invisible from the box
 # they are consumed on (services1's frigate pulls their RTSP through its go2rtc).
-# Read `cameras/README.md` before changing anything on one; the device-side
-# story (how an OpenIPC camera is opened up at all) is `cameras/c110.md`.
+# Read `cameras/README.md` before changing anything on one.  The device-side story
+# (hardware, flash layout, how to flash) lives in the firmware's own repository,
+# `cjdell/thingino-firmware` branch `ssc333-infinity6b0`, whose camera guide is `tapo-c110.md`;
+# the pre-thingino bench guide is `docs/archive/c110.md`.
 # `cameras/inventory.sh` is the busybox-ash report; `cameras/config/` holds the
 # pulled /etc files.  The fleet is bootstrapped by `cam-key`, which is the one
 # recipe that asks for the device password (once, interactively): the devices
@@ -941,7 +946,7 @@ cam-keytest name:
 
 # ------------------------------------------------------------------- firmware
 # A firmware update on these boxes is a ceremony, not a command, and the four
-# recipes below are the ceremony in order.  `cameras/c110.md` §8 still describes
+# recipes below are the ceremony in order.  `docs/archive/c110.md` §8 still describes
 # the 2024 route — an 8 MB full-chip image written from U-Boot with `sf erase` /
 # `sf write` — and that is *not* what upstream ships now: a current nightly tgz
 # holds `uImage.<soc>` + `rootfs.squashfs.<soc>` and nothing else, and the tool is
@@ -968,6 +973,10 @@ cam-keytest name:
 # policy the thingino side grew around rather than broke — the thingino build/verify
 # and the two deploy ceremonies (rescue card, changeover) are the section at the end
 # of this file, and neither reflashes anything without a human reading its output.
+# Everything about the firmware *itself* — how it is built, what the C110's flash
+# layout is, how to flash one from stock, what a payload update costs — is documented
+# in the firmware's own repository (cjdell/thingino-firmware, branch
+# ssc333-infinity6b0; its tapo-c110.md camera guide and its AGENTS.md).
 cam-preflight name:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -1174,14 +1183,23 @@ cam-card name:
 # These four recipes are this repo's half of owning that: the pins and hashes the
 # image has to match (`cameras/thingino-manifest.sh`), the build, the card, and the
 # one changeover ceremony — the full story of what each gate is for is
-# docs/camera-thingino-build-deploy-2026-10-31.md.  What has NOT changed is the
+# docs/camera-thingino-build-deploy-2026-10-31.md.  **The firmware itself is documented
+# where it lives**, in the SSOT: cjdell/thingino-firmware, branch ssc333-infinity6b0
+# (private; clone it and `git submodule update --init --recursive`, plain, never --remote).
+# Its `tapo-c110.md` is the C110 guide (hardware, flash layout, flashing from stock, the
+# rescue card, updating a running unit, what has been payload-pushed since the pin) and its
+# own AGENTS.md is the build recipe — nothing about the firmware is restated here.  What that
+# repo cannot know is the pin: the commit these hashes describe survives only as tag
+# `c110-fleet-20261031` (§1 of the build-deploy doc), so a fresh clone's branch head is
+# *refused* by cam-fw-build.  What has NOT changed is the
 # policy above: these deploy things a human watched through a rehearsal; there is
 # still no recipe that reflashes a camera unattended, and on a thingino unit a
 # payload update is a card and a power cycle, never ssh (erasing mtd3 under a
 # thingino root is the watchdog reset that killed the first restore at 92 %).
 #
 #   just cam-fw-build                    containerised Buildroot run of the pinned
-#                                        branch, ends in cam-fw-verify or a failure
+#                                        commit (the tag, not the branch head), ending
+#                                        in cam-fw-verify or a failure
 #   just cam-fw-verify                   artifacts + geometry vs the manifest
 #   just cam-fw-fetch                    restage the flashed bytes of record from the
 #                                        SSOT release and verify them (no build needed)

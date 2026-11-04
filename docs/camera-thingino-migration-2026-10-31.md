@@ -1,21 +1,26 @@
 # thingino on the SigmaStar fleet: the port exists, and `cam5` + `cam8` now run it
 
-**2026-10-31.** `cameras/README.md` and `docs/camera-thingino-evaluation-2026-10-25.md`
-both say, with receipts, that thingino is not an option for these cameras because upstream
-builds only Ingenic SoCs. **As of today that is no longer true**: a build tree porting
-thingino to the SigmaStar SSC333 / Infinity6B0 family exists on the operator's bench
-(`~/Projects/tapo/thingino-c110`, branch `ssc333-infinity6b0`, board
-`tplink_tapo_c110_ssc333_sc3338_ssw101b`), and two fleet cameras were migrated onto it
+**2026-10-31.** `cameras/README.md` and
+`docs/archive/camera-thingino-evaluation-2026-10-25.md` (archived 2026-11-04) both say, with
+receipts, that thingino is not an option for these cameras because upstream builds only Ingenic
+SoCs. **As of today that is no longer true**: a build tree porting
+thingino to the SigmaStar SSC333 / Infinity6B0 family exists — the SSOT is
+`git@github.com:cjdell/thingino-firmware.git`, branch `ssc333-infinity6b0` (private, see the
+build-deploy doc §7) — and two fleet cameras were migrated onto it
 today — **`cam5` (10.3.2.10)** and **`cam8` (10.3.2.112 dynamically that day; pinned to
 **10.3.2.11** by MAC the same evening, see §1's cam8 bullet, because 112 is inside VLAN
 226's own DHCP range)**. `cam7` and `cam9` remain OpenIPC. The 2026-10-25
 evaluation is superseded at its headline and stands as history at its receipts; re-read the
 four re-check commands there before repeating the old sentence to anyone.
 
-Everything below was measured today on cam5 and cam8 hardware; the full bench narrative
-with hashes lives in the operator tree (`~/Projects/tapo/docs/thingino-c110-execution.md`
-§7d–§7e, `~/Projects/tapo/docs/openipc-migration.md`). This file is the network-facing
-summary: what changed, what the endpoints are, what broke and how to not break it again.
+Everything below was measured today on cam5 and cam8 hardware. **The firmware-side narrative —
+hashes, the flashing procedure, the rescue design, every payload pushed since — is kept in that
+repository** (`docs/cameras/tapo-c110.md` and its outcome log, plus
+`git log c110-fleet-20261031..ssc333-infinity6b0`); the retired bench scratchpad's own
+execution log rides on as `tapo-bench-docs.tar.gz` in release `c110-fleet-20261031`. This file
+is the network-facing summary and stays that way: what changed, what the endpoints are, what
+broke and how to not break it again. If you are about to restate a firmware fact here, ask
+whether the firmware repo has a better answer for it already.
 
 ## 1. What a migrated camera is now
 
@@ -29,7 +34,7 @@ procedure of §5.
 | --- | --- |
 | boot0 container | md5 `7a8643b8…`, sha256 `c10ea860…` — **byte-identical across the fleet** (cam5's and cam8's OpenIPC boot0 both hashed `ca9c15c3…` pre-migration), so the same image works unit to unit |
 | u-boot | banner `I61286efbd`, hush parser; bootcmd is an SD **rescue**: `if fatload mmc 0 … RESCUE.KRN` → `sf erase`/`sf write` kernel+rootfs → boot → `S98sd-rescue-clear` eats the markers only after a successful boot, so an interrupted rescue **retries on next power-cycle** |
-| kernel | uImage md5 `cb14c981…` (4.9.84, + MIIC/I2C driver fixes: the sensor bus never worked on this SoC without them — see the execution log §5q) |
+| kernel | uImage md5 `cb14c981…` (4.9.84, + MIIC/I2C driver fixes: the sensor bus never worked on this SoC without them — the port's `git log` names the commit that fixes it) |
 | rootfs | squashfs md5 `ce3b7ef9…`; `NAME=Thingino`; dropbear **2026.94**; `rvd` + `rsd` (the raptor stack, not majestic) |
 | env | `bootdelay 3` on the migrated units; OpenIPC's `wlanssid`/`wlanpass`/`sensor` vars **deleted** |
 
@@ -74,8 +79,9 @@ watchdog bites).
 Two flows are proven. Both **back up every mtd, sha-verified, before writing** (five
 partitions over ssh, a few minutes).
 
-* **Network two-phase** (`~/Projects/tapo/docs/openipc-migration.sh`, proven on cam8
-  2026-10-31, then re-run twice): phase 1 from OpenIPC Linux — env rewrite (thingino
+* **Network two-phase** (`cameras/thingino-migrate.sh`, proven on cam8
+  2026-10-31, then re-run twice — the rehearsal narrative is in that script's header and in
+  the firmware repo's docs bundle): phase 1 from OpenIPC Linux — env rewrite (thingino
   geometry, **simple-parser bootcmd**, because the old u-boot has no hush and would execute
   an `if` unconditionally), then a RAM-resident writer (busybox here is *dynamically* linked:
   the writer's loader + libc + applets must be staged to tmpfs and exec'd through
@@ -123,8 +129,9 @@ re-checking on any unit this is done to.
 **Diagnosis in four commands (no serial needed if anything reaches the unit):**
 `wpa_cli status | grep wpa_state`, `ps | grep udhcpc`, `cat /etc/network/interfaces.d/wlan0`
 — is that the OpenIPC stanza? — and the decisive one:
-`ls /overlay/root/etc` (thingino tip 16: *list the upper before trusting that a unit runs
-what it was flashed with*). Recovery is the data wipe of §2; the unit then boots pristine
+`ls /overlay/root/etc` (the lesson is written into the firmware repo's flashing guide too:
+*list the upper before trusting that a unit runs what it was flashed with*).
+Recovery is the data wipe of §2; the unit then boots pristine
 (rootfs defaults incl. baked Wi-Fi), formats a fresh jffs2, and behaves like cam8 did
 (Leighhack `COMPLETED` in seconds, same room, same image).
 
@@ -172,7 +179,8 @@ root password reset — plan a console for it.
   channel 11, where cam8 is the only 2.4 GHz client. The driver-vs-hardware question is answered
   *neither*, and cam5 has inherited the same fault on channel 6
   (`docs/camera-wifi-cells-2026-10-31.md` §3).
-* **cam7, cam9** — untouched OpenIPC. The bench tree's docs carry a stale habit of calling
+* **cam7, cam9** — untouched OpenIPC. The firmware repository's docs carried a stale habit of
+  calling
   cam9 "the sealed unit at 10.3.2.17"; **this repo's table is the authority: cam9 is an
   ordinary fleet camera**, no special sealing or protection. Anyone touching a camera
   should confirm the target's **MAC** against the `cameras/README.md` fleet table before
@@ -196,3 +204,11 @@ changes two of its conclusions: which AP each camera is on explains the remainin
 difference between the two thingino units - and the 2026-10-29 `cam8` fault - better than driver
 or hardware does, and the -63 dBm / 2304x1296 / sc3338 facts in this file were wrong in ways
 named there. Its §8 is the rule about changing a camera's association over the association itself.
+
+**What has happened on the firmware side since this file was written is not tracked here.** The
+port has taken payload work since (audio/speaker bring-up, the night-latch fixes, the Wi-Fi
+reconnect watchdog, `docs/cameras/tapo-c110.md` itself), and `cam5` was
+payload-updated from that repository over ssh on 2026-11-02 — a path that bypasses
+`cameras/thingino-manifest.sh` entirely, which is why the build-deploy doc §3 warns that its
+hash table describes the release bytes and not the units. Ask that repo what the firmware does;
+ask this one what the network thinks the camera is.

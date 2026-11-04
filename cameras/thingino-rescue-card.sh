@@ -5,7 +5,8 @@
 #   usage: sudo cameras/thingino-rescue-card.sh --device /dev/sdX [--images DIR] [--yes]
 #
 # How the mechanism works (proven on cam8 2026-10-29 through 2026-10-31, four
-# live rescues — bench execution log §5k and §7d item 6, and the bootcmd is
+# live rescues — bench execution log §5k and §7d item 6, on the docs bundle of release
+# c110-fleet-20261031; the bootcmd is
 # checked by cam-fw-verify): the flashed u-boot's bootcmd starts with
 # `if fatload mmc 0 … RESCUE.KRN; then sf erase/write ${kernaddr}; if fatload …
 # RESCUE.RFS; then sf erase/write ${rootaddr}; fi; fi` and then **falls through**
@@ -19,7 +20,7 @@
 # Why this is the payload path at all: the installed units have no serial and
 # thingino has no trusted network writer — writing mtd3 from a Linux whose root
 # is mtd3 is the watchdog-reset that killed the first restore attempt at 92 %
-# (bench §7d item 3).  A card plus a power cycle is the boring proven way.
+# (bench §7d item 3, same bundle).  A card plus a power cycle is the boring proven way.
 #
 # This DESTROYS the card.  It never touches a camera by itself.
 set -euo pipefail

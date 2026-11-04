@@ -1,5 +1,13 @@
 # thingino, measured against this fleet: it is Ingenic-only, and our cameras are not Ingenic
 
+> **ARCHIVED 2026-11-04 — history, not instructions.** The headline answer below is dead, and
+> what killed it is the port that has since become this fleet's SSOT: the SigmaStar branch lives
+> at `git@github.com:cjdell/thingino-firmware.git`, branch `ssc333-infinity6b0` (private — see
+> [`../camera-thingino-build-deploy-2026-10-31.md`](../camera-thingino-build-deploy-2026-10-31.md)
+> §7), and it carries the C110 target, its build recipe and its flashing guide
+> (`docs/cameras/tapo-c110.md`). §8's four commands still re-answer the *upstream* question and
+> are the reusable part; the rule for this directory is [`README.md`](README.md).
+
 > **Superseded at the headline, 2026-10-31.** A port of thingino to these boards' SigmaStar
 > silicon was built on the operator's bench, and `cam5` + `cam8` were migrated onto it:
 > **[`camera-thingino-migration-2026-10-31.md`](camera-thingino-migration-2026-10-31.md)**.

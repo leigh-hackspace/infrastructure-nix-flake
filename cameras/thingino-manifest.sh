@@ -1,9 +1,12 @@
 # DATA — pins and hashes for the thingino SigmaStar port: the one table the build,
 # verify and rescue-card scripts read.  Nothing below is a guess: every hash is
-# `md5sum`/`sha256sum` of the artifact in the bench tree on 2026-10-31, cross-read
+# `md5sum`/`sha256sum` of the artifact as built from FW_COMMIT on 2026-10-31, cross-read
 # against the flashed state of cam5/cam8 as recorded in
-# docs/camera-thingino-migration-2026-10-31.md §1, and the bench narrative in
-# ~/Projects/tapo/docs/thingino-c110-execution.md (§2 pins, §5k layout, §7d).
+# docs/camera-thingino-migration-2026-10-31.md §1.  The firmware's own narrative is in
+# the firmware's own repository (SSOT below): `docs/cameras/tapo-c110.md` for the device
+# and the flashing procedure, its `AGENTS.md` for the build, and the retired bench
+# execution log preserved as `tapo-bench-docs.tar.gz` in release `c110-fleet-20261031`.
+# This file pins; it does not document.
 #
 # What a hash is FOR: `just cam-fw-verify` refuses to stage an image the fleet has
 # never run, `cam-migrate` refuses to flash what it cannot verify, and the rescue
@@ -26,6 +29,16 @@
 # flipping this public (and rotate both PSKs before that day).
 FW_GIT_URL="git@github.com:cjdell/thingino-firmware.git"
 FW_BRANCH="ssc333-infinity6b0"
+# The pin survives only as its tag: recreating the SSOT as a standalone repo (§7 of the
+# build-deploy doc) replayed the branch, so `1286efbd3` is on no branch and a fresh
+# `git clone -b ssc333-infinity6b0` lands past it — `thingino-build.sh` then refuses, as it
+# should.  Build the fleet image from `git checkout c110-fleet-20261031`; the branch tip is a
+# different image and needs its own pin move.  Measured 2026-11-04: `git log
+# c110-fleet-20261031..ssc333-infinity6b0` counts 30 commits, 20 of them replays of work already
+# in the tag's lineage and 10 genuinely new (audio, night latch, wifi watchdog, its own
+# tapo-c110.md guide), and the firmware repo's own outcome log records a payload pushed to cam5
+# on 2026-11-02 whose artifact md5s are NOT the two below.  So ARTIFACTS is the bytes of record,
+# not a read of any unit; what a unit runs is read off the unit.
 FW_COMMIT="1286efbd3b5a348ea49f27fba8dea7b62e71e222"          # "c110 overlay: bake Leighhack as a second Wi-Fi network"
 FW_COMMIT_SHORT="1286efbd3"
 FW_REPO="cjdell/thingino-firmware"
@@ -61,7 +74,7 @@ GEOM_DATASIZE=0x80000
 # one disagreed; the rescue-card and migrate flows refuse on any FAIL.
 #
 # uImage      -> kernel (4.9.84 + the Infinity6B0 MIIC I2C fixes, without which the
-#              sensor bus never writes — bench execution log §5q)
+#              sensor bus never writes — the port's MIIC fix, `git log` of the SSOT names it)
 # rootfs      -> squashfs; bakes Wi-Fi for Leighhack + The Lab 2.4GHz (the U-Boot
 #              env credential channel is OpenIPC-only), raptor rvd/rsd, dropbear
 # u-boot      -> SPL+U-Boot container, fleet-identical (sha256 c10ea860… on every
@@ -80,8 +93,8 @@ thingino-${FW_CAMERA}.bin|7864320|e75c95145d3a57322c7aab61f4252be0|933a2fae513c6
 
 # --- the migration tool --------------------------------------------------------
 # cameras/thingino-migrate.sh is a byte-identical copy of the script proven on
-# cam8 2026-10-31 (~/Projects/tapo/docs/openipc-migration.sh, bench execution log
-# §7d): two phases over one ssh session, sha-verified backup of every mtd first,
+# cam8 2026-10-31 (rehearsal narrative: the firmware repo's docs bundle, release
+# `c110-fleet-20261031`): two phases over one ssh session, sha-verified backup of every mtd first,
 # data partition wiped inside the writer by construction.  cam-migrate re-checks
 # this hash before it lets the script near a camera — the provenance IS the
 # evidence, so a hand-edit here or there must show up as a FAIL, and the fix is a

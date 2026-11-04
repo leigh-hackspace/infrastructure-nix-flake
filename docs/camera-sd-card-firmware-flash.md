@@ -13,15 +13,22 @@ Every number below names the command that produced it; anything still unmeasured
 as an unknown with the test that closes it.
 
 **Settled first, so nobody spends a day on it: the firmware to flash is OpenIPC, not thingino.**
-thingino builds for **Ingenic** SoCs and this fleet is SigmaStar (`ssc337` ×2, `ssc333` ×1) — its
-252 device configs and 176 release images contain no SigmaStar board, and its one SigmaStar
-Kconfig model (`ssc30kq`) is a different chip on a different family. Receipts, the four commands
-that re-answer it, the purchase case where thingino *is* the right answer (C110 **v3** = Ingenic
+**That sentence is 2026-10-25's, and it is false at its headline:** the SigmaStar port exists,
+`cam5` and `cam8` have run its images since 2026-10-31, and the thingino side of this fleet is
+documented in its own repository (`git@github.com:cjdell/thingino-firmware.git`, branch
+`ssc333-infinity6b0`, private — build-deploy doc §7 — whose `tapo-c110.md` camera guide is the
+flashing procedure). What follows is therefore the **OpenIPC** procedure, which is what `cam7`
+and `cam9` still run, and the only thing this repo has to say about flashing them. The original
+reasoning is kept because it is the record of why an OpenIPC image was the answer for six days:
+thingino built only for **Ingenic** SoCs at the time, and this fleet is SigmaStar (`ssc337` ×2,
+`ssc333` ×1). Receipts, the four commands
+that re-answer it for any other firmware, the purchase case where thingino *was* the right
+answer (C110 **v3** = Ingenic
 T23N), and what a firmware swap would cost the frigate pipe:
-**[`./camera-thingino-evaluation-2026-10-25.md`](./camera-thingino-evaluation-2026-10-25.md)**.
+**[`archive/camera-thingino-evaluation-2026-10-25.md`](archive/camera-thingino-evaluation-2026-10-25.md)**.
 Everything below assumes an OpenIPC image (`uImage.<soc>` + `rootfs.squashfs.<soc>`), because
 thingino's images are a single assembled `.bin` with its own partition table — a different write
-entirely, not a different filename.
+entirely, not a different filename, and the geometry moves with the firmware (migration doc §1).
 
 **The question was "can we rig these to flash a whole image from SD on next boot, maybe by
 modifying U-Boot?" — and the answer is: no modification is needed, and one is not
@@ -190,7 +197,7 @@ Before flashing anything, also:
 Everything in §8 needs the U-Boot prompt.
 
 - **Pins:** UART0, **3.3 V logic, 115200 8N1**, TX/RX on the main PCB near `TP501`, boot
-  banner `IPL` then `U-Boot 2015.01` — all from `cameras/c110.md` §8.3, which did this on a
+  banner `IPL` then `U-Boot 2015.01` — all from `docs/archive/c110.md` §8.3, which did this on a
   donor board of this family. **Never 5 V TTL.** The `console=ttyS0,115200 panic=20` on the
   command line and `stdin/stdout/stderr=serial` in the env confirm the kernel and U-Boot
   both talk to it.
@@ -581,8 +588,10 @@ conv=notrunc bs=1 seek=<offset>` lines that rebuild `chip.bin` from the five par
 ## 13. Related
 
 `cameras/README.md` (the fleet record, the reach, the faults, and the corrected storage
-model), `cameras/c110.md` §8 (the original reflash route on the donor board — the IPL/
-`sload`/clip detail this document does not repeat), `docs/camera-firmware-audit-2026-10-25.md`
+model), `docs/archive/c110.md` §8 (the original reflash route on the donor board — the IPL/
+`sload`/clip detail this document does not repeat; archived 2026-11-04, and the thingino-era
+flashing guide for this exact board is `docs/cameras/tapo-c110.md` in the firmware repo),
+`docs/camera-firmware-audit-2026-10-25.md`
 (what was believed before the measurement, what replaced it, and the strike list of claims
 that never had a source), `docs/camera-wifi-recovery.md` (the card-only recovery for a camera
 that boots without a radio, and what actually holds the credentials), `docs/follow-ups.md`
