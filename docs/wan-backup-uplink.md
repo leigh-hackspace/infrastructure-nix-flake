@@ -169,8 +169,11 @@ already carrying the network on the hand-built link. In order:
    `sudo rm /run/systemd/network/10-wan-backup.network && sudo networkctl reload &&
    sudo networkctl reconfigure wlp0s29u1u2`. **Without this the `/run` file wins** —
    networkd takes the first matching file in lexical order, and `10-` sorts before `20-`.
-5. `sudo systemctl start wan-backup-route` — it should log
-   `egress is now 'wwan <gw>' (primary path down)`.
+5. `sudo systemctl start wan-backup-route` **and `sudo systemctl start
+   wan-backup-route.timer`** — the service installs the routes once and logs
+   `egress is now 'wwan <gw>' (primary path down)`; the timer is what keeps doing it
+   every 10 s. Starting only the service is the trap this section was written around
+   (see "The loop is a timer" below); `just wan-backup-handback` does this whole list.
 6. Delete the hand-typed routes and rules, now that the reconciler owns them:
    `sudo ip route del default via <old gw> dev wlp0s29u1u2 metric 50`,
    `sudo ip route flush table 300`, `sudo ip rule del pref 50` (twice).
@@ -192,6 +195,30 @@ ssh -i ~/.ssh/agent-hop-key leigh-admin@10.3.1.20 'curl -fsS -m 10 -o /dev/null 
 
 If step 4 is skipped and the box is rebooted instead, `/run` is cleared and the declarative
 file wins by itself — that is the normal path after any future reboot.
+
+### The loop is a timer, and a stopped timer is invisible (2026-11-07)
+
+`wan-backup-route` is a **oneshot**: running it installs the routes once and exits. Every
+behaviour this document describes — failover, the return to the primary, following a hotspot
+that moved to another `/24`, the fallback probe, the kick — happens on the *next tick*, so it
+needs **`wan-backup-route.timer`**, not the service. Starting the service alone leaves one
+static route installed by a one-shot run with nothing watching it, and **nothing about that
+looks wrong**: `wan-backup-wifi` is `active`, `ip route` reads correctly,
+`/run/wan-backup/route.state` still says `wwan`, and a stopped timer is not a failed unit.
+
+Measured cost: a break-glass handover at 16:54 that started the service but not the timer
+left **zero reconciler runs between 16:54 and 17:37**. The wifi link lost its beacons at
+17:29, the LAN lost its egress, nothing was watching, and the operator ran
+`wan-backup-emergency.sh` again — which is the third time that day and the reason this
+section exists. Two things now make it impossible to leave quietly:
+
+* **`just wan-backup-handback`** does the whole handover in order, ends by asserting the
+  heartbeat is fresh, and is the only thing this document asks you to run.
+* **`wan-backup-loop-check.timer`** (5 min) fails when `/run/wan-backup/last-run` is older
+  than 120 s, naming the stopped timer and the handback — a red unit in
+  `systemctl --failed`, the same signal `lease-reader-watch` uses. It will also be red while
+  the box is deliberately on the hand-built path, which is the point: a box whose reconciler
+  is off should say so.
 
 ## Break glass
 
@@ -219,6 +246,14 @@ come back. If the nftables table itself is missing it installs a bare NAT table 
 loudly that the box has no firewall. **A reboot ends it**, and the declarative version
 comes up instead.
 
+**Coming back out is `just wan-backup-handback`, run on `gw`** — not a list of commands
+remembered from this page, and not "restart the units". Four things have to happen in
+order (the hand-built `/run` file disables the DHCP route the reconciler reads; the metric-50
+default has to outlive the promoted route replacing it; the leftover rules and table 300
+have to go; and the timer — not just the service — has to be started), and the AAISP session
+has to be re-dialled because stopping the units is what left `ppp0` down. Skipping any one
+of them leaves a box that looks repaired: IPv4 works, and the reconciler is not running.
+
 **What break-glass costs, and why it is not the first lever (measured 2026-11-07).** The
 script stops the `wan-backup-*` units to take the interface over, and `wan-backup-route` is
 the thing that maintains the L2TP endpoint's `/32`. So after the emergency script the LAN has
@@ -239,8 +274,10 @@ systemctl restart xl2tpd-aaisp              # force the AAISP re-dial now, over 
 ## Verify the policy, not just the internet
 
 ```bash
-systemctl status wan-backup-wifi wan-backup-route.timer
+systemctl status wan-backup-wifi wan-backup-route.timer wan-backup-loop-check.timer
+sudo cat /run/wan-backup/last-run           # a unix second; `date +%s` minus it < 10
 journalctl -u wan-backup-route -n 20        # only speaks on transitions, and on a kick
+systemctl status wan-backup-loop-check      # red = the loop stopped being scheduled
 sudo ping -c1 -W2 -I router-uplink 1.1.1.1  # the primary-liveness probe, by hand
 sudo ping -c1 -W1 -I wlp0s29u1u2 10.120.243.148   # the fallback probe, by hand (its own gateway)
 sudo cat /run/wan-backup/fallback.failures  # 0 unless the fallback is silent; 12 is a kick

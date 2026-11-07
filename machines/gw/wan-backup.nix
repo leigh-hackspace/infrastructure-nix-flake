@@ -117,6 +117,43 @@
   # purpose: this is the same shape as `./uplink.nix`'s `ip-up`/`ip-down`, and
   # AGENTS.md rule 1 calls that small glue.  A daemon would have to do exactly
   # this on exactly the same events.
+  # The heartbeat check, described where it is scheduled (below).  `systemctl` is
+  # here for the one useful sentence it can add — whether the timer is stopped —
+  # and nothing in this script touches the network.
+  loopCheck = pkgs.writeShellScript "wan-backup-loop-check" ''
+    set -eu
+    export PATH="${lib.makeBinPath [pkgs.coreutils pkgs.systemd]}"
+
+    beat=/run/wan-backup/last-run
+    timer_state=$(systemctl is-active wan-backup-route.timer 2>/dev/null || true)
+
+    if [ ! -r "$beat" ]; then
+      # No tick yet.  That is normal for the first seconds of a boot (the
+      # reconciler's OnBootSec is 20 s) and, on a `switch`, for the moment before
+      # the reconciler's rewritten unit has run.  It is only a fault if the timer
+      # is not running either, because then nothing will ever write it.  This
+      # branch is what keeps *this check* from being the reason an activation
+      # fails: a health check that fails a `switch` arms a rollback countdown on
+      # the router (AGENTS.md, the 2026-10-24 receipt).
+      if [ "$timer_state" = active ]; then exit 0; fi
+      echo "wan-backup: the route loop has never run ($beat is missing) and wan-backup-route.timer is $timer_state." >&2
+      echo "wan-backup: start it: systemctl start wan-backup-route.timer" >&2
+      exit 1
+    fi
+
+    age=$(($(date +%s) - $(cat "$beat")))
+    # 120 s is twelve ticks: long enough that a slow tick, a busy box or a
+    # suspended VM is not a fault, short enough to notice within the same outage.
+    if [ "$age" -gt 120 ]; then
+      echo "wan-backup: the route loop last ran ''${age}s ago — nothing is reconciling the backup WAN's routes (failover, return to the primary, gateway following)." >&2
+      if [ "$timer_state" != active ]; then
+        echo "wan-backup: wan-backup-route.timer is $timer_state. Start it: systemctl start wan-backup-route.timer" >&2
+      fi
+      echo "wan-backup: if this box is on the hand-built path, hand back with: just wan-backup-handback" >&2
+      exit 1
+    fi
+  '';
+
   routeScript = pkgs.writeShellScript "wan-backup-route" ''
     set -eu
     export PATH="${
@@ -330,6 +367,11 @@
     fi
     printf '%s\n' "$kick" > "$kick_file"
 
+    # The heartbeat `wan-backup-loop-check` reads.  This script being *run* is not
+    # the same fact as it being *scheduled*, and the difference is invisible: see
+    # the check unit below.
+    date +%s > /run/wan-backup/last-run
+
     # Log on transitions only: the timer runs every 10 s, and a line every tick is
     # a journal nobody reads.  The state file is in /run, so the first run after a
     # boot always speaks.
@@ -462,6 +504,47 @@ in {
       OnUnitActiveSec = "10s";
       AccuracySec = "1s";
       Unit = "wan-backup-route.service";
+    };
+  };
+
+  # THE LOOP IS THE TIMER, AND A STOPPED TIMER IS INVISIBLE.  `wan-backup-route` is
+  # a oneshot: running it installs the routes once and exits.  Everything that
+  # makes this module self-healing — failover, the return to the primary, following
+  # a hotspot that moved to another /24, the fallback probe — happens on the *next*
+  # tick, so it needs `wan-backup-route.timer` and not the service.  Starting the
+  # service alone (which is what the runbook's handover step said, and what
+  # `wan-backup-emergency.sh`'s epilogue suggested) leaves one static route
+  # installed by a one-shot run with nothing watching it, and none of that state
+  # looks wrong: `wan-backup-wifi` is `active`, the routes read correctly,
+  # `route.state` says `wwan`, and a stopped timer is not a failed unit.
+  #
+  # Measured cost, 2026-11-07: **zero `wan-backup-route` runs between 16:54 and
+  # 17:37** after a break-glass handover, and the next link drop was another
+  # manual rescue.  So the reconciler leaves a heartbeat and this check fails
+  # loudly when it goes cold — the same shape as `./lease-reader.nix`'s watch, for
+  # the same reason: a channel that can die while still answering needs a red
+  # unit, not a comment.  It only *reports*: it will not restart anything or move
+  # the network's routing on a guess, and its red unit is what
+  # `systemctl --failed` and the fleet's failed-unit metric already read.
+  systemd.services.wan-backup-loop-check = {
+    description = "Fail when the backup WAN's route loop has stopped running";
+    serviceConfig = {
+      Type = "oneshot";
+      ExecStart = loopCheck;
+    };
+  };
+
+  systemd.timers.wan-backup-loop-check = {
+    description = "Check the backup WAN's route loop is still being scheduled";
+    wantedBy = ["timers.target"];
+    timerConfig = {
+      # `OnActiveSec`, not `OnBootSec`: this timer is (re)started by every
+      # activation, and OnBootSec would be already-elapsed on a box that booted
+      # days ago — which fires the check *during* the switch.  Five minutes after
+      # the switch, with the reconciler ticking every 10 s, is the right moment.
+      OnActiveSec = "5min";
+      OnUnitActiveSec = "5min";
+      Unit = "wan-backup-loop-check.service";
     };
   };
 
