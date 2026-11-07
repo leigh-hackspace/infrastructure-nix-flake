@@ -95,7 +95,14 @@ show table 200` (are the two egresses installed?), `ip -6 route show default` (m
 `dev ppp0`, or there is no IPv6 anywhere), `networkctl status ppp0`, and
 `systemctl restart dnsmasq` if the LAN link has flapped (the RA-timer trap below — a
 dnsmasq that is `active` and has stopped advertising is the failure `systemctl` cannot
-see).
+see). **When the box itself has internet and the LAN does not, test the path rather than
+the link:** `sudo ping -c1 -W2 -I router-uplink 1.1.1.1` answers whether the primary
+egress carries packets at all, and `journalctl -u wan-backup-route` says which egress the
+reconciler chose. The 2026-11-07 case was a live hub link with a dead upstream, and the
+backup WAN is what carries the network in it — `docs/wan-backup-uplink.md`. While it does,
+the AAISP session is dialled over the hotspot too (`ip -4 route get 194.4.172.12` names
+`wlp0s29u1u2`; `ip -br addr show ppp0` is the public address; `iw dev wlp0s29u1u2 link` is
+the band and rate if it is slow).
 
 ## The rule this directory is written to
 
@@ -123,8 +130,8 @@ evaluation of this machine succeeds with tables that disagree, and standalone vi
 | --- | --- |
 | `default.nix` | the import list, and the machine's name (`gw`, the name `common/hosts.nix` and every client's known_hosts entry use) |
 | `configuration.nix` | system-level: packages (including the self-build trio `git`/`just`/`jq`), time, `stateVersion`, the daemon trust the fallback deploy needs. No NAS, deliberately |
-| `hardware-configuration.nix` | the measured root FS, the ESP, and the two `links` rules that pin `router-lan`/`router-uplink` to the two e1000e MACs |
-| `constants.nix` | `LAN_NIC`, `UPLINK_NIC`, `UPLINK_TUNNEL` — the three interface names the rest of the directory keys on |
+| `hardware-configuration.nix` | the measured root FS, the ESP, and the three `links` rules that pin `router-lan`/`router-uplink` to the two e1000e MACs and the backup WAN's USB adapter to its own name |
+| `constants.nix` | `LAN_NIC`, `UPLINK_NIC`, `UPLINK_TUNNEL`, `WWAN_NIC` — the four interface names the rest of the directory keys on |
 | `networking.nix` | the VLAN netdevs, the addresses on them, the uplink NIC's DHCP |
 | `dns.nix` | dnsmasq: the generated conf, the two generated hosts files (the device records and the `*.int` front door), the netboot variants |
 | `http.nix` | nginx and the network's certificate: the vhosts this box serves — **all of them, rendered from `common/front-door.nix`, none written in this file** — the `nginx-sso` gate and `anubis`, the `dnsResolver` + propagation-wait lines the zone's own authority makes mandatory, and `front-door-cert-check` — the only check that can tell an issued certificate from nixpkgs' minica placeholder. All four phases of `docs/router-front-door-migration.md`, **deployed 2026-10-24**; read that file before adding a name |
@@ -132,6 +139,7 @@ evaluation of this machine succeeds with tables that disagree, and standalone vi
 | `int-dns.nix` | the guard over `common/int-dns.nix` read from *this box's* `virtualHosts`: equality now that `frontDoor` names `gw` (AGENTS.md rule 24) |
 | `firewall.nix` | nftables: forward, input, NAT, and the IPv6 pair |
 | `uplink.nix` | pppd's tunnel, the tailnet (headscale) client |
+| `wan-backup.nix` | the **backup WAN**: the USB Wi-Fi adapter's association (`wan-backup-wifi`), its DHCP address, and the 10 s reconciler (`wan-backup-route`) that promotes its default into the main table and table 200 only when the hub cannot carry a packet — **and routes the AAISP L2TP endpoint out the hotspot** (`/32` at metric 5) so the public `/29`, the `/48` and the tailnet control plane keep working while the hub is dead. Break-glass: `wan-backup-emergency.sh` at `/etc/` and `/root/`. **Read `docs/wan-backup-uplink.md` before changing the policy** — it owns the limits, the measured speed (2.4 GHz only, ~14 Mbit/s) and the off-switch |
 | `openvpn.nix` | the old box's two OpenVPN servers, **off by default** |
 | `sops.nix` | the secrets this box needs: the AAISP PPP password, the tailnet's join key, and the shared env-file — for its `DO_AUTH_TOKEN` alone, because `http.nix` answers for the zone through DigitalOcean |
 | `lib/network-tables.nix` | the renderers: tables → dnsmasq lines, nft set literals, device names |

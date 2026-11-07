@@ -165,6 +165,26 @@ The failure this is often mistaken for is not routing at all: "only VLAN 225 has
 internet" is the PPP password (`machines/gw/README.md`), because 225 is the one VLAN
 whose path differs.
 
+### The backup WAN, and when the table above is not what happens
+
+Since 2026-11-07 there is a third egress: the USB Wi-Fi adapter in
+`machines/gw/wan-backup.nix`, associated to the organisation's hotspot. It is a
+**fallback**, not a second primary — `wan-backup-route` promotes its DHCP default into the
+main table *and* into table 200 only when the hub cannot carry a packet (`ping -I
+router-uplink 1.1.1.1`), and removes it within ~20 s of the hub coming back. A dialled
+tunnel is treated as proof the hub works **only while the L2TP endpoint is routed through
+the hub**; while the hub is dead the reconciler also routes `194.4.172.12` out the hotspot,
+so xl2tpd redials the AAISP session over LTE and the public `/29`, the `/48` and the
+tailnet control plane keep working (measured 2026-11-07: `tailscale.leighhack.org/health`
+answered `200` through `81.187.195.17`). So the table above still describes a healthy
+primary; the day it is wrong is the day the tunnel is down and `ip -4 route get 1.1.1.1
+mark 1` names `wlp0s29u1u2` or `ppp0`-over-the-hotspot instead of `ppp0` over the hub, which
+`journalctl -u wan-backup-route` explains. The two limits are the hotspot **alone** (no
+IPv6, and no inbound because `81.187.195.17/29` is routed to the AAISP line) and the data
+cost of carrying VLAN 225 plus inbound over a metered ~2.4 GHz link.
+`docs/wan-backup-uplink.md` owns the policy, the rollout, the checks, the speed measurements
+and the off-switch.
+
 ## dnsmasq — the LAN resolver
 
 The resolver is `services.dnsmasq` from `machines/gw/dns.nix`, and everything it

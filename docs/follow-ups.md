@@ -890,6 +890,40 @@ thing to do with either is to date it (`journalctl -u … | grep "Failed with re
 
 ## Router (gw)
 
+- **The AAISP uplink was dead on 2026-11-07, and the network ran on a hotspot; the
+  fallback is now declarative, the primary is still AAISP's to fix** (opened
+  2026-11-07). Measured on `gw`: `ping 192.168.20.1` answered while
+  `ping -I router-uplink 1.1.1.1` did not, `sudo ip route show table 100` was
+  empty (the tunnel cannot dial *through* a hub with no upstream), and
+  `journalctl -u xl2tpd-aaisp` was a redial loop. The hand-built lifeline
+  (`/run/wpa-backup.conf`, a `/run` `.network` file, typed routes, an `nft`
+  `masquerade` added by hand, two `ip rule`s at a table 300) had the LAN's IPv4
+  back inside an hour — and was one reboot or one `switch` away from ending,
+  because `/run` does not survive the first and nftables' reload deletes the
+  second. It is now `machines/gw/wan-backup.nix`: the association, the DHCP
+  address (the hotspot moves between `/24`s — `10.112.100.0/24` at 13:48 to
+  `10.120.243.0/24` at 14:53 the same day), a 10 s reconciler that promotes the
+  wwan's default only when the tunnel *and* the hub probe are both dead, and the
+  `masquerade` rows in `./firewall.nix`. The passphrase is
+  `wan_backup_wifi_psk` in sops. **`docs/wan-backup-uplink.md`** owns the policy,
+  the takeover steps, the verification and the limits.
+
+  **Blocks:** nothing in the flake — the 2026-11-07 rollout and its per-VLAN
+  checks passed. What is open is AAISP's: the hub still has no upstream and the
+  tunnel still will not dial, so the network is on a metered hotspot and has
+  **no IPv6 and no inbound public services** (the `/29` is routed to the AAISP
+  line) until that is fixed. When it is, the reconciler demotes the wwan within
+  10 s and nothing has to be deployed; the module can stay as a standing
+  fallback, or be retired by unplugging the stick (safe, immediate) or by
+  removing the import, the two NAT rows, the sops key and the `2-wwan` link rule
+  in one change (`docs/wan-backup-uplink.md`, "Retiring it"). **Do not** remove the
+  sops key while the module still reads it — that fails activation, on the
+  router. Two decisions this opens and does not take: whether the fallback should
+  stay semi-permanent once the primary is healthy, and whether to rename
+  `wlp0s29u1u2` to `router-wwan` (a NAT-keyed rename, so it needs both names in
+  the masquerade rule for one deploy; `./constants.nix` says why it was not done
+  while the network was *on* the link).
+
 - **The IPv6 half of the reservation table has no mechanism behind it** (found
   2026-10-26 debugging "the PXE clients stopped booting", and **the twelve records
   that were provably unreachable are now emptied** — see `docs/router-and-dns.md`,

@@ -552,6 +552,24 @@ in {
             # tailscale0), and the hub only routes the address it gave this box.
             # The tailnet's own range is common/config.nix's TAILNET_V4.
             oifname "${NICS.UPLINK_NIC}" ip saddr ${CONFIG.TAILNET_V4} masquerade
+            # The backup WAN (`./wan-backup.nix`): the same two rules on each
+            # interface a fallback egress can live on — one pair per entry in
+            # ./constants.nix's `WWAN_FALLBACK_NICS`, the phone on USB first and
+            # the Wi-Fi hotspot second.  This is what makes a fallback *usable*
+            # rather than a router-only internet connection — without it every
+            # forwarded packet leaves with a 10.3.x source the hotspot will not
+            # route back.  The live box had the first of these added by hand on
+            # 2026-11-07, which is also why it had to go in this file: a `switch`
+            # reloads nftables, and the hand-added rule was the network's only NAT
+            # on the path it had just started using.  Both names are written out
+            # rather than looped over `WWAN_FALLBACK_NICS` because a third path
+            # must not be able to appear without a NAT row here, and an interface
+            # name in a masquerade rule is exactly the thing the router cannot
+            # evaluate its way out of.
+            oifname "${NICS.WWAN_USB_NIC}" ip saddr ${TABLES.blockSet VLANS} masquerade
+            oifname "${NICS.WWAN_USB_NIC}" ip saddr ${CONFIG.TAILNET_V4} masquerade
+            oifname "${NICS.WWAN_NIC}" ip saddr ${TABLES.blockSet VLANS} masquerade
+            oifname "${NICS.WWAN_NIC}" ip saddr ${CONFIG.TAILNET_V4} masquerade
             # NAT reflection, which is the old box's `rdr on vlan0.X` copies of
             # every forward: a LAN client resolving a *public* name gets the public
             # address from the network's resolver (the *.leighhack.org names live

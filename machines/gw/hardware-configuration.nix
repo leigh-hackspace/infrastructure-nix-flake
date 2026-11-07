@@ -94,6 +94,37 @@
       matchConfig.MACAddress = "00:25:90:d3:f0:eb";
       linkConfig.Name = "router-uplink";
     };
+
+    # The backup WAN's USB Wi-Fi adapter (./wan-backup.nix): a Ralink RT5370 on
+    # the internal USB header, measured on 2026-11-07 (`networkctl status`).
+    # Pinned to the name the kernel's own USB-path scheme already gives it, so
+    # that moving the stick to another port, or a change in USB enumeration, does
+    # not rename the interface ./wan-backup.nix dials and ./firewall.nix
+    # masquerades on.  See ./constants.nix's `WWAN_NIC` for why it is not renamed
+    # to `router-wwan` yet.
+    "2-wwan" = {
+      matchConfig.MACAddress = "c8:3a:35:e1:a3:f3";
+      linkConfig.Name = "wlp0s29u1u2";
+    };
+
+    # The other backup WAN (`./wan-backup.nix`): a phone plugged into this box's
+    # USB and switched to USB tethering.  It is matched by what it *is* rather
+    # than by a MAC, because the MAC is the phone's and a phone is the one thing
+    # here that gets swapped: `Type = ether` is the netdev type (`networkctl
+    # list`) and excludes the Wi-Fi stick (`wlan`) and the two PCI e1000es, and
+    # `ID_BUS=usb` keeps it to the cable.  Every driver the three common phones
+    # use registers a normal Ethernet netdev — Android `rndis_host` (or
+    # `cdc_ether` on newer releases), an iPhone `ipheth` — so this rule renames
+    # all of them and no driver name has to be guessed.  The kernel would
+    # otherwise call it `enp0s29u1u<port>`: the port, which is exactly the fact
+    # that must not decide an interface name ./firewall.nix NATs on.
+    "3-wwan-usb" = {
+      matchConfig = {
+        Type = "ether";
+        Property = "ID_BUS=usb";
+      };
+      linkConfig.Name = "router-wwan-usb";
+    };
   };
 
   nixpkgs.hostPlatform = lib.mkDefault "x86_64-linux";

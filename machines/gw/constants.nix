@@ -11,7 +11,10 @@
 # the box.  `UPLINK_TUNNEL` is the one name here the flake cannot create: pppd
 # makes it at runtime, and ./README.md says to read it back off a box that has
 # dialled.
-{
+#
+# `rec`, because `WWAN_FALLBACK_NICS` is the single list of the backup paths and
+# spelling those names again beside it is how the two facts it joins drift apart.
+rec {
   LAN_NIC = "router-lan"; # the NIC the VLAN devices hang off
 
   # The NIC the uplink arrives on — the AAISP hub's handoff, which the old box
@@ -26,6 +29,41 @@
   # name ./firewall.nix's masquerade rule matches — read it off the real box with
   # `ip link` before trusting that rule (./README.md, "read the rendered file").
   UPLINK_TUNNEL = "ppp0";
+
+  # The USB Wi-Fi adapter the *backup* uplink arrives on (./wan-backup.nix): a
+  # Ralink RT5370 (driver `rt2800usb`, so no firmware package) on the internal
+  # USB header.  The spelling is the kernel's USB-path name, and
+  # ./hardware-configuration.nix pins it to that MAC so moving the stick to
+  # another port does not rename an interface the firewall masquerades on.
+  #
+  # It is deliberately **not** renamed to `router-wwan`: the masquerade rule is
+  # keyed on the name, so a rename is a NAT change and has to be deployed with the
+  # association and the routes in one switch (a second name in the rule during the
+  # changeover, then a follow-up to drop it) — a quiet-moment job, not something
+  # to do while the network is *on* this link.
+  WWAN_NIC = "wlp0s29u1u2";
+
+  # The *other* backup path: a USB-tethered phone (./wan-backup.nix), used in
+  # preference to the Wi-Fi stick above whenever the cable is in and tethering is
+  # switched on.  This name is *ours*, not the kernel's: a phone's USB netdev
+  # arrives as whatever this box's USB wiring produces (`ID_NET_NAME_PATH`, e.g.
+  # `enp0s29u1u3`), which changes with the port, so
+  # ./hardware-configuration.nix matches it by *type* (`ether` on the USB bus)
+  # rather than by MAC — an Android presents RNDIS or CDC-ECM, an iPhone
+  # CDC-NCM (`ipheth`), and some phones randomise the tether MAC per session.
+  WWAN_USB_NIC = "router-wwan-usb";
+
+  # Preference order among the backup paths, and the one list both of its readers
+  # use: ./wan-backup.nix picks the first one that holds a DHCP lease, and
+  # ./firewall.nix masquerades on every one of them (a path that is up but not
+  # NATed is a LAN with no internet, so a missing row there is not cosmetic).
+  # The order is a decision, not an accident: the cable carries the phone's
+  # cellular link at whatever the radio can do, while the Wi-Fi stick is one 1×1
+  # spatial stream on 2.4 GHz (`docs/wan-backup-uplink.md`, "Why it is slow").
+  WWAN_FALLBACK_NICS = [
+    WWAN_USB_NIC
+    WWAN_NIC
+  ];
 
   # The hub's own address on the handoff VLAN.  The old box's `netstat -rn`
   # (2026-10-17) had `default 192.168.20.1 UG em3`, and the static endpoint route

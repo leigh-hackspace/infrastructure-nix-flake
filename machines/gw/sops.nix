@@ -22,6 +22,18 @@
       mode = "0440";
     };
 
+    # The backup WAN's Wi-Fi passphrase (`Leighhack WAN Backup`, see
+    # ./wan-backup.nix).  Runtime, like the tunnel password: the unit derives the
+    # PMK at start and writes it to a mode-0600 file under /run, so the passphrase
+    # reaches neither the store nor a process listing.  It was the hand-built
+    # 2026-11-07 lifeline's `/run/wpa-backup.conf` until it moved here — which is
+    # the whole point of the move: `/run` does not survive a reboot, and the
+    # network's internet was riding on it.
+    wan_backup_wifi_psk = {
+      group = "secrets";
+      mode = "0440";
+    };
+
     # The tailnet's join key (a headscale pre-auth key — the network runs its own
     # control server, so this is not a Tailscale account key).  services1 declares
     # the same secret for headplane; the router needs it because it is the box that
