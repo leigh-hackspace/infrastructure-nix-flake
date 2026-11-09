@@ -246,6 +246,8 @@ pub(crate) mod tests {
             lease_ttl: 86_400,
             lease_max_rows: 500,
             leases_file: None,
+            wan_status_file: None,
+            wan_metrics_file: None,
         }
     }
 

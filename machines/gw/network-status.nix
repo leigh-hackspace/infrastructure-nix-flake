@@ -157,6 +157,13 @@ in {
           "--title"
           # Quoted: the em dash + spaces would otherwise split the argv.
           "\"Network — router\""
+          # The WAN supervisor's own status. It is a separate file so the two
+          # services can fail independently: this tab then says the daemon is
+          # unavailable instead of serving an empty ranking that looks healthy.
+          "--wan-status"
+          "/run/wan-manager/status.json"
+          "--wan-metrics"
+          "/run/wan-manager/metrics.prom"
         ]
         # --- the per-connection view (the `/api/connections` table) -------------
         # Byte counters come out of /proc/net/nf_conntrack only while

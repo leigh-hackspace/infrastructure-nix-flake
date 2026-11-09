@@ -171,6 +171,13 @@ struct Args {
     lease_ttl: i64,
     /// Most rows `/api/leases` will return.
     lease_max_rows: usize,
+    /// `/run/wan-manager/status.json`, written by the WAN supervisor, served
+    /// verbatim at `/api/wan`. `None` means this build/probe has no WAN
+    /// manager and the endpoint answers 404 rather than an empty object.
+    wan_status_file: Option<String>,
+    /// `/run/wan-manager/metrics.prom`, appended to `/metrics` so the same
+    /// scrape that charts interfaces charts the WAN ranking.
+    wan_metrics_file: Option<String>,
 }
 
 /// The filter `/api/connections` uses when the request asks for none.
@@ -197,7 +204,7 @@ fn route(
         ("GET", "/api/config") => common_web::Reply::json(
             200,
             &format!(
-                r#"{{"wan":{},"title":{},"interval":{},"connections":{{"enabled":{},"min_age":{},"min_bytes":{},"max_rows":{},"stale":{},"local_prefixes":{}}},"leases":{{"enabled":{},"ttl":{},"max_rows":{},"vlans":{}}}}}"#,
+                r#"{{"wan":{},"title":{},"interval":{},"connections":{{"enabled":{},"min_age":{},"min_bytes":{},"max_rows":{},"stale":{},"local_prefixes":{}}},"leases":{{"enabled":{},"ttl":{},"max_rows":{},"vlans":{}}},"wan_status":{{"enabled":{}}}}}"#,
                 quoted(&args.wan),
                 quoted(&args.title),
                 args.interval.as_secs(),
@@ -211,6 +218,7 @@ fn route(
                 args.lease_ttl,
                 args.lease_max_rows,
                 json_strings(&args.local_nets.vlan_labels()),
+                args.wan_status_file.is_some(),
             ),
         ),
         ("GET", "/api/snapshot") => {
@@ -292,10 +300,39 @@ fn route(
                 Err(e) => common_web::Reply::json(503, &format!(r#"{{"error":{}}}"#, quoted(&e))),
             }
         }
+        // The WAN supervisor's own status. It is a file rather than a shared
+        // data structure on purpose: the daemon must keep working if this
+        // dashboard is stopped, and the dashboard must show the last known
+        // ranking if the daemon restarts. Missing is an error, never `{}`.
+        ("GET", "/api/wan") => match args.wan_status_file.as_deref() {
+            None => common_web::Reply::json(
+                404,
+                r#"{"error":"WAN status disabled (no --wan-status)"}"#,
+            ),
+            Some(path) => match std::fs::read_to_string(path) {
+                Ok(body) => common_web::Reply::new(200, "application/json", body.into_bytes()),
+                Err(e) => common_web::Reply::json(
+                    503,
+                    &format!(
+                        r#"{{"error":{}}}"#,
+                        quoted(&format!("cannot read {path}: {e}"))
+                    ),
+                ),
+            },
+        },
         // The SPA. `/assets/…` is the embedded bundle; anything else is a page route,
         // which a single-page app answers with its own index.html — that is why a bookmark
         // of `/#leases` or a stray `/favicon.ico` still opens the page instead of 404ing.
-        ("GET", "/") => page(&args.title),
+        ("GET", "/") => {
+            let mut r = page(&args.title);
+            // One-time cache flush for a browser holding a pre-tab bundle: visit
+            // `/?flush=1` and the old wasm is evicted before the shell loads it.
+            if query.get("flush").map(|v| v == "1").unwrap_or(false) {
+                r.headers
+                    .push(("Clear-Site-Data".to_string(), "\"cache\"".to_string()));
+            }
+            r
+        }
         ("GET", p) if p.starts_with("/assets/") => match serve_asset(&p[8..]) {
             Some(r) => r,
             None => page(&args.title),
@@ -341,6 +378,14 @@ fn metrics_with_conns(s: &Snapshot, state: &State, args: &Args) -> String {
     let mut out = metrics_text(s);
     if args.conns {
         out.push_str(&state.flows.lock().unwrap().metrics(args.conn_min_age));
+    }
+    if let Some(path) = args.wan_metrics_file.as_deref() {
+        if let Ok(wan) = std::fs::read_to_string(path) {
+            out.push_str(&wan);
+            if !wan.ends_with('\n') {
+                out.push('\n');
+            }
+        }
     }
     out
 }
@@ -410,6 +455,8 @@ fn main() {
     let mut no_leases = false;
     let mut lease_ttl: i64 = 86_400;
     let mut lease_max_rows: usize = 500;
+    let mut wan_status_file: Option<String> = None;
+    let mut wan_metrics_file: Option<String> = None;
     let mut vlans: Vec<String> = Vec::new();
     let mut i = 0;
     while i < argv.len() {
@@ -483,6 +530,18 @@ fn main() {
                 }
             }
             "--no-leases" => no_leases = true,
+            "--wan-status" => {
+                if let Some(v) = argv.get(i + 1) {
+                    wan_status_file = Some(v.clone());
+                    i += 1;
+                }
+            }
+            "--wan-metrics" => {
+                if let Some(v) = argv.get(i + 1) {
+                    wan_metrics_file = Some(v.clone());
+                    i += 1;
+                }
+            }
             // `--vlan vlan226=10.3.2.0/24`: the same block a `--local-prefix`
             // would give, plus the VLAN's name so the lease table can group by
             // it.  Kept in its own list because it is parsed by the same
@@ -595,6 +654,8 @@ fn main() {
         lease_ttl,
         lease_max_rows,
         leases_file,
+        wan_status_file,
+        wan_metrics_file,
     };
     let state = Arc::new(State::new(&args.hosts_files, args.leases_file.clone()));
 

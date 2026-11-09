@@ -60,6 +60,154 @@ pub struct Issue {
     pub message: String,
 }
 
+// --- the WAN supervisor (/api/wan) ---------------------------------------
+//
+// This is the WAN manager's own status file, not a second opinion computed by
+// this page. A missing file is an error the panel shows; the daemon and the
+// dashboard are allowed to be down independently.
+
+#[derive(Deserialize, Clone, PartialEq, Debug, Default)]
+pub struct WanStatus {
+    #[serde(default)]
+    pub ts: i64,
+    #[serde(default)]
+    pub uptime_secs: u64,
+    #[serde(default)]
+    pub ticks: u64,
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub selected: Option<WanChoice>,
+    #[serde(default)]
+    pub tunnel: Option<WanChoice>,
+    #[serde(default)]
+    pub candidates: Vec<WanCandidate>,
+    #[serde(default)]
+    pub wifi: Vec<WanWifi>,
+    #[serde(default)]
+    pub all_aps: Vec<WanAp>,
+    #[serde(default)]
+    pub usb: WanUsb,
+    #[serde(default)]
+    pub repairs: Vec<String>,
+    #[serde(default)]
+    pub last_error: Option<String>,
+    #[serde(default)]
+    pub ssid: String,
+    #[serde(default)]
+    pub interval_secs: u64,
+}
+
+#[derive(Deserialize, Clone, PartialEq, Debug, Default)]
+pub struct WanChoice {
+    #[serde(default)]
+    pub role: String,
+    #[serde(default)]
+    pub interface: String,
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub gateway: Option<String>,
+    #[serde(default)]
+    pub score: f64,
+    #[serde(default)]
+    pub latency_ms: Option<f64>,
+    #[serde(default)]
+    pub throughput_bps: Option<f64>,
+}
+
+#[derive(Deserialize, Clone, PartialEq, Debug, Default)]
+pub struct WanCandidate {
+    #[serde(default)]
+    pub interface: String,
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub link: bool,
+    #[serde(default)]
+    pub carrier: bool,
+    #[serde(default)]
+    pub addresses: Vec<String>,
+    #[serde(default)]
+    pub gateway: Option<String>,
+    #[serde(default)]
+    pub driver: Option<String>,
+    #[serde(default)]
+    pub usb_path: Option<String>,
+    #[serde(default)]
+    pub eligible: bool,
+    #[serde(default)]
+    pub reason: String,
+    #[serde(default)]
+    pub score: f64,
+    #[serde(default)]
+    pub gateway_ok: bool,
+    #[serde(default)]
+    pub internet_ok: bool,
+    #[serde(default)]
+    pub latency_ms: Option<f64>,
+    #[serde(default)]
+    pub throughput_bps: Option<f64>,
+    #[serde(default)]
+    pub failures: u32,
+}
+
+#[derive(Deserialize, Clone, PartialEq, Debug, Default)]
+pub struct WanWifi {
+    #[serde(default)]
+    pub interface: String,
+    #[serde(default)]
+    pub associated_bssid: Option<String>,
+    #[serde(default)]
+    pub signal_dbm: Option<i32>,
+    #[serde(default)]
+    pub chosen_bssid: Option<String>,
+    #[serde(default)]
+    pub error: Option<String>,
+    #[serde(default)]
+    pub aps: Vec<WanAp>,
+}
+
+#[derive(Deserialize, Clone, PartialEq, Debug, Default)]
+pub struct WanAp {
+    #[serde(default)]
+    pub bssid: String,
+    #[serde(default)]
+    pub ssid: String,
+    #[serde(default)]
+    pub signal_dbm: Option<i32>,
+    #[serde(default)]
+    pub freq_mhz: Option<u32>,
+}
+
+#[derive(Deserialize, Clone, PartialEq, Debug, Default)]
+pub struct WanUsb {
+    #[serde(default)]
+    pub ok: bool,
+    #[serde(default)]
+    pub diagnosis: String,
+    #[serde(default)]
+    pub devices: Vec<WanUsbDevice>,
+    #[serde(default)]
+    pub kernel_failures: Vec<String>,
+}
+
+#[derive(Deserialize, Clone, PartialEq, Debug, Default)]
+pub struct WanUsbDevice {
+    #[serde(default)]
+    pub path: String,
+    #[serde(default)]
+    pub vendor: String,
+    #[serde(default)]
+    pub product: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub driver: Option<String>,
+    #[serde(default)]
+    pub netdev: Option<String>,
+}
+
 #[derive(Deserialize, Clone, PartialEq, Debug, Default)]
 pub struct Router {
     #[serde(default)]

@@ -17,7 +17,7 @@ use gloo_timers::future::sleep;
 use js_sys::Date;
 use wasm_bindgen::prelude::*;
 
-use crate::api::{self, Config, ConnResponse, History, LeaseResponse, Snapshot};
+use crate::api::{self, Config, ConnResponse, History, LeaseResponse, Snapshot, WanStatus};
 
 /// Rolling window, in samples. The old number, kept: the sparklines draw 90 points and
 /// the main chart 120, so 300 keeps both fed without a scrollback the page cannot draw.
@@ -38,8 +38,9 @@ pub fn default_config() -> Config {
 /// The tabs, in order. `id` is what the URL fragment names — a bookmark of `#leases`
 /// opens on leases — and `label` is what the tab prints. The tabs are by *question*, not
 /// by widget; the reason is in `app.rs`.
-pub const PANELS: [(&str, &str); 4] = [
+pub const PANELS: [(&str, &str); 5] = [
     ("overview", "Overview"),
+    ("uplink", "Uplink"),
     ("connections", "Connections"),
     ("leases", "DHCP leases"),
     ("network", "Interfaces & issues"),
@@ -93,6 +94,10 @@ pub struct Store {
     pub conns_err: Signal<Option<String>>,
     pub leases: Signal<Option<LeaseResponse>>,
     pub leases_err: Signal<Option<String>>,
+    /// The WAN supervisor's ranking, read from `/api/wan`. `None` means no
+    /// status file yet (or this backend was built without `--wan-status`).
+    pub wan: Signal<Option<WanStatus>>,
+    pub wan_err: Signal<Option<String>>,
     /// The snapshot's own failure, either the `error` the backend reported or the reason
     /// the request did not answer. The banner reads this.
     pub snap_err: Signal<Option<String>>,
@@ -128,6 +133,8 @@ impl Store {
             conns_err: Signal::new(None),
             leases: Signal::new(None),
             leases_err: Signal::new(None),
+            wan: Signal::new(None),
+            wan_err: Signal::new(None),
             snap_err: Signal::new(None),
             controls: Signal::new(ConnControls {
                 min_age: -1,
@@ -260,6 +267,19 @@ impl Store {
                 self.last.set(Some(s));
             }
             Err(e) => self.snap_err.set(Some(e)),
+        }
+    }
+
+    /// The WAN supervisor's status is its own endpoint, so a daemon that has
+    /// restarted is visible as an error here while the interface charts keep
+    /// their last sample.
+    pub async fn poll_wan(mut self) {
+        match api::get_json::<WanStatus>("/api/wan").await {
+            Ok(w) => {
+                self.wan.set(Some(w));
+                self.wan_err.set(None);
+            }
+            Err(e) => self.wan_err.set(Some(e)),
         }
     }
 
@@ -424,6 +444,7 @@ pub fn start(mut store: Store) {
 
         loop {
             store.poll().await;
+            store.poll_wan().await;
             store.poll_conns().await;
             store.poll_leases().await;
             let n = *store.tick.peek();

@@ -171,48 +171,16 @@ in {
           # would make the router's own name resolution depend on the thing it is
           # supposed to be shielding.  A separate section, not a key of [Network]:
           # networkd's own schema, and the NixOS module's.
-          # The hub's DHCP route does not become this box's default route by
-          # itself: the old box's main table had the hub's default, and its
-          # `route-to` rules chose the tunnel or the hub per VLAN.  The same split
-          # is written below as two tables and two marks.  `UseRoutes = false`
-          # leaves only the connected route, and the endpoint /32 and defaults
-          # below are written explicitly — a DHCP default that appeared and
-          # disappeared with the hub's lease would race the tunnel's own default
-          # and make the failure depend on lease timing.
+          # The hub's DHCP route is not allowed to win by itself, but it is
+          # allowed to exist: networkd caches it at a high metric, and
+          # `wan-manager` promotes whatever gateway the DHCP server actually
+          # offered. Nothing here knows the hub's address — the old static
+          # `192.168.20.1` routes are gone with the rest of the hardcoded WAN.
           dhcpV4Config = {
             UseDNS = false;
-            UseRoutes = false;
+            UseRoutes = true;
+            RouteMetric = 2000;
           };
-          # The L2TP endpoint is reached through the hub, so its /32 has to be
-          # in the main table or the dial has no route to its own LNS.  The next
-          # two routes are the hub's default in its own table (selected by
-          # MARK_HUB) and the box's own default in the main table.
-          routes = [
-            {
-              Destination = "${NICS.L2TP_ENDPOINT}/32";
-              Gateway = NICS.UPLINK_HUB_GATEWAY;
-              GatewayOnLink = true;
-              Metric = 10;
-            }
-            {
-              Destination = "0.0.0.0/0";
-              Gateway = NICS.UPLINK_HUB_GATEWAY;
-              GatewayOnLink = true;
-              Table = TABLE_HUB;
-              Metric = 200;
-            }
-            # The box's own default: the hub, exactly as the old box's main table
-            # had `default 192.168.20.1 UG em3`.  Its traffic (dnsmasq's upstreams,
-            # tailscaled, the AAISP dial itself) is not the forwarded traffic the
-            # marks above are about, and it must not be sent into a tunnel whose
-            # endpoint it is still trying to reach.
-            {
-              Destination = "0.0.0.0/0";
-              Gateway = NICS.UPLINK_HUB_GATEWAY;
-              GatewayOnLink = true;
-              Metric = 300;
-            }
-          ];
           # The old box's `pass out route-to (em3 192.168.20.1)` half: traffic
           # marked 2 by ./firewall.nix's prerouting chain looks in table 200, and
           # that table's default is the hub.  `Family = "ipv4"` because the hub

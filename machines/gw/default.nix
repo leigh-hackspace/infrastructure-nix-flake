@@ -88,11 +88,12 @@
     ./openvpn.nix
     ./sops.nix
     ./uplink.nix
-    # The emergency uplink: the USB Wi-Fi adapter, its association, and the tiny
-    # policy-routing layer that keeps it a fallback instead of a second primary.
-    # The 2026-11-07 AAISP outage is why it exists; `docs/wan-backup-uplink.md` is
-    # the story, the rollout and the limits (no IPv6 and no inbound public
-    # services while it is the egress).
+    # The WAN supervisor: `crates/wan-manager` discovers every possible uplink
+    # (non-LAN DHCP NICs, USB-tethered phones, any number of wireless adapters),
+    # measures and ranks them, and repairs the routes and the firewall's
+    # `wan_ifaces` NAT set every 5 s. The 2026-11-07 AAISP outage is why the
+    # backup exists; `docs/wan-manager-2026-11-09.md` owns the current policy,
+    # the Android USB diagnosis and the limits.
     ./wan-backup.nix
     # The UPS on this box's USB port, and the ordered power-off it drives: NUT for
     # the protocol, `upssched` for the outage countdown, and `crates/ups-watchdog`

@@ -1,3 +1,11 @@
+> **ARCHIVED 2026-11-09 — frozen history.** This describes the declarative backup-WAN
+> module that `crates/wan-manager` replaced. Its interface names, `WWAN_FALLBACK_NICS`
+> list, 10-second shell reconciler and timer heartbeat no longer exist. The live policy,
+> the USB-tether diagnosis and the break-glass procedure are in
+> [`docs/wan-manager-2026-11-09.md`](../wan-manager-2026-11-09.md). Kept because the
+> 2026-11-07 outage and the measurements in it are still the reason the policy is shaped
+> the way it is.
+
 # The backup WAN — the hotspot that kept the network online on 2026-11-07
 
 **What this is:** `machines/gw/wan-backup.nix`. A USB Wi-Fi adapter on the router,

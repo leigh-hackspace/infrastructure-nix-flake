@@ -1,0 +1,13 @@
+[package]
+name = "wan-manager"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "wan-manager"
+path = "src/main.rs"
+
+# Deliberately zero external crates, like network-status and status-dashboard:
+# the daemon has to work on a router whose only guaranteed store paths are the
+# ones it already needs (iproute2, iputils, wpa_supplicant, nftables, systemd).
+# The house style is in AGENTS.md rule 1 and `crates/status-dashboard/`.

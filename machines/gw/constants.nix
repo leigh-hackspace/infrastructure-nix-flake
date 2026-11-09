@@ -4,6 +4,11 @@
 # answers nothing — or, for `UPLINK_TUNNEL`, a router that routes everything
 # with its real source address and gets no replies.
 #
+# **There are no backup-WAN names here any more.** The Wi-Fi adapter, the
+# USB-tethered phone and the hub's own address are discovered at runtime by
+# `crates/wan-manager`; the firewall NATs an nftables interface *set* the manager
+# fills. The names below are LAN/tunnel facts, not WAN facts.
+#
 # The two NIC names are *names* rather than MACs because a VLAN device has no MAC
 # of its own to match on, so everything on the LAN side is keyed by name and the
 # one place a MAC appears is the `links` rule that creates the name — those rules
@@ -11,9 +16,6 @@
 # the box.  `UPLINK_TUNNEL` is the one name here the flake cannot create: pppd
 # makes it at runtime, and ./README.md says to read it back off a box that has
 # dialled.
-#
-# `rec`, because `WWAN_FALLBACK_NICS` is the single list of the backup paths and
-# spelling those names again beside it is how the two facts it joins drift apart.
 rec {
   LAN_NIC = "router-lan"; # the NIC the VLAN devices hang off
 
@@ -26,51 +28,9 @@ rec {
   # The interface the tunnel itself creates, which is not the NIC above: pppd
   # makes this one at runtime and the flake cannot name it.  `ppp0` is the name
   # the kernel gives the first ppp unit, so it is the honest guess, and it is the
-  # name ./firewall.nix's masquerade rule matches — read it off the real box with
-  # `ip link` before trusting that rule (./README.md, "read the rendered file").
+  # name `wan-manager` treats as the tunnel candidate — read it off the real box
+  # with `ip link` before trusting that (./README.md, "read the rendered file").
   UPLINK_TUNNEL = "ppp0";
-
-  # The USB Wi-Fi adapter the *backup* uplink arrives on (./wan-backup.nix): a
-  # Ralink RT5370 (driver `rt2800usb`, so no firmware package) on the internal
-  # USB header.  The spelling is the kernel's USB-path name, and
-  # ./hardware-configuration.nix pins it to that MAC so moving the stick to
-  # another port does not rename an interface the firewall masquerades on.
-  #
-  # It is deliberately **not** renamed to `router-wwan`: the masquerade rule is
-  # keyed on the name, so a rename is a NAT change and has to be deployed with the
-  # association and the routes in one switch (a second name in the rule during the
-  # changeover, then a follow-up to drop it) — a quiet-moment job, not something
-  # to do while the network is *on* this link.
-  WWAN_NIC = "wlp0s29u1u2";
-
-  # The *other* backup path: a USB-tethered phone (./wan-backup.nix), used in
-  # preference to the Wi-Fi stick above whenever the cable is in and tethering is
-  # switched on.  This name is *ours*, not the kernel's: a phone's USB netdev
-  # arrives as whatever this box's USB wiring produces (`ID_NET_NAME_PATH`, e.g.
-  # `enp0s29u1u3`), which changes with the port, so
-  # ./hardware-configuration.nix matches it by *type* (`ether` on the USB bus)
-  # rather than by MAC — an Android presents RNDIS or CDC-ECM, an iPhone
-  # CDC-NCM (`ipheth`), and some phones randomise the tether MAC per session.
-  WWAN_USB_NIC = "router-wwan-usb";
-
-  # Preference order among the backup paths, and the one list both of its readers
-  # use: ./wan-backup.nix picks the first one that holds a DHCP lease, and
-  # ./firewall.nix masquerades on every one of them (a path that is up but not
-  # NATed is a LAN with no internet, so a missing row there is not cosmetic).
-  # The order is a decision, not an accident: the cable carries the phone's
-  # cellular link at whatever the radio can do, while the Wi-Fi stick is one 1×1
-  # spatial stream on 2.4 GHz (`docs/wan-backup-uplink.md`, "Why it is slow").
-  WWAN_FALLBACK_NICS = [
-    WWAN_USB_NIC
-    WWAN_NIC
-  ];
-
-  # The hub's own address on the handoff VLAN.  The old box's `netstat -rn`
-  # (2026-10-17) had `default 192.168.20.1 UG em3`, and the static endpoint route
-  # below has to point at the box that can reach AAISP's L2TP LNS.  It is a
-  # static route rather than the DHCP default because the tunnel is the network's
-  # route out and the hub's default would otherwise keep winning.
-  UPLINK_HUB_GATEWAY = "192.168.20.1";
 
   # AAISP's L2TP endpoint and the username the old box used (`<ppps>` in
   # /conf/config.xml, read 2026-10-17).  The password is not here: it is

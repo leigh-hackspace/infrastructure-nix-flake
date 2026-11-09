@@ -23,6 +23,7 @@ use crate::connections::ConnectionsPanel;
 use crate::leases::LeasesPanel;
 use crate::panels::{Banner, Header, IfaceCards, Issues};
 use crate::state::{PANELS, Store, start};
+use crate::wan::WanPanel;
 
 #[component]
 pub fn App() -> Element {
@@ -95,6 +96,9 @@ fn panel(store: Store, id: &str) -> Element {
         },
         "connections" => {
             rsx! { ConnectionsPanel { store: store } }
+        }
+        "uplink" => {
+            rsx! { WanPanel { store: store } }
         }
         "leases" => {
             rsx! { LeasesPanel { store: store } }

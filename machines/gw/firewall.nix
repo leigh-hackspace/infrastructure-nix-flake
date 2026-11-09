@@ -124,12 +124,17 @@
   # tunnel, no route out, and no way in to find out why — which is the definition
   # of a bad 04:00.
   uplinkServiceRules = ''
-    iifname "${NICS.UPLINK_NIC}" udp sport 67 udp dport 68 accept
+    # Any interface the WAN manager has adopted. The set is the whole point:
+    # DHCP is a property of "a path that offers us a lease", not of a NIC name
+    # this file would have to know. `@wan_ifaces` is filled by
+    # `crates/wan-manager` and is empty for the first seconds of a boot, which
+    # is why the manager starts before `network-online.target`.
+    iifname @wan_ifaces udp sport 67 udp dport 68 accept
     # The tunnel's DHCPv6 client, which asks AAISP for the /48 and the public
-    # address.  The reply comes from the peer's link-local address and is not
+    # address. The reply comes from the peer's link-local address and is not
     # `established` from the client's point of view, exactly like the DHCPv4
     # reply above.
-    iifname "${NICS.UPLINK_TUNNEL}" udp sport 547 udp dport 546 accept
+    iifname @wan_ifaces udp sport 547 udp dport 546 accept
   '';
 
   # --- the front door: HTTP(S) *to the router itself* -----------------------
@@ -185,7 +190,6 @@
     "192.168.2.0/24"
     "192.168.49.0/24"
     CONFIG.TAILNET_V4
-    "192.168.20.0/24"
     NICS.DMZ_NET
   ];
 
@@ -212,7 +216,7 @@
       map
       (
         v: ''
-          iifname "${TABLES.vlanDevice v}" ip daddr != ${markLocalV4} meta mark set ${toString (
+          iifname "${TABLES.vlanDevice v}" ip daddr != ${markLocalV4} ip daddr != @wan_local_v4 meta mark set ${toString (
             if v.id == 225
             then MARK_AAISP
             else MARK_HUB
@@ -315,10 +319,10 @@
   # tunnel already addressed to this box (`nginx.leighhack.org`'s AAAA moved here with
   # the certificate). Both are input, not forward.
   publicInboundRules = ''
-    iifname "${NICS.UPLINK_TUNNEL}" tcp dport { 80, 443 } accept
+    iifname @wan_ifaces tcp dport { 80, 443 } accept
     # headscale's DERP STUN socket: public 3478/udp is DNAT'd to 3479 on this box
     # (machines/gw/headscale.nix binds `stun_listen_addr = 0.0.0.0:3479`).
-    iifname "${NICS.UPLINK_TUNNEL}" udp dport 3479 accept
+    iifname @wan_ifaces udp dport 3479 accept
   '';
 
   # **An origin is reachable from the front door and nowhere else.** This is the packet
@@ -360,6 +364,14 @@ in {
         family = "ip";
         name = "router";
         content = ''
+          # The connected subnets of uplinks the WAN manager has adopted. A
+          # packet for the hub's own handoff network (or any other uplink's
+          # link-local subnet) must keep its connected route instead of being
+          # marked into a policy table whose default is further away. The
+          # manager fills this from the DHCP addresses it discovers, which is
+          # why no hub subnet appears in this file.
+          set wan_local_v4 { type ipv4_addr; flags interval; }
+
           # The policy-routing half: mark before the routing decision, then let
           # ./networking.nix's two fwmark rules pick table 100 (AAISP) or table
           # 200 (the hub).  This is the old box's `route-to` split, and it is in
@@ -373,7 +385,7 @@ in {
             # old box sent it out of the hub (`route-to (em3 ...)` on
             # tailscale0).  A packet for the LAN never reaches this mark because
             # its destination is in markLocalV4.
-            iifname "tailscale0" ip daddr != ${markLocalV4} meta mark set ${toString MARK_HUB}
+            iifname "tailscale0" ip daddr != ${markLocalV4} ip daddr != @wan_local_v4 meta mark set ${toString MARK_HUB}
           }
 
           # The same decision for packets this box *originates*.
@@ -398,7 +410,7 @@ in {
           # so it identifies the reply without needing the inbound interface.
           chain output {
             type route hook output priority mangle; policy accept;
-            ct status dnat ip daddr != ${markLocalV4} meta mark set ${toString MARK_AAISP}
+            ct status dnat ip daddr != ${markLocalV4} ip daddr != @wan_local_v4 meta mark set ${toString MARK_AAISP}
           }
 
           chain forward {
@@ -459,6 +471,7 @@ in {
         family = "ip";
         name = "routerIn";
         content = ''
+          set wan_ifaces { type ifname; }
           chain input {
             type filter hook input priority 0; policy drop;
 
@@ -526,11 +539,12 @@ in {
         family = "ip";
         name = "routerNat";
         content = ''
-          # Inbound: the internet reaching a service.  This is the half that makes
-          # a public vhost exist at all — without it the forward chain's policy
-          # drops every packet from outside, which is what the network looked like
-          # after the cutover (every 81.187.195.17/:80/:443 timed out while the
-          # same vhost answered over IPv6 and on the LAN).
+          # The WAN manager owns the membership of this set and the NAT rules
+          # below match it. It is declared here so an empty ruleset still has
+          # the shape the manager expects, and so no interface name appears in
+          # this file.
+          set wan_ifaces { type ifname; }
+
           chain dstnat {
             type nat hook prerouting priority dstnat; policy accept;
             ${dnatRules}
@@ -538,38 +552,13 @@ in {
 
           chain srcnat {
             type nat hook postrouting priority srcnat; policy accept;
-            # The trusted VLAN out of the AAISP tunnel (the old box's
-            # `nat on l2tp0 ... -> (l2tp0:0)` half).
-            oifname "${NICS.UPLINK_TUNNEL}" ip saddr ${TABLES.blockSet VLANS} masquerade
-            # Every other VLAN out of the hub, which the old box did not need a
-            # nat rule for because its `nat on em3` rule covered the interface
-            # rather than the source; the same rule here is written with the
-            # source block so a packet arriving from the hub cannot be
-            # masqueraded back out of it.
-            oifname "${NICS.UPLINK_NIC}" ip saddr ${TABLES.blockSet VLANS} masquerade
-            # The tailnet, when this box is its exit node: the old box sent
-            # tailscale0's traffic out of the hub (`route-to (em3 ...)` on
-            # tailscale0), and the hub only routes the address it gave this box.
-            # The tailnet's own range is common/config.nix's TAILNET_V4.
-            oifname "${NICS.UPLINK_NIC}" ip saddr ${CONFIG.TAILNET_V4} masquerade
-            # The backup WAN (`./wan-backup.nix`): the same two rules on each
-            # interface a fallback egress can live on — one pair per entry in
-            # ./constants.nix's `WWAN_FALLBACK_NICS`, the phone on USB first and
-            # the Wi-Fi hotspot second.  This is what makes a fallback *usable*
-            # rather than a router-only internet connection — without it every
-            # forwarded packet leaves with a 10.3.x source the hotspot will not
-            # route back.  The live box had the first of these added by hand on
-            # 2026-11-07, which is also why it had to go in this file: a `switch`
-            # reloads nftables, and the hand-added rule was the network's only NAT
-            # on the path it had just started using.  Both names are written out
-            # rather than looped over `WWAN_FALLBACK_NICS` because a third path
-            # must not be able to appear without a NAT row here, and an interface
-            # name in a masquerade rule is exactly the thing the router cannot
-            # evaluate its way out of.
-            oifname "${NICS.WWAN_USB_NIC}" ip saddr ${TABLES.blockSet VLANS} masquerade
-            oifname "${NICS.WWAN_USB_NIC}" ip saddr ${CONFIG.TAILNET_V4} masquerade
-            oifname "${NICS.WWAN_NIC}" ip saddr ${TABLES.blockSet VLANS} masquerade
-            oifname "${NICS.WWAN_NIC}" ip saddr ${CONFIG.TAILNET_V4} masquerade
+            # Every adopted path, whatever it is: the AAISP tunnel, the hub, a
+            # USB-tethered phone, a Wi-Fi hotspot. The manager maintains this
+            # set; the rule is the only NAT row in the file. Source matching is
+            # the network's own blocks, so a packet arriving from an uplink
+            # cannot be masqueraded back out of one.
+            oifname @wan_ifaces ip saddr ${TABLES.blockSet VLANS} masquerade
+            oifname @wan_ifaces ip saddr ${CONFIG.TAILNET_V4} masquerade
             # NAT reflection, which is the old box's `rdr on vlan0.X` copies of
             # every forward: a LAN client resolving a *public* name gets the public
             # address from the network's resolver (the *.leighhack.org names live
@@ -602,6 +591,7 @@ in {
         family = "ip6";
         name = "router6";
         content = ''
+          set wan_ifaces { type ifname; }
           chain forward {
             type filter hook forward priority 0; policy drop;
             ct state established,related accept

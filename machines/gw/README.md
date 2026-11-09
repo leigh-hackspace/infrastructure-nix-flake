@@ -97,12 +97,12 @@ show table 200` (are the two egresses installed?), `ip -6 route show default` (m
 dnsmasq that is `active` and has stopped advertising is the failure `systemctl` cannot
 see). **When the box itself has internet and the LAN does not, test the path rather than
 the link:** `sudo ping -c1 -W2 -I router-uplink 1.1.1.1` answers whether the primary
-egress carries packets at all, and `journalctl -u wan-backup-route` says which egress the
+egress carries packets at all, and `journalctl -u wan-manager` says which egress the
 reconciler chose. The 2026-11-07 case was a live hub link with a dead upstream, and the
-backup WAN is what carries the network in it — `docs/wan-backup-uplink.md`. While it does,
-the AAISP session is dialled over the hotspot too (`ip -4 route get 194.4.172.12` names
-`wlp0s29u1u2`; `ip -br addr show ppp0` is the public address; `iw dev wlp0s29u1u2 link` is
-the band and rate if it is slow).
+backup WAN is what carries the network in it — `docs/wan-manager-2026-11-09.md`. While it does,
+the AAISP session is dialled over the working backup too (`ip -4 route get 194.4.172.12`
+names the backup interface; `ip -br addr show ppp0` is the public address; the Uplink tab
+on network-info shows each adapter, its BSS and its measured rate).
 
 ## The rule this directory is written to
 
@@ -139,7 +139,7 @@ evaluation of this machine succeeds with tables that disagree, and standalone vi
 | `int-dns.nix` | the guard over `common/int-dns.nix` read from *this box's* `virtualHosts`: equality now that `frontDoor` names `gw` (AGENTS.md rule 24) |
 | `firewall.nix` | nftables: forward, input, NAT, and the IPv6 pair |
 | `uplink.nix` | pppd's tunnel, the tailnet (headscale) client |
-| `wan-backup.nix` | the **backup WAN**: the USB Wi-Fi adapter's association (`wan-backup-wifi`), its DHCP address, and the 10 s reconciler (`wan-backup-route`) that promotes its default into the main table and table 200 only when the hub cannot carry a packet — **and routes the AAISP L2TP endpoint out the hotspot** (`/32` at metric 5) so the public `/29`, the `/48` and the tailnet control plane keep working while the hub is dead. Break-glass: `wan-backup-emergency.sh` at `/etc/` and `/root/`. **Read `docs/wan-backup-uplink.md` before changing the policy** — it owns the limits, the measured speed (2.4 GHz only, ~14 Mbit/s) and the off-switch |
+| `wan-backup.nix` | the **WAN supervisor** (`crates/wan-manager`): discovers every non-LAN Ethernet NIC by its DHCP offer, every USB-tethered phone by the USB bus, and **every wireless adapter of any brand**; runs one supplicant per adapter scanning for `Leighhack WAN Backup`; probes each path's own gateway and the internet through it; ranks by measured throughput/latency with hysteresis; installs the main/table-200 defaults and the AAISP `/32`, fills the firewall's `wan_ifaces` NAT set, and resets a selected backup whose gateway has been silent for 12 ticks. Break-glass: `wan-backup-emergency.sh` at `/etc/`. **Read `docs/wan-manager-2026-11-09.md` before changing the policy** — it owns the Android USB diagnosis, the limits, and the measured speed |
 | `openvpn.nix` | the old box's two OpenVPN servers, **off by default** |
 | `sops.nix` | the secrets this box needs: the AAISP PPP password, the tailnet's join key, and the shared env-file — for its `DO_AUTH_TOKEN` alone, because `http.nix` answers for the zone through DigitalOcean |
 | `lib/network-tables.nix` | the renderers: tables → dnsmasq lines, nft set literals, device names |

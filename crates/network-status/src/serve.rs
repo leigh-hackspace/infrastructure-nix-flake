@@ -51,13 +51,20 @@ pub(crate) fn fallback_html(title: &str) -> String {
 pub(crate) fn serve_asset(name: &str) -> Option<Reply> {
     let asset = find_asset(name)?;
     let mut reply = Reply::new(200, asset.mime, asset.data.to_vec());
-    // A megabyte of wasm re-fetched on every page load is not "instant". Only the assets
-    // are cached: index.html is the file that names them, so caching it would pin a page
-    // to a bundle it no longer refers to.
+    // The bundle has fixed filenames (`network_status_web.js` and its `.wasm`),
+    // so an `immutable` cache pins a browser to an old bundle for a week —
+    // measured 2026-11-09, when a new tab existed on the server and not in the
+    // browser. JS and wasm revalidate; other static assets keep the long cache.
     if !asset.mime.starts_with("text/html") {
+        let bundle = asset.mime.starts_with("application/wasm")
+            || asset.mime.contains("javascript");
         reply.headers.push((
             "Cache-Control".to_string(),
-            "public, max-age=604800, immutable".to_string(),
+            if bundle {
+                "no-cache".to_string()
+            } else {
+                "public, max-age=604800, immutable".to_string()
+            },
         ));
     }
     Some(reply)

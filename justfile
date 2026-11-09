@@ -265,22 +265,15 @@ known-hosts:
     addrs=$(nix eval --impure --raw --expr 'let h = import ./common/hosts.nix; in builtins.concatStringsSep " " [ h.router h.services1 h.services2 h.aibox ]')
     ssh-keyscan -T 5 -t rsa,ed25519 ${addrs} 2>/dev/null | grep -v '^#'
 
-# --- the router's backup WAN: handing back from break-glass -------------------
+# --- the router's WAN: handing back from break-glass -------------------------
 #
-# `machines/gw/wan-backup-emergency.sh` is the lifeline when the uplink is gone: it
-# associates to the hotspot itself, writes a `/run` network file, types a metric-50
-# default route, puts two `ip rule`s at priority 50 and stops the `wan-backup-*`
-# units so nothing fights it.  What it leaves behind is *not* recoverable by
-# restarting one thing, and doing it by hand has bitten twice (see
-# docs/wan-backup-uplink.md, "Break glass").  This is that handover, in order, and
-# idempotent — running it on a box the flake already owns changes nothing.
-#
-# The order is load-bearing: the hand-built `/run` file sorts before the flake's
-# (10- before 20-) and sets UseRoutes=no, so the reconciler has no DHCP route to
-# read until it is gone; the promoted route must exist before the metric-50 one is
-# deleted; and the *timer* is what makes any of it keep happening — starting
-# `wan-backup-route` alone installs one static route and leaves nothing watching
-# it, which is 45 minutes of invisible silence that already happened once.
+# `machines/gw/wan-backup-emergency.sh` is the lifeline when the uplink is gone.
+# It stops `wan-manager`, tries every USB-Ethernet, wireless and plain-Ethernet
+# candidate it can find, writes a `/run` network file, types a metric-50 default
+# in the main table and tables 200/300, puts two `ip rule`s at pref 50 and adds
+# NAT. What it leaves behind is *not* recoverable by restarting one thing, so
+# this recipe is the handover and it is idempotent: running it on a box the flake
+# already owns changes nothing.
 #
 # Run it on gw (`hostname` first — a hop to the box you are already on succeeds
 # silently).
@@ -291,69 +284,64 @@ wan-backup-handback:
         echo "refusing: this repairs gw's live routing, so run it on gw" >&2
         exit 1
     fi
-    iface=wlp0s29u1u2
 
-    # 1. The association, under the flake's own unit.  Its preStart stops any
-    #    hand-started wpa_supplicant holding the interface, which is what the
-    #    emergency script left running.
-    sudo systemctl start wan-backup-wifi
-    sleep 3
+    # 1. Start the daemon while the emergency metric-50 route is still in place.
+    #    Do NOT touch networkd yet: a `networkctl reload` can flush the promoted
+    #    routes, and removing the emergency route before there is a replacement
+    #    is how the 2026-11-09 handbacks took the LAN down.
+    sudo systemctl start wan-manager
 
-    # 2. The declarative DHCP address.  Removing the hand-built network file and
-    #    letting networkd read 20-wwan again is what gives the reconciler the
-    #    `proto dhcp` default it promotes — this is the step whose absence makes
-    #    the reconciler answer `nowhere` forever.  `sudo test` and not `test`:
-    #    /run/systemd/network is root-only, so an unprivileged `-e` cannot stat it
-    #    and answers "no" for a file that is there — which skipped this step
-    #    silently on the first version of this recipe, the exact shape of failure
-    #    it exists to prevent.
-    if sudo test -e /run/systemd/network/10-wan-backup.network; then
-        sudo rm -f /run/systemd/network/10-wan-backup.network
-        sudo networkctl reload
-        sudo networkctl reconfigure "$iface"
-        sleep 4
+    # 2. Wait for the daemon to report a non-tunnel egress and for internet to
+    #    work *while the emergency route is still present*. Up to 90 s.
+    ok=0
+    for _ in $(seq 1 18); do
+        sleep 5
+        state=$(sudo sed -n 's/.*"state":"\([^"]*\)".*/\1/p' /run/wan-manager/status.json 2>/dev/null | head -1)
+        sel=$(sudo sed -n 's/.*"selected":{"role":"egress","interface":"\([^"]*\)".*/\1/p' /run/wan-manager/status.json 2>/dev/null | head -1)
+        if [ -n "${sel:-}" ] && curl -fsS -m 4 -o /dev/null https://one.one.one.one 2>/dev/null; then
+            echo "daemon egress: $sel (state ${state:-?})"
+            ok=1
+            break
+        fi
+        echo "waiting for wan-manager (state ${state:-?}, egress ${sel:-none})"
+    done
+    if [ "$ok" -ne 1 ]; then
+        echo "FAILED: wan-manager has no egress; leaving the emergency path untouched." >&2
+        echo "Do not remove the metric-50 route. Diagnose: journalctl -u wan-manager -n 80" >&2
+        exit 1
     fi
 
-    # 3. The routes: once by hand, then the loop that keeps reconciling them.
-    sudo systemctl start wan-backup-route
-    sudo systemctl start wan-backup-route.timer
-
-    # 4. The break-glass leftovers, now that the flake owns the box: the typed
-    #    metric-50 default, its two rules, its table, and the passphrase copy.
-    sudo ip -4 route del default dev "$iface" metric 50 2>/dev/null || true
-    sudo ip rule del pref 50 2>/dev/null || true
-    sudo ip rule del pref 50 2>/dev/null || true
+    # 3. Only now remove the hand-built metric-50 default. No `networkctl
+    #    reload` and no touching /run/systemd/network: those are what flushed
+    #    the daemon's route on the first attempt. The daemon's metric-100 route
+    #    is already installed and proven.
+    for dev in $(ip -o link show | awk -F': ' '{print $2}' | cut -d@ -f1); do
+        sudo ip -4 route del default dev "$dev" metric 50 2>/dev/null || true
+        sudo ip -4 route del default dev "$dev" table 200 metric 50 2>/dev/null || true
+        sudo ip -4 route del default dev "$dev" table 300 metric 50 2>/dev/null || true
+    done
+    while sudo ip rule del pref 50 2>/dev/null; do :; done
     sudo ip -4 route flush table 300 2>/dev/null || true
+    sudo ip route flush cache
+
+    # 4. The emergency network files and supplicant copy are now inert (the
+    #    daemon's 05- file wins) but remove them without reloading networkd.
+    sudo find /run/systemd/network -maxdepth 1 \( -name '10-wan-emergency-*.network' -o -name '10-wan-backup.network' \) -delete 2>/dev/null || true
     sudo rm -f /run/wpa-backup.conf
 
-    # 5. The AAISP session.  The emergency script stopped the units, so nothing
-    #    was maintaining the L2TP endpoint's route and ppp0 is usually gone: a LAN
-    #    that is IPv4-only, with no `/29` and no IPv6, looks repaired and is not.
-    if [ -z "$(ip -4 addr show dev ppp0 2>/dev/null)" ]; then
-        echo "ppp0 is down — re-dialling the AAISP session over the new path"
-        sudo systemctl restart xl2tpd-aaisp
+    # 5. Verify the daemon's own route is what remains and that the path works.
+    sleep 2
+    if ! curl -fsS -m 8 -o /dev/null https://one.one.one.one; then
+        echo "FAILED: the daemon route is not carrying traffic. Re-run the emergency script:" >&2
+        echo "  sudo /etc/wan-backup-emergency.sh --force" >&2
+        exit 1
     fi
-
-    # 6. Prove the loop is actually running, not merely started: the heartbeat is
-    #    written by every tick, so a stale one means the timer is not scheduled.
-    sleep 12
-    beat=$(sudo cat /run/wan-backup/last-run 2>/dev/null || echo 0)
-    now=$(date +%s)
-    age=$((now - beat))
     echo
     ip -4 route show default
     echo
-    sudo cat /run/wan-backup/route.state
-    echo
-    sudo systemctl is-active wan-backup-wifi wan-backup-route.timer \
-        wan-backup-loop-check.timer
-    ip -br addr show ppp0 2>/dev/null || echo "ppp0: not dialled yet (watch: journalctl -u xl2tpd-aaisp)"
-    if [ "$age" -gt 30 ]; then
-        echo "FAILED: the reconciler has not ticked for ${age}s — is wan-backup-route.timer running?" >&2
-        exit 1
-    fi
-    echo "the route loop ticked ${age}s ago — the box is back on the flake's own units"
-    echo "check the LAN, not just this box: ssh services1 'curl -fsS https://one.one.one.one'"
+    sudo cat /run/wan-manager/decision 2>/dev/null || true
+    systemctl is-active wan-manager.service
+    echo "handback complete: wan-manager is the WAN, no metric-50 route remains"
 
 # --- the UPS, the outage, and the notice that goes out first -------------------
 #

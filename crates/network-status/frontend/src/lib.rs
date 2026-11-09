@@ -1,14 +1,15 @@
 //! `network-status` web UI — a Dioxus (wasm) SPA, the front end of the router's dashboard
 //! at `network-info.int.leighhack.org`.
 //!
-//! One page, four tabs, by question: what the router is doing right now (overview), what
-//! the connection table says (`connections.rs`), what the DHCP leases say (`leases.rs`),
-//! and which interface is doing it (`charts.rs` + `panels.rs`). The tabs are not by
-//! widget — the reason is in `app.rs`.
+//! One page, five tabs, by question: what the router is doing right now (overview), what
+//! the WAN supervisor chose and why (`wan.rs`), what the connection table says
+//! (`connections.rs`), what the DHCP leases say (`leases.rs`), and which interface is
+//! doing it (`charts.rs` + `panels.rs`). The tabs are not by widget — the reason is in
+//! `app.rs`.
 //!
 //! Modules: `api` (the wire contract + fetch), `state` (signals, the poll, the listeners),
 //! `format` (number/duration/time), `chart` (the canvas drawing), `charts` (the chart
-//! components), `panels` (header/banner/cards/issues), `connections`, `leases`, `app`.
+//! components), `panels` (header/banner/cards/issues), `connections`, `leases`, `wan`, `app`.
 //!
 //! The port from SolidJS is 2026-10-30; `README.md` keeps what the port had to preserve
 //! and the two things it changed on purpose.
@@ -22,6 +23,7 @@ mod format;
 mod leases;
 mod panels;
 mod state;
+mod wan;
 
 use app::App;
 

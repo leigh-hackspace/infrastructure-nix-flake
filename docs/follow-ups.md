@@ -905,7 +905,7 @@ thing to do with either is to date it (`journalctl -u … | grep "Failed with re
   `10.120.243.0/24` at 14:53 the same day), a 10 s reconciler that promotes the
   wwan's default only when the tunnel *and* the hub probe are both dead, and the
   `masquerade` rows in `./firewall.nix`. The passphrase is
-  `wan_backup_wifi_psk` in sops. **`docs/wan-backup-uplink.md`** owns the policy,
+  `wan_backup_wifi_psk` in sops. **`docs/wan-manager-2026-11-09.md`** owns the policy,
   the takeover steps, the verification and the limits.
 
   **Blocks:** nothing in the flake — the 2026-11-07 rollout and its per-VLAN
@@ -915,8 +915,8 @@ thing to do with either is to date it (`journalctl -u … | grep "Failed with re
   line) until that is fixed. When it is, the reconciler demotes the wwan within
   10 s and nothing has to be deployed; the module can stay as a standing
   fallback, or be retired by unplugging the stick (safe, immediate) or by
-  removing the import, the two NAT rows, the sops key and the `2-wwan` link rule
-  in one change (`docs/wan-backup-uplink.md`, "Retiring it"). **Do not** remove the
+  removing the import, the sops key and the `wan-backup.nix` module
+  in one change (`docs/wan-manager-2026-11-09.md`, "Retiring it"). **Do not** remove the
   sops key while the module still reads it — that fails activation, on the
   router. Two decisions this opens and does not take: whether the fallback should
   stay semi-permanent once the primary is healthy, and whether to rename
