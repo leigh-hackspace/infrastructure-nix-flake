@@ -21,6 +21,10 @@
     ../../common/exporters.nix
     ./netboot.nix
     ./networking.nix
+    # aibox is the far end of the router's declared relay path (./wan-relay.nix):
+    # the phone that cannot enumerate on gw's EHCI does on this box's xHCI, and
+    # this is the half that forwards the router's packets out its USB tether.
+    ./wan-relay.nix
     # PARKED modules say so on their own first line (AGENTS.md rule 23), so this list
     # only names them: neither is evaluated, and `nix flake check` cannot see either.
     # ./nvidia.nix

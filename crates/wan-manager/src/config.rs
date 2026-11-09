@@ -60,6 +60,15 @@ pub struct Config {
     /// daemon uses if that set or the nft table is missing.
     pub nat_sources: Vec<String>,
 
+    /// Interfaces that are **declared** WAN paths rather than discovered ones:
+    /// a point-to-point tunnel to another box of ours that owns the real uplink
+    /// (`machines/gw/wan-relay.nix`). A tunnel netdev has no upstream gateway to
+    /// probe and no `/sys/class/net/*/device` symlink, so discovery cannot find
+    /// it and ranking must not demand a gateway of it; both are facts about the
+    /// declaration, not about the interface. Empty on any box that has no such
+    /// path, which is why nothing about a relay appears in the defaults.
+    pub relay_candidates: Vec<String>,
+
     /// A small HTTP endpoint used to measure throughput. The old runbook's own
     /// lesson is attached: `https://1.1.1.1` redirects and times out on a slow
     /// link, so this defaults to `one.one.one.one`.
@@ -127,6 +136,7 @@ impl Default for Config {
                 "wg".into(),
                 "lo".into(),
             ],
+            relay_candidates: Vec::new(),
         }
     }
 }
@@ -245,6 +255,11 @@ impl Config {
                         c.ignore_prefixes.push(v);
                     }
                 }
+                "--relay-candidate" => {
+                    if let Some(v) = value(&mut i) {
+                        c.relay_candidates.push(v);
+                    }
+                }
                 "--help" | "-h" => {
                     println!("{}", USAGE);
                     std::process::exit(0);
@@ -303,4 +318,5 @@ Options:
   --wifi-scan-interval SECS  300
   --kick-ticks N             12
   --ignore-prefix PREFIX     interface-name prefix never to touch (repeatable)
+  --relay-candidate NAME     declared path to another box's uplink (repeatable)
 ";

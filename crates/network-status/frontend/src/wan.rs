@@ -14,6 +14,16 @@ fn ms(v: Option<f64>) -> String {
     v.map(|x| format!("{x:.0} ms")).unwrap_or_else(|| "–".into())
 }
 
+/// How old a kept throughput sample is, in the page's own words. Bounded on
+/// purpose: a sample from another era is not evidence, and the Uplink tab is read
+/// during an outage to decide what to believe.
+fn age(secs: i64) -> String {
+    match secs {
+        s if s < 3600 => format!("{}m old", s / 60),
+        s => format!("{}h old", s / 3600),
+    }
+}
+
 
 #[component]
 pub fn WanPanel(store: Store) -> Element {
@@ -62,102 +72,135 @@ pub fn WanPanel(store: Store) -> Element {
         }
 
         h2 { "Candidates, ranked" }
-        table {
-            thead {
-                tr {
-                    th { "interface" }
-                    th { "kind" }
-                    th { "link" }
-                    th { "address / gateway" }
-                    th { "gateway" }
-                    th { "internet" }
-                    th { "latency" }
-                    th { "throughput" }
-                    th { "score" }
-                    th { "verdict" }
-                }
-            }
-            tbody {
-                for c in w.candidates.iter() {
-                    tr {
-                        td { class: "mono", "{c.interface}" }
-                        td { span { class: "kind", "{c.kind}" } }
-                        td { if c.link { span { class: "up", "up" } } else { span { class: "muted", "down" } } }
-                        td { class: "mono",
-                            {c.addresses.join(", ")}
-                            if let Some(g) = &c.gateway { span { class: "muted", " via {g}" } }
-                        }
-                        td { if c.gateway_ok { span { class: "up", "ok" } } else { span { class: "muted", "silent" } } }
-                        td { if c.internet_ok { span { class: "up", "ok" } } else { span { class: "muted", "no" } } }
-                        td { class: "num", "{ms(c.latency_ms)}" }
-                        td { class: "num", "{fmt_rate(c.throughput_bps)}" }
-                        td { class: "num", {format!("{:.1}", c.score)} }
-                        td {
-                            if c.eligible {
-                                span { class: "chip", "viable" }
-                            } else {
-                                span { class: "warn-text", "{c.reason}" }
-                            }
-                        }
-                    }
-                }
-            }
+        div { class: "conn-scroll",
+          table {
+            class: "conn",
+              thead {
+                  tr {
+                      th { "interface" }
+                      th { "kind" }
+                      th { "link" }
+                      th { "address / gateway" }
+                      th { "gateway" }
+                      th { "internet" }
+                      th { "latency" }
+                      th { "throughput" }
+                      th { "score" }
+                      th { "verdict" }
+                  }
+              }
+              tbody {
+                  for c in w.candidates.iter() {
+                      tr {
+                          td { class: "mono", "{c.interface}" }
+                          td { span { class: "kind", "{c.kind}" } }
+                          td { if c.link { span { class: "up", "up" } } else { span { class: "muted", "down" } } }
+                          td { class: "mono",
+                              {c.addresses.join(", ")}
+                              if let Some(g) = &c.gateway { span { class: "muted", " via {g}" } }
+                          }
+                          td { if c.gateway_ok { span { class: "up", "ok" } } else { span { class: "muted", "silent" } } }
+                          td {
+                              if c.internet_ok {
+                                  span { class: "up", "ok" }
+                                  // Which transport answered. A phone hotspot drops ICMP
+                                  // under load and the data path is fine, so `ok (tcp)`
+                                  // beside a measured rate is the normal reading — and a
+                                  // bare `no` beside a rate is a contradiction, not a
+                                  // verdict.
+                                  if let Some(via) = &c.internet_via {
+                                      span { class: "muted", " ({via})" }
+                                  }
+                              } else {
+                                  span { class: "muted", "no" }
+                              }
+                          }
+                          td { class: "num", "{ms(c.latency_ms)}" }
+                          td { class: "num",
+                              "{fmt_rate(c.throughput_bps)}"
+                              // The last good sample is kept across a failed probe
+                              // on purpose, so it has to carry its own age or it
+                              // reads as this tick's measurement.
+                              if let Some(ts) = c.throughput_ts {
+                                  if w.ts > ts && w.ts - ts > 90 {
+                                      span { class: "muted", " · {age(w.ts - ts)}" }
+                                  }
+                              }
+                          }
+                          td { class: "num", {format!("{:.1}", c.score)} }
+                          td {
+                              if c.eligible {
+                                  span { class: "chip", "viable" }
+                              } else {
+                                  span { class: "warn-text", "{c.reason}" }
+                              }
+                          }
+                      }
+                  }
+              }
+          }
         }
 
         h2 { "Wi-Fi associations (one supplicant per adapter)" }
         if w.wifi.is_empty() {
             div { class: "empty", "no wireless adapter discovered" }
         } else {
-            table {
-                thead {
-                    tr {
-                        th { "interface" }
-                        th { "associated BSSID" }
-                        th { "signal" }
-                        th { "chosen BSSID" }
-                        th { "error" }
-                        th { "BSSes offering {w.ssid}" }
-                    }
-                }
-                tbody {
-                    for a in w.wifi.iter() {
-                        tr {
-                            td { class: "mono", "{a.interface}" }
-                            td { class: "mono", {a.associated_bssid.clone().unwrap_or_else(|| "–".into())} }
-                            td { class: "num", {a.signal_dbm.map(|s| format!("{s} dBm")).unwrap_or_else(|| "–".into())} }
-                            td { class: "mono", {a.chosen_bssid.clone().unwrap_or_else(|| "–".into())} }
-                            td { class: "muted", {a.error.clone().unwrap_or_default()} }
-                            td { class: "mono", {a.aps.iter().map(|b| format!("{} {}dBm", b.bssid, b.signal_dbm.unwrap_or(0))).collect::<Vec<_>>().join("; ")} }
-                        }
-                    }
-                }
+            div { class: "conn-scroll",
+              table {
+                class: "conn",
+                  thead {
+                      tr {
+                          th { "interface" }
+                          th { "associated BSSID" }
+                          th { "signal" }
+                          th { "chosen BSSID" }
+                          th { "error" }
+                          th { "BSSes offering {w.ssid}" }
+                      }
+                  }
+                  tbody {
+                      for a in w.wifi.iter() {
+                          tr {
+                              td { class: "mono", "{a.interface}" }
+                              td { class: "mono", {a.associated_bssid.clone().unwrap_or_else(|| "–".into())} }
+                              td { class: "num", {a.signal_dbm.map(|s| format!("{s} dBm")).unwrap_or_else(|| "–".into())} }
+                              td { class: "mono", {a.chosen_bssid.clone().unwrap_or_else(|| "–".into())} }
+                              td { class: "muted", {a.error.clone().unwrap_or_default()} }
+                              td { class: "mono", {a.aps.iter().map(|b| format!("{} {}dBm", b.bssid, b.signal_dbm.unwrap_or(0))).collect::<Vec<_>>().join("; ")} }
+                          }
+                      }
+                  }
+              }
             }
         }
 
         h2 { "Android / USB tether" }
         div { class: "{usb_class}", "{w.usb.diagnosis}" }
         if !w.usb.devices.is_empty() {
-            table {
-                thead {
-                    tr {
-                        th { "usb path" }
-                        th { "vendor:product" }
-                        th { "name" }
-                        th { "driver" }
-                        th { "netdev" }
-                    }
-                }
-                tbody {
-                    for d in w.usb.devices.iter() {
-                        tr {
-                            td { class: "mono", "{d.path}" }
-                            td { class: "mono", "{d.vendor}:{d.product}" }
-                            td { "{d.name}" }
-                            td { class: "mono", {d.driver.clone().unwrap_or_else(|| "–".into())} }
-                            td { class: "mono", {d.netdev.clone().unwrap_or_else(|| "–".into())} }
-                        }
-                    }
-                }
+            div { class: "conn-scroll",
+              table {
+                class: "conn",
+                  thead {
+                      tr {
+                          th { "usb path" }
+                          th { "vendor:product" }
+                          th { "name" }
+                          th { "driver" }
+                          th { "netdev" }
+                      }
+                  }
+                  tbody {
+                      for d in w.usb.devices.iter() {
+                          tr {
+                              td { class: "mono", "{d.path}" }
+                              td { class: "mono", "{d.vendor}:{d.product}" }
+                              td { "{d.name}" }
+                              td { class: "mono", {d.driver.clone().unwrap_or_else(|| "–".into())} }
+                              td { class: "mono", {d.netdev.clone().unwrap_or_else(|| "–".into())} }
+                          }
+                      }
+                  }
+              }
             }
         }
         if !w.usb.kernel_failures.is_empty() {

@@ -42,7 +42,7 @@ impl Candidate {
 
     pub fn eligible(&self) -> bool {
         match self.info.kind {
-            Kind::Tunnel => self.info.link_up && self.probe.internet_ok,
+            Kind::Tunnel | Kind::Relay => self.info.link_up && self.probe.internet_ok,
             _ => {
                 self.info.link_up
                     && self.info.gateway.is_some()
@@ -77,7 +77,7 @@ impl Candidate {
         if !self.info.link_up {
             return "link down".into();
         }
-        if self.info.kind != Kind::Tunnel {
+        if !self.info.kind.is_gatewayless() {
             if self.info.gateway.is_none() {
                 return "no DHCP gateway offered".into();
             }

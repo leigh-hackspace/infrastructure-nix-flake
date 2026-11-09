@@ -15,6 +15,14 @@ pub enum Kind {
     Wired,
     UsbTether,
     Wifi,
+    /// A **declared** point-to-point path to another box of ours that owns a
+    /// real uplink — `--relay-candidate`, and the reason it exists is measured:
+    /// the phone enumerates on `aibox`'s xHCI and never on this box's EHCI, so
+    /// the only way this router can reach that tether is through a box that can
+    /// (`docs/wan-manager-2026-11-09.md`, "The phone that enumerates somewhere
+    /// else"). Like the tunnel it has no gateway to probe and no `.device`
+    /// symlink for discovery to find, so it is *declared* rather than found.
+    Relay,
 }
 
 impl Kind {
@@ -24,7 +32,14 @@ impl Kind {
             Kind::Wired => "wired",
             Kind::UsbTether => "usb-tether",
             Kind::Wifi => "wifi",
+            Kind::Relay => "relay",
         }
+    }
+
+    /// A path with no gateway and no `.device` symlink: it carries traffic on
+    /// its own terms, so probes ask only "is there internet at the far end".
+    pub fn is_gatewayless(&self) -> bool {
+        matches!(self, Kind::Tunnel | Kind::Relay)
     }
 
     /// A stable, *small* preference bonus. Performance is the primary ranking
@@ -36,6 +51,11 @@ impl Kind {
             Kind::Wired => 40.0,
             Kind::UsbTether => 30.0,
             Kind::Wifi => 20.0,
+            // A relay is someone else's tether: it is that path plus a hop, so
+            // it must not outrank the same link measured directly on this box
+            // at the same rate. Throughput still dominates, which is what makes
+            // a USB tether beat a 2.4 GHz hotspot through the same phone.
+            Kind::Relay => 15.0,
         }
     }
 }
@@ -58,6 +78,27 @@ pub struct IfaceInfo {
     /// The USB path (e.g. `2-1.1`) when `usb` is true, for diagnostics.
     pub usb_path: Option<String>,
     pub driver: Option<String>,
+}
+
+impl IfaceInfo {
+    /// What a probe must bind to so it leaves by *this* path.
+    ///
+    /// For a device that owns a route that is the device itself. A relay has no
+    /// route of its own until it is selected, so `-I <device>` would fail the
+    /// lookup and report "network unreachable" for a path that is fine; its own
+    /// address is the thing that is bound, and `machines/gw/wan-relay.nix`
+    /// declares the rule that sends that source into the relay's own table.
+    /// `ping -I` and `curl --interface` both accept an address for this reason.
+    pub fn probe_bind(&self) -> String {
+        match self.kind {
+            Kind::Relay => self
+                .addresses
+                .first()
+                .map(|(a, _)| a.to_string())
+                .unwrap_or_else(|| self.name.clone()),
+            _ => self.name.clone(),
+        }
+    }
 }
 
 pub fn list_interfaces() -> Vec<String> {
@@ -309,6 +350,31 @@ pub fn discover(cfg: &Config) -> Vec<IfaceInfo> {
             usb,
             usb_path: usb_path(&name),
             driver: driver(&name),
+        });
+    }
+    // Declared relays last, so a name that discovery also found keeps the kind
+    // discovery gave it. A tunnel netdev has no `device` symlink and offers no
+    // DHCP gateway, so neither of discovery's two questions can see it: that it
+    // is a WAN at all is the declaration, and everything else is measured.
+    for name in &cfg.relay_candidates {
+        if ignored(cfg, name) || out.iter().any(|i| &i.name == name) {
+            continue;
+        }
+        if !std::path::Path::new(&format!("/sys/class/net/{name}")).exists() {
+            continue;
+        }
+        out.push(IfaceInfo {
+            name: name.clone(),
+            kind: Kind::Relay,
+            link_up: link_up(name),
+            carrier: carrier(name),
+            addresses: ipv4_addresses(name),
+            gateway: None,
+            dhcp_metric: None,
+            wireless: false,
+            usb: false,
+            usb_path: None,
+            driver: driver(name),
         });
     }
     out

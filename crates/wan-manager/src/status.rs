@@ -82,7 +82,7 @@ pub fn json(r: &Report) -> String {
                 .map(|(a, m)| quoted(&format!("{a}/{m}")))
                 .collect();
             format!(
-                r#"{{"interface":{},"kind":{},"link":{},"carrier":{},"addresses":[{}],"gateway":{},"dhcp_metric":{},"driver":{},"usb_path":{},"eligible":{},"reason":{},"score":{},"gateway_ok":{},"internet_ok":{},"latency_ms":{},"throughput_bps":{},"failures":{},"checked_ts":{}}}"#,
+                r#"{{"interface":{},"kind":{},"link":{},"carrier":{},"addresses":[{}],"gateway":{},"dhcp_metric":{},"driver":{},"usb_path":{},"eligible":{},"reason":{},"score":{},"gateway_ok":{},"internet_ok":{},"internet_via":{},"latency_ms":{},"throughput_bps":{},"throughput_ts":{},"failures":{},"checked_ts":{}}}"#,
                 quoted(&c.info.name),
                 quoted(c.info.kind.as_str()),
                 c.info.link_up,
@@ -97,8 +97,17 @@ pub fn json(r: &Report) -> String {
                 format!("{:.2}", c.score),
                 c.probe.gateway_ok,
                 c.probe.internet_ok,
+                c.probe
+                    .internet_via
+                    .map(quoted)
+                    .unwrap_or_else(|| "null".into()),
                 jopt_f(c.probe.latency_ms),
                 jopt_f(c.throughput_bps),
+                if c.probe.throughput_ts > 0 {
+                    c.probe.throughput_ts.to_string()
+                } else {
+                    "null".into()
+                },
                 c.failures,
                 c.probe.checked_ts,
             )

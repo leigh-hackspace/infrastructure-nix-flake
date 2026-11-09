@@ -100,6 +100,7 @@ impl Manager {
 
     fn probe_all(&mut self) {
         let targets = self.cfg.ping_targets.clone();
+        let http_url = self.cfg.probe_url.clone();
         for c in self.candidates.iter_mut() {
             let ts = util::now_ts();
             if !c.info.link_up {
@@ -110,40 +111,70 @@ impl Manager {
                 };
                 continue;
             }
+            let bind = c.info.probe_bind();
             let mut p = probe::Probe {
                 checked_ts: ts,
+                // Deliberately not this tick's: a throughput sample is only due
+                // every `throughput_interval`, and the value is kept across a
+                // failed probe so a momentary loss does not erase the evidence.
+                throughput_ts: c.probe.throughput_ts,
                 ..Default::default()
             };
-            match c.info.kind {
-                Kind::Tunnel => {
-                    p.internet_ok = probe::internet_latency(&c.info.name, &targets).is_some();
-                    p.latency_ms = probe::internet_latency(&c.info.name, &targets);
-                    if !p.internet_ok {
-                        p.error = Some("tunnel carries no internet".into());
-                    }
+            // The two questions, asked in the order the outage taught: does this
+            // path's own next hop answer, and is there internet beyond it. The
+            // second one is asked over **two** transports, because they fail
+            // independently: a phone's hotspot drops ICMP under load while the
+            // TCP path is fine, and judging it by echo alone demoted a working
+            // 197 KB/s path to "no internet" on 2026-11-09 while a 3 MB HTTPS
+            // download through it completed.
+            let gateway_ok = match c.info.kind {
+                // A gatewayless path has no next hop to ask; the far end answers
+                // the internet question or nothing does.
+                _ if c.info.kind.is_gatewayless() => {
+                    p.gateway_ok = false;
+                    true
                 }
-                _ => {
-                    if let Some(gw) = c.info.gateway.as_deref() {
-                        if let Some(ms) = probe::gateway_latency(&c.info.name, gw) {
+                _ => match c.info.gateway.as_deref() {
+                    Some(gw) => match probe::gateway_latency(&bind, gw) {
+                        Some(ms) => {
                             p.gateway_ok = true;
                             p.latency_ms = Some(ms);
+                            true
                         }
-                        if p.gateway_ok {
-                            if let Some(ms) = probe::internet_latency(&c.info.name, &targets) {
-                                p.internet_ok = true;
-                                p.latency_ms = Some(ms);
-                            } else {
-                                p.error = Some("gateway answers, no internet beyond it".into());
-                            }
-                        } else {
+                        None => {
                             p.error = Some("gateway silent".into());
+                            false
                         }
-                    } else {
+                    },
+                    None => {
                         p.error = Some("no DHCP gateway offered".into());
+                        false
                     }
+                },
+            };
+            if gateway_ok {
+                if let Some(ms) = probe::internet_latency(&bind, &targets) {
+                    p.internet_ok = true;
+                    p.internet_via = Some("icmp");
+                    p.latency_ms = Some(ms);
+                } else if probe::internet_http(&bind, &http_url) {
+                    // Echo was filtered or lost; the network does not care which
+                    // protocol answered, only that something did. The latency
+                    // figure stays the gateway's, so a `tcp` verdict is not also
+                    // a claim about round-trip time.
+                    p.internet_ok = true;
+                    p.internet_via = Some("tcp");
+                } else {
+                    p.error = Some(
+                        if c.info.kind.is_gatewayless() {
+                            "no internet through this path".into()
+                        } else {
+                            "gateway answers, no internet beyond it".into()
+                        },
+                    );
                 }
             }
-            if c.info.kind == Kind::Tunnel {
+            if c.info.kind.is_gatewayless() {
                 if p.internet_ok {
                     c.failures = 0;
                 } else {
@@ -168,9 +199,10 @@ impl Manager {
             if !due {
                 continue;
             }
-            if let Some(v) = probe::throughput(&c.info.name, &url) {
+            if let Some(v) = probe::throughput(&c.info.probe_bind(), &url) {
                 c.throughput_bps = Some(v);
                 c.probe.throughput_bps = Some(v);
+                c.probe.throughput_ts = util::now_ts();
             }
             c.last_measured = Some(Instant::now());
         }

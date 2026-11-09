@@ -272,6 +272,38 @@ pub fn apply_routes(cfg: &Config, candidates: &[Candidate], sel: &Selection) -> 
                 "metric",
                 &cfg.l2tp_metric.to_string(),
             ]);
+        } else if c.info.kind.is_gatewayless() {
+            // A relay is a point-to-point link to a box that owns the uplink, so
+            // there is no next hop to name: `dev <relay>` is the whole route. It
+            // is written to both tables for the same reason the `via` form is —
+            // the main table carries this box's sockets and table 200 carries
+            // every VLAN, and the two disagreeing is a failover that half-works.
+            let dev = c.info.name.as_str();
+            if route_default(dev, cfg.fallback_metric, None) {
+                actions.push(format!(
+                    "selected relay {dev} (main, metric {})",
+                    cfg.fallback_metric
+                ));
+            }
+            if route_default(dev, cfg.fallback_metric, Some(cfg.hub_table)) {
+                actions.push(format!(
+                    "selected relay {dev} (table {}, metric {})",
+                    cfg.hub_table, cfg.fallback_metric
+                ));
+            }
+            // The tunnel still has to dial *through* the relay: name it as the
+            // path to AAISP's LNS so public addresses and IPv6 do not fall away
+            // while the relay is the egress.
+            let _ = ip(&[
+                "-4",
+                "route",
+                "replace",
+                &format!("{}/32", cfg.l2tp_endpoint),
+                "dev",
+                dev,
+                "metric",
+                &cfg.l2tp_metric.to_string(),
+            ]);
         }
     } else if let Some(i) = sel.tunnel {
         // Nothing but the tunnel: it can carry the router's own traffic, and
@@ -402,6 +434,10 @@ pub fn apply_nat(cfg: &Config, candidates: &[Candidate], sel: &Selection) -> Vec
                 .addresses
                 .iter()
                 .any(|(a, _)| !crate::net::is_lan_ip(cfg, *a)),
+            // A relay carries whatever the far end can NAT; its own address is
+            // in no source block, so the address test the tunnel uses would
+            // exclude it and the LAN would lose NAT on the tick it is chosen.
+            Kind::Relay => c.info.link_up,
             _ => c.info.gateway.is_some(),
         })
         .map(|c| c.info.name.clone())

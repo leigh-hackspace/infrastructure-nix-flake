@@ -144,10 +144,21 @@ pub struct WanCandidate {
     pub gateway_ok: bool,
     #[serde(default)]
     pub internet_ok: bool,
+    /// `icmp`, `tcp` or absent: which transport decided the internet verdict.
+    /// Shown because a `tcp` verdict next to a measured throughput is the normal
+    /// reading on a phone hotspot, where echo is dropped under load and the data
+    /// path is fine.
+    #[serde(default)]
+    pub internet_via: Option<String>,
     #[serde(default)]
     pub latency_ms: Option<f64>,
     #[serde(default)]
     pub throughput_bps: Option<f64>,
+    /// When the throughput sample above was taken. The daemon keeps the last
+    /// good sample across a failed probe, so this is what stops an old rate from
+    /// reading as this tick's.
+    #[serde(default)]
+    pub throughput_ts: Option<i64>,
     #[serde(default)]
     pub failures: u32,
 }

@@ -60,7 +60,7 @@ pub fn ensure(cfg: &Config, ifaces: &[IfaceInfo], rt: &mut DhcpRuntime) -> Vec<S
     // a stale metric or a stale name.
     let desired: std::collections::BTreeSet<String> = ifaces
         .iter()
-        .filter(|i| !matches!(i.kind, crate::net::Kind::Tunnel))
+        .filter(|i| !i.kind.is_gatewayless())
         .map(|i| format!("05-wan-manager-{}.network", safe(&i.name)))
         .collect();
     if let Ok(rd) = std::fs::read_dir(&dir) {
@@ -75,7 +75,7 @@ pub fn ensure(cfg: &Config, ifaces: &[IfaceInfo], rt: &mut DhcpRuntime) -> Vec<S
     let mut changed = false;
     for (i, info) in ifaces
         .iter()
-        .filter(|i| !matches!(i.kind, crate::net::Kind::Tunnel))
+        .filter(|i| !i.kind.is_gatewayless())
         .enumerate()
     {
         let path = path_for(cfg, &info.name);
@@ -92,7 +92,7 @@ pub fn ensure(cfg: &Config, ifaces: &[IfaceInfo], rt: &mut DhcpRuntime) -> Vec<S
     actions.append(&mut published);
     for info in ifaces
         .iter()
-        .filter(|i| !matches!(i.kind, crate::net::Kind::Tunnel))
+        .filter(|i| !i.kind.is_gatewayless())
     {
         // An interface with no lease and no address gets one reconfigure every
         // 120 s, not every tick: `networkctl reconfigure` tears the link's

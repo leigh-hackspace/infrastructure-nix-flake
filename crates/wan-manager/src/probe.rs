@@ -20,8 +20,21 @@ use std::time::Instant;
 pub struct Probe {
     pub gateway_ok: bool,
     pub internet_ok: bool,
+    /// **How** the internet verdict was reached. `icmp` is three echoes through
+    /// this path; `tcp` is an HTTP GET, used when echo is filtered or lost under
+    /// load. The distinction is not decoration: on 2026-11-09 the Uplink tab read
+    /// `170.1 KB/s` beside `no internet through this path` for the Wi-Fi path —
+    /// because the throughput *sample* had completed over TCP while the *verdict*
+    /// came only from ICMP, which this phone's hotspot drops when the cell is
+    /// busy. The daemon then kept the network on a 10 Mbit/s USB Ethernet dongle
+    /// at 16 KB/s, which is the mis-selection this field exists to make visible.
+    pub internet_via: Option<&'static str>,
     pub latency_ms: Option<f64>,
     pub throughput_bps: Option<f64>,
+    /// When `throughput_bps` was measured. Kept across a failed probe on purpose
+    /// (a momentary loss must not erase the ranking evidence), so it needs its own
+    /// timestamp or the table shows an old number as if it were this tick's.
+    pub throughput_ts: i64,
     pub checked_ts: i64,
     pub error: Option<String>,
 }
@@ -35,7 +48,10 @@ pub fn ping(iface: &str, target: &str) -> Option<f64> {
         "-i".to_string(),
         "0.2".to_string(),
         "-W".to_string(),
-        "1".to_string(),
+        // Two seconds, not one: this network's backup paths are a phone's cellular
+        // uplink behind a hotspot, where 300-470 ms round trips are normal and a
+        // 1 s wait reported a working path as silent whenever the cell queued.
+        "2".to_string(),
         "-n".to_string(),
         "-q".to_string(),
         "-I".to_string(),

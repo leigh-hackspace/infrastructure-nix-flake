@@ -95,6 +95,7 @@
     # backup exists; `docs/wan-manager-2026-11-09.md` owns the current policy,
     # the Android USB diagnosis and the limits.
     ./wan-backup.nix
+    ./wan-relay.nix
     # The UPS on this box's USB port, and the ordered power-off it drives: NUT for
     # the protocol, `upssched` for the outage countdown, and `crates/ups-watchdog`
     # for the two things neither knows how to do — broadcast a notice to every

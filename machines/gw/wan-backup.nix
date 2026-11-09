@@ -90,6 +90,13 @@
       "300"
       "--kick-ticks"
       "12"
+      # The declared relay path (./wan-relay.nix): a point-to-point tunnel to the
+      # box that can enumerate the phone. Declared, not discovered — an ipip
+      # netdev has no `device` symlink and offers no DHCP gateway, so nothing in
+      # the discovery loop can see it. Probes and ranking then treat it like any
+      # other path; the only difference is that it has no gateway to ping.
+      "--relay-candidate"
+      "wan-aibox"
     ]
     ++ lib.concatMap (p: ["--lan-prefix" p]) lanPrefixes
     ++ lib.concatMap (p: ["--nat-source" p]) natSources;
