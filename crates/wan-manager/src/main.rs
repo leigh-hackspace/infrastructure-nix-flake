@@ -16,7 +16,9 @@
 //!   6. resets a selected backup whose own gateway has been silent for 12
 //!      ticks, because a route is not a link;
 //!   7. writes `/run/wan-manager/status.json` and `metrics.prom`, and pets the
-//!      systemd watchdog.
+//!      systemd watchdog — **between the steps of a tick, not once per tick**,
+//!      because probing every path serially is legitimately slower than the
+//!      watchdog window on a router with two dead uplinks attached.
 //!
 //! A tick that fails does not stop the loop: the failure is recorded and the
 //! next tick tries again. That is the *whole* design. There is no one-shot mode
@@ -35,7 +37,7 @@ mod wifi;
 
 use config::Config;
 use net::{IfaceInfo, Kind};
-use rank::{Candidate, Selection};
+use rank::{Candidate, History, Policy, Selection};
 use std::collections::HashMap;
 use std::panic::AssertUnwindSafe;
 use std::time::{Duration, Instant};
@@ -52,6 +54,15 @@ struct Manager {
     sel: Selection,
     prev_best: Option<String>,
     prev_tunnel: Option<String>,
+    /// The two durations the ranking remembers (`rank::History`) and the policy
+    /// that turns them into a decision.
+    history: History,
+    policy: Policy,
+    /// When the selected egress last moved. A move strands the AAISP session's
+    /// socket on the old path, so the session is redialled once the new route
+    /// has settled — not on the tick the move happened.
+    egress_changed_at: Option<Instant>,
+    last_redial: Option<Instant>,
     ticks: u64,
     started: Instant,
     last_error: Option<String>,
@@ -77,10 +88,24 @@ impl Manager {
             },
             prev_best: None,
             prev_tunnel: None,
+            history: History::default(),
+            policy: Policy::default(),
+            egress_changed_at: None,
+            last_redial: None,
             ticks: 0,
             started: Instant::now(),
             last_error: None,
         }
+    }
+
+    /// The policy comes from the arguments, the history starts empty: a daemon
+    /// that has just started has no incumbent to protect.
+    fn configure(&mut self) {
+        self.policy = Policy {
+            failover_ticks: self.cfg.failover_ticks,
+            dwell: self.cfg.failback_dwell,
+            margin: self.cfg.failback_margin,
+        };
     }
 
     fn merge_candidates(&mut self, infos: Vec<IfaceInfo>) {
@@ -109,6 +134,31 @@ impl Manager {
                     error: Some("link down".into()),
                     ..Default::default()
                 };
+                // One candidate is one step of the tick, and the watchdog is
+                // petted per step: two dead paths on this router legitimately
+                // spend ~20 s each here (three echoes at 2 s, twice, then an
+                // HTTP verdict), which is longer than a whole tick is supposed
+                // to take.
+                sdnotify::watchdog();
+                continue;
+            }
+            // A tunnel or relay with no IPv4 address cannot carry anything: there
+            // is no source address for `ping -I` or `curl --interface` to bind,
+            // so every question below would time out and be reported as "no
+            // internet through this path" — true, and useless. This is the state
+            // a networkd restart left ppp0 in on 2026-11-09 (session up and
+            // authenticated, address flushed), and the actionable fact is the
+            // address, not the internet.
+            if c.info.kind.is_gatewayless() && c.info.addresses.is_empty() {
+                c.probe = probe::Probe {
+                    checked_ts: ts,
+                    error: Some(
+                        "no IPv4 address: the link is up but IPCP has given it none".into(),
+                    ),
+                    ..Default::default()
+                };
+                c.failures = c.failures.saturating_add(1);
+                sdnotify::watchdog();
                 continue;
             }
             let bind = c.info.probe_bind();
@@ -182,6 +232,7 @@ impl Manager {
                 }
             }
             c.probe = p;
+            sdnotify::watchdog();
         }
     }
 
@@ -205,6 +256,7 @@ impl Manager {
                 c.probe.throughput_ts = util::now_ts();
             }
             c.last_measured = Some(Instant::now());
+            sdnotify::watchdog();
         }
     }
 
@@ -289,6 +341,71 @@ impl Manager {
         self.usb_checked = Some(Instant::now());
     }
 
+    /// Redial the AAISP session when the egress it was established over moves.
+    ///
+    /// This is the repair the daemon deliberately did *not* do in its first
+    /// version, on the grounds that restarting a unit on every ranked change
+    /// trades the 60 s echo timeout for a redial loop. That reasoning was right
+    /// about the loop and wrong about the cause: the loop was the ranking moving
+    /// the network on a single lost probe. With both directions of the ranking
+    /// held for a duration, an egress move means the path really changed, and a
+    /// stranded session is the *only* outcome — the L2TP socket is bound to the
+    /// old path's source address, verified 2026-11-09 (an egress move at
+    /// 19:54:25 and a fresh session at 19:54:54). So: wait for the new route to
+    /// be installed, restart the session, and never do it more often than the
+    /// cooldown — a redial storm is the failure mode this guard exists for.
+    fn maybe_redial_tunnel(&mut self, actions: &mut Vec<String>) {
+        if self.cfg.tunnel_redial.is_zero() {
+            return;
+        }
+        let Some(egress) = self.sel.best.map(|i| self.candidates[i].info.name.clone()) else {
+            self.egress_changed_at = None;
+            return;
+        };
+        // The tick the move happens on: arm the timer and let the new default
+        // route settle before anything is restarted.
+        if Some(egress.as_str()) != self.prev_best.as_deref() {
+            if self.prev_best.is_some() {
+                self.egress_changed_at = Some(Instant::now());
+            }
+            return;
+        }
+        let Some(changed) = self.egress_changed_at else {
+            return;
+        };
+        if changed.elapsed() < self.cfg.tunnel_redial {
+            return;
+        }
+        self.egress_changed_at = None;
+        if self
+            .last_redial
+            .map(|t| t.elapsed() < self.cfg.tunnel_redial_cooldown)
+            .unwrap_or(false)
+        {
+            actions.push(
+                "egress moved but the AAISP session was redialled recently; leaving it to pppd's echo timeout"
+                    .to_string(),
+            );
+            return;
+        }
+        let unit = self.cfg.tunnel_unit.clone();
+        match util::run(
+            "systemctl",
+            &["restart".to_string(), unit.clone()],
+            30,
+        ) {
+            Some((0, _, _)) => actions.push(format!(
+                "redialled {unit}: the egress moved to {egress}, and the session's socket was bound to the old path"
+            )),
+            Some((code, _, err)) => actions.push(format!(
+                "redialling {unit} failed (exit {code}): {}",
+                err.trim()
+            )),
+            None => actions.push(format!("redialling {unit} failed: systemctl did not answer")),
+        }
+        self.last_redial = Some(Instant::now());
+    }
+
     fn tick(&mut self) {
         let mut actions = Vec::new();
 
@@ -300,6 +417,8 @@ impl Manager {
             let rt = self.wifi_rt.entry(iface.clone()).or_default();
             let report = wifi::ensure(&self.cfg, &iface, rt);
             self.wifi_reports.push(report);
+            // A scan is up to 8 s per adapter, and there can be several.
+            sdnotify::watchdog();
         }
 
         // 2. Discovery and DHCP.
@@ -315,12 +434,14 @@ impl Manager {
         self.probe_all();
         self.measure_throughput();
 
-        // 4. Rank.
+        // 4. Rank. Both directions of the decision have a duration now: see
+        //    `rank::History` and `docs/wan-manager-2026-11-09.md`.
         self.sel = rank::update(
             &mut self.candidates,
+            &mut self.history,
             self.prev_best.as_deref(),
             self.prev_tunnel.as_deref(),
-            self.cfg.throughput_interval,
+            self.policy,
         );
 
         // 5. Repair a selected backup whose own gateway is silent.
@@ -330,8 +451,12 @@ impl Manager {
         actions.extend(apply::apply_routes(&self.cfg, &self.candidates, &self.sel));
         actions.extend(apply::apply_nat(&self.cfg, &self.candidates, &self.sel));
 
-        // 7. USB diagnostics are expensive (journalctl); refresh them slowly.
+        // 7. The AAISP session is stranded by step 6 whenever the egress moved.
+        self.maybe_redial_tunnel(&mut actions);
+
+        // 8. USB diagnostics are expensive (journalctl); refresh them slowly.
         self.refresh_usb();
+        sdnotify::watchdog();
 
         // 8. Status, heartbeat and a transition line in the journal.
         let new_best = self.sel.best.map(|i| self.candidates[i].info.name.clone());
@@ -400,6 +525,7 @@ fn main() {
         cfg.interval.as_secs()
     );
     let mut manager = Manager::new(cfg.clone());
+    manager.configure();
     let interval = cfg.interval;
     let mut ever_ready = false;
     loop {

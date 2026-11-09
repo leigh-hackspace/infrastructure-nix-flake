@@ -90,6 +90,30 @@
       "300"
       "--kick-ticks"
       "12"
+      # Both directions of the failover decision get a duration (2026-11-09).
+      # `--failover-ticks` is the grace an incumbent that is still link-up but
+      # has stopped answering keeps the seat: 3 ticks = 15 s, which is the
+      # difference between a lost probe and an outage. A link that loses carrier
+      # is still failed over on the first tick. `--failback-dwell` is how long a
+      # challenger must stay clearly better before it takes a healthy
+      # incumbent's seat — failing *back* is the voluntary move, and every one of
+      # them rewrites the NAT source of every open connection.
+      "--failover-ticks"
+      "3"
+      "--failback-dwell"
+      "600"
+      "--failback-margin"
+      "1.5"
+      # When the egress does move, pppd's L2TP socket is still bound to the old
+      # path's source address and the session is stranded until six missed LCP
+      # echoes (60 s). Redial the session instead, once the new route has
+      # settled, and never in a loop.
+      "--tunnel-unit"
+      config.systemd.services.xl2tpd-aaisp.name
+      "--tunnel-redial"
+      "10"
+      "--tunnel-redial-cooldown"
+      "300"
       # The declared relay path (./wan-relay.nix): a point-to-point tunnel to the
       # box that can enumerate the phone. Declared, not discovered — an ipip
       # netdev has no `device` symlink and offers no DHCP gateway, so nothing in

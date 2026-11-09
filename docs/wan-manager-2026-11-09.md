@@ -278,6 +278,78 @@ the working path by default (`--no-tunnel` opts out). It stops `wan-manager` so 
 cannot fight; a reboot ends it, and `just wan-backup-handback` hands the box back without
 one.
 
+## Sessions were dying because the ranking moved the network (2026-11-09, later)
+
+**The report was "connections are very flaky", and the daemon was most of the cause.** With
+the AAISP hub still without an upstream (the 2026-11-07 open item, `docs/follow-ups.md`) the
+whole network was running on backup paths, and every few minutes the selected egress moved
+between them. Measured on the box, 2026-11-09 19:40-20:25:
+
+```bash
+journalctl -u wan-manager --since '-6h' | grep 'wan-manager: backup'   # the moves
+journalctl -u xl2tpd-aaisp    --since '-6h' | grep -E 'disconnected|Connecting'
+```
+
+```text
+19:53:13  backup (egress enp0s29u1u2u3i1, tunnel ppp0)   # the move
+19:54:12  pppd: Serial link appears to be disconnected    # 59 s later, the session dies
+19:54:54  xl2tpd: Connection established …                # 42 s after that, IPv6 is back
+20:15:01  backup (egress enp0s29u1u2u3i1, tunnel ppp0)   # and again
+20:16:04  pppd: Serial link appears to be disconnected
+```
+
+39 such moves in 24 h. Each one: (1) rewrites the NAT source address of every forwarded
+flow, so every long-lived TCP session in the building dies; (2) strands the L2TP socket on
+the old path, so `pppd` waits out six missed LCP echoes and then redials — 40-90 s in which
+there is **no IPv6 on any VLAN** and, after three failed ticks, no table-100 default, so
+VLAN 225 loses its public `/29` too. The dashboard's numbers also show why the moves were
+not even buying anything: the two paths were 456 kbit/s and 80 kbit/s.
+
+**Why it moved.** Two decisions in `rank::update`, both of which were "immediate" on
+purpose and both of which cost more than they saved:
+
+- failover happened on the **first** tick the incumbent's probe failed (three echoes at two
+  anchors — one lost burst on a 2.4 GHz cell is enough), and
+- the challenger needed only **20 %** more score to take the seat back, which the daemon's
+  own 60 s throughput samples fluctuate around on a cellular path.
+
+**What it does now** (`rank::History` + `rank::Policy`, `crates/wan-manager/src/rank.rs`):
+
+| Option | Default | What it decides |
+| --- | --- | --- |
+| `--failover-ticks` | `3` | consecutive ineligible ticks before the network moves. A link that loses **carrier** is not a probe blip and still fails over on the first tick. |
+| `--failback-dwell` | `600` | how long a challenger must stay better before it takes a *healthy* incumbent's seat. Failing back is the only voluntary move. |
+| `--failback-margin` | `1.5` | how much better, as a factor of the incumbent's score. |
+| `--tunnel-unit` | `xl2tpd-aaisp` | the session to redial when the egress does move. |
+| `--tunnel-redial` | `10` | grace after the move, so the new default route is in place first (`0` disables). |
+| `--tunnel-redial-cooldown` | `300` | never redial more often than this: a redial storm is the failure mode the first version was avoiding, and the loop was the *ranking*, not the restart. |
+
+The two halves are complementary and both are needed: the durations stop the network moving
+for no reason, and the redial makes a move that *is* warranted cost ~15-25 s instead of
+40-90 s. The restart is safe from the daemon's sandbox (measured: `systemd-run
+-p ProtectSystem=strict … systemctl is-active xl2tpd-aaisp` answers `active`).
+
+**Re-verify** (with the unit running and a backup selected):
+
+```bash
+journalctl -u wan-manager --since '-2h' | grep -E 'redialled|egress'
+readlink -f /run/current-system      # the daemon's own unit, unchanged by a service restart
+jq -r '.actions[]' /run/wan-manager/status.json 2>/dev/null; jq -c '.candidates[]|{i:.interface,score}' /run/wan-manager/status.json
+ip -4 route show table 100; ip -6 route show default
+```
+
+The counter to watch is the journal line count of `wan-manager: backup` over an hour: before
+this change it was 2-5 an hour on a single dead upstream, and each one was a tunnel outage.
+`docs/follow-ups.md` still owns the real fix — the hub has no upstream and that is AAISP's.
+
+**Forcing everything through the tunnel is not that fix.** `ppp0` is currently carried *over*
+a backup (`ip route get 194.4.172.12` → `via 192.168.1.1`), so it has nothing better to offer;
+moving every VLAN's mark to 1 would concentrate the whole network on one 0.5 Mbit path and
+make each of these outages total instead of confined to VLAN 225. The split in
+`docs/router-and-dns.md` ("Which uplink each VLAN leaves by") exists because only VLAN 225
+needs the tunnel's public addresses, and it is worth revisiting only once the hub carries
+traffic again.
+
 ## Status
 
 `https://network-info.int.leighhack.org/` has an **Uplink** tab (`/api/wan`) showing the
@@ -292,10 +364,15 @@ the repairs applied on the last tick. `/metrics` gains `wan_manager_*` series.
   `--relay-candidate` (above) adds, and a phone whose tether refuses forwarded traffic is
   still refused traffic.
 
-- The hotspot alone still gives no IPv6 and no inbound public services. What restores
-  them is moving the AAISP L2TP session over the working backup, which the daemon does
-  whenever the hub cannot carry packets. If AAISP's LNS refuses the off-net session, the
-  network is IPv4-only until the hub returns.
+- The hotspot alone still gives no IPv6 and no inbound public services. What restores them is
+  the AAISP L2TP session dialling over the working path. Moving the selected egress rewrites
+  the `/32` to the LNS, but the L2TP socket is already bound to the old path's source
+  address, so the session is stranded until something redials it — measured 2026-11-09 19:54:
+  an egress move at 19:54:25 (this daemon's own journal: `tunnel down`) and a new session at
+  19:54:54, thirty seconds with no IPv6 and VLAN 225's IPv4 on the fallback. **The daemon now
+  redials the session itself on an egress move** ("Sessions were dying…" below); the
+  break-glass script still does it too (`--no-tunnel` opts out). If AAISP's LNS refuses the
+  off-net session, the network is IPv4-only until the hub returns.
 - The hotspot is metered and the 2.4 GHz path is slow; the daemon ranks by measured
   performance, not by cost.
 - A Wi-Fi adapter whose driver is out-of-tree or whose firmware is missing is not made to

@@ -83,6 +83,31 @@ pub struct Config {
     /// fault, short enough that a wedged radio is repaired while someone watches.
     pub kick_ticks: u32,
 
+    /// Consecutive ticks the *incumbent* egress may be selected but ineligible
+    /// before the network moves. `1` is the first version's behaviour, and it
+    /// moved the network on a single failed probe: measured 2026-11-09, two
+    /// marginal backups swapped every few minutes and each swap stranded the
+    /// AAISP session for 40-90 s. A link that loses carrier is not a probe
+    /// failure and still fails over on the first tick.
+    pub failover_ticks: u32,
+
+    /// How long a challenger must stay `failback_margin` times better than a
+    /// healthy incumbent before it takes the seat. Failing *back* is the only
+    /// voluntary move, and it costs every open connection its NAT source and
+    /// the tunnel its socket, so it needs to be obviously worth it.
+    pub failback_dwell: Duration,
+    pub failback_margin: f64,
+
+    /// The AAISP session unit. When the selected egress changes, pppd's L2TP
+    /// socket is still bound to the old path's source address, so the session
+    /// is stranded even though it looks up; `pppd` only notices after six
+    /// missed LCP echoes (60 s). Restarting the unit redials it immediately,
+    /// after `tunnel_redial` (the new route has to be installed first) and no
+    /// more often than `tunnel_redial_cooldown`.
+    pub tunnel_unit: String,
+    pub tunnel_redial: Duration,
+    pub tunnel_redial_cooldown: Duration,
+
     /// Do not touch an interface whose name matches these. VLANs and the LAN are
     /// excluded structurally; this is for the other things on a router that are
     /// not an uplink and must not be reconfigured (tailscale, OpenVPN, bridges).
@@ -124,6 +149,12 @@ impl Default for Config {
             throughput_interval: Duration::from_secs(60),
             wifi_scan_interval: Duration::from_secs(300),
             kick_ticks: 12,
+            failover_ticks: 3,
+            failback_dwell: Duration::from_secs(600),
+            failback_margin: 1.5,
+            tunnel_unit: "xl2tpd-aaisp".into(),
+            tunnel_redial: Duration::from_secs(10),
+            tunnel_redial_cooldown: Duration::from_secs(300),
             ignore_prefixes: vec![
                 "vlan".into(),
                 "tailscale".into(),
@@ -250,6 +281,38 @@ impl Config {
                         c.kick_ticks = v.parse().unwrap_or(c.kick_ticks);
                     }
                 }
+                "--failover-ticks" => {
+                    if let Some(v) = value(&mut i) {
+                        c.failover_ticks = v.parse().unwrap_or(c.failover_ticks);
+                    }
+                }
+                "--failback-dwell" => {
+                    if let Some(v) = value(&mut i) {
+                        c.failback_dwell =
+                            Duration::from_secs(v.parse().unwrap_or(600));
+                    }
+                }
+                "--failback-margin" => {
+                    if let Some(v) = value(&mut i) {
+                        c.failback_margin = v.parse().unwrap_or(c.failback_margin);
+                    }
+                }
+                "--tunnel-unit" => {
+                    if let Some(v) = value(&mut i) {
+                        c.tunnel_unit = v;
+                    }
+                }
+                "--tunnel-redial" => {
+                    if let Some(v) = value(&mut i) {
+                        c.tunnel_redial = Duration::from_secs(v.parse().unwrap_or(10));
+                    }
+                }
+                "--tunnel-redial-cooldown" => {
+                    if let Some(v) = value(&mut i) {
+                        c.tunnel_redial_cooldown =
+                            Duration::from_secs(v.parse().unwrap_or(300));
+                    }
+                }
                 "--ignore-prefix" => {
                     if let Some(v) = value(&mut i) {
                         c.ignore_prefixes.push(v);
@@ -317,6 +380,16 @@ Options:
   --throughput-interval SECS 60
   --wifi-scan-interval SECS  300
   --kick-ticks N             12
+  --failover-ticks N         consecutive ineligible ticks before the network
+                             moves (3 = 15 s at the 5 s interval; a lost
+                             carrier moves at once)
+  --failback-dwell SECS      how long a challenger must stay better before it
+                             takes a healthy incumbent's seat (600)
+  --failback-margin FACTOR   how much better, as a factor (1.5)
+  --tunnel-unit NAME         the AAISP session unit to redial (xl2tpd-aaisp)
+  --tunnel-redial SECS       redial after the egress moves, once the new route
+                             has settled (10; 0 disables)
+  --tunnel-redial-cooldown SECS  never redial more often than this (300)
   --ignore-prefix PREFIX     interface-name prefix never to touch (repeatable)
   --relay-candidate NAME     declared path to another box's uplink (repeatable)
 ";
