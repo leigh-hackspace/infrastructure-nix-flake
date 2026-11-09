@@ -15,12 +15,15 @@
 //! text nodes, and a hostname here is a string a device chose for itself — the vnode layer
 //! escapes it, so there is no string to escape.
 
+use std::collections::HashSet;
+
 use dioxus::prelude::*;
 
 use crate::api::{ConnResponse, ConnRow, HostAgg};
 use crate::format::{fmt_dur, fmt_rate, fmt_total};
 use crate::state::{ConnControls, Store};
 use common_ui::checkbox::{Checkbox, CheckboxIndicator, CheckboxState};
+use common_ui::toggle_group::{ToggleGroup, ToggleItem};
 
 const AGE_OPTIONS: [(i64, &str); 7] = [
     (-1, "server default"),
@@ -41,12 +44,18 @@ const SORT_OPTIONS: [(&str, &str); 6] = [
     ("host", "device"),
 ];
 
-const KIND_OPTIONS: [(&str, &str); 5] = [
-    ("", "every direction"),
-    ("out", "device → internet"),
-    ("in", "internet → device"),
-    ("lan", "device ↔ device"),
-    ("wan", "neither end is ours"),
+/// The direction filter: `(value sent to the backend, caption on the segment, what the
+/// caption means)`.
+///
+/// The caption has to be short because it is a segment of a segmented control, and the long
+/// form cannot be dropped either — "wan" does not say *which* wan — so it travels as the
+/// segment's accessible name and tooltip.
+const KIND_OPTIONS: [(&str, &str, &str); 5] = [
+    ("", "all", "every direction"),
+    ("out", "out", "device → internet"),
+    ("in", "in", "internet → device"),
+    ("lan", "LAN", "device ↔ device"),
+    ("wan", "other", "neither end is ours"),
 ];
 
 fn plural(n: usize) -> &'static str {
@@ -156,16 +165,17 @@ pub fn ConnectionsPanel(store: Store) -> Element {
             label {
                 class: "ctl",
                 select {
-                    value: "{controls.kind}",
+                    value: "{controls.sort}",
                     onchange: move |e| {
                         let v = e.value();
-                        store.edit_controls(|c| c.kind = v);
+                        store.edit_controls(|c| c.sort = v);
                     },
-                    for (v, l) in KIND_OPTIONS {
-                        option { value: "{v}", selected: v == controls.kind, "{l}" }
+                    for (v, l) in SORT_OPTIONS {
+                        option { value: "{v}", selected: v == controls.sort, "{l}" }
                     }
                 }
             }
+            DirectionFilter { store: store }
             label {
                 class: "ctl",
                 Checkbox {
@@ -262,6 +272,55 @@ pub fn ConnectionsPanel(store: Store) -> Element {
             class: "conn-note muted",
             for w in why {
                 div { "{w}" }
+            }
+        }
+    }
+}
+
+/// The direction filter, as the library's segmented control.
+///
+/// Five fixed choices, so every one is worth seeing at once and one click should change it:
+/// that is a toggle group, not a `select`. `sort` and "older than" stay selects (six and
+/// seven wordy options as buttons would be worse, and the library's own `select` needs the
+/// `dioxus-attributes` macro, which cannot be vendored — `docs/component-library.md`).
+///
+/// `ToggleGroup` is pressed-*by-index* while the store holds the backend's string, so the
+/// memo below is the only place that maps between the two shapes.
+#[component]
+fn DirectionFilter(store: Store) -> Element {
+    let pressed: ReadSignal<Option<HashSet<usize>>> = ReadSignal::from(use_memo(move || {
+        let kind = store.controls.read().kind.clone();
+        KIND_OPTIONS
+            .iter()
+            .position(|(v, _, _)| *v == kind)
+            .map(|i| [i].into_iter().collect::<HashSet<usize>>())
+    }));
+
+    let on_change = use_callback(move |set: HashSet<usize>| {
+        // Single-select (`allow_multiple_pressed: false`), but upstream still lets a click on
+        // the pressed segment empty the set. For this filter that state is not a thing it can
+        // mean — "no direction selected" *is* "every direction", which is option 0 — so an
+        // empty set is ignored and the group behaves like radios.
+        let Some(&i) = set.iter().min() else { return };
+        let kind = KIND_OPTIONS[i].0.to_string();
+        store.edit_controls(|c| c.kind = kind);
+    });
+
+    rsx! {
+        ToggleGroup {
+            class: "segs",
+            pressed: pressed,
+            horizontal: true,
+            allow_multiple_pressed: false,
+            on_pressed_change: on_change,
+            for (i, (value, caption, meaning)) in KIND_OPTIONS.iter().enumerate() {
+                ToggleItem {
+                    key: "{value}",
+                    index: i,
+                    title: "{meaning}",
+                    aria_label: "{meaning}",
+                    "{caption}"
+                }
             }
         }
     }
@@ -377,13 +436,24 @@ fn conn_row(c: &ConnRow, max: f64) -> Element {
 
 /// A rate cell's background is its share of the busiest row, so the table can be scanned
 /// rather than read.
+///
+/// It is deliberately *not* a `Progress`, unlike the lease countdown: this number is a
+/// comparison against the busiest row on screen, not a completion out of a known maximum,
+/// and the text beside it already carries the value. So the bar is hidden from assistive
+/// tech rather than announced a second time, wrongly.
 fn rate_bar(bps: Option<f64>, max: f64, cls: &str) -> Element {
     let Some(v) = bps else { return rsx! {} };
     if v <= 0.0 {
         return rsx! {};
     }
     let pct = ((v / max) * 100.0).min(100.0);
-    rsx! { span { class: "bar {cls}", style: format!("width:{pct:.1}%") } }
+    rsx! {
+        span {
+            class: "bar {cls}",
+            "aria-hidden": "true",
+            style: format!("width:{pct:.1}%"),
+        }
+    }
 }
 
 fn empty_why(d: &ConnResponse, c: &ConnControls) -> String {

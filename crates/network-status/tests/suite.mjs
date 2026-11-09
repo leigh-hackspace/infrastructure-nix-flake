@@ -7,10 +7,24 @@
 // What this suite is for, in one line: the port replaced imperative DOM with a reactive
 // render, and the three things the imperative version guaranteed are exactly the three things
 // a reactive rewrite loses first — the per-panel error, the canvas redraw, and the tab/URL
-// being the same fact. Each check here is one of those, plus the two library primitives the
-// page now depends on (`common_ui::tabs` and `common_ui::checkbox`), plus the lease panel's
-// freshness banner — which is not a reactive concern at all and is the check that exists
-// because of a real incident (see check 9).
+// being the same fact. Each check here is one of those, plus the library primitives the page
+// now depends on (`common_ui::tabs`, `checkbox`, `toggle_group`, `progress`), plus the lease
+// panel's freshness banner — which is not a reactive concern at all and is the check that
+// exists because of a real incident (see the lease-channel check) — and, at the end, two
+// checks about appearance rather than behaviour: **the stylesheet guard**, which refuses a
+// class no rule mentions, and **the painted check**, which refuses a rule that has no effect.
+// Both exist because the page ran green for nine days with most of its styling detached from
+// its markup; the story is in `docs/component-library.md`.
+//
+// The numbers in the comments below are structure, not identity: never refer to a check by
+// number from another file, for the reason two paragraphs up.
+//
+// **Tabs are selected by their label, never by position.** This suite was written when the
+// page had four tabs and passed; the Uplink tab went in at position 2, and four checks
+// silently started driving the wrong panel — `#connections` came back as `#uplink`, the
+// canvas check looked at a hidden tab, the checkbox was not on the panel it clicked. Nothing
+// about that is a styling question, which is why it is a rule here rather than a note: a
+// positional selector is an assertion about the order of an array the page is free to change.
 //
 // Two choices about what the page is pointed at, because both are assertions:
 //
@@ -59,6 +73,25 @@ const until = async (label, fn, ms = 8000) => {
 const flat = (s) => s.replace(/\s+/g, ' ');
 const panelText = async () => flat(await page.locator('[role=tabpanel]:not([hidden])').innerText());
 const headerText = async () => flat(await page.locator('header').innerText());
+const tabsByName = async (...labels) => {
+  // Resolved by index rather than by a text-matching locator, so the assertion is "this
+  // label sits at this position" — a locator that matched two tabs would otherwise quietly
+  // pick the first one. The order check is what stops a substring name ("Uplink" vs some
+  // future "Uplink history") from returning a tab nobody asked for.
+  const want = async () => {
+    const tabs = page.locator('[role=tab]');
+    const texts = (await tabs.allInnerTexts()).map(flat);
+    const idx = labels.map((l) => texts.findIndex((t) => t.includes(l)));
+    if (idx.some((i) => i < 0)) return null;
+    for (let i = 1; i < idx.length; i++) if (idx[i] <= idx[i - 1]) return null;
+    return idx.map((i) => tabs.nth(i));
+  };
+  return until(`the tab${labels.length > 1 ? 's' : ''} ${labels.join(', ')} in that order`, want);
+};
+/** A segment of a `common_ui::toggle_group`, by its caption. Anchored, because `hasText`
+ *  with a string is a case-insensitive substring match and these captions are short. */
+const seg = (caption) =>
+  page.locator(`.segs [data-state]`, { hasText: new RegExp(`^\\s*${caption}\\s*$`) });
 
 const browser = await chromium.launch({
   executablePath: process.env.NS_TEST_BROWSER || undefined,
@@ -67,20 +100,35 @@ const browser = await chromium.launch({
 const page = await browser.newPage();
 
 // 1 — the tabs are the library's tabs: roles, aria-selected, and the state the CSS keys on.
+//     The panel a tab shows is the one its `aria-controls` *names* — the primitive's own
+//     contract — not the one at the same index, which is a fact about `PANELS` nobody should
+//     have to remember when they add one.
 await run('tabs render as a tablist, with the state attributes the library puts on them', async () => {
   await page.goto(BASE);
   await until('a tablist', () => page.locator('[role=tablist]').count());
   const tabs = page.locator('[role=tab]');
-  assert.equal(await tabs.count(), 4, 'four tabs, by question');
+  const labels = (await tabs.allInnerTexts()).map(flat);
+  assert.deepEqual(
+    labels,
+    ['Overview', 'Uplink', 'Connections', 'DHCP leases', 'Interfaces & issues'],
+    'one tab per question, in the order app.rs draws them',
+  );
   const first = tabs.nth(0);
   assert.equal(await first.getAttribute('aria-selected'), 'true', 'overview is selected');
   assert.equal(await first.getAttribute('data-state'), 'active', 'the vendored primitive announces state');
-  // The panel that is shown is the one the tablist names; the others are hidden, which is
-  // what `TabContent` does rather than what the old CSS did with a class.
-  const panels = page.locator('[role=tabpanel]');
-  assert.equal(await panels.count(), 4, 'four panels');
-  assert.equal(await panels.nth(0).getAttribute('hidden'), null, 'overview panel is visible');
-  assert.ok(await panels.nth(1).getAttribute('hidden'), 'connections panel is hidden');
+
+  const controls = await first.getAttribute('aria-controls');
+  assert.ok(controls, 'the selected tab names the panel it controls');
+  assert.equal(
+    await page.locator(`#${controls}`).getAttribute('hidden'),
+    null,
+    'and that panel is the visible one',
+  );
+  assert.equal(
+    await page.locator('[role=tabpanel]:not([hidden])').count(),
+    1,
+    'exactly one panel is shown: TabContent renders only the selected one',
+  );
 });
 
 // 2 — what the primitive guarantees and what the app adds are two different things, and the
@@ -88,28 +136,32 @@ await run('tabs render as a tablist, with the state attributes the library puts 
 // not activate (upstream's `focus_next` changes focus only). Activation is the click, and
 // `choose` in app.rs is what writes the fragment, so the tab survives a reload.
 await run('the arrow keys move the roving focus without changing the selection', async () => {
-  await page.locator('[role=tab]').nth(0).focus();
+  const [overview, uplink] = await tabsByName('Overview', 'Uplink');
+  await overview.focus();
   await page.keyboard.press('ArrowRight');
-  await until('roving focus on the second tab', async () => (await page.locator('[role=tab]').nth(1).getAttribute('tabindex')) === '0');
-  assert.equal(await page.locator('[role=tab]').nth(0).getAttribute('tabindex'), '-1', 'the first tab released focus');
-  assert.equal(await page.locator('[role=tab]').nth(1).getAttribute('aria-selected'), 'false', 'focus is not selection');
+  await until('roving focus on the second tab', async () => (await uplink.getAttribute('tabindex')) === '0');
+  assert.equal(await overview.getAttribute('tabindex'), '-1', 'the first tab released focus');
+  assert.equal(await uplink.getAttribute('aria-selected'), 'false', 'focus is not selection');
 });
 
+// 3 — activating is the other half: the click is what selects, and `choose` writing the
+// fragment is what makes the selection survive a reload.
 await run('activating a tab selects it and writes the fragment', async () => {
-  await page.locator('[role=tab]').nth(1).click();
+  const [connections] = await tabsByName('Connections');
+  await connections.click();
   await until('the fragment written by the click', () => page.evaluate(() => location.hash));
   assert.match(await page.evaluate(() => location.hash), /#connections/);
   assert.match(await page.locator('[role=tab][aria-selected=true]').innerText(), /Connections/);
 });
 
-// 3 — the fragment seeds the tab on load, so a bookmark of #leases opens on leases.
+// 4 — the fragment seeds the tab on load, so a bookmark of #leases opens on leases.
 await run('a pasted fragment opens the panel it names', async () => {
   await page.goto(`${BASE}/#leases`);
   await until('the leases tab to be selected', async () => /DHCP leases/.test(await page.locator('[role=tab][aria-selected=true]').innerText()));
   assert.match(await panelText(), /lease/, 'the leases panel is the one shown');
 });
 
-// 4 — a failed fetch keeps the last data *and* says so. The order here is the point: the panel
+// 5 — a failed fetch keeps the last data *and* says so. The order here is the point: the panel
 // is loaded with the fixture's real answer first, and only then does the endpoint start
 // refusing. If the panel showed its reason only when it had nothing to show, the table that
 // stayed on screen would read as current — which is the failure mode the rule exists to
@@ -143,7 +195,8 @@ await run('a panel that keeps stale data names it as stale', async () => {
 
   // The other panel is unaffected by this panel's failure, and the header — outside the
   // tablist, reading the probe — is still answering.
-  await page.locator('[role=tab]').nth(1).click();
+  const [connections] = await tabsByName('Connections');
+  await connections.click();
   const conns = await until('the connections panel’s table head', async () => {
     const t = await panelText();
     return /device/i.test(t) ? t : null;
@@ -153,7 +206,7 @@ await run('a panel that keeps stale data names it as stale', async () => {
   await page.unroute('**/api/leases*');
 });
 
-// 5 — the canvas redraws. This is the rule the port had to keep: a draw waits for the mount,
+// 6 — the canvas redraws. This is the rule the port had to keep: a draw waits for the mount,
 // then re-runs on every data change, and reads the tab so a chart in a hidden panel is not
 // left at the size it had when it was hidden.
 //
@@ -162,7 +215,8 @@ await run('a panel that keeps stale data names it as stale', async () => {
 // when its tab is the selected one, so a chart in a hidden tab has no node to draw on at all —
 // which is exactly the thing the draw effect reads `store.tab` for.
 await run('the bandwidth canvas has drawn something after a poll', async () => {
-  await page.locator('[role=tab]').nth(3).click();
+  const [network] = await tabsByName('Interfaces & issues');
+  await network.click();
   const drawn = await until('a drawn pixel on the bandwidth canvas', async () =>
     page.evaluate(() => {
       const c = document.getElementById('chart-bw');
@@ -179,16 +233,18 @@ await run('the bandwidth canvas has drawn something after a poll', async () => {
   assert.ok(drawn, 'the chart drew a line or a gridline');
 });
 
-// 6 — the checkbox is the library's, so the control is the element carrying the role, and
+// 7 — the checkbox is the library's, so the control is the element carrying the role, and
 // toggling it changes what is *asked for*, not what is filtered afterwards: `min_bps` is the
 // backend's filter and is applied before the row limit.
 await run('the "moving now" control is the library checkbox and sends its filter to the backend', async () => {
   const seen = [];
-  page.on('request', (r) => {
+  const note = (r) => {
     if (r.url().includes('/api/connections')) seen.push(r.url());
-  });
+  };
+  page.on('request', note);
 
-  await page.locator('[role=tab]').nth(1).click();
+  const [connections] = await tabsByName('Connections');
+  await connections.click();
   const box = await until('the library checkbox on the connections panel', () => page.locator('[role=checkbox]').count());
   assert.equal(box, 1, 'one checkbox on the connections panel');
   assert.equal(await page.locator('[role=checkbox]').getAttribute('aria-checked'), 'false');
@@ -196,9 +252,98 @@ await run('the "moving now" control is the library checkbox and sends its filter
   await page.locator('[role=checkbox]').click();
   await until('the checkbox to become checked', async () => (await page.locator('[role=checkbox]').getAttribute('aria-checked')) === 'true');
   await until('a request carrying min_bps=1', () => seen.some((u) => u.includes('min_bps=1')));
+  page.off('request', note);
 });
 
-// 7 — device-supplied strings cannot become markup. The old files needed an esc() because they
+// 8 — the direction filter is the library's toggle group: one segment per choice, all of them
+// visible, and a click is one interaction rather than two. Two halves are asserted separately,
+// exactly as for the tabs, because the group is built on the same roving-focus collection:
+// arrows move focus, a click (or Enter/Space on the focused segment) selects.
+//
+// The store is the source of truth here too — `DirectionFilter` maps the backend's `kind`
+// string to a pressed index in a memo — so `aria-pressed` on the segment is what says the
+// mapping went round, and the request is what says it reached the filter that does the work.
+await run('the direction filter is a segmented control that sends kind= to the backend', async () => {
+  const seen = [];
+  const note = (r) => {
+    if (r.url().includes('/api/connections')) seen.push(r.url());
+  };
+  page.on('request', note);
+
+  const segs = page.locator('.segs [data-state]');
+  await until('the direction segments', async () => (await segs.count()) >= 5);
+  assert.equal(await segs.count(), 5, 'every direction, one segment each');
+
+  const pressed = () => page.locator('.segs [aria-pressed="true"]');
+  assert.equal(await pressed().count(), 1, 'single-select: exactly one segment is pressed');
+  assert.match(await pressed().innerText(), /all/, 'and it is the unfiltered one on a fresh page');
+  assert.equal(
+    await page.locator('.segs').getAttribute('data-orientation'),
+    'horizontal',
+    'the group announces its orientation, which is what the separators key on',
+  );
+
+  const out = seg('out');
+  await out.click();
+  await until('the segment to follow the store back', async () => (await out.getAttribute('aria-pressed')) === 'true');
+  assert.equal(await pressed().count(), 1, 'selecting a segment deselects the one it replaced');
+  await until('a request carrying kind=out', () => seen.some((u) => u.includes('kind=out')));
+
+  // Roving focus, not activation: the same contract the tabs have, asserted here because a
+  // change upstream would otherwise show as a keyboard user silently selecting on arrows.
+  await page.locator('.segs [aria-pressed="true"]').focus();
+  await page.keyboard.press('ArrowRight');
+  const moved = await page.evaluate(() => document.activeElement?.getAttribute('aria-pressed'));
+  assert.equal(moved, 'false', 'an arrow moved focus onto an unpressed segment');
+  assert.equal(await pressed().innerText(), 'out', 'and nothing was selected');
+
+  // "all" is the empty string on the wire, so this is asserted on the *requests after the
+  // click*: the first poll of the page also had no filter, and a check that accepted any
+  // such request would pass without the click having done anything.
+  const since = seen.length;
+  await seg('all').click();
+  await until('a request after the click with no kind filter', () =>
+    seen.slice(since).some((u) => !u.includes('kind=')),
+  );
+  page.off('request', note);
+});
+
+// 9 — a lease's countdown is a real progressbar. The cell used to be a `span` with an inline
+// `width`, and a `width` on an inline box is ignored: the bar had been invisible, to a browser
+// as well as to a screen reader. So both halves are asserted — that the value is announced,
+// and that the indicator is drawn wide enough to see. `--progress-value` is the primitive's
+// own variable, and the indicator's width is the only thing that reads it.
+//
+// `run.sh`'s fixture has one lease inside a declared block and one outside every block, which
+// is the only way this can assert the pair: a lease whose length is not known here must be
+// announced as indeterminate rather than given an invented percentage.
+await run('a lease’s time left is announced and drawn as the library progressbar', async () => {
+  await page.goto(`${BASE}/#leases`);
+  await until('both lease bars', async () => ((await page.locator('table.leases [role=progressbar]').count()) === 2 ? true : null));
+
+  const known = page.locator('table.leases [role=progressbar][aria-valuenow]');
+  assert.equal(await known.count(), 1, 'exactly the in-block lease has a value');
+  const now = Number(await known.getAttribute('aria-valuenow'));
+  assert.ok(now >= 0 && now <= 100, `aria-valuenow is a percentage, got ${now}`);
+  assert.equal(await known.getAttribute('data-state'), 'loading', 'a known value is not indeterminate');
+  assert.match(await known.getAttribute('aria-label'), /lease still to run/, 'and it says what is being counted');
+
+  const painted = await until('the indicator to be actually painted', async () =>
+    known.locator('.fill').evaluate((el) => {
+      const r = el.getBoundingClientRect();
+      return r.width > 2 && r.height > 0 ? r.width : null;
+    }),
+  );
+  const track = await known.evaluate((el) => el.getBoundingClientRect().width);
+  assert.ok(painted > track * 0.9, `the bar is ${painted}px of a ${track}px track — the width is not reaching the indicator`);
+
+  const unknown = page.locator('table.leases [role=progressbar][data-state="indeterminate"]');
+  assert.equal(await unknown.count(), 1, 'the out-of-block lease is indeterminate');
+  assert.equal(await unknown.getAttribute('aria-valuenow'), null, 'and is not given a number the router never knew');
+  assert.match(await panelText(), /no block the router was told about/, 'the note says why, in the same words');
+});
+
+// 10 — device-supplied strings cannot become markup. The old files needed an esc() because they
 // built HTML; the vnode layer escapes text nodes, so a hostile name is a name. This reads the
 // real path: the fixture lease file `run.sh` writes carries the hostile hostname, so it is
 // parsed by `crates/network-status/src/leases.rs` and rendered by `leases.rs` here, not put on
@@ -215,7 +360,7 @@ await run('a hostname that is markup renders as text, not as an element', async 
   assert.equal(await page.title(), 'network-status', 'nothing in the name was executed');
 });
 
-// 8 — the banner: the data still on screen has to be named as last-known, which is the whole
+// 11 — the banner: the data still on screen has to be named as last-known, which is the whole
 // point of keeping it when a fetch fails.
 await run('an unreachable router shows the banner and keeps the data it already had', async () => {
   await page.goto(BASE);
@@ -238,7 +383,7 @@ await run('an unreachable router shows the banner and keeps the data it already 
   assert.ok(before.length > 0, 'the data was never lost while the router was unreachable');
 });
 
-// 9 — the channel, not the table. This check exists because of a real incident: a device was
+// 12 — the channel, not the table. This check exists because of a real incident: a device was
 // live and the page showed a table of lapsed leases for two and a half days, because `install`
 // had replaced `/var/lib/dnsmasq/dnsmasq.leases` and dnsmasq went on writing the orphan inode it
 // opened at startup. The verdict is the backend's (`stale` in crates/network-status/src/leases.rs);
@@ -264,7 +409,7 @@ await run('a lease file that stopped being written banners as a snapshot, not as
   const old = Math.floor(Date.now() / 1000) - 3 * 86400;
   fs.utimesSync(leasesPath, new Date(old * 1000), new Date(old * 1000));
 
-  const bannered = await until('the panel to banner the backend\u2019s verdict', async () => {
+  const bannered = await until('the panel to banner the backend’s verdict', async () => {
     const t = await panelText();
     return t.includes('not live') ? t : null;
   }, 15000);
@@ -277,6 +422,124 @@ await run('a lease file that stopped being written banners as a snapshot, not as
   // Put the file back, so a failing check does not leave the fixture stamped as stale for the
   // next run, and so the healthy path is what the suite ends on.
   fs.utimesSync(leasesPath, new Date(), new Date());
+});
+
+// 13 — the sheet covers the DOM. Every rule for the interface cards, the table controls, the
+// status pill and the issue list was silently doing nothing for nine days after the port,
+// because the sheet had been rewritten from scratch and keyed on class names the Rust does not
+// emit — `.pill.ok` where the component says `pill good`, `.issues li` where it says
+// `.issue.bad`, and no rule at all for `iface`, `ctl`, `legend` or `sw`. Nothing was wrong
+// enough to break a check: an unstyled page still renders, so the suite passed on a page with
+// no interface cards, no chart legend and a permanently grey "problem detected" pill.
+//
+// So this check is not about whether it looks good — it is the drift detector for the one way
+// this page goes bad quietly: a component emits a class no rule has ever mentioned. It walks
+// every tab, and every class token on every element that is currently in the document, and
+// refuses any token the stylesheet never names.
+await run('every class the components emit has a rule in the sheet', async () => {
+  await page.goto(BASE);
+  const offenders = {};
+  for (const label of ['Overview', 'Uplink', 'Connections', 'DHCP leases', 'Interfaces & issues']) {
+    const [t] = await tabsByName(label);
+    await t.click();
+    await until(`${label} to render`, async () => (await page.locator('[role=tabpanel]:not([hidden]) [class]').count()) > 0);
+    const bad = await page.evaluate(() => {
+      const selectors = [...document.styleSheets].flatMap((s) => {
+        try {
+          return [...s.cssRules].filter((r) => r.selectorText).map((r) => r.selectorText);
+        } catch {
+          return [];
+        }
+      }).join(' , ');
+      const missing = new Set();
+      for (const el of document.querySelectorAll('[class]')) {
+        for (const token of el.classList) {
+          if (!selectors.includes('.' + token)) missing.add(token);
+        }
+      }
+      return [...missing];
+    });
+    if (bad.length) offenders[label] = bad;
+  }
+  assert.deepEqual(offenders, {}, 'these classes are emitted by a component and styled by nothing');
+});
+
+// 14 — the rules *apply*. The guard above proves a selector exists; it cannot prove the declaration
+// it carries has any effect, and three of the nine-day faults were exactly that: a `width` on
+// an inline element (ignored), a zero-sized `span` used as a status dot (invisible), and a
+// legend swatch with a colour and no box. So this check reads computed styles rather than the
+// DOM: the card is not the page background, the dot has an area, the swatch has a width, the
+// pill is coloured and tinted, the pressed segment differs from its neighbours, and a `select`
+// is light-on-dark because `appearance: none` did its job. Each assertion is a *relation*
+// (differs from / lighter than), not a hex, so the palette may be re-tuned without touching
+// the suite. Note which tab each part runs on: the interface cards are on the overview, the
+// legend swatch is in the bandwidth card on "Interfaces & issues".
+await run('the page is painted: cards, dots, swatches, pill, segments and selects have their styles', async () => {
+  await page.goto(BASE);
+  const [overview] = await tabsByName('Overview');
+  await overview.click();
+  await until('an interface card with a status dot', async () =>
+    ((await page.locator('.iface').count()) > 0 && (await page.locator('.iface .dot').count()) > 0 ? true : null));
+
+  const cards = await page.evaluate(() => {
+    const cs = (el) => getComputedStyle(el);
+    const card = document.querySelector('.iface');
+    const dot = document.querySelector('.iface .dot');
+    const pill = document.querySelector('header .pill');
+    const dr = dot.getBoundingClientRect();
+    return {
+      body: cs(document.body).backgroundColor,
+      card: cs(card).backgroundColor,
+      border: `${cs(card).borderTopWidth} ${cs(card).borderTopStyle}`,
+      dot: { w: dr.width, h: dr.height, bg: cs(dot).backgroundColor },
+      pill: { color: cs(pill).color, bg: cs(pill).backgroundColor, text: pill.innerText },
+    };
+  });
+  assert.notEqual(cards.card, cards.body, 'an interface card is a card, not text on the page background');
+  assert.match(cards.border, /1px solid/, 'with a border');
+  assert.ok(cards.dot.w >= 6 && cards.dot.h >= 6, `the status dot is ${cards.dot.w}×${cards.dot.h}px — this page's dots were invisible`);
+  assert.notEqual(cards.dot.bg, 'rgba(0, 0, 0, 0)', 'and it has a colour');
+  assert.notEqual(cards.pill.color, 'rgb(139, 152, 165)', `the status pill (“${cards.pill.text}”) is still the muted colour, so a problem and all good look the same`);
+  assert.notEqual(cards.pill.bg, 'rgba(0, 0, 0, 0)', 'and it is tinted, not just coloured');
+
+  // The bandwidth card is on "Interfaces & issues", not the overview: the swatch that used to
+  // render as a zero-width inline span is in that one's legend.
+  const [network] = await tabsByName('Interfaces & issues');
+  await network.click();
+  await until('the bandwidth legend', async () => ((await page.locator('.legend .sw').count()) > 0 ? true : null));
+  const sw = await page.locator('.legend .sw').first().evaluate((el) => {
+    const r = el.getBoundingClientRect();
+    return { w: r.width, h: r.height };
+  });
+  assert.ok(sw.w >= 8 && sw.h >= 8, `the legend swatch is ${sw.w}×${sw.h}px — an invisible swatch made the legend unreadable`);
+
+  const [connections] = await tabsByName('Connections');
+  await connections.click();
+  await until('the connections controls', async () => ((await page.locator('.segs [data-state]').count()) >= 5 ? true : null));
+  const controls = await page.evaluate(() => {
+    const on = document.querySelector('.segs [aria-pressed="true"]');
+    const off = [...document.querySelectorAll('.segs [data-state]')].find((e) => e.getAttribute('aria-pressed') === 'false');
+    const sel = document.querySelector('select');
+    const cs = (el) => getComputedStyle(el);
+    return {
+      on: cs(on).backgroundColor,
+      off: cs(off).backgroundColor,
+      selColor: cs(sel).color,
+      selBg: cs(sel).backgroundColor,
+      scroll: document.documentElement.scrollWidth,
+      view: window.innerWidth,
+    };
+  });
+  assert.notEqual(controls.on, controls.off, 'the pressed segment is distinguishable from its neighbours');
+  // A native select that escaped `appearance: none` comes back as the OS's white box with
+  // black text, which was the loudest thing on the old page; light-on-dark is the property,
+  // not any particular colour, so the palette can move.
+  const l = (c) => {
+    const m = c.match(/\d+(?:\.\d+)?/g) || [];
+    return (0.2126 * +m[0] + 0.7152 * +m[1] + 0.0722 * +m[2]) / 255;
+  };
+  assert.ok(l(controls.selColor) > l(controls.selBg), `the select is ${controls.selColor} on ${controls.selBg} — it should be light on dark`);
+  assert.ok(controls.scroll <= controls.view + 2, `the page is ${controls.scroll}px wide in a ${controls.view}px viewport — a wide table must scroll in its own container`);
 });
 
 await browser.close();

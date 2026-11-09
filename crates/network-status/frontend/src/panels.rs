@@ -70,7 +70,7 @@ pub fn Header(store: Store) -> Element {
         header {
             h1 { "{cfg.title}" }
             span { class: "sub mono", "{meta_text}" }
-            span { class: "{pill_class}", style: "margin-left:auto", "{pill_text}" }
+            span { class: "{pill_class}", "{pill_text}" }
         }
     }
 }

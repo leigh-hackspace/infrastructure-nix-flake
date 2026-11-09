@@ -10,81 +10,287 @@
   `index.html` + `bundle.css` would be a second request the browser has to make for
   nothing.  One stylesheet, no framework: the page is one document and a few tables.
 -->
+<!--
+  Inlined, as in the other three Dioxus SPAs (AGENTS.md rule 19): `dist/` is no
+  longer a committed pair of files — the flake builds the bundle here, so a plain
+  `index.html` + `bundle.css` would be a second request the browser has to make for
+  nothing.  One stylesheet, no framework: the page is one document and a few tables.
+
+  The widgets are the vendored library's (`crates/common-rs/ui`) and they are *unstyled*:
+  what they emit is roles, `aria-*`, and `data-state` / `data-orientation` /
+  `data-disabled` / `--progress-value`.  So the rules for a widget below key on that
+  contract — `role="tab"`, `[data-state="on"]`, `.lease .fill` — and never invent a
+  parallel state; the app's own `class` props (`tabs`, `tablist`, `segs`) are layout
+  hooks only.  `docs/component-library.md` owns the contract.
+
+  This sheet is also the reason a restyle was needed at all: the Dioxus port rewrote it
+  from scratch and keyed it on class names the Rust does not emit, so every interface
+  card, table control, issue row and status pill rendered unstyled for nine days, and the
+  Uplink tab was never styled.  Two checks at the end of
+  `crates/network-status/tests/suite.mjs` — the stylesheet guard and the painted check — are
+  the guard against that class of drift happening again.
+-->
 <style>
 :root {
-  --bg: #0d1117; --panel: #161d26; --panel2: #1c2530; --border: #2a3542;
+  --bg: #0d1117; --panel: #161d26; --panel2: #1c2530; --panel3: #202c38;
+  --border: #2a3542; --border-hi: #3d4c5c;
   --text: #d7e0e8; --muted: #8b98a5;
   --good: #2ecc71; --bad: #e74c3c; --warn: #f1c40f; --inactive: #7f8c8d;
-  --up: #2dd4bf; --down: #60a5fa;
+  --up: #2dd4bf; --down: #60a5fa; --accent: #a78bfa;
+  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --ring: #4a6b8a;
 }
 * { box-sizing: border-box; }
-body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
-header { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--border); background: var(--panel); flex-wrap: wrap; }
-header h1 { font-size: 15px; margin: 0; letter-spacing: .5px; }
-.pill { font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); }
-.pill.ok { color: var(--good); border-color: #1e4636; }
-.pill.err { color: var(--bad); border-color: #4b2420; }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  font: 14px/1.5 var(--sans);
+}
+h1 { font-size: 17px; margin: 0; letter-spacing: .2px; }
+h2 {
+  font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted);
+  font-weight: 600; margin: 18px 0 8px;
+}
+h2:first-child { margin-top: 0; }
+.mono {
+  font-variant-numeric: tabular-nums; font-family: var(--mono);
+  font-size: .94em; letter-spacing: -.1px;
+}
+.muted { color: var(--muted); }
+.sub { color: var(--muted); font-size: 12px; }
+code {
+  font-family: var(--mono); font-size: .9em; background: var(--panel2);
+  border: 1px solid var(--border); border-radius: 4px; padding: 0 4px;
+}
+a { color: var(--down); }
+:focus-visible { outline: 1px solid var(--ring); outline-offset: 2px; }
+
+main { max-width: 1240px; margin: 0 auto; padding: 0 20px 40px; }
+header {
+  position: sticky; top: 0; z-index: 6;
+  display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+  padding: 14px 20px; margin: 0 -20px 16px;
+  background: rgba(13,17,23,.92); border-bottom: 1px solid var(--border);
+  backdrop-filter: blur(6px);
+}
+header .sub { margin-left: 2px; }
+header .pill { margin-left: auto; }
+
+/* --- the library's tabs, styled (common_ui::tabs) -------------------------------- */
+/* `data-orientation` and `data-state` are what the primitive announces; `hidden` on a
+   panel is the UA's `display:none`, which an author `display:grid` on a child would
+   override — hence the belt on `[hidden]` below. */
+.tabs { display: block; }
+.tablist {
+  display: flex; gap: 3px; flex-wrap: wrap;
+  padding: 4px 0; margin: 0 0 16px;
+  border-bottom: 1px solid var(--border);
+}
+.tablist .tab {
+  background: transparent; color: var(--muted); border: 1px solid transparent;
+  border-radius: 7px 7px 0 0; padding: 6px 13px; font: inherit; font-size: 13px;
+  cursor: pointer; transition: color .1s, background .1s;
+}
+.tablist .tab:hover { color: var(--text); background: var(--panel2); }
+.tablist .tab[data-state="active"] {
+  color: var(--text); background: var(--panel); border-color: var(--border);
+  border-bottom-color: var(--panel); font-weight: 600;
+}
+.tablist .tab[data-disabled="true"] { opacity: .45; cursor: not-allowed; }
+.tabpanel[hidden] { display: none !important; }
+.tabpanel { min-width: 0; }
+
+/* --- cards ---------------------------------------------------------------------- */
+.cards {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px;
+  margin-bottom: 14px;
+}
+.card {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+  padding: 12px 14px; min-width: 0;
+}
+.card.wide { grid-column: 1 / -1; }
+.card .k {
+  color: var(--muted); font-size: 10.5px; text-transform: uppercase; letter-spacing: .07em;
+  font-weight: 600;
+}
+.card .v { font-size: 16px; margin-top: 3px; font-variant-numeric: tabular-nums; }
+
+/* --- status pill ---------------------------------------------------------------- */
+.pill {
+  display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12px;
+  font-weight: 600; border: 1px solid transparent; white-space: nowrap;
+}
+.pill.good { background: rgba(46,204,113,.14); color: var(--good); border-color: rgba(46,204,113,.3); }
+.pill.bad, .pill.err { background: rgba(231,76,60,.14); color: #fca5a5; border-color: rgba(231,76,60,.35); }
+.pill.warn { background: rgba(241,196,15,.12); color: var(--warn); border-color: rgba(241,196,15,.3); }
+
+/* --- banners and notes ---------------------------------------------------------- */
+.banner, .panel-error {
+  background: rgba(231,76,60,.12); border: 1px solid rgba(231,76,60,.4);
+  color: #fca5a5; border-radius: 8px; padding: 10px 14px; margin: 0 0 14px; font-size: 13px;
+}
+.panel-error { line-height: 1.55; }
+.issue { padding: 7px 11px; border-radius: 7px; margin-bottom: 6px; font-size: 13px; }
+.issue.bad {
+  background: rgba(231,76,60,.12); border: 1px solid rgba(231,76,60,.35); color: #fca5a5;
+}
+.issue.warn {
+  background: rgba(241,196,15,.1); border: 1px solid rgba(241,196,15,.3); color: #fde68a;
+}
 .warn-text { color: var(--warn); }
-.meta { color: var(--muted); font-size: 12px; }
-main { padding: 16px; max-width: 1100px; }
-.banner { margin: 12px 0; padding: 8px 10px; border: 1px solid #4b2420; border-left: 4px solid var(--bad); background: #1a1113; color: #f0b8b4; font-size: 12px; }
-.controls { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
-.controls label { color: var(--muted); font-size: 12px; display: inline-flex; align-items: center; gap: 6px; }
-.controls input[type=text], .controls select { background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 5px 7px; font: inherit; font-size: 12px; }
-.controls input[type=text] { min-width: 210px; }
+.empty { color: var(--muted); font-size: 13px; padding: 14px 4px; }
+.note { color: var(--muted); font-size: 12.5px; margin: 8px 0 0; max-width: 78ch; }
 
-/* Tabs: the primitive is the library's (common_ui::tabs), so the roles, the keyboard
-   and the activation state belong to it.  This is only the styling, keyed on what it
-   emits — `data-state` is the state the library announces. */
-.tabs { display: flex; gap: 4px; flex-wrap: wrap; margin: 4px 0 14px; }
-[role="tablist"] [role="tab"] {
-  background: var(--panel2); color: var(--muted); border: 1px solid var(--border);
-  border-radius: 4px; padding: 6px 12px; font: inherit; font-size: 13px; cursor: pointer;
+/* --- charts --------------------------------------------------------------------- */
+.chart-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 0 8px; }
+.chart-head h2 { margin: 0; }
+.chart-head .now { margin-left: auto; font-size: 13px; }
+canvas { display: block; width: 100%; background: var(--panel); border-radius: 6px; }
+.legend { display: flex; gap: 14px; font-size: 12px; color: var(--muted); margin-top: 6px; flex-wrap: wrap; }
+.legend .sw {
+  display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px;
+  vertical-align: -1px;
 }
-[role="tablist"] [role="tab"][data-state="active"] { color: var(--text); border-color: #3d4c5c; background: #202c38; }
-[role="tablist"] [role="tab"]:focus-visible, .checkbox [role="checkbox"]:focus-visible { outline: 1px solid #4a6b8a; outline-offset: 2px; }
+.upc { color: var(--up); } .downc { color: var(--down); }
 
-/* The connections panel's "moving now" control is the library's checkbox; the element
-   carrying role="checkbox" is the control, not the hidden input it mirrors. */
-.checkbox { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; color: var(--muted); font-size: 12px; }
-.checkbox [role="checkbox"] {
-  width: 15px; height: 15px; border: 1px solid var(--border); border-radius: 3px;
-  background: var(--panel2); color: var(--text); font: inherit; font-size: 11px;
-  display: inline-flex; align-items: center; justify-content: center;
+/* --- the interface cards -------------------------------------------------------- */
+.iface-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px;
+  margin-bottom: 6px;
 }
-.checkbox [role="checkbox"][data-state="checked"] { border-color: #2f6b4f; background: #16281f; color: var(--good); }
-.checkbox [role="checkbox"][data-disabled="true"] { opacity: .5; cursor: not-allowed; }
+.iface { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; }
+.iface .head { display: flex; align-items: center; gap: 8px; }
+.iface .name { font-weight: 600; font-size: 13px; }
+.iface .rates { margin-top: 4px; font-size: 12px; display: flex; justify-content: space-between; gap: 8px; }
+.iface canvas { margin-top: 8px; border: 0; background: transparent; }
+.dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: none; }
+.dot.up { background: var(--good); box-shadow: 0 0 6px rgba(46,204,113,.7); }
+.dot.down { background: var(--bad); }
 
-.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 14px; }
-.card { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; }
-.card .k { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .6px; }
-.card .v { font-size: 16px; margin-top: 4px; }
-.row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-.row .spacer { flex: 1; }
-.panel-error { margin: 0 0 12px; padding: 8px 10px; border: 1px solid #4b2420; border-left: 4px solid var(--bad); background: #1a1113; color: #f0b8b4; font-size: 12px; }
-canvas { display: block; width: 100%; background: var(--panel); border: 1px solid var(--border); border-radius: 6px; }
-.chip { padding: 3px 8px; border-radius: 999px; border: 1px solid var(--border); background: var(--panel2); color: var(--muted); font-size: 11px; }
-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
-th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid #202a34; white-space: nowrap; }
-th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .5px; }
-tbody tr:nth-child(odd) { background: #131a22; }
-td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
-.kind { font-size: 11px; padding: 1px 7px; border-radius: 4px; background: var(--panel2); border: 1px solid var(--border); color: var(--muted); }
-.kind.out { color: var(--bad); }
-.kind.in { color: var(--down); }
-.kind.lan { color: var(--good); }
-.kind.wan { color: var(--warn); }
-.bar { height: 4px; background: #22303c; border-radius: 2px; overflow: hidden; }
-.bar i { display: block; height: 100%; background: var(--up); }
-.up { color: var(--up); } .down { color: var(--down); } .muted { color: var(--muted); }
-.empty { color: var(--muted); font-size: 12px; padding: 10px; }
-.issues { list-style: none; margin: 0; padding: 0; }
-.issues li { padding: 6px 10px; border-left: 3px solid var(--muted); margin-bottom: 6px; background: var(--panel); font-size: 12.5px; }
-.issues li.warn { border-left-color: var(--warn); }
-.issues li.error { border-left-color: var(--bad); }
-.spark-wrap { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px; }
-.note { color: var(--muted); font-size: 12px; margin: 10px 0 0; }
-h2 { font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: .6px; margin: 18px 0 10px; }
+/* --- the controls: native selects, the search box, the library's toggle groups --- */
+/* The library has no styleable `select`: upstream's needs the unpublished
+   `dioxus-attributes` macro (docs/component-library.md), so the native control stays and
+   is dressed — a bare `<select>` on a dark page renders as an OS-white box, which is the
+   single ugliest thing on this page. */
+select {
+  appearance: none; background-color: var(--panel2); color: var(--text);
+  border: 1px solid var(--border); border-radius: 7px; padding: 4px 26px 4px 9px;
+  font: inherit; font-size: 12.5px; cursor: pointer;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'><path d='M2 4l3 3 3-3' fill='none' stroke='%238b98a5' stroke-width='1.4'/></svg>");
+  background-repeat: no-repeat; background-position: right 8px center;
+}
+select:hover { border-color: var(--border-hi); background-color: var(--panel3); }
+input[type="search"]:focus-visible, select:focus-visible { border-color: var(--ring); }
+.ctl { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); cursor: pointer; }
+input.q, .ctl.q {
+  min-width: 200px; background: var(--panel2); color: var(--text);
+  border: 1px solid var(--border); border-radius: 7px; padding: 4px 9px;
+  font: inherit; font-size: 12.5px;
+}
+input.q::placeholder, .ctl.q::placeholder { color: #6b7885; }
+input.q:focus { border-color: var(--ring); outline: none; }
+
+/* Segmented control: `common_ui::toggle_group`.  The pressed state is the primitive's
+   `data-state="on"` on its button, announced as `aria-pressed`; the group's
+   `data-orientation` is upstream's, and it is what the separators key on. */
+.segs {
+  display: inline-flex; overflow: hidden; border: 1px solid var(--border);
+  border-radius: 7px; background: var(--panel2);
+}
+.segs [data-state] {
+  background: transparent; color: var(--muted); border: 0; border-left: 1px solid var(--border);
+  padding: 4px 11px; font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap;
+}
+.segs [data-state]:first-child { border-left: 0; }
+.segs [data-state]:hover { color: var(--text); background: var(--panel3); }
+.segs [data-state="on"] {
+  background: var(--panel3); color: var(--text); font-weight: 600;
+  box-shadow: inset 0 -2px 0 var(--up);
+}
+.segs [data-disabled="true"] { opacity: .45; cursor: not-allowed; }
+/* The library's checkbox (`common_ui::checkbox`): the control is the element carrying
+   `role="checkbox"`, not the hidden input it would otherwise mirror — upstream puts no
+   class on it, so the role is the only hook, and it is the stable one. */
+[role="checkbox"] {
+  width: 16px; height: 16px; border: 1px solid var(--border); border-radius: 4px;
+  background: var(--panel2); color: transparent; font: inherit; font-size: 11px;
+  display: inline-flex; align-items: center; justify-content: center; cursor: pointer;
+}
+[role="checkbox"]:hover { border-color: var(--border-hi); }
+[role="checkbox"][data-state="checked"] { border-color: #2f6b4f; background: #16281f; color: var(--good); }
+[role="checkbox"][data-disabled="true"] { opacity: .5; cursor: not-allowed; }
+
+/* --- the tables (connections, leases, uplink) ----------------------------------- */
+.conn-summary { font-size: 13px; margin: 2px 0 10px; display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.conn-hosts { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.chip {
+  background: var(--panel2); border: 1px solid var(--border); border-radius: 7px;
+  padding: 3px 8px; font-size: 12px; display: inline-flex; gap: 6px; align-items: baseline;
+}
+.chip:hover { border-color: var(--border-hi); }
+.chip .who { font-weight: 600; }
+.conn-scroll { overflow-x: auto; }
+table.conn { width: 100%; border-collapse: collapse; font-size: 13px; }
+table.conn th {
+  text-align: left; font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em;
+  color: var(--muted); font-weight: 600; padding: 6px 8px; white-space: nowrap;
+  border-bottom: 1px solid var(--border);
+}
+table.conn td {
+  padding: 6px 8px; border-bottom: 1px solid rgba(42,53,66,.55);
+  vertical-align: top; position: relative; z-index: 0;
+}
+table.conn tbody tr:hover td { background: rgba(28,37,48,.55); }
+table.conn th.num, table.conn td.num {
+  text-align: right; font-variant-numeric: tabular-nums; font-family: var(--mono); font-size: 12.5px;
+}
+table.conn td.empty { text-align: center; padding: 16px 0; }
+/* Two-line cells are the point: the name is what you scan for, the address is what you
+   act on, and only one of them is a fact the network chose. */
+.muted.addr { display: block; font-size: 11px; line-height: 1.25; }
+/* A rate's share of the busiest row, behind the number, so the table can be scanned for
+   the fat cell instead of read line by line.  Decorative, and `aria-hidden` upstream. */
+.bar {
+  position: absolute; right: 0; bottom: 3px; height: 14px; opacity: .16;
+  border-radius: 3px; z-index: -1; pointer-events: none;
+}
+.bar.down { background: var(--down); }
+.bar.up { background: var(--up); }
+td.left-cell { padding-bottom: 8px; }
+/* `common_ui::progress` — the lease countdown.  `--progress-value` is the primitive's own
+   variable (it sets it from value/max); the indicator is what reads it. */
+.lease {
+  display: block; height: 5px; margin-top: 4px; border-radius: 3px;
+  background: var(--panel3); overflow: hidden;
+}
+.lease .fill { display: block; height: 100%; width: var(--progress-value, 0%); background: var(--good); border-radius: 3px; }
+.lease.low .fill { background: var(--warn); }
+.lease.lapsed .fill { background: var(--bad); }
+.lease.unknown { background: repeating-linear-gradient(135deg, var(--panel3) 0 4px, #26313d 4px 8px); }
+.lease.unknown .fill { width: 0; }
+.kind {
+  font-size: 10px; text-transform: uppercase; letter-spacing: .04em; border-radius: 4px;
+  padding: 1px 5px; border: 1px solid var(--border); color: var(--muted); white-space: nowrap;
+}
+.k-out { color: var(--down); border-color: rgba(96,165,250,.4); }
+.k-in { color: var(--warn); border-color: rgba(241,196,15,.4); }
+.k-lan { color: var(--good); border-color: rgba(46,204,113,.35); }
+.k-wan { color: var(--accent); border-color: rgba(167,139,250,.4); }
+tr.uncounted td { opacity: .72; }
+/* Which way a row goes is the first thing to know about a connection, and the chip in the
+   first cell carries it; the edge tint lets the column be scanned without reading it. */
+tr.kind-out td:first-child { box-shadow: inset 2px 0 0 rgba(96,165,250,.45); }
+tr.kind-in td:first-child { box-shadow: inset 2px 0 0 rgba(241,196,15,.45); }
+tr.kind-lan td:first-child { box-shadow: inset 2px 0 0 rgba(46,204,113,.4); }
+tr.kind-wan td:first-child { box-shadow: inset 2px 0 0 rgba(167,139,250,.45); }
+tr.lapsed td { opacity: .55; }
+tr.lapsed td.num { color: var(--bad); }
+tr.low td.num { color: var(--warn); }
+table.leases td { vertical-align: middle; }
+.conn-note { margin-top: 12px; font-size: 11.5px; line-height: 1.6; max-width: 110ch; }
+.conn-note div { margin-bottom: 3px; }
+.up { color: var(--up); } .down { color: var(--down); }
 </style>
 </head>
 <body>

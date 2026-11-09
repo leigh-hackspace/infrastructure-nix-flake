@@ -374,6 +374,30 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   Until then: if `just check` dies on `sops-secret-*.drv`, that is this item, not your
   change — say so, and say what you verified against a clean HEAD.
 
+- **Nothing runs the three Playwright suites, so a red one is only found by whoever happens to
+  need it** (found 2026-11-09 while restyling network-info: `5ebe2d5` added the Uplink tab at
+  17:10 and five of `crates/network-status/tests/suite.mjs`'s ten checks went red silently — a
+  click on the wrong tab still clicks something — and nothing would have noticed at all had the
+  restyle not needed the suite two hours later; the last receipt in that suite's own README,
+  "ten checks, all pass" dated 2026-10-31, was still standing as the record of a failing
+  suite). The cause is structural, not carelessness:
+  `just network-status-test`, `just switch-gui-test` and `just filestore-test` are build-shaped
+  (`_build-host-guard`), so they cannot run on the router, and they are not in `just check`,
+  `just check-build` or `just test` anywhere else either. They run when a human remembers.
+  **Blocks:** nothing — this is an open question, not a broken thing. **Options, cheapest
+  first:** (a) run the affected suite whenever a `crates/*/frontend/**` or `machines/*/*.nix`
+  unit that serves it changes, which is a documentation rule and is what `AGENTS.md` rule 3
+  gestures at but does not say; (b) add the three to a new `just check-ui` and run it on
+  aibox before a deploy that touches a frontend; (c) a nightly `systemd.timer` on aibox that
+  runs all three and leaves the journal as the alarm — cheapest to keep honest, and it also
+  catches the browser/crate drift none of these suites can see today. What blocks (c) is
+  that `switch-gui-test` needs the local Postgres cluster and all three need
+  `nixpkgs#playwright.browsers-chromium` present, so it wants the same shape as the other
+  nightly units in this file (a `--no-block` `systemd-run` or a oneshot + timer, and a
+  failure that is visible without reading a log). Re-verify the gap with:
+  `just network-status-test` on services1 or aibox, and
+  `grep -n "network-status-test\|switch-gui-test\|filestore-test" justfile`.
+
 
 ## Strata (services2, and aibox's engine since 2026-10-28)
 

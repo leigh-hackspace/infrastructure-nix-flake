@@ -35,7 +35,7 @@ X first", X has already cost someone a day.
 | **build the thingino firmware** for these cameras, or deploy a built image (changeover of an OpenIPC unit, payload update of a thingino one) | **`docs/camera-thingino-build-deploy-2026-10-31.md`** is this repo's half: the pins (`cameras/thingino-manifest.sh`: `1286efbd3` = tag `c110-fleet-20261031`, buildroot `727b904c`), the artifact hashes, `just cam-fw-build`/`cam-fw-verify`/`cam-fw-fetch`, and why a payload update is `sudo just cam-rescue-card /dev/sdX` + a power cycle while a changeover is `MIG_PASS=… GO=1 just cam-migrate <cam> all` — **never ssh-into-a-thingino-unit-and-write-mtd3**, that is the watchdog reset, and `just cam-fw-verify` is the precondition of both. **How the image is built, what the C110's flash holds and what the firmware does are documented in that repository, not here (rule 30): `cjdell/thingino-firmware`, branch `ssc333-infinity6b0`, PRIVATE because its history carries the baked Wi-Fi PMKs — §7 of that doc before touching its visibility or assuming the PSKs are secret.** The pin survives only as its tag: a fresh clone's branch head is refused by the build gate, and the branch is 30 commits ahead of it — 10 of them new work, and one `cam5` payload push (2026-11-02) that this repo never saw — §1 and §3 there |
 | touch the netboot image the Pi Room boots, or aibox's tftp/ipxe/NFS export of it | `machines/pi-room-sys/README.md` (the image is built by aibox, not deployed) |
 | touch a Dioxus SPA (any of the five) or its headless-browser suite | `docs/filestore-gotchas-2026-10-05.md` (the dioxus 0.7 + wasm traps apply to all of them) + `crates/filestore/tests/README.md`, `crates/switch-gui/tests/README.md`, `crates/network-status/tests/README.md` |
-| add a component to `crates/common-rs/ui/` (the vendored `dioxus-components` primitives) or wire another app to it | `docs/component-library.md` — the pin, what was measured and rejected, and the traps hit on the first conversion |
+| add a component to `crates/common-rs/ui/` (the vendored `dioxus-components` primitives) or wire another app to it | `docs/component-library.md` — the pin and its per-file re-verify table, what was measured and rejected, the gate a new module must pass (its `use` block: `dioxus::prelude` + this crate's helpers, nothing else), and the traps hit on the first two conversions |
 | create or debug an OIDC app / authentik anything | `docs/authentik-oidc-notes.md` — **every part of it has bitten once** |
 | touch the authentik container stack on services1, or anything that still names `10.3.1.36` | `docs/authentik-container-migration.md` — **the flake stack on services1 *is* the IdP since 2026-10-28**; `10.3.1.36` is a second address on that box, the appliance VM is stopped, and the outposts answer RADIUS/LDAPS there |
 | touch how a box turns authentik into Unix accounts — sssd, `common/auth-posix.nix`, a Pi Room or aibox login, anything that could renumber a user | `docs/auth-posix-logins.md` — **every uid here is `2000 + an authentik Postgres primary key` and that number is the ACL on a person's NAS home directory**; it is stored nowhere, group gids are generated too, nested groups are unobtainable, and `id`/`getent` cannot tell a live directory read from a cache hit |
@@ -957,6 +957,15 @@ there is declarative. **Root SSH is keyed here** (unlike the flake machines):
   never one), and it leaves decode untouched — which is where this box's time actually goes.
   Upstream's own numbers make it a 1.2-1.3x prefill ceiling here, and one cuBLAS GEMM on the
   card decides it without touching boot: `machines/services2/STRATA.md` + `docs/follow-ups.md`.
+- **A UI suite that selects by position goes silently wrong, and an unstyled page passes
+  every behavioural check.** `PANELS` gained a tab at index 1 and four of
+  `crates/network-status`'s ten checks started driving the wrong panel and still reported a
+  result — a click on the wrong tab still clicks something. Select by label. And the page whose
+  suite that was had been rendering without its interface cards, legend or status colours for
+  nine days with the suite green, because the fault is *absence of appearance*: the last check
+  in that suite now refuses a class the DOM emits that no rule mentions. Both rules, with the
+  receipts: `crates/network-status/tests/README.md` and `docs/component-library.md`, "The
+  stylesheet is app code too".
 - **Proving a component end to end is not proving the system**: the switch write-path fix
   was verified by driving the console directly, which is why it passed while the queue
   swallowed every change for a day. Test through the path users take.

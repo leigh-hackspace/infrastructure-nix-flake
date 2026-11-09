@@ -279,7 +279,7 @@ mangled one. It used to be the repo's one exception: SolidJS + esbuild with a **
 with the port on 2026-10-30; `just build-frontend network-status` is the rebuild now, and
 `just network-status-test` is its suite. See `crates/network-status/frontend/README.md`.
 
-It is **tabbed** (`Overview`, `Connections`, `DHCP leases`, `Interfaces & issues`)
+It is **tabbed** (`Overview`, `Uplink`, `Connections`, `DHCP leases`, `Interfaces & issues`)
 since 2026-10-26, because one column of cards holding two tables and a chart grid had
 got long enough that finding a lease meant scrolling past everything else. The tabs are
 by question, not by widget, and the active tab lives in the URL fragment (`#leases`) so a
@@ -292,7 +292,15 @@ same guarantee the old always-mounted panels gave by construction; and the tabs 
 `common_ui::tabs`, so the roles, `aria-selected` and the roving focus are the primitive's,
 not written here. The arrow keys move the roving focus and no longer activate, so a
 keyboard user activates with Enter/Space on the focused tab (`docs/component-library.md`,
-trap 9). The "moving now" control is `common_ui::checkbox`.
+trap 9). The other widgets it uses are the library's too: the "moving now" control is
+`common_ui::checkbox`, the direction filter and the lease "show" filter are one
+`common_ui::toggle_group` each, and a lease's countdown is `common_ui::progress` — which
+means they ship **no CSS**, and the sheet in `frontend/index.html` styles them through what
+they announce (`data-state`, `--progress-value`). That split is where this page went wrong
+once: the port's rewritten sheet was keyed on class names the components do not emit, so
+most of it applied to nothing, and every check still passed. Two checks at the end of the
+suite now keep the markup and the sheet attached to each other (the stylesheet guard and the
+painted check); `crates/network-status/tests/README.md` has why both are needed.
 
 ## `crates/filestore/` — file browser over the NAS `filestore` share
 

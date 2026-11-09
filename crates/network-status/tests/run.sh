@@ -92,16 +92,29 @@ fi
 #    embedded in the binary, which is what the deployed unit runs, so the suite drives the same
 #    page a browser gets on gw.
 LEASES="$WORKDIR/dnsmasq.leases"
-# One real-shaped row and one row whose hostname is markup. dnsmasq's own `duid` header line is
-# included because the parser has to skip it rather than turn it into a row. The hostile name is
-# a single token because dnsmasq's file is whitespace-separated: a name with a space in it is two
-# fields to the parser, and the suite would then be testing the parser's field split rather than
-# the page's escaping.
+# Two real-shaped rows and one header line that is not a lease.
+#
+#   * `duid` is dnsmasq's own header line, included because the parser has to skip it rather
+#     than turn it into a row.
+#   * the first lease is inside the one block this run declares with `--vlan`, so the page can
+#     be shown drawing a real countdown bar; its hostname is markup, which is only worth
+#     checking through a path that parses it.
+#   * the second is deliberately outside every block, so `known` is false and the same table
+#     also contains the *indeterminate* case — a lease whose length is not known here. The bar
+#     in that cell is a fact about the router's configuration, and the one fixture that can
+#     produce both states is what lets the suite assert the pair rather than guess at it.
+#
+# The hostile name is one token because dnsmasq's file is whitespace-separated: a name with a
+# space in it is two fields to the parser, and the suite would then be testing the parser's
+# field split rather than the page's escaping. The expiries are in ascending order because the
+# table's default sort is "expiring first", and a check that reads the first cell of the first
+# row depends on that being the hostile one.
 printf '%s\n' \
   'duid 00:01:00:01:32:6b:9c:78:00:25:90:d3:f0:ea' \
-  '1900000000 aa:bb:cc:dd:ee:ff 10.3.2.99 <img/onerror=x> *' > "$LEASES"
+  '1900000000 aa:bb:cc:dd:ee:ff 10.3.2.99 <img/onerror=x> *' \
+  '1900000001 aa:bb:cc:dd:ee:02 10.9.9.9 tailnet-node *' > "$LEASES"
 "$BIN" --local --bind 127.0.0.1 --port "$PORT" --interval 1 \
-  --leases-file "$LEASES" > "$LOG_SERVER" 2>&1 &
+  --leases-file "$LEASES" --vlan vlan226=10.3.2.0/24 > "$LOG_SERVER" 2>&1 &
 APP=$!
 
 for _ in $(seq 1 40); do

@@ -13,7 +13,14 @@
 //! The tabs themselves are the component library's (`common_ui::tabs`) — the roles, the
 //! roving focus, the arrow-key movement, and the `data-state` the CSS keys on all belong to
 //! the vendored primitive. `docs/component-library.md` is why that library is vendored
-//! rather than depended on.
+//! rather than depended on, and it is also why the *styling* is here: the primitives are
+//! unstyled, so the sheet in `index.html` keys on what the primitive emits
+//! (`data-state="active"`, `data-orientation`, `data-disabled`) and passes the classes
+//! through the components' own `class` props rather than reaching for `[role=…]` selectors.
+//!
+//! Every panel is `TabContent`, which renders its children only for the selected tab — so a
+//! chart in a hidden panel has no canvas to draw on, which is what `charts.rs` reads
+//! `store.tab` for, and why the suite names the tab it wants to look at.
 
 use common_ui::tabs::{TabContent, TabList, TabTrigger, Tabs};
 use dioxus::prelude::*;
@@ -45,24 +52,25 @@ pub fn App() -> Element {
             Header { store: store }
             Banner { store: store }
             Tabs {
+                class: "tabs",
                 value: value,
                 horizontal: true,
                 roving_loop: true,
                 on_value_change: on_change,
                 TabList {
+                    class: "tablist",
                     for (i, (id, label)) in PANELS.iter().enumerate() {
                         TabTrigger {
+                            class: "tab",
                             value: id.to_string(),
                             index: i,
-                            // The icon is what the eye uses to tell the tabs apart; the old
-                            // page used a box glyph, and it is kept.
-                            span { class: "tabicon", "⊞ " }
                             "{label}"
                         }
                     }
                 }
                 for (i, (id, _)) in PANELS.iter().enumerate() {
                     TabContent {
+                        class: "tabpanel",
                         value: id.to_string(),
                         index: i,
                         {panel(store, id)}

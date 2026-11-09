@@ -14,9 +14,13 @@ directory now has a `Cargo.toml` instead of a `package.json`.
 - **dioxus 0.7** (`web` feature) — the only runtime dependency. No router, no state
   library, no charting library (charts are plain `canvas`).
 - **`common-rs/ui`** — the vendored `dioxus-components` subset
-  (`docs/component-library.md`). The tabs are `common_ui::tabs`, and the "moving now"
-  control is `common_ui::checkbox`; the roles, `aria-selected`, the roving focus and the
-  `data-state` the CSS keys on belong to those primitives, so they are not written here.
+  (`docs/component-library.md`). The tabs are `common_ui::tabs`, the "moving now" control is
+  `common_ui::checkbox`, the direction and lease "show" filters are one `toggle_group` each,
+  and a lease's countdown is `common_ui::progress`; the roles, `aria-selected`,
+  `aria-pressed`, `aria-valuenow`, the roving focus and the `data-state` the CSS keys on
+  belong to those primitives, so they are not written here. **They ship no CSS**, so
+  `index.html`'s sheet is the styling and it keys on what they announce — an app-side class
+  that no rule mentions is a bug, and the suite's last check refuses one.
 - **gloo-net / gloo-timers / js-sys / web-sys** — fetch, the poll timer, `Date`, and
   `CanvasRenderingContext2d`. No `web-sys` feature beyond the canvas and the window.
 
@@ -37,6 +41,7 @@ src/
             /api/connections, /api/leases)
   connections.rs  the "Active connections" panel: filters + flow table
   leases.rs       the "DHCP leases" panel: filters + lease table with countdowns
+  wan.rs          the "Uplink" panel: the WAN supervisor's ranking, verbatim from its status file
   format.rs       byte / rate / time / duration formatting
   chart.rs        dependency-free canvas drawing + sparkline
   charts.rs       Bandwidth / Connections / Load average components
@@ -50,10 +55,11 @@ rather than leaving a screen of nothing where an answer was. The flow table and
 `charts.rs`'s conntrack graph are different things: one is a table of flows, the other is
 the size of the kernel's conntrack table over time.
 
-The page is **tabbed** — `Overview`, `Connections`, `DHCP leases`, `Interfaces & issues` —
-by question rather than by widget. The active tab lives in the URL fragment (`#leases`),
-so a reload keeps it and a link can point at one; the tab and the fragment are the same
-fact in `state.rs`, with `hashchange` making the browser's own history drive the tab.
+The page is **tabbed** — `Overview`, `Uplink`, `Connections`, `DHCP leases`,
+`Interfaces & issues` — by question rather than by widget. The active tab lives in the URL
+fragment (`#leases`), so a reload keeps it and a link can point at one; the tab and the
+fragment are the same fact in `state.rs`, with `hashchange` making the browser's own history
+drive the tab.
 
 The lease table's countdown is computed against the **router's** clock: `/api/leases`
 carries the `now` it read, `state.rs` keeps the offset from the browser's clock, and
@@ -89,12 +95,18 @@ Changed on purpose:
    page activated on arrow keys because it had its own tab implementation, so the port is a
    small behaviour change — a keyboard user activates with Enter/Space on the focused tab.
 
-3. **The markup uses the names the stylesheet defines.** The port carried `class="pill bad"`
-   over from the SolidJS page, where `.pill.bad` had been defined in `styles.css`; the
-   stylesheet here defines `.pill.err`, so every error pill — "router unreachable", "last
-   attempt failed", "not live" — rendered in the neutral pill colour, which is a failure that
-   looks like a label. Now the markup and the stylesheet name the same thing, and `.warn-text`
-   (which was also undefined) is defined.
+3. **A dropped stylesheet is invisible to a passing suite.** This item used to read "the
+   markup uses the names the stylesheet defines", claiming the port had fixed the pill and
+   `.warn-text`. It had done the opposite: the SolidJS `styles.css` — which was keyed on what
+   the components emit, because the components were ported from it — was replaced by a sheet
+   written from scratch against names the Rust does not use (`.pill.ok`, `.issues li`,
+   `.controls select`), and it lost the rules for `iface`, `iface-grid`, `dot`, `rates`,
+   `legend`, `sw`, `chart-head`, `conn-*`, `ctl`, `q`, `who`, `addr`, `lapsed` and `low`
+   outright. Everything still rendered, so all ten checks kept passing, for nine days, on a
+   page whose interface cards had no card, whose legend swatches were zero-width, whose rate
+   bars set `width` on an inline element (ignored), whose "all good" pill could not turn
+   green, and whose Uplink tab was never styled at all. Restyled 2026-11-09; the detector is
+   check 12 of `tests/suite.mjs` and the reasoning is in `docs/component-library.md`.
 
 ## Build
 

@@ -20,7 +20,10 @@
 //! copied here once, and each SPA path-depends on this crate through the
 //! symlink/`sharedCrates` machinery (AGENTS.md rule 2: one copy, never five).
 //!
-//! Re-verify a file against upstream before changing it:
+//! Re-verify a file against upstream before changing it — with the command in
+//! `docs/component-library.md` → "Re-verify", which has one line per vendored file and
+//! carries each file's `tail -n +N` (the header above is ours, the body is upstream's, and a
+//! bare diff reports the header as a deviation on every file in here):
 //!
 //! ```bash
 //! curl -s https://raw.githubusercontent.com/DioxusLabs/dioxus-components/9a758255ea26e2b20c8cecf4c1c946feb9e71da7/primitives/src/checkbox.rs \
@@ -43,6 +46,15 @@
 //! `common/frontend-build-spa.sh` emits only the wasm, its glue and `index.html`.
 //! A SPA that wants `dialog` has to add that asset to the build recipe first.
 //!
+//! That is the gate a new module has to pass, and it was applied again on 2026-11-09
+//! before `progress`, `toggle` and `toggle_group` were copied in: **its `use` block is
+//! `dioxus::prelude` plus this crate's own helpers and nothing else** — no
+//! `dioxus-attributes`, no `document::eval` on the render path, no new crate. Read a
+//! candidate's imports before its docs; they are the whole of the cost. Two upstream
+//! components that would otherwise suit this network fail it exactly there: `tooltip`
+//! and `select` (attributes macro), and `collapsible` (attributes macro *and*
+//! `crate::merge_attributes`, which is not in this subset).
+//!
 //! ## The deviations
 //!
 //! `use_unique_id` below is upstream's, minus the `fullstack!` block. That block is
@@ -60,7 +72,17 @@ pub mod checkbox;
 // every focus-trap component in upstream is built on. Vendoring a component means
 // vendoring the hooks it calls — `tabs` is three lines of rsx plus this.
 pub mod collection;
+// Added 2026-11-09 with the network-info restyle: `network-status` renders a lease's
+// countdown as a real `progressbar` rather than as a `span` with an inline width.
+// Self-contained (`use dioxus::prelude::*` and nothing else), which is why it is a whole
+// component rather than a component plus its dependencies.
+pub mod progress;
 pub mod tabs;
+// The direction and "show" filters on network-info are one segmented `ToggleGroup` each
+// rather than two more `<select>`s. `toggle` is here because `toggle_group` calls it —
+// the same reason `collection` is: a vendored component is the file plus what it calls.
+pub mod toggle;
+pub mod toggle_group;
 
 /// Generate a runtime-unique id.
 fn use_unique_id() -> Signal<String> {

@@ -13,9 +13,13 @@
 
 use dioxus::prelude::*;
 
+use std::collections::HashSet;
+
 use crate::api::{LeaseResponse, LeaseRow};
 use crate::format::{fmt_dur, fmt_time};
 use crate::state::{LeaseControls, Store};
+use common_ui::progress::{Progress, ProgressIndicator};
+use common_ui::toggle_group::{ToggleGroup, ToggleItem};
 
 const SORT_OPTIONS: [(&str, &str); 5] = [
     ("expires", "expiring first"),
@@ -25,11 +29,15 @@ const SORT_OPTIONS: [(&str, &str); 5] = [
     ("addr", "address"),
 ];
 
-const LEFT_OPTIONS: [(i64, &str); 4] = [
-    (-1, "every lease"),
-    (3600, "expiring within an hour"),
-    (6 * 3600, "expiring within 6 hours"),
-    (24 * 3600, "expiring today"),
+/// The "show" filter: `(value sent to the backend, caption on the segment, what it means)`.
+///
+/// Captions are short because these are segments of a segmented control; the sentence each
+/// one stands for is the segment's accessible name and tooltip.
+const LEFT_OPTIONS: [(i64, &str, &str); 4] = [
+    (-1, "all", "every lease"),
+    (3600, "≤ 1 h", "expiring within an hour"),
+    (6 * 3600, "≤ 6 h", "expiring within 6 hours"),
+    (24 * 3600, "≤ 24 h", "expiring today"),
 ];
 
 /// How long a lease has left, as a word rather than a count of seconds.
@@ -123,7 +131,7 @@ pub fn LeasesPanel(store: Store) -> Element {
     ];
     if d.unknown_ttl > 0 {
         why.push(format!(
-            "{} lease{} inside no block the router was told about (a tailnet or hand-written address), so the bar is dimmed: the length it actually ran at is not known here.",
+            "{} lease{} inside no block the router was told about (a tailnet or hand-written address), so the bar under “left” is drawn as indeterminate: the length it actually ran at is not known here.",
             d.unknown_ttl,
             plural(d.unknown_ttl)
         ));
@@ -147,20 +155,7 @@ pub fn LeasesPanel(store: Store) -> Element {
         div {
             class: "chart-head",
             h2 { "DHCP leases" }
-            label {
-                class: "ctl",
-                "show "
-                select {
-                    value: "{controls.max_left}",
-                    onchange: move |e| {
-                        let v = e.value().parse::<i64>().unwrap_or(-1);
-                        store.edit_lease_controls(|c| c.max_left = v);
-                    },
-                    for (v, l) in LEFT_OPTIONS {
-                        option { value: "{v}", selected: v == controls.max_left, "{l}" }
-                    }
-                }
-            }
+            ShowFilter { store: store }
             label {
                 class: "ctl",
                 "sort "
@@ -291,6 +286,92 @@ pub fn LeasesPanel(store: Store) -> Element {
     }
 }
 
+/// The "show" filter as the library's segmented control — the same reasoning as
+/// `DirectionFilter` in `connections.rs`, and the reason the two panels' toolbars read the
+/// same way.
+#[component]
+fn ShowFilter(store: Store) -> Element {
+    let pressed: ReadSignal<Option<HashSet<usize>>> = ReadSignal::from(use_memo(move || {
+        let want = store.lease_controls.read().max_left;
+        LEFT_OPTIONS
+            .iter()
+            .position(|(v, _, _)| *v == want)
+            .map(|i| [i].into_iter().collect::<HashSet<usize>>())
+    }));
+
+    let on_change = use_callback(move |set: HashSet<usize>| {
+        let Some(&i) = set.iter().min() else { return };
+        let max_left = LEFT_OPTIONS[i].0;
+        store.edit_lease_controls(|c| c.max_left = max_left);
+    });
+
+    rsx! {
+        ToggleGroup {
+            class: "segs",
+            pressed: pressed,
+            horizontal: true,
+            allow_multiple_pressed: false,
+            on_pressed_change: on_change,
+            for (i, (value, caption, meaning)) in LEFT_OPTIONS.iter().enumerate() {
+                ToggleItem {
+                    key: "{value}",
+                    index: i,
+                    title: "{meaning}",
+                    aria_label: "{meaning}",
+                    "{caption}"
+                }
+            }
+        }
+    }
+}
+
+/// The share of a lease that still has to run, as the library's `Progress`.
+///
+/// This cell used to be a `span` with an inline width. The cell states a proportion of a
+/// known total, which is exactly what `role=progressbar` with `aria-valuenow` announces and
+/// what a styled `span` does not. The connection table's rate bars **stay** plain spans on
+/// purpose: one of those is a comparison against the busiest row, not a completion, and a
+/// hundred progressbars in a table is noise rather than information.
+///
+/// Three states, and the widget has a name for each: a running lease is `pct` of its own
+/// length, a lapsed one is zero (there is none left — this is a fact, not a missing value),
+/// and a lease in a block the router was not told about has `value: None`, which the
+/// primitive announces as indeterminate rather than inventing a bar for.
+///
+/// `pct` arrives as a prop and goes out through a memo because the primitive's prop is a
+/// signal: a component's props are the reactive edge, which is also why this is a component
+/// and `lease_row` below is still a plain function.
+#[component]
+fn LeaseProgress(pct: Option<f64>, lapsed: bool) -> Element {
+    let value = ReadSignal::from(use_memo(move || match (lapsed, pct) {
+        (true, _) => Some(0.0),
+        (false, Some(p)) => Some(p),
+        (false, None) => None,
+    }));
+    let tone = if lapsed {
+        "lapsed"
+    } else {
+        match pct {
+            None => "unknown",
+            Some(p) if p < 15.0 => "low",
+            // Healthy leases get no extra class: a class nothing styles is how this page
+            // lost its stylesheet in the first place, and check 12 of the suite now refuses
+            // one. `ok` is the absence of a tone, so it is spelled as one.
+            Some(_) => "",
+        }
+    };
+
+    rsx! {
+        Progress {
+            class: "lease {tone}",
+            value: value,
+            max: 100.0,
+            aria_label: "share of this lease still to run",
+            ProgressIndicator { class: "fill" }
+        }
+    }
+}
+
 fn lease_row(l: &LeaseRow, now: i64) -> Element {
     let left = l.expires - now;
     let ident = if !l.mac.is_empty() && l.mac != "*" {
@@ -301,10 +382,10 @@ fn lease_row(l: &LeaseRow, now: i64) -> Element {
         None
     };
 
-    // The bar is the share of the lease still to run, and it is absent — not empty — when
-    // the length is unknown or the lease has already lapsed.
-    let pct = if l.known && left >= 0 && l.ttl > 0 {
-        Some(((left as f64 / l.ttl as f64) * 100.0).min(100.0))
+    // The bar is the share of the lease still to run; `None` means the length it ran at is
+    // not known here, which the widget renders as indeterminate rather than as empty.
+    let pct = if l.known && l.ttl > 0 {
+        Some(((left as f64 / l.ttl as f64) * 100.0).clamp(0.0, 100.0))
     } else {
         None
     };
@@ -314,10 +395,6 @@ fn lease_row(l: &LeaseRow, now: i64) -> Element {
         "low".to_string()
     } else {
         String::new()
-    };
-    let bar = match pct {
-        Some(p) => format!("bar lease{}", if p < 15.0 { " low" } else { "" }),
-        None => String::new(),
     };
     let where_ = if l.vlan.as_ref().map(|v| !v.is_empty()).unwrap_or(false) {
         format!("{} · {}", l.vlan.clone().unwrap_or_default(), l.net)
@@ -347,11 +424,9 @@ fn lease_row(l: &LeaseRow, now: i64) -> Element {
             td { class: "mono", "{l.ip}" }
             td { span { class: "muted mono", "{where_}" } }
             td {
-                class: "num",
-                if !bar.is_empty() {
-                    span { class: "{bar}", style: format!("width:{:.1}%", pct.unwrap_or(0.0)) }
-                }
+                class: "num left-cell",
                 "{fmt_left(left)}"
+                LeaseProgress { pct, lapsed: left < 0 }
             }
             td { class: "num muted", "{fmt_time(l.expires)}" }
         }
