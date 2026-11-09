@@ -154,8 +154,13 @@ in {
     serviceConfig = {
       Type = "notify";
       NotifyAccess = "main";
-      # The daemon pets this every tick (5 s). 45 s gives nine missed ticks —
-      # a busy box, a long `iw scan` — before systemd's own recovery fires.
+      # The daemon pets this between the *steps* of a tick, not once per tick:
+      # one tick probes every candidate serially with `ping -c 3 -W 2` before it
+      # falls back to an HTTP verdict, so a tick with two dead paths legitimately
+      # takes ~45 s (measured 2026-11-09: 35-50 s on this box, and the daemon was
+      # killed and restarted every ~90 s while doing exactly its job). 45 s is
+      # therefore the budget for **one step** — a wedge inside a probe, a spec, a
+      # `networkctl reconfigure` — and `util::run` bounds every child anyway.
       WatchdogSec = "45s";
       RestartSec = "2s";
       TimeoutStartSec = "120s";
@@ -171,6 +176,15 @@ in {
       NoNewPrivileges = true;
       RuntimeDirectory = "wan-manager";
       RuntimeDirectoryMode = "0755";
+      # A restart must not take the page's last answer with it. systemd removes
+      # `RuntimeDirectory` when the unit stops, so every watchdog restart or
+      # crash wiped `/run/wan-manager/status.json` and `/api/wan` answered 503
+      # for the ~40 s the first tick takes to rewrite it — which is what the
+      # Uplink tab read as "WAN supervisor status unavailable" on 2026-11-09
+      # while the daemon was running perfectly. `restart` keeps it across a
+      # restart and still clears it on a deliberate stop, which is the honest
+      # boundary: a status file left by a daemon nobody is running is not news.
+      RuntimeDirectoryPreserve = "restart";
       # systemd's `ProtectSystem=strict` makes /run read-only except for the
       # directories a unit explicitly asks to write. The status file lives in
       # RuntimeDirectory; the networkd drop-ins need this one line, or `publish`

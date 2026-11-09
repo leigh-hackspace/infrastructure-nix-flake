@@ -64,6 +64,90 @@ identical links in the same building differed by 22× because of the radio cell.
   last `<state> <egress> <tunnel>` line; `/run/wan-manager/status.json` is the page's
   source and `metrics.prom` is appended to the existing Prometheus scrape.
 
+## Four faults met on 2026-11-09, and what each one actually was
+
+All four were found by reading the box after a switch, and none of them is visible from
+`just check`: they are interactions between a running tunnel, a restarted `networkd`, this
+daemon's own liveness contract and one string parser.
+
+**1. A `nixos-rebuild switch` flushed the AAISP tunnel's IPv4 address, and nothing said
+so.** `switch-to-configuration` restarts `systemd-networkd`, and a restarted networkd
+*configures* every link it matches. `ppp0` matches `10-tunnel.network`, so the address
+pppd had negotiated (`81.187.223.123/32` by IPCP) and the routes `ip-up-aaisp` had
+installed were removed — `tailscaled` logs it as one line (`ips ppp0:
+[81.187.223.123/32 fe80::…]->[fe80::…]`). The L2TP session stayed up and authenticated, so
+nothing redialled: no LCP failure, no `xl2tpd` restart, no event. The observable state was
+a healthy `ppp0`, an empty table 100, no IPv6 default on the box at all, and this daemon
+correctly reporting the tunnel as `no internet through this path` while the network fell
+through to a USB Ethernet backup.
+
+The fix is `KeepConfiguration = true` on `10-tunnel.network` (`machines/gw/networking.nix`):
+networkd must not reconfigure a link whose IP owner is pppd. `KeepConfiguration` deliberately
+comes *before* `linkConfig.Unmanaged = true` as the choice, because the file's
+`routingPolicyRules` (mark 1 → table 100) are the declarative half of VLAN 225's policy
+routing and an unmanaged link would not have them applied. PD has never worked on this box
+and the per-VLAN public `/64`s are static in `common/vlans.nix`, so declining to re-request
+the prefix on a relaunch loses nothing.
+
+Two consequences worth keeping:
+
+- **The regression test is a `systemctl restart systemd-networkd` on a box whose tunnel is
+  up.** Afterwards `ip -4 addr show ppp0` must still show the public address, table 100 must
+  still have its default and `ip -6 route show default` must still say `dev ppp0`. If a
+  future systemd stops honouring the setting, that is the measurement to re-take.
+- **A tunnel that is up with no address needs a redial, and nothing does that
+  automatically.** The address is not recoverable from software once flushed — `pppd` has
+  already finished IPCP. `systemctl restart xl2tpd-aaisp` redials and the address and the
+  IPv6 default come back in seconds. (That is also why the emergency script restarts the
+  session rather than editing routes.)
+
+The daemon now reports this state as what it is — `no IPv4 address (the link is up but
+IPCP has given it none)` — rather than probing for 20 s and concluding `no internet`:
+`Probe::error` and `Candidate::reason` both carry it, and the Uplink tab prints it in the
+candidate's verdict column.
+
+**2. The watchdog was firing on a slow tick, not a wedged one.** `WatchdogSec=45s` with a
+pet only at the end of a tick, while one tick probes every candidate serially — a dead path
+costs three 2 s echoes twice and then a 10 s HTTP verdict, so two dead paths (the broken
+tunnel and the USB dongle's own uplink) put a normal tick at 35-50 s. The daemon was killed
+and restarted about every 90 s while doing exactly its job; the coredump even shows a
+`curl` mid-probe, which reads as a hang and is not one. It now pets **between the steps of a
+tick** (per candidate, per throughput sample, per wireless adapter, after the USB
+refresh), so 45 s is the budget for one step and a wedge inside one is still caught.
+`util::run` also gained `--kill-after=5s`: `timeout` alone sends one TERM and then waits,
+so a child that ignores it held the daemon rather than being reported as bounded.
+
+**3. `status.json` did not survive a restart, so the Uplink tab read "unavailable".**
+systemd removes a unit's `RuntimeDirectory` when it stops, so every watchdog restart wiped
+`/run/wan-manager/status.json` and `/api/wan` answered 503 for the ~40 s the first tick
+takes to rewrite it. `RuntimeDirectoryPreserve = "restart"` keeps it across a restart and
+still clears it on a deliberate stop. The page also stops replacing a good last tick with
+the error: no data still means "unavailable"/"waiting", data plus an error means the last
+tick plus a banner (`crates/network-status/frontend/src/wan.rs`).
+
+**4. The daemon could not parse a point-to-point address, so the tunnel has always looked
+addressless.** `net::ipv4_addresses` read `inet A.B.C.D/NN` and nothing else, but `ip -4 -o
+addr show dev ppp0` prints `inet 81.187.223.123 peer 81.187.81.187/32` — the local half has
+no prefix, so `split_once('/')` found nothing and ppp0's address list came back empty while
+the tunnel was up and carrying the network. It only cost the dashboard's address column
+until the "no IPv4 address" check above was added, at which point it made a healthy tunnel
+unselectable *and* the daemon deleted table 100 after three failed ticks, dropping VLAN
+225's IPv4 onto a backup (measured within minutes of the first deploy: `curl -4
+v4.ident.me` from `services1` answered with the hotspot's address, not AAISP's). The parser
+now takes the local field and the peer's mask, is a pure function, and has a unit test for
+both shapes (`net::parse_ipv4_addrs`).
+
+Re-verify all four in one pass, on the box, with the tunnel up:
+
+```bash
+ip -4 -o addr show dev ppp0          # inet 81.187… peer …/32  (and the daemon sees it)
+ip -4 route show table 100           # default dev ppp0
+ip -6 route show default             # default dev ppp0
+sudo systemctl restart systemd-networkd && ip -4 addr show dev ppp0   # survives
+curl -s http://10.3.1.1:8091/api/wan | jq -c '.tunnel.interface, [.candidates[]|{i:.interface,reason}]'
+ssh services1 'curl -4 -s https://v4.ident.me'   # must be 81.187.223.123
+```
+
 ## The phone's greyed-out checkbox (measured 2026-11-09)
 
 The Android USB-tethering checkbox is greyed out because the phone never gets a data

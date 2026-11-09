@@ -206,6 +206,25 @@ in {
         # prefix; `PrefixDelegationHint` is the old box's `/48` and is what makes
         # AAISP's server delegate the whole block rather than a single /64.
         #
+        # **`KeepConfiguration` is load-bearing, and its absence cost the network
+        # its IPv4 and its IPv6 on 2026-11-09.**  `switch-to-configuration`
+        # restarts systemd-networkd, and a restarted networkd configures every
+        # link it matches — which flushed ppp0's negotiated `81.187.223.123/32`
+        # and the routes the ip-up script had installed.  The L2TP session stayed
+        # up and authenticated with no IPv4 address, so `wan-manager` read the
+        # tunnel as "no internet through this path", VLAN 225 fell through to a
+        # backup, and the whole network had no IPv6 default; `pppd` had no reason
+        # to redial, so nothing healed it.  `KeepConfiguration = true` tells
+        # networkd to leave an already-configured link alone, which is the truth
+        # about this one: pppd is its IP owner.  Nothing is lost if networkd then
+        # also declines to re-request PD on a relaunch — the per-VLAN public /64s
+        # are static in `common/vlans.nix` because PD has never been seen to work
+        # on this box, so they are the source of truth rather than the bonus.  If
+        # a future systemd ignores the setting, the unambiguous form is
+        # `linkConfig.Unmanaged = true`, and the cost of that is the policy rule
+        # below, which would then be written only by `wan-manager`'s
+        # `ensure_policy_rules`.
+        #
         # The unit is present whether or not ppp0 exists yet: networkd writes a
         # .network file for a device that is not there and does nothing with it,
         # which is the least surprising way to have "the tunnel has not dialled"
@@ -215,6 +234,8 @@ in {
           networkConfig = {
             DHCP = "ipv6";
             IPv6AcceptRA = false;
+            # See above: pppd owns this interface's addresses.
+            KeepConfiguration = true;
           };
           dhcpV6Config = {
             UseDNS = false;

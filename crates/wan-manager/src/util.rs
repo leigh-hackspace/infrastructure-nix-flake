@@ -15,9 +15,16 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// daemon that hangs doing a probe is indistinguishable from one that has nothing
 /// to do. `timeout` is in the daemon's PATH by construction (coreutils is the
 /// first package in the unit's `path`).
+///
+/// `--kill-after` is not decoration: `timeout` alone sends one TERM and then
+/// **waits for the child to exit**, so a child that ignores it (or whose signal
+/// handling is stuck behind a blocking syscall) holds this daemon forever. That
+/// is a hang in `probe`, not a slow probe — the distinction the watchdog is
+/// there to catch — and this is what stops it from being one.
 pub fn run(prog: &str, args: &[String], timeout_secs: u64) -> Option<(i32, String, String)> {
     let mut cmd = Command::new("timeout");
     cmd.arg("--signal=TERM")
+        .arg("--kill-after=5s")
         .arg(format!("{timeout_secs}s"))
         .arg(prog)
         .args(args)

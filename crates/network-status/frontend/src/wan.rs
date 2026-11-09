@@ -32,14 +32,23 @@ pub fn WanPanel(store: Store) -> Element {
     let err_ref = store.wan_err.read();
     let err = &*err_ref;
 
-    if let Some(e) = err {
+    // A missing status file is the page's first ~40 s (the first tick scans every
+    // radio and probes every path) and, on 2026-11-09, every watchdog restart of
+    // the supervisor — so the *absence* of a status file is not the absence of a
+    // network. With no data there is nothing to show but the reason; with data,
+    // the last tick stays on the page and the error becomes a banner above it,
+    // because "the router's last known uplink" is still the best answer to "what
+    // is the router doing" while the supervisor restarts.
+    let Some(w) = wan.as_ref() else {
         return rsx! {
-            div { class: "panel-error", "WAN supervisor status unavailable — {e}" }
+            if err.is_some() {
+                div { class: "panel-error", "WAN supervisor status unavailable — {err.as_ref().unwrap()}" }
+            }
+            if err.is_none() {
+                div { class: "empty", "waiting for the WAN supervisor's first tick…" }
+            }
             div { class: "empty", "The interface charts keep their last sample; this tab reads /run/wan-manager/status.json." }
         };
-    }
-    let Some(w) = wan.as_ref() else {
-        return rsx! { div { class: "empty", "waiting for the WAN supervisor's first tick…" } };
     };
 
     let selected = w.selected.as_ref();
@@ -69,6 +78,10 @@ pub fn WanPanel(store: Store) -> Element {
 
         if let Some(e) = &w.last_error {
             div { class: "panel-error", "last tick error: {e}" }
+        }
+
+        if let Some(e) = err {
+            div { class: "panel-error", "the supervisor's status file is unreadable right now, so this is the last tick it wrote — {e}" }
         }
 
         h2 { "Candidates, ranked" }

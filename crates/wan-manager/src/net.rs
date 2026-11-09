@@ -175,20 +175,54 @@ pub fn ipv4_addresses(name: &str) -> Vec<(Ipv4Addr, u8)> {
         name.to_string(),
     ];
     if let Some(out_text) = run_ok("ip", &args, 3) {
-        for line in out_text.lines() {
-            let mut it = line.split_whitespace();
-            // `2: eth0    inet 10.0.0.2/24 brd ... scope global eth0`
-            while let Some(tok) = it.next() {
-                if tok == "inet" {
-                    if let Some(cidr) = it.next() {
-                        if let Some((a, m)) = cidr.split_once('/') {
-                            if let (Ok(ip), Ok(mask)) = (a.parse(), m.parse()) {
-                                out.push((ip, mask));
-                            }
-                        }
-                    }
-                }
+        out = parse_ipv4_addrs(&out_text);
+    }
+    out
+}
+
+/// Parse `ip -4 -o addr show` output into (address, prefix length) pairs.
+///
+/// Two shapes, and reading only the first is a bug that hid for as long as this
+/// crate has existed (measured 2026-11-09):
+///
+///   `2: eth0    inet 10.0.0.2/24 brd 10.0.0.255 scope global eth0`
+///   `29: ppp0   inet 81.187.223.123 peer 81.187.81.187/32 scope global ppp0`
+///
+/// The second is a point-to-point link: the local half carries **no** prefix, so
+/// a `split_once('/')` on it found nothing and `ppp0` was reported as having no
+/// IPv4 address at all — including while the AAISP tunnel was up and carrying
+/// the network. It cost only the dashboard's address column until 2026-11-09,
+/// when the daemon started using "addressless tunnel" as a reason to stop
+/// probing, which would have left a working tunnel unselected. The local address
+/// is the first field; the peer's mask is the link's mask.
+///
+/// It is a pure function so it can be tested against the exact strings: `ip` is
+/// not installed in a test sandbox and the two shapes differ by one token.
+pub fn parse_ipv4_addrs(out_text: &str) -> Vec<(Ipv4Addr, u8)> {
+    let mut out = Vec::new();
+    for line in out_text.lines() {
+        let toks: Vec<&str> = line.split_whitespace().collect();
+        let Some(i) = toks.iter().position(|t| *t == "inet") else {
+            continue;
+        };
+        let Some(local) = toks.get(i + 1) else {
+            continue;
+        };
+        let (addr, mask): (&str, String) = match local.split_once('/') {
+            Some((a, m)) => (a, m.to_string()),
+            None => {
+                let m = toks
+                    .iter()
+                    .position(|t| *t == "peer")
+                    .and_then(|p| toks.get(p + 1))
+                    .and_then(|cidr| cidr.split_once('/'))
+                    .map(|(_, m)| m.to_string())
+                    .unwrap_or_else(|| "32".to_string());
+                (*local, m)
             }
+        };
+        if let (Ok(ip), Ok(mask)) = (addr.parse(), mask.parse()) {
+            out.push((ip, mask));
         }
     }
     out
@@ -378,4 +412,41 @@ pub fn discover(cfg: &Config) -> Vec<IfaceInfo> {
         });
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The two shapes `ip -4 -o addr show` emits, captured from this box on
+    /// 2026-11-09. The point-to-point one is why `ppp0` looked addressless for
+    /// the life of the crate; the peer's `/32` is the link's mask, and the local
+    /// address is what the daemon must see.
+    #[test]
+    fn parses_connected_and_point_to_point_addresses() {
+        let eth = "23: enp0s29u1u2u1    inet 192.168.1.101/24 metric 2000 brd 192.168.1.255 scope global dynamic enp0s29u1u2u1\\       valid_lft 86348sec preferred_lft 86348sec";
+        assert_eq!(
+            parse_ipv4_addrs(eth),
+            vec![(std::net::Ipv4Addr::new(192, 168, 1, 101), 24)]
+        );
+
+        let ppp = "29: ppp0    inet 81.187.223.123 peer 81.187.81.187/32 scope global ppp0\\       valid_lft forever preferred_lft forever";
+        assert_eq!(
+            parse_ipv4_addrs(ppp),
+            vec![(std::net::Ipv4Addr::new(81, 187, 223, 123), 32)]
+        );
+
+        // A /30 point-to-point link keeps the shared mask rather than assuming
+        // /32, because `ip` prints the peer's prefix for exactly that reason.
+        let p2p30 = "7: tun0    inet 10.9.0.1 peer 10.9.0.2/30 scope global tun0";
+        assert_eq!(
+            parse_ipv4_addrs(p2p30),
+            vec![(std::net::Ipv4Addr::new(10, 9, 0, 1), 30)]
+        );
+
+        // An interface with no IPv4 address at all yields nothing, which is the
+        // answer the tunnel branch of `probe_all` acts on.
+        assert!(parse_ipv4_addrs("29: ppp0    inet6 fe80::1/64 scope link").is_empty());
+        assert!(parse_ipv4_addrs("").is_empty());
+    }
 }
