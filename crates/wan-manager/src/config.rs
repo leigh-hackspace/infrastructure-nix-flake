@@ -69,9 +69,14 @@ pub struct Config {
     /// path, which is why nothing about a relay appears in the defaults.
     pub relay_candidates: Vec<String>,
 
-    /// A small HTTP endpoint used to measure throughput. The old runbook's own
-    /// lesson is attached: `https://1.1.1.1` redirects and times out on a slow
-    /// link, so this defaults to `one.one.one.one`.
+    /// A **large** HTTP object used to measure throughput. Two lessons are
+    /// attached. `https://1.1.1.1` redirects and times out on a slow link, so
+    /// this defaults to Cloudflare's speed endpoint; and a *small* page cannot
+    /// measure a link at all — the old default (`https://one.one.one.one/`, a
+    /// 56 KB homepage) spent 90 % of the measured time waiting for the server's
+    /// first byte and under-reported `gw`'s path by 8.7x. One megabyte is enough
+    /// that the transfer phase dominates even at 5 MB/s (~0.2 s) and still fits
+    /// inside `--max-time` on a path that manages a tenth of that.
     pub probe_url: String,
 
     pub interval: Duration,
@@ -144,7 +149,7 @@ impl Default for Config {
                 "192.168.2.0/24".into(),
                 "100.64.0.0/10".into(),
             ],
-            probe_url: "https://one.one.one.one/".into(),
+            probe_url: "https://speed.cloudflare.com/__down?bytes=1000000".into(),
             interval: Duration::from_secs(5),
             throughput_interval: Duration::from_secs(60),
             wifi_scan_interval: Duration::from_secs(300),
@@ -375,7 +380,7 @@ Options:
   --l2tp-metric N            5
   --ping-target ADDR         internet anchor (repeatable)
   --nat-source CIDR          a source block to masquerade (repeatable)
-  --probe-url URL            small HTTP endpoint for throughput ranking
+  --probe-url URL            large HTTP object for throughput ranking (1 MB)
   --interval SECS            5
   --throughput-interval SECS 60
   --wifi-scan-interval SECS  300

@@ -83,15 +83,14 @@ pub fn internet_latency(iface: &str, targets: &[String]) -> Option<f64> {
     targets.iter().find_map(|t| ping(iface, t))
 }
 
-/// A small HTTP GET through one interface. `curl --interface` is the only
-/// portable way (with no netlink crate) to say "this request must leave by this
-/// device"; `%{speed_download}` is bytes/sec as curl measured it.
-pub fn throughput(iface: &str, url: &str) -> Option<f64> {
+/// One transfer-phase sample: bytes delivered divided by the time spent
+/// delivering them, i.e. total time minus time-to-first-byte.
+fn throughput_once(iface: &str, url: &str) -> Option<f64> {
     let args = vec![
         "--interface".to_string(),
         iface.to_string(),
         "--max-time".to_string(),
-        "15".to_string(),
+        "5".to_string(),
         "--connect-timeout".to_string(),
         "5".to_string(),
         "--silent".to_string(),
@@ -99,14 +98,51 @@ pub fn throughput(iface: &str, url: &str) -> Option<f64> {
         "--output".to_string(),
         "/dev/null".to_string(),
         "--write-out".to_string(),
-        "%{speed_download}".to_string(),
+        "%{size_download} %{time_total} %{time_starttransfer}".to_string(),
         url.to_string(),
     ];
-    let (code, out, _) = run("curl", &args, 20)?;
-    if code != 0 {
+    // 28 is `--max-time`: the write-out is still emitted, and a partial transfer
+    // measured over the time it actually took is a valid (low-bound) rate.
+    let (code, out, _) = run("curl", &args, 10)?;
+    if code != 0 && code != 28 {
         return None;
     }
-    out.trim().parse::<f64>().ok().filter(|v| *v > 0.0)
+    let mut it = out.split_whitespace();
+    let size: f64 = it.next()?.parse().ok()?;
+    let total: f64 = it.next()?.parse().ok()?;
+    let ttfb: f64 = it.next()?.parse().ok()?;
+    // Pure divide-by-zero guard, and nothing more. A *meaningful* floor is how
+    // this went wrong once already: with a 56 KB page and a 20 ms floor every
+    // measurement on a fast path clamped to `56614 / 0.02`, i.e. the constant
+    // 2 830 700 B/s for every path at once — a number that looked plausible and
+    // measured nothing. That is why the probe URL is now a megabyte.
+    let transfer = (total - ttfb).max(0.001);
+    (size > 0.0).then_some(size / transfer)
+}
+
+/// A small HTTP GET through one interface, as **bytes per second**, measured over
+/// the transfer phase only. `curl --interface` is the only portable way (with no
+/// netlink crate) to say "this request must leave by this device".
+///
+/// `%{speed_download}` is deliberately *not* used. It is bytes over the whole
+/// request, so on a small page it measures the server answering, not the link:
+/// measured on `gw` 2026-11-11, a 56 KB page with 96-145 ms time-to-first-byte
+/// reported 476 418 B/s while a 10 MB transfer over the same interface did
+/// 4 141 702 B/s — 8.7x wrong, and it moved with the server's latency.
+///
+/// Subtracting the time-to-first-byte removes that bias, but the payload then
+/// has to be big enough for the transfer phase to be measurable at all, which is
+/// why `--probe-url` is a megabyte and not a homepage. Two samples, max: sharing
+/// or congestion can only make a sample slower, so the larger one is the better
+/// estimate of what the path can do.
+pub fn throughput(iface: &str, url: &str) -> Option<f64> {
+    let a = throughput_once(iface, url);
+    let b = throughput_once(iface, url);
+    match (a, b) {
+        (Some(x), Some(y)) => Some(x.max(y)),
+        (Some(x), None) | (None, Some(x)) => Some(x),
+        (None, None) => None,
+    }
 }
 
 pub fn internet_http(iface: &str, url: &str) -> bool {

@@ -80,12 +80,20 @@
       "1.1.1.1"
       "--ping-target"
       "8.8.8.8"
+      # A **megabyte**, not a homepage: a 56 KB page cannot measure a link, it
+      # measures the server answering (measured on gw 2026-11-11: 476 KB/s
+      # reported against 4.14 MB/s of real capacity). One megabyte keeps the
+      # transfer phase dominant even on a fast path.
       "--probe-url"
-      "https://one.one.one.one/"
+      "https://speed.cloudflare.com/__down?bytes=1000000"
       "--interval"
       "5"
+      # Ten minutes, not seconds. Every sample is real metered traffic on a
+      # cellular path, and each measurement is two 1 MB fetches per eligible
+      # candidate. Ten minutes still refreshes inside the 600 s failback dwell,
+      # and a throughput sample is kept across ticks rather than re-taken.
       "--throughput-interval"
-      "60"
+      "600"
       "--wifi-scan-interval"
       "300"
       "--kick-ticks"

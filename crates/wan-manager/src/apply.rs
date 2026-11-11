@@ -107,24 +107,42 @@ pub fn ensure_policy_rules(cfg: &Config) -> Vec<String> {
     out
 }
 
-/// Remove only the routes this daemon installs. The devices' own DHCP defaults
-/// (higher metrics, `proto dhcp`) and pppd's table-100 route are somebody else's
-/// inputs and must survive a clear.
-fn clear_ours(cfg: &Config, candidates: &[Candidate]) -> Vec<String> {
+/// Remove only the routes this daemon installs — and never the ones it is about
+/// to put straight back for the current selection.
+///
+/// `keep` is the selected device. `apply_routes` re-installs that device's main
+/// default, table-200 default and L2TP `/32` with `ip route replace`, which is
+/// atomic in the kernel: the route is never absent, so no packet is dropped.
+/// Deleting them first is *not* atomic, and that is exactly what this used to
+/// do. Measured on `gw` 2026-11-11: the unconditional delete left the main and
+/// table-200 defaults gone for ~50 ms on every 5 s tick — a ~1 % packet-loss
+/// injector on every forwarded IPv4 packet in the building. That is what "lost
+/// TCP connections" looked like, on a box that was otherwise healthy (0.02 %
+/// retransmits in a spot sample, a silent 36 Mbit/s download, both USB paths
+/// with zero errors). So the selected path is skipped here and left to
+/// `replace`; only routes belonging to a path we are *not* using get deleted.
+///
+/// The devices' own DHCP defaults (higher metrics, `proto dhcp`) and pppd's
+/// table-100 route are somebody else's inputs and must survive a clear.
+fn clear_ours(cfg: &Config, candidates: &[Candidate], keep: Option<&str>) -> Vec<String> {
     let mut out = Vec::new();
     let metric = cfg.fallback_metric.to_string();
     let l2tp_metric = cfg.l2tp_metric.to_string();
     let table = cfg.hub_table.to_string();
     for c in candidates {
-        if c.info.kind == Kind::Tunnel {
+        if c.info.kind == Kind::Tunnel || keep == Some(c.info.name.as_str()) {
             continue;
         }
         let dev = c.info.name.clone();
-        let _ = ip(&["-4", "route", "del", "default", "dev", &dev, "metric", &metric]);
-        let _ = ip(&[
+        if ip(&["-4", "route", "del", "default", "dev", &dev, "metric", &metric]) {
+            out.push(format!("cleared stale default dev {dev} (main)"));
+        }
+        if ip(&[
             "-4", "route", "del", "default", "dev", &dev, "table", &table, "metric", &metric,
-        ]);
-        let _ = ip(&[
+        ]) {
+            out.push(format!("cleared stale default dev {dev} (table {table})"));
+        }
+        if ip(&[
             "-4",
             "route",
             "del",
@@ -133,18 +151,41 @@ fn clear_ours(cfg: &Config, candidates: &[Candidate]) -> Vec<String> {
             &dev,
             "metric",
             &l2tp_metric,
-        ]);
+        ]) {
+            out.push(format!("cleared stale L2TP route dev {dev}"));
+        }
     }
-    // Also remove an endpoint route that the candidate list no longer names.
-    let _ = ip(&[
-        "-4",
-        "route",
-        "del",
-        &format!("{}/32", cfg.l2tp_endpoint),
-        "metric",
-        &l2tp_metric,
-    ]);
-    out.push("cleared daemon routes".into());
+    // An endpoint route the candidate list no longer names — but not the one the
+    // selection already holds, for the same atomicity reason as above.
+    let held = match keep {
+        Some(dev) => run(
+            "ip",
+            &[
+                "-4".to_string(),
+                "route".to_string(),
+                "show".to_string(),
+                format!("{}/32", cfg.l2tp_endpoint),
+                "metric".to_string(),
+                l2tp_metric.clone(),
+            ],
+            5,
+        )
+        .map(|(code, stdout, _)| code == 0 && stdout.lines().filter_map(route_dev).any(|d| d == dev))
+        .unwrap_or(false),
+        None => false,
+    };
+    if !held
+        && ip(&[
+            "-4",
+            "route",
+            "del",
+            &format!("{}/32", cfg.l2tp_endpoint),
+            "metric",
+            &l2tp_metric,
+        ])
+    {
+        out.push("cleared orphaned L2TP route".into());
+    }
     out
 }
 
@@ -184,7 +225,10 @@ pub fn apply_routes(cfg: &Config, candidates: &[Candidate], sel: &Selection) -> 
     // 100 is useful, but it must not delete the main/table-200 defaults that
     // are still carrying traffic.
     if sel.best.is_some() {
-        actions.extend(clear_ours(cfg, candidates));
+        // `keep` is the path chosen this tick: `clear_ours` must not delete the
+        // routes that are about to be `replace`d in place (see its comment).
+        let keep = sel.best.map(|i| candidates[i].info.name.clone());
+        actions.extend(clear_ours(cfg, candidates, keep.as_deref()));
     } else {
         actions.push("no non-tunnel egress yet; leaving existing default routes untouched".into());
     }

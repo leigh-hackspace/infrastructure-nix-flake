@@ -148,6 +148,108 @@ curl -s http://10.3.1.1:8091/api/wan | jq -c '.tunnel.interface, [.candidates[]|
 ssh services1 'curl -4 -s https://v4.ident.me'   # must be 81.187.223.123
 ```
 
+## A fifth fault, measured 2026-11-11: the daemon's own route churn
+
+**The report was "still getting lost TCP connections", and this time the cause was the
+daemon's route writes — not the ranking.** `apply_routes` called `clear_ours()`
+unconditionally, which **deleted** the selected path's main default, table-200 default and
+L2TP `/32`, and then re-installed them with `ip route replace`. `replace` is atomic in the
+kernel; delete-then-replace is not, and they are two separate processes.
+
+Measured on `gw` (`sudo timeout 12 ip monitor route`), on a box that was otherwise healthy:
+0.02 % retransmits in a spot sample, a silent 36 Mbit/s download, both USB paths with zero
+errors, and `router-uplink` irrelevant because it had had no carrier since 10:25 that day.
+
+```text
+18:05:01.418  Deleted default via 192.168.1.1 dev enp0s29u1u2u1 metric 100
+18:05:01.422  Deleted default via 192.168.1.1 dev enp0s29u1u2u1 table 200 metric 100
+18:05:01.469  default via 192.168.1.1 dev enp0s29u1u2u1 metric 100
+18:05:01.473  default via 192.168.1.1 dev enp0s29u1u2u1 table 200 metric 100
+```
+
+**~50 ms with no route, on every 5 s tick.** The main table survived it because networkd's
+own `proto dhcp` default at metric 2000 stayed put, but **table 200 has no second route**, so
+every IPv4 packet from VLAN 226/227/222/1337 (cameras, printers, guest) that arrived in the
+window was dropped — roughly 1 % uniform loss, injected on purpose, for as long as the daemon
+had been running. VLAN 225 (the tunnel, table 100) and IPv6 (main table) were untouched,
+which is why it looked like "some connections" rather than an outage.
+
+The fix is `clear_ours(cfg, candidates, keep)`: `keep` is the selected device and is
+**skipped**, so the only writes to the live path are `replace`s and the route is never absent.
+Routes belonging to a path that is *not* selected are still cleared, and `clear_ours` now
+reports only deletions that actually happened — which also stops `repairs` printing "cleared
+daemon routes" on every tick whether or not anything was cleared.
+
+Re-verify after any change to `crates/wan-manager/src/apply.rs`:
+
+```bash
+sudo timeout 20 ip monitor route | grep -c Deleted   # must be 0
+f=0; for i in $(seq 2000); do ip route get 1.1.1.1 mark 2 >/dev/null 2>&1 || f=$((f+1)); done; echo fails=$f  # must be 0
+jq -r '.repairs[]' /run/wan-manager/status.json       # no "cleared daemon routes"
+```
+
+Measured after the fix: 9,494 `mark 2` lookups with 0 failures (was ~1 %), 0 `Deleted` route
+events in 20 s (was ~4 in 15 s), 50/50 pings through the tunnel from `services1`, and
+`networkd` was **not** restarted by the switch, so `ppp0` kept `81.187.223.123` and table 100
+kept its default.
+
+## The throughput column was measuring latency (2026-11-11)
+
+**`probe::throughput` used curl's `%{speed_download}`, which is bytes over the *whole*
+request.** The probe fetches a 56 KB page, so on a fast path almost all of the measured time
+is the server answering, and the number moved with the *server's* time-to-first-byte instead
+of the link's capacity. Measured on `gw`:
+
+```text
+56 KB from one.one.one.one:  size 56614  total 0.124 s  ttfb 0.109 s  -> 457 597 B/s  (reported)
+10 MB from speed.cloudflare: size 10 MB  total 2.414 s  ttfb 0.662 s  -> 4 141 702 B/s  (truth)
+```
+
+**8.7x wrong, and it wandered** — five consecutive samples of the old probe spanned
+368-506 KB/s purely on TTFB jitter. That also means the numbers in "Sessions were dying"
+above ("456 kbit/s and 80 kbit/s") are ~8.7x low: they were 56 KB fetches, not bandwidth.
+
+The fix has two halves, and the first one alone was not enough — which is the part worth
+keeping:
+
+1. **Measure the transfer phase**, `size_download / (time_total - time_starttransfer)`,
+   instead of `%{speed_download}`.
+2. **Use a payload big enough to have a transfer phase.** The first attempt kept the 56 KB
+   homepage and floored the transfer time at 20 ms as a divide-by-zero guard. On a fast path
+   the transfer phase is ~11 ms, so every sample clamped to exactly `56614 / 0.02` —
+   **2 830 700 B/s for every candidate at once, to the byte.** A plausible-looking constant
+   that measured nothing, and the identical number on all three rows was the tell. The floor
+   is a pure guard (1 ms) now, and `--probe-url` is
+   `https://speed.cloudflare.com/__down?bytes=1000000`: one megabyte puts the transfer phase
+   at ~0.2 s even on a 5 MB/s path, and `--max-time 5` still returns a valid partial-transfer
+   rate on a slow one.
+
+Two samples, **max**, not mean: congestion can only make a sample slower, so the larger one
+is the better estimate of capacity. Each measurement is therefore 2 MB per eligible
+candidate, which is why `--throughput-interval` is 600 s in `machines/gw/wan-backup.nix` —
+every byte of it is metered on a cellular path, and ten minutes still refreshes inside the
+600 s failback dwell.
+
+**The general lesson: a floor on a measured duration turns the measurement into
+`payload / floor`.** Any clamp meant only to avoid a division by zero has to be small
+compared with the real quantity, or it silently becomes the answer — and it does so most on
+the fastest paths, where the transfer phase is shortest.
+
+**The unit is bytes per second, and always was** — `format::fmt_rate` on the page renders
+KB/s and MB/s, so the display was right and only the magnitude was wrong. `rank::score`'s
+local was called `mbps`, which is how the wrong assumption survived; it is `mbytes` now. The
+score is only compared as a *ratio* (`score * policy.margin`), so fixing the magnitude does
+not change the failback rule, but it does make throughput dominate the additive latency term
+— which is what the doc comment always claimed it did.
+
+Re-verify (compare the page against a real transfer on the same interface):
+
+```bash
+curl --interface enp0s29u1u2u1 -s -o /dev/null \
+  -w 'real %{speed_download} B/s\n' --max-time 25 'https://speed.cloudflare.com/__down?bytes=10000000'
+jq -c '.candidates[]|{i:.interface,bps:.throughput_bps}' /run/wan-manager/status.json
+```
+
 ## The phone's greyed-out checkbox (measured 2026-11-09)
 
 The Android USB-tethering checkbox is greyed out because the phone never gets a data

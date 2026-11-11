@@ -112,13 +112,17 @@ impl Candidate {
         if !self.eligible() {
             return 0.0;
         }
-        let mbps = self.throughput_bps.unwrap_or(0.0) / 1_000_000.0;
+        // **Bytes** per second, not bits: `probe::throughput` returns curl's
+        // byte count over the transfer phase. The name here used to read `mbps`,
+        // which is how the unit survived unchecked. Dividing by 1e6 therefore
+        // yields MB/s; the thresholds below are tuned against that.
+        let mbytes = self.throughput_bps.unwrap_or(0.0) / 1_000_000.0;
         let latency = self.probe.latency_ms.unwrap_or(500.0);
-        // Throughput is the dominant term below ~10 Mbit/s (the hotspot's
-        // measured ceiling) and the latency term breaks ties among slow paths.
-        // The class bonus is small on purpose: it decides between two paths
-        // that measured the same, not between a working cable and a faster one.
-        let mut s = mbps * 100.0
+        // Throughput is the dominant term and the latency term breaks ties among
+        // paths of similar speed. The class bonus is small on purpose: it decides
+        // between two paths that measured the same, not between a working cable
+        // and a faster one.
+        let mut s = mbytes * 100.0
             + 1000.0 / (latency + 20.0)
             + self.info.kind.preference();
         // A path with a live tunnel session is proof the path carries traffic;
