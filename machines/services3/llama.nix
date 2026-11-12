@@ -54,7 +54,6 @@
 # ./README.md's open items.
 {
   pkgs,
-  lib,
   INFRA,
   flakeInputs,
   ...
@@ -63,8 +62,8 @@
 
   # Upstream llama.cpp **0.9.0** (the `llama-cpp-upstream` input) — but built with
   # nixpkgs' `llama-cpp` expression rather than llama.cpp's own flake, and with the
-  # embedded web UI switched off.  Both halves of that sentence are load-bearing, and
-  # both were chosen by failure rather than taste:
+  # embedded web UI **on, built from this same tree**.  Both halves of that sentence are
+  # load-bearing, and both were chosen by failure rather than taste:
   #
   #   * **Why not upstream's flake package:** its web UI is not optional in practice.
   #     `webui` is an attribute of the `mkDerivation` set, which makes it a
@@ -85,21 +84,39 @@
   #     choice is "carry the bug" or "build the same source elsewhere".
   #   * **Why nixpkgs' expression, and what the override actually does:** nixpkgs' `llama-cpp`
   #     at this lock is 0.6.0, which has no `lfm3` arch, so only its *build* is reused —
-  #     `src` becomes the input's tree and the version says so. `patches = []` because nixpkgs' single
-  #     `fetchpatch` is a 0.6.0-era fix for test-model generation under
-  #     `GGML_BACKEND_DL` — not wanted with dynamic dispatch off, and not applicable to
-  #     0.9.0's tree anyway. `preConfigure`/`npmDeps`/`npmConfigHook` come out because that is where
-  #     nixpkgs builds `tools/ui` (`npm run build` before configure); `LLAMA_BUILD_WEBUI`
-  #     is not set by nixpkgs at all and defaults to OFF in 0.9.0's `CMakeLists.txt:137`,
-  #     so nothing needs enabling to replace it. `cpuArchDynamicDispatch = false` because
-  #     this is one known x86-64 CPU, not a binary distribution.
+  #     `src` becomes the input's tree and the version says so. `patches = []` because nixpkgs'
+  #     single `fetchpatch` is a 0.6.0-era fix for test-model generation under
+  #     `GGML_BACKEND_DL` — not wanted with dynamic dispatch off, and not applicable to 0.9.0's
+  #     tree anyway. `cpuArchDynamicDispatch = false` because this is one known x86-64 CPU, not
+  #     a binary distribution. Everything else of nixpkgs' recipe is kept, **including the UI**:
+  #     `preConfigure` runs `npm run build` in `tools/ui` against the `node_modules` that
+  #     `npmConfigHook` links out of `npmDeps`, and cmake's `scripts/ui-assets.cmake` gzips
+  #     whatever ends up in `dist/` into a generated `ui.cpp` that the server then serves.
   #
-  # The cost of dropping the UI: `https://llama.int.leighhack.org/` serves no chat page —
-  # the API (`/health`, `/props`, `/v1/chat/completions`, `/completion`) is what the door
-  # row proxies, and aibox's `ai.*` is the network's chat UI. Re-check whether upstream's
-  # flake builds the UI cleanly (and switch back to
-  # `flakeInputs.llama-cpp-upstream.packages.${pkgs.system}.vulkan` if it does) with:
-  #   nix build --no-link 'github:ggml-org/llama.cpp#packages.x86_64-linux.vulkan'
+  # **The UI, and the 404 that hid it.** `https://llama.int.leighhack.org/` answering
+  # `{"error":{"message":"File Not Found"}}` under `Server: llama.cpp` was neither nginx nor the
+  # door row — it was a binary with an **empty embedded asset table**, and two defaults in
+  # `CMakeLists.txt` made it that way quietly: `LLAMA_BUILD_UI` is **OFF** (:137), and
+  # `LLAMA_USE_PREBUILT_UI` is **ON** (:138), whose fallback is to *download* the prebuilt UI
+  # from a Hugging Face bucket (`ui-assets.cmake`, priority 3) — impossible in a sandbox, and
+  # `ui-assets.cmake:144` then generates the empty table **without failing the build**. So the
+  # engine compiled clean, started clean, served its API clean and had no UI; the only trace
+  # was a `404` at one path nobody had asked for yet. Hence both flags below: build the assets
+  # (`LLAMA_BUILD_UI=ON`) and refuse the network fallback (`LLAMA_USE_PREBUILT_UI=OFF`), so the
+  # failure cannot be silent again — either the assets are there or the build fails.
+  #
+  # `npmDepsHash` is deliberately **not** nixpkgs', whose pin is for 0.6.0's lockfile: it is
+  # what *this* tree's `tools/ui/package-lock.json` hashes to, read off the mismatch the first
+  # attempt reported (`got: sha256-73PXSTOtXjdk97azLoaGUHam7Ua/nC2jMrHjAhLTSXM=` in the
+  # `…-llama-cpp-0.9.0-npm-deps` fetch). A `nixpkgs` bump that moves `llama-cpp` past the
+  # release that has `lfm3` should delete the whole `overrideAttrs` — see docs/follow-ups.md.
+  #
+  # Checks, in the order that tells you which of the three stories you are in:
+  #
+  #   curl -sS http://10.3.2.213:8080/ | head -c 120      # HTML = embedded UI is in the binary
+  #   llama-server --help | grep -E '^  --ui'             # runtime switch --ui/--no-ui, on by default
+  #   nix build --no-link 'github:ggml-org/llama.cpp#packages.x86_64-linux.vulkan'   # the upstream-flake bug above
+  #
   engine =
     (pkgs.llama-cpp.override {
       vulkanSupport = true;
@@ -108,10 +125,20 @@
       src = flakeInputs.llama-cpp-upstream.outPath;
       version = "0.9.0";
       patches = [];
-      npmDeps = null;
-      npmDepsHash = null;
-      preConfigure = "";
-      nativeBuildInputs = lib.filter (p: p != pkgs.npmHooks.npmConfigHook) prev.nativeBuildInputs;
+      npmDepsHash = "sha256-73PXSTOtXjdk97azLoaGUHam7Ua/nC2jMrHjAhLTSXM=";
+
+      # `npmConfigHook` points `npm_config_cache` at `$npmDeps` (fetcher v1 layout), and npm
+      # 11 still wants `_cacache/tmp` in that cache even for an offline install — i.e. it tries
+      # to `mkdir` inside a store path: `EACCES … /…-npm-deps/_cacache/tmp`, "Your cache folder
+      # contains root-owned files". The hook's own documented answer (its error prints the
+      # list) is this flag, which copies the cache into the build tree first.
+      makeCacheWritable = true;
+      cmakeFlags =
+        prev.cmakeFlags
+        ++ [
+          "-DLLAMA_BUILD_UI=ON"
+          "-DLLAMA_USE_PREBUILT_UI=OFF"
+        ];
 
       # nixpkgs runs CTest for this package, and four of 0.9.0's tests cannot pass in a
       # sandbox: `test-download-model` (wants the network), `test-conversion-fp8` and

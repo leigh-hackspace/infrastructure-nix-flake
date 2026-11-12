@@ -528,7 +528,7 @@ The contract, in the rows that matter to anyone routing to it:
 | --- | --- |
 | Listens | `10.3.2.213:8080` — **the LAN address, not loopback**, because the front door is a different box; so this is one of the few apps here whose socket is reachable from the whole LAN and the LAN ACL in `common/config.nix` is the only gate |
 | Served as | `llama.int.leighhack.org` — a row in `common/front-door.nix` with the LAN ACL, TLS at `gw`, `proxyBuffering = false` for SSE, and **no `strataBearer`**: `strata_api_key` is another engine's credential and reusing it here would widen its audience for free |
-| Paths | OpenAI-compatible: `/health`, `/props`, `/v1/models`, `/v1/chat/completions`, `/completion`. **No web UI** — the chat page is aibox's `ai.*`; llama.cpp's embedded UI is built by neither nixpkgs' recipe nor this one (./llama.nix's header is the measurement of why) |
+| Paths | OpenAI-compatible API — `/health`, `/props`, `/v1/models`, `/v1/chat/completions`, `/completion` — **and llama.cpp's own web UI at `/`** (SvelteKit: `/_app/immutable/bundle.*.js` 2.88 MB, `/_app/immutable/assets/bundle.*.css` 305 KB, manifest, icons). **The UI is stored gzipped, so a client that sends no `Accept-Encoding: gzip` gets `415 Error: gzip is not supported by this browser` at `/`** — every browser sends it, a plain `curl` does not, and a monitoring probe must (`curl -H 'Accept-Encoding: gzip' …`). aibox's `ai.*` remains the network's prettier chat UI; this one is the engine's own |
 | Model | `/home/leigh-admin/Models/LFM3-1.7B-Q4_K_M.gguf` (1,050 MiB, sha256-checked in by hand). Runtime data outside the store: no switch fetches it, an engine bump does not re-prepare it, and a missing file is a unit that restarts forever and a door that answers 502 |
 | GPU path | **Vulkan, not CUDA** — CUDA 13's nvcc has no Pascal target, so `GGML_VULKAN` + `legacy_580` + `open = false` is the only way this card is a compute device at all. `--device Vulkan0`, and index 0 is the card *because* index 1 is llvmpipe: check `vulkaninfo --summary` by name |
 
@@ -536,6 +536,8 @@ Four checks, in the order that answers something:
 
 ```bash
 systemctl is-active llama-server                      # and: journalctl -u llama-server -n 20
+curl -sS -m 8 http://10.3.2.213:8080/ | head -c 80     # "<!doctype html>" = the UI is embedded
+                                                       # (with no gzip header this answers 415, which is not a fault)
 curl -m 5 http://10.3.2.213:8080/health                # "ok" (note: not localhost — see Listens)
 sudo nvidia-smi --query-compute-apps=pid,used_memory    # llama-server holding ~1.3 GiB = on-GPU
 vulkaninfo --summary | grep -E 'deviceName|driverName'  # NVIDIA GeForce GTX 1080 Ti, not llvmpipe

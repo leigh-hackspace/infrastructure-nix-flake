@@ -190,10 +190,10 @@ Two facts about this endpoint are worth having at hand:
 
 ### How the engine is built, and why it is not the input's own package
 
-`llama-cpp-upstream` is the source; **nixpkgs' `llama-cpp` expression is the build**, with
-the embedded web UI taken out. That is a failure-driven choice, and the whole argument (the
-`EACCES: copyfile` inside `webui-0.0.0.drv`, why `useWebUi` cannot be reached through
-`.override`, and what each line of the `overrideAttrs` removes) is in the header of
+`llama-cpp-upstream` is the source; **nixpkgs' `llama-cpp` expression is the build**, and the
+embedded web UI is built **with** it. Both halves are failure-driven. The argument for the
+first (the `EACCES: copyfile` inside `webui-0.0.0.drv`, why `useWebUi` cannot be reached
+through `.override`, and what each line of the `overrideAttrs` removes) is in the header of
 ./llama.nix — the short version is that upstream's flake makes `webui` an attribute of the
 `mkDerivation` set, which makes it a *derivation input*, so asking for "no UI" does not stop
 its **808 npm tarball derivations** from being built — measured at this pin with
@@ -202,7 +202,39 @@ this sentence said "~830" off the top of an agent's head, which is the exact fai
 `docs/nix-dev-workflow.md` warns about (a doc's "measured on the box" quoting somebody's
 earlier guess). One of those 808 then fails.
 
-Two commands re-verify the claim, because it is a claim about somebody else's build:
+nixpkgs' UI build works on this tree with **two pins**, each named by an error it printed and
+each recorded in ./llama.nix: `npmDepsHash` is not nixpkgs' (that pin is for 0.6.0's
+`tools/ui` lockfile — the right value is the `got:` the first fetch of *this* tree reported),
+and `makeCacheWritable = true`, because npm 11 tries to `mkdir _cacache/tmp` inside the
+read-only `npmDeps` store path even when offline.
+
+### `https://llama.int.leighhack.org/` was a 404, and the two things that made it quiet
+
+`{"error":{"message":"File Not Found"}}` under `Server: llama.cpp` is the engine, not the door.
+The binary had **no embedded assets at all**, and the reason is a pair of defaults that conspire
+to be invisible: `LLAMA_BUILD_UI` is **OFF** (`CMakeLists.txt:137`), and
+`LLAMA_USE_PREBUILT_UI` is **ON** (:138), whose fallback is to *download* the built UI from a
+Hugging Face bucket — impossible in the sandbox, and `scripts/ui-assets.cmake:144` then
+generates an **empty** asset table **without failing the build**. So the engine compiled clean,
+started clean, served `/health` and the API clean, and had no UI at the one path nobody had
+asked for yet. Hence `-DLLAMA_USE_PREBUILT_UI=OFF` alongside `-DLLAMA_BUILD_UI=ON`: a build can
+now be missing the UI loudly, never quietly. **The general shape — a default-ON network
+fallback inside a build is a silent behaviour change the moment the sandbox denies the network —
+is worth recognising on any package, not just this one.**
+
+The second quiet thing: **the assets are stored gzipped inside the binary**, so `/` answers
+`415 Error: gzip is not supported by this browser` to any client that sends no
+`Accept-Encoding: gzip`. Every browser sends it; `curl` does not. So the check is
+`curl -H 'Accept-Encoding: gzip' http://10.3.2.213:8080/ | head -c 80` — and an HTTP monitor
+pointed at this endpoint either sends the header or probes `/health`, because a 415 on `/` is
+not a fault. (And the UI is a SvelteKit app: its assets are
+`/_app/immutable/bundle.*.js` and `/_app/immutable/assets/bundle.*.css`. A first reading of
+those as `/assets/bundle.*.css` — 404 — was a `grep -oE '/assets/…'` matching the *tail* of the
+real URL and then testing a path nothing requests: check the URL came out of the page, not out
+of your pattern.)
+
+Two commands re-verify the **build** claim above, because it is a claim about somebody else's
+build:
 
 ```bash
 nix build --no-link 'github:ggml-org/llama.cpp#packages.x86_64-linux.vulkan'   # fails in webui
@@ -216,6 +248,7 @@ nix eval --raw .#nixosConfigurations.services3.config.systemd.services.llama-ser
 | Driver | `nvidia 580.178.04` (the `legacy_580` branch ./nvidia.nix pins — the last one with Pascal), `open = false`, 11,264 MiB total |
 | Vulkan | `vulkaninfo --summary` → deviceName `NVIDIA GeForce GTX 1080 Ti`, driverName `NVIDIA`, Vulkan 1.4.312 — **device 0**, which is what `--device Vulkan0` in ./llama.nix names. Device 1 is `llvmpipe (LLVM 21.1.8, 256 bits)`: a working llvmpipe is normal here and useless for this, so read the *name*, not the count |
 | VRAM at `--ctx-size 32768`, q8_0 KV, `--n-gpu-layers all` | **1,368 MiB** (`nvidia-smi --query-compute-apps=pid,used_memory` shows llama-server holding 1,363 MiB of it). Weights are 1,050 MiB, so the KV cache is ~300 MiB — the headroom in the Open items table is real |
+| Serving | `/` → the embedded llama.cpp UI (`<!doctype html>`…), with `/_app/immutable/bundle.CSvj5_dP.js` 2,884,479 b, `/_app/immutable/assets/bundle.T5LmKmrW.css` 304,601 b, `manifest.webmanifest`, icons — **200 direct and through the door**; `--ui`/`--no-ui` is the runtime switch and defaults to enabled |
 | Decode | **105.6 tok/s** (`/completion`, `n_predict=180`, `predicted_per_second`; a 10-token prompt evaluated in 608 ms) |
 | Answering | `curl http://10.3.2.213:8080/v1/chat/completions` returns a `reasoning_content` body — the model spends the first tokens thinking, so `content` is empty at `max_tokens: 12`. That is the model, not a broken endpoint |
 

@@ -15,13 +15,15 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
 - **`services3`'s llama.cpp is nixpkgs' build recipe over the upstream flake's source, and a
   nixpkgs bump moves that recipe under it** (opened 2026-11-11, `machines/services3/llama.nix`).
   The engine is `pkgs.llama-cpp.override { vulkanSupport = true; }.overrideAttrs (… src =
-  flakeInputs.llama-cpp-upstream.outPath; version = "0.9.0"; patches = []; npmDeps = null;
-  preConfigure = ""; doCheck = false)` because upstream's own flake cannot build here — its
-  `tools/ui` web UI is a *derivation input* whatever `useWebUi` says, and `webui-0.0.0.drv`
-  fails on `EACCES: copyfile … /build/source/static/favicon-dark.svg`. Every one of those six
-  overrides is pinned to a fact about **this** nixpkgs pin (20261014, llama-cpp 0.6.0): its
-  `fetchpatch`, its `npmDepsHash` for `tools/ui`, its `nativeBuildInputs` identity comparison,
-  and its CTest list. **Blocks:** nothing today. **To do:** the moment nixpkgs' `llama-cpp` is
+  flakeInputs.llama-cpp-upstream.outPath; version = "0.9.0"; patches = []; npmDepsHash =
+  <this tree's>; makeCacheWritable = true; cmakeFlags += [ LLAMA_BUILD_UI=ON and
+  LLAMA_USE_PREBUILT_UI=OFF ]; doCheck = false)` because upstream's own flake cannot build here
+  — its `tools/ui` web UI is a *derivation input* whatever `useWebUi` says, and
+  `webui-0.0.0.drv` fails on `EACCES: copyfile … /build/source/static/favicon-dark.svg`. Every
+  one of those lines is pinned to a fact about **this** nixpkgs pin (20261014, llama-cpp 0.6.0):
+  its `fetchpatch`, its `nativeBuildInputs`, its CTest list, and above all its **`npmDepsHash`,
+  which is for 0.6.0's `tools/ui` lockfile and must be *replaced*, not deleted, whenever the
+  source moves**. **Blocks:** nothing today. **To do:** the moment nixpkgs' `llama-cpp` is
   ≥ the release that has `lfm3`, delete the source swap *and* the input and take the package
   straight — the whole reason for the pin is an arch that will arrive upstream. Re-verify
   before either half:
@@ -29,6 +31,12 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   `grep -n lfm3 $(nix-build --no-out-link '<nixpkgs>' -A llama-cpp.src)/common/src/llama-arch.cpp`.
   To see whether upstream's flake has fixed its UI build:
   `nix build --no-link 'github:ggml-org/llama.cpp#packages.x86_64-linux.vulkan'`.
+  The UI half has two failure modes of its own, both written up in
+  `machines/services3/README.md`: `LLAMA_USE_PREBUILT_UI` defaults **ON** and *downloads* the UI
+  from a Hugging Face bucket, which under a sandbox means an empty embedded asset table and a
+  `404` at `/` with a perfectly healthy-looking build (this flake pins it OFF so it cannot be
+  silent again), and npm 11 tries to `mkdir _cacache/tmp` inside the read-only `npmDeps` store
+  path unless `makeCacheWritable` is set.
 
 - **Evaluation still reads a derivation: finish the crane half of "Evaluation must not
   build"** (found 2026-10-22, on gw, by accident: `just check` began failing with
@@ -795,7 +803,9 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   7. `llama.int.leighhack.org/health` is not in `common/monitoring-endpoints.nix` yet, so
      gatus does not watch the network's only llama.cpp. It could not have been watched before
      the door row existed; it can be now, and it rides the same deferred services1 switch as
-     item 3 rather than costing that box a second restart of six apps.
+     item 3 rather than costing that box a second restart of six apps. Probe **`/health`, not
+     `/`**: llama.cpp's UI is gzipped into the binary and `/` answers `415` to a client that
+     sends no `Accept-Encoding: gzip` (`machines/services3/README.md`).
 
 ## Nightly units that are red on services1 (found 2026-11-03 while reading `is-system-running`)
 
