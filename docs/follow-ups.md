@@ -12,6 +12,24 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
 
 ## Nix / build
 
+- **A commit re-downloads `whisper-ws`'s whole npm tree on aibox, and a registry hiccup there
+  fails `just check-build` for the whole fleet** (hit 2026-11-12, on the aibox toplevel:
+  `whisper-ws-web-0.1.0-npm-deps` failed with `couldn't fetch
+  node_modules/@rolldown/binding-win32-arm64-msvc at https://registry.npmjs.org/… : [92]
+  Stream error in the HTTP/2 framing layer`, which cascaded
+  `unit-whisper-ws.service.drv → system-units → etc → nixos-system-aibox`). It was transient —
+  the immediate re-run got past it — but the reason it ran at all is the finding: `fetchNpmDeps`
+  takes `inherit src`, so **any** commit anywhere in the repo dirties that fixed-output and
+  re-streams ~all of `web/`'s tarballs through aibox, and one TCP reset in a few-minute download
+  therefore blocks the build of a machine that has nothing to do with the change. **Blocks:**
+  nothing permanently (retry works), but it makes `just check-build` flaky in a way that reads
+  like the deployed change being broken. **To do:** narrow what the fetch sees — the standard
+  shape is a filtered source for the npm half (`lib.cleanSourceWith { filter = ./web only }`,
+  or `npmRoot`/`npmLockFile` pointing at a subpath whose contents do not move on a docs commit).
+  Re-verify by touching a `.md` and asking whether the npm drv's hash moved:
+  `nix eval --raw .#nixosConfigurations.aibox.pkgs.whisper-ws.pname` before and after is not
+  enough — compare `nix derivation show -R` on the `-npm-deps` drv.
+
 - **`services3`'s llama.cpp is nixpkgs' build recipe over the upstream flake's source, and a
   nixpkgs bump moves that recipe under it** (opened 2026-11-11, `machines/services3/llama.nix`).
   The engine is `pkgs.llama-cpp.override { vulkanSupport = true; }.overrideAttrs (… src =
