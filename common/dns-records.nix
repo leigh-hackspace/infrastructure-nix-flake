@@ -353,6 +353,29 @@
     macs = ["5c:cf:7f:c6:85:ed"];
     clientIds = [];
   };
+  # services3, pinned where it already was rather than moved: unlike cam8 above it did
+  # not *arrive* on a dynamic address nobody chose, it was put on this one on purpose,
+  # and a name that is a deploy target is a worse thing to move than a camera.  So the
+  # row pins 10.3.2.213, which sits inside VLAN 226's dynamic range (10.3.2.100-.253),
+  # and that is only acceptable because dnsmasq does not hand a reserved address to
+  # another client while the reservation is live — it costs the pool one address and buys
+  # the flake a target address that never changes under it.
+  #
+  # The MAC is the **USB Wi-Fi dongle's**, because on the bench that is the interface
+  # with the cable-equivalent in it; the board's wired I219-V
+  # (`70:8b:cd:a8:50:bc`) has no carrier and is not here.  `ipv6` is empty because the
+  # box holds only temporary SLAAC addresses in `2001:8b0:1d14:226::/64` — naming one
+  # here would be the address-nobody-owns case this file's header is about.  Both change
+  # when the box is racked: `machines/services3/README.md` ("The move to VLAN 225") is
+  # the procedure, and it moves this row, `../common/hosts.nix` and
+  # `machines/services3/vlan225.nix` in one commit.
+  services3 = {
+    vlan = 226;
+    ipv4 = "10.3.2.213";
+    ipv6 = [];
+    macs = ["90:de:80:e1:4e:42"];
+    clientIds = [];
+  };
 
   # --- VLAN 227: the workshop's own block, 10.3.14.x ------------------------
   workshop = {

@@ -33,6 +33,31 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
+    # llama.cpp **upstream**, and the second llama.cpp in this flake on purpose.
+    #
+    # The reason is a tensor-architecture name rather than taste: services3 serves
+    # Liquid's LFM3, and that GGUF's own header says `general.architecture = lfm3`
+    # (read out of the file, not inferred from its filename). `lfm3` exists in
+    # upstream's arch registry (`src/llama-arch.cpp`, `src/models/lfm3.cpp`) and in
+    # neither of the trees this flake could otherwise build a Vulkan llama-server
+    # from: the fork above is llama.cpp 0.3.0 and nixpkgs' `llama-cpp-vulkan` at this
+    # lock is 0.6.0 — both know `lfm2`/`lfm2moe` and nothing else in the family, so
+    # either refuses the file with an unknown-architecture error rather than serving
+    # something wrong. Re-pinning the fork was not an option: aibox's `ai.*` endpoint
+    # is built from it, and moving aibox's inference engine to make room for a
+    # second model is the kind of coupling this flake has been deleting for a month.
+    #
+    # So: one input, one job — the upstream tree, tracked on its default branch like
+    # `strata`, and only services3 builds from it. `nix flake update
+    # llama-cpp-upstream` moves services3's engine and nothing else; `llama-cpp` stays
+    # the fork aibox depends on. Re-verify the arch is still there (and which version
+    # introduced it) with:
+    #   curl -s https://raw.githubusercontent.com/ggml-org/llama.cpp/master/src/llama-arch.cpp | grep -i lfm
+    llama-cpp-upstream = {
+      url = "github:ggml-org/llama.cpp";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+
     # The software centre the Pi Room netboot image ships in its
     # `environment.systemPackages`.  It used to be an input of that tree's own
     # flake (machines/pi-room-sys, `nixosConfigurations.pi-room-sys` below), which
@@ -117,7 +142,7 @@
     whisperWsPkg = pkgs.callPackage ./crates/whisper-ws/package.nix {};
 
     /*
-    The five machines, as one function and five short calls (§2.1 of
+    The machines, as one function and one short call each (§2.1 of
     docs/flake-simplification-audit-2026-10-22.md).
 
     Before this there were five copies of `nixpkgs.lib.nixosSystem`, nine
@@ -262,6 +287,27 @@
       services2 = mkSystem {
         pkgsConfig = {cudaSupport = true;};
         modules = commonModules ++ [./machines/services2];
+      };
+
+      # The third services box — and read `machines/services3/README.md` before
+      # assuming what that name means yet.  It came off *another* fleet
+      # (`github:cjdell/nixos-config`, where it was a Folding@Home heater called
+      # `asus-i7-6700-nixos`), was started afresh on 2026-11-11, and is currently on
+      # the bench with a USB Wi-Fi dongle as its only uplink, so it answers on VLAN 226
+      # (10.3.2.213 in `common/hosts.nix`, reserved by the dongle's MAC) instead of
+      # living with the other services boxes in 10.3.1.x.  It gets the full
+      # `commonModules` treatment — NAS client, podman, delegation to aibox, the tool
+      # set — and runs no service of its own yet, which is why it has no
+      # `nixpkgs.overlays`, no `extraArgs'` and no `pkgsConfig`.
+      #
+      # What it does *not* get, and where that is written down rather than discovered:
+      # a row in `machines/gw/ups.nix`'s `shutdownTargets`, and the wired
+      # `./vlan225.nix` its directory holds in reserve.  What it *does* get beyond the
+      # shared set is the GTX 1080 Ti driver (`./nvidia.nix`) and a llama.cpp engine on it
+      # (`./llama.nix`, upstream `llama-cpp-upstream` because the model's architecture is
+      # `lfm3` and no other llama.cpp in this flake has it).
+      services3 = mkSystem {
+        modules = commonModules ++ [./machines/services3];
       };
 
       aibox = mkSystem {

@@ -12,6 +12,24 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
 
 ## Nix / build
 
+- **`services3`'s llama.cpp is nixpkgs' build recipe over the upstream flake's source, and a
+  nixpkgs bump moves that recipe under it** (opened 2026-11-11, `machines/services3/llama.nix`).
+  The engine is `pkgs.llama-cpp.override { vulkanSupport = true; }.overrideAttrs (… src =
+  flakeInputs.llama-cpp-upstream.outPath; version = "0.9.0"; patches = []; npmDeps = null;
+  preConfigure = ""; doCheck = false)` because upstream's own flake cannot build here — its
+  `tools/ui` web UI is a *derivation input* whatever `useWebUi` says, and `webui-0.0.0.drv`
+  fails on `EACCES: copyfile … /build/source/static/favicon-dark.svg`. Every one of those six
+  overrides is pinned to a fact about **this** nixpkgs pin (20261014, llama-cpp 0.6.0): its
+  `fetchpatch`, its `npmDepsHash` for `tools/ui`, its `nativeBuildInputs` identity comparison,
+  and its CTest list. **Blocks:** nothing today. **To do:** the moment nixpkgs' `llama-cpp` is
+  ≥ the release that has `lfm3`, delete the source swap *and* the input and take the package
+  straight — the whole reason for the pin is an arch that will arrive upstream. Re-verify
+  before either half:
+  `nix-instantiate --eval -E 'with import <nixpkgs> {}; llama-cpp.version'`, and
+  `grep -n lfm3 $(nix-build --no-out-link '<nixpkgs>' -A llama-cpp.src)/common/src/llama-arch.cpp`.
+  To see whether upstream's flake has fixed its UI build:
+  `nix build --no-link 'github:ggml-org/llama.cpp#packages.x86_64-linux.vulkan'`.
+
 - **Evaluation still reads a derivation: finish the crane half of "Evaluation must not
   build"** (found 2026-10-22, on gw, by accident: `just check` began failing with
   `Cannot build '/nix/store/7ac7180r…-Cargo.lock.drv'` — `local builds are disabled
@@ -372,7 +390,16 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   secret in that option at all (some `EnvironmentFile`-shaped plumbing), or a
   `databaseUrlFile`-style change upstream), which is a bigger call than a ride-along.
   Until then: if `just check` dies on `sops-secret-*.drv`, that is this item, not your
-  change — say so, and say what you verified against a clean HEAD.
+  change — say so, and say what you verified against a clean HEAD. **Reproduced again
+  2026-11-11, on both names and both sides of that rule:** `just check` on services1 died
+  on `…-sops-secret-pg_pass.drv`, and `nix flake check --no-build` from a clean
+  `git worktree` at `5787f23` (so: at HEAD, with nothing of the author's in it) died on
+  `…-sops-secret-grafana_secret_key.drv` — which is the exact string AGENTS.md rule 9
+  records as *not* reproducing at the 2026-10-14 lock, and this flake is still pinned to
+  `26.11.20261014.319e4ce`, so the doc's sentence is a receipt about a store, not about a
+  lock. The documented unblock worked: `nix eval --raw
+  ".#nixosConfigurations.services3.config.system.build.toplevel.drvPath"` realised the
+  decrypts in seconds and the trace then reached further before dying the same way.
 
 - **Nothing runs the three Playwright suites, so a red one is only found by whoever happens to
   need it** (found 2026-11-09 while restyling network-info: `5ebe2d5` added the Uplink tab at
@@ -724,6 +751,51 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   true` gives an unauthenticated root shell in the initrd, which is a lab
   convenience on the Pi Room VLAN and still worth knowing about
   (`machines/pi-room-sys/README.md`).
+
+- **services3 owes four things, and three of them are the rack** (joined the flake
+  2026-11-11, assimilated from another fleet (`cjdell/nixos-config`, where it was
+  `asus-i7-6700-nixos`); the box's own file is `machines/services3/README.md` and this
+  is only the network's half). **Blocks:** nothing that is running.
+  1. It answers on **VLAN 226** (`10.3.2.213`, reserved by its USB Wi-Fi dongle's MAC),
+     so it is the one services box not in 10.3.1.x. Move it with
+     `machines/services3/vlan225.nix` in one commit that also changes
+     `common/dns-records.nix`, `common/hosts.nix` and the `deploy`/`known-hosts` reads,
+     and deploy gw before the box is cabled — the procedure and its order are in the
+     README, and `machines/gw/lib/check-network-tables.nix` is what refuses a half-move.
+  2. It is **not in `machines/gw/ups.nix`'s `shutdownTargets`**, and that is a fact about
+     nobody having checked what it is plugged into, not a decision to leave it out. It
+     joins the list (in the order `docs/ups-and-fleet-shutdown.md` argues for) when it is
+     racked on the same load as the others.
+  3. Its Prometheus scrape rows are written but **not yet scraping**: they live in
+     `machines/services1/services/observability.nix`, so they land on services1's next
+     switch, and a `dry-activate` of exactly that change showed it would restart six of
+     services1's apps (the crates' unit paths move with the flake source). Not a fee
+     worth charging a new box on the same evening; it rides the next services1 deploy.
+     Until then `10.3.2.213:9100/9558/9633` answer and nobody reads them.
+  4. ~~Both `services3` and `gw` are activated from an uncommitted tree.~~ **Committed
+     2026-11-11**, which is why both boxes are now `git log -1`-checkable (rule 20) and
+     `just deploy` of either reproduces what runs instead of reverting it.
+  5. **The ssh *identity* that makes a `nix copy` to a new box work is hand-written.**
+     `sudo nix copy --to ssh://…` runs as root out of `HOME=/root`, and root's ssh only has
+     an identity for hosts named in `/root/.ssh/config` — which had a stanza for aibox and
+     nobody else, so the copy to services3 died with `Too many authentication failures`
+     (after an earlier, separate `Host key verification failed` caused by a stale `.213` line
+     in `/root/.ssh/known_hosts`, which ssh reads *before* the declarative
+     `/etc/ssh/ssh_known_hosts`). Rule 25 made the *keys* data; the identity is still a file
+     on one box, edited at 23:50 by whoever is unlucky next. **Blocks:** nothing — the
+     workarounds are known (`Host` stanza, or `sudo env NIX_SSHOPTS='-i … -o
+     IdentitiesOnly=yes' nix copy …`). **To do:** decide it in `common/build-farm.nix` (the
+     delegating side writes root a config naming the builder and the copy targets, or root
+     gets the hop key declaratively), then delete the hand-written file. Re-verify: `sudo ssh
+     -o BatchMode=yes leigh-admin@<a new box> true` on a box whose `/root/.ssh/config` you
+     have not touched.
+  6. **Disk: 9.7 GiB free** with the engine and driver installed. The recipe is in
+     `machines/services3/README.md` and it destroys the rollback path to the folding@home
+     configuration, so it is a decision. Nothing is blocked until a nixpkgs bump lands.
+  7. `llama.int.leighhack.org/health` is not in `common/monitoring-endpoints.nix` yet, so
+     gatus does not watch the network's only llama.cpp. It could not have been watched before
+     the door row existed; it can be now, and it rides the same deferred services1 switch as
+     item 3 rather than costing that box a second restart of six apps.
 
 ## Nightly units that are red on services1 (found 2026-11-03 while reading `is-system-running`)
 
@@ -2116,6 +2188,70 @@ that **need an owner or a decision** rather than another measurement.
   plan in the controller UI and record it here - the AP/BSSID map and the measurement recipe are
   sections 4 and 5 of `docs/camera-wifi-cells-2026-10-31.md` - plus a decision on whether the Pi Room
   camera stays on Wi-Fi at all.
+
+- **The thingino units' RTSP credential is thingino's factory default, and frigate now depends on
+  it** (found 2026-11-11 while fixing the "Stream Offline" pair). Both `cam5` and `cam8` answer
+  RTSP `401` with `WWW-Authenticate: Digest realm="Raptor"`, user `thingino`, password = `[rtsp]
+  password` in each unit's `/etc/raptor.conf` — read off both, **identical on both, and not one we
+  set**. The `root` login on the same boxes is a different credential, so the fleet no longer has
+  one "camera password". **Blocks:** nothing; the exposure is that VLAN 226 (and anything the door
+  can be tricked into) can pull both pictures with a default credential, and the value is written
+  in `/srv/frigate/config/config.yaml`, the file fault 8 says nobody tracks. **Needs:** a real
+  credential on both units and in that config in the same change — or, better, fold it into fault
+  11 (camera RTSP credentials into a sops-rendered env file rather than a bind-mounted YAML) and
+  do all of them once. Note `[rtsp] max_clients = 2` while you are in there: go2rtc plus one direct
+  viewer fills it, so direct viewers belong behind the restream.
+  Re-verify with `ssh -i ~/.ssh/agent-hop-key root@10.3.2.10 'awk "/^\[rtsp\]/{f=1} /^\[/&&!/^\[rtsp\]/{f=0} f" /etc/raptor.conf | grep -c password'` and go2rtc's `/api/streams`.
+- **go2rtc cannot authenticate to thingino 2's RTSP server, so both feeds run on the `ffmpeg:`
+  workaround** (2026-11-11). The server's digest challenge carries **no `qop`**; frigate's go2rtc
+  1.9.14 answers its own attempt with `streams: wrong response on DESCRIBE` and resets, while
+  `curl --digest` and the container's ffmpeg 7.0 *and* 8.0 complete the same handshake against the
+  same camera. Both feeds are therefore `ffmpeg:rtsp://thingino:…@camN.int…:554/ch0`, which costs a
+  remux process per feed (`-c copy`) and buys nothing else. **Blocks:** any future attempt to
+  "simplify" those two lines back to a plain `rtsp://` source — it will look like the camera is
+  broken and be the client. **Needs:** either a go2rtc version that does `qop`-less digest (test
+  before believing: the failure is a `WRN [rtsp]` line, not a 401), or the cameras configured to
+  offer Basic too. **Also needs:** `just cam-probe` should stop presenting a `200` from
+  `curl -w '%{http_code}'` as a working feed path — measured 2026-11-11, it printed `200` for
+  `/stream0` on a build where ffmpeg got `404 Unknown stream endpoint` for that exact URL; the
+  recipe's own wording invites the wrong conclusion.
+- **`cameras/thingino-manifest.sh` is now two payloads behind the fleet** (2026-11-11; extends the
+  2026-11-04 item above, which was written when it was one behind). Both thingino units run
+  **thingino 2 (Figata)**, kernel built `2026-11-11 14:34 UTC`, and this repo still pins
+  `1286efbd3` / tag `c110-fleet-20261031` with that image's five artifact hashes — so
+  `just cam-fw-build` and `just cam-fw-verify` refuse, by design, the very firmware the cameras run,
+  and `cam-fw-fetch` would restage the wrong bytes if anyone ran it. The new build's commit and
+  hashes exist only on the bench: there is no `~/Projects/thingino-firmware` tree on services1 **or**
+  aibox (checked 2026-11-11). **Blocks:** believing the manifest, and any future `cam-rescue-card`
+  (it writes verified-but-wrong images). **Needs:** the same decision the 2026-11-04 item asks for,
+  now with two more payloads to account for — move `FW_COMMIT` + the five hashes to what the units
+  run, or record on purpose that this repo pins a release and the fleet drifts from it. Re-verify
+  with `just cam-fw-verify` against the staged tree and `uname -a` + `/etc/os-release` over the hop
+  key on 10.3.2.10.
+- **Fault 8 cost 2 h 35 min of two dead cameras on 2026-11-11.** The outage was invisible to every
+  check this repo owns: no flake file names a feed URL, the two lines that had to change live in
+  `/srv/frigate/config/config.yaml`, and `cam-probe` cannot check the go2rtc end without `CAM_FEED`
+  set by hand. Nothing detected it for the network either — gatus watches `cam5.int`/`cam9.int`
+  (HTTP), which answered `200` the whole time, so "camera up" and "camera recording nothing" were
+  indistinguishable from the monitoring side. **Blocks:** nothing; it is a repeat-cost estimate.
+  **Needs:** fault 8's fix (track that file, and the three-name table, in the flake) plus a gatus
+  row that asks frigate `/api/stats` for `camera_fps > 0` per camera rather than asking the device
+  for HTTP.
+- **`cam5`'s thingino 2 audio track emits bad timestamps, so its frigate feed is video-only as a
+  workaround** (2026-11-11, found while fixing the same outage — the feed was still dead after auth
+  and path were right). `[audio] codec = l16` / `enabled = true` in `/etc/raptor.conf`, and the PCM
+  stream's DTS is not monotonic: ffmpeg says `non monotonically increasing dts to muxer in stream 1`
+  all the way down and go2rtc's `ffmpeg:` source fails with `Invalid data found when processing
+  input`. `-an` is clean; `/ch1` is as broken as `/ch0`; **`cam8` with the byte-identical config
+  file is clean**, so it is the unit, not the payload. `pi_room` therefore has no audio in frigate
+  until this is fixed properly. **Blocks:** audio detection/recorded audio on `pi_room`, and any
+  assumption that the two thingino units are interchangeable. **Needs:** `[audio] enabled = false`
+  in cam5's `/etc/raptor.conf` — whole-file replace + md5 verify + `/etc/init.d/S31raptor restart`,
+  backed up first, the operation `cameras/README.md` rule 2 prescribes — **and** the same change in
+  that board's profile in the firmware repo, because the next payload will re-enable it; then drop
+  `#video=h264` from the `pi_room` line in `/srv/frigate/config/config.yaml` and re-enable audio in
+  frigate if the fleet wants it. Re-verify with the container's own ffmpeg: `-t 5 -c copy -f null -`
+  against `rtsp://…@cam5.int…/ch0` is silent when the track is gone.
 
 ## UPS and the power-cut path (gw) — opened 2026-10-28, `docs/ups-and-fleet-shutdown.md` owns it
 

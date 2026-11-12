@@ -201,12 +201,15 @@ in {
       # Every machine, by fixed IP (common/hosts.nix). The exporters bind 0.0.0.0,
       # so this box scrapes itself the same way it scrapes the others — there is no
       # "127.0.0.1 = this machine" special case any more, which is what keeps the
-      # instance labels comparable across the three.
+      # instance labels comparable across the four.  services3 is in the list on the
+      # same terms as the others even though it answers from VLAN 226: the router
+      # routes between the two blocks, and the scrape is by address, not by block.
       {
         job_name = "node";
         static_configs = [
           {targets = ["${HOSTS.services1}:9100"];}
           {targets = ["${HOSTS.services2}:9100"];}
+          {targets = ["${HOSTS.services3}:9100"];}
           {targets = ["${HOSTS.aibox}:9100"];}
         ];
       }
@@ -215,6 +218,7 @@ in {
         static_configs = [
           {targets = ["${HOSTS.services1}:9558"];}
           {targets = ["${HOSTS.services2}:9558"];}
+          {targets = ["${HOSTS.services3}:9558"];}
           {targets = ["${HOSTS.aibox}:9558"];}
         ];
       }
@@ -223,6 +227,7 @@ in {
         static_configs = [
           {targets = ["${HOSTS.services1}:9633"];}
           {targets = ["${HOSTS.services2}:9633"];}
+          {targets = ["${HOSTS.services3}:9633"];}
           {targets = ["${HOSTS.aibox}:9633"];}
         ];
         # SMART queries can be slow on large/degraded disks.

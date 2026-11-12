@@ -83,8 +83,8 @@ deploy machine:
     set -euo pipefail
     machine={{ quote(machine) }}
     case "$machine" in
-        services1|services2|aibox|gw) ;;
-        *) echo "unknown machine: $machine — expected services1, services2, aibox or gw" >&2; exit 2 ;;
+        services1|services2|services3|aibox|gw) ;;
+        *) echo "unknown machine: $machine — expected services1, services2, services3, aibox or gw" >&2; exit 2 ;;
     esac
     # The address is `common/hosts.nix`, not a second copy of it — one table of addresses,
     # which is also what `just known-hosts` reads for the same job.  `gw` is the hostname and
@@ -262,7 +262,7 @@ router-known-hosts:
 known-hosts:
     #!/usr/bin/env bash
     set -euo pipefail
-    addrs=$(nix eval --impure --raw --expr 'let h = import ./common/hosts.nix; in builtins.concatStringsSep " " [ h.router h.services1 h.services2 h.aibox ]')
+    addrs=$(nix eval --impure --raw --expr 'let h = import ./common/hosts.nix; in builtins.concatStringsSep " " [ h.router h.services1 h.services2 h.services3 h.aibox ]')
     ssh-keyscan -T 5 -t rsa,ed25519 ${addrs} 2>/dev/null | grep -v '^#'
 
 # --- the router's WAN: handing back from break-glass -------------------------
@@ -760,11 +760,11 @@ check-source-size:
 check-build: _build-host-guard
     #!/usr/bin/env bash
     set -euo pipefail
-    for m in services1 services2 aibox gw; do
+    for m in services1 services2 services3 aibox gw; do
         echo "=== nix build $m toplevel"
         nix build --no-link --print-out-paths ".#nixosConfigurations.$m.config.system.build.toplevel"
     done
-    echo "all four systems build"
+    echo "all five systems build"
 
 # Offload a build to aibox and refuse to fall back (common/build-farm.nix).
 # `nix.distributedBuilds` is true, so nix already prefers the external builder for

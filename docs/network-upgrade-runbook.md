@@ -15,7 +15,7 @@ touched — the router, the NAS, the Proxmox host and the appliance that is the 
 
 Read first: `AGENTS.md` (rules 4, 5, 11, 13, 20, 21), `docs/nix-dev-workflow.md`,
 `docs/follow-ups.md`, and the per-box READMEs (`machines/services1/`,
-`machines/services2/`, `machines/aibox/`).
+`machines/services2/`, `machines/services3/`, `machines/aibox/`).
 
 ---
 
@@ -28,10 +28,12 @@ Skim this; the detail below is what each step means.
 3. Put the whole network on **one commit**: push local work, then reset each box to it.
 4. Decide, per input, whether the upgrade moves it. Update `flake.lock` deliberately, commit it.
 5. `just check` (evaluate everything, activate nothing). Re-read the baseline at the new lock.
-6. `just check-build` (build all four machines' toplevels, activate nothing) — detached, polled, ~75 min for a nixpkgs bump.
+6. `just check-build` (build all five machines' toplevels, activate nothing) — detached, polled, ~75 min for a nixpkgs bump.
 7. Read the diff for **interface** changes (ports, addresses, APIs). They reorder step 10.
 8. Decide per box whether the upgrade changes the kernel. A kernel change means a reboot.
-9. Pick the order: services1 → aibox → services2, unless 7 said otherwise.
+9. Pick the order: services1 → aibox → services2, unless 7 said otherwise. `services3` has
+   no service to protect and its own deploy is the one that has to be made **on** the box
+   (Wi-Fi uplink — `machines/services3/README.md`), so it goes last among the machines.
 10. Land one box: `switch` **and** `nixos-confirm` in one shell invocation — chained with `&&`, so a failed switch is never confirmed.
 11. Verify that box before starting the next one. Never two boxes mid-switch at once.
 12. Repeat 10–11 for the next box.
@@ -51,6 +53,7 @@ statement about *that day*; re-probe it, do not inherit it.
 | --- | --- | --- | --- | --- |
 | services1 | 10.3.1.20 | `leigh-admin` + hop key | full `switch`. An **origin** now: nginx on plain HTTP :80 behind `ROUTER_ONLY`, with the app-shaped vhosts; postgres serves five DBs | a reboot that takes postgres or an origin app down without knowing who is up; putting a certificate or the gate back on this box |
 | services2 | 10.3.1.21 | `leigh-admin` + hop key | full `switch`. The RTX 3060 / Strata **Coder** engine, its own status dashboard, a 16 GiB swap file | being switched while its 30 GiB is the engine's; being mistaken for the builder or monitor it no longer is |
+| services3 | 10.3.2.213 | `leigh-admin` + hop key | full `switch`, run **on** the box. On the bench, Wi-Fi-only, running `llama-server` (llama.cpp/Vulkan on a GTX 1080 Ti, LFM3-1.7B, `llama.int.leighhack.org`) — a restart loses in-flight generations and nothing else. A `nixpkgs` bump here also re-resolves the `llama-cpp-upstream`-built engine: `nix flake update llama-cpp-upstream` moves it independently of aibox's `llama-cpp` fork. | switching it from another box's `--target-host`, or touching `networking.nix` in a way that stops NetworkManager owning the Wi-Fi dongle — there is no cable, no console and the reservation is the **dongle's** MAC (`machines/services3/README.md`) |
 | aibox | 10.3.1.32 | `leigh-admin` + hop key | full `switch`. Hosts immich, frigate, whisper, the netboot server, a status dashboard — and, since 2026-10-17, the **builder** | deploying from its **dirty** tree (see Phase 0) |
 | gw (the router) | 10.3.1.1 is the **flake's own box** (cut over from the OPNsense appliance on 2026-10-21; the appliance is retired) | `leigh-admin` + hop key, root not keyed — like every other machine here | `just deploy gw` (or `just switch` on the box): it evaluates itself, builds on aibox, activates and confirms on itself (`nix.settings.max-jobs = 0`, so nothing compiles here). It answers DNS, hands out leases, and is the network's **front door**: nginx, the one certificate, `nginx-sso`, `anubis`, `headscale`/`headplane` | anything that takes the router down, including a failed switch (rollback here is a reboot); a build on the box itself (`_build-host-guard`) |
 | NAS | 10.3.1.6 | `leigh-admin` + hop key (root is **not** keyed) | nothing declarative. It must stay online: services1 and aibox NFS-mount it, borg runs on it | editing `/etc/sudoers` (middleware regenerates it); blaming a mount failure on the flake |
@@ -291,7 +294,7 @@ network's date.
 
 ## Phase 3 — build everything, activate nothing
 
-`just check-build` builds all four machines' system toplevels and activates
+`just check-build` builds all five machines' system toplevels and activates
 nothing. It is the gate that catches "evaluates but will not build", which
 `nix flake check` does not. The fourth is `gw`, the replacement router: it builds
 here because it is deployed, and it is *not* in the deploy order below — it runs in
@@ -302,7 +305,7 @@ may be switched over.
 just check          # nix flake check + the assertion evals + alejandra --check; on gw the
                     # flake step is skipped out loud (rule 22), so `just check-eval` is the
                     # router's gate and a green `just check` here covers less than there
-just check-build    # all four machines, nothing activated
+just check-build    # all five machines, nothing activated
 ```
 
 **`just check-build` used to be `nixos-rebuild dry-build`, and it never built
@@ -398,7 +401,7 @@ eval, and they answer questions that otherwise get asked at 20:00 during an
 activation):
 
 ```bash
-for m in services1 services2 aibox; do
+for m in services1 services2 services3 aibox; do
   echo -n "$m new-kernel: "
   nix eval --raw ".#nixosConfigurations.$m.config.boot.kernelPackages.kernel.version"
 done; uname -r
@@ -649,7 +652,7 @@ run "finished but not upgraded":
   of it fails and `switch-to-configuration` exits **4** — on 2026-10-15 that was
   the only thing that failed aibox's switch, and it failed *after* `/run/current-system`
   had been flipped and after nginx/sshd/immich/strata had restarted. **What that cost from
-  2026-10-22 on is a reboot, not just a nonzero exit**: all four deployable boxes now carry
+  2026-10-22 on is a reboot, not just a nonzero exit**: every deployable box now carries
   `system.autoRollback.enable = true`, so an activation that makes the new generation current
   and then exits 4 arms the five-minute countdown, and the box **reboots itself back into the
   previous generation**. Measured on aibox 2026-11-04: 16:13:30 the busy unmount, the new

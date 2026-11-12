@@ -108,7 +108,7 @@ Two things bite, and both are load-bearing:
   prints equal paths when the box is safe.
 
 Then, when anything is built rather than just evaluated, `just check-build` (`nix
-build` of all four deployable machines' system toplevels — compiles everything,
+build` of all five deployable machines' system toplevels — compiles everything,
 activates nothing, writes no boot entry; it is *not* `nixos-rebuild dry-build`, which
 builds nothing). Budget ~75 min for a nixpkgs bump.
 

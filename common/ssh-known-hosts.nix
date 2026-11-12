@@ -51,6 +51,21 @@ in {
     hostNames = [HOSTS.services2];
     publicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICw1DA6most5SuQgeSajkpQXpWIhcKGIYdN00PWpK0xl";
   };
+  # services3, scanned 2026-11-11 with `just known-hosts` and cross-checked against
+  # `/etc/ssh/ssh_host_*.pub` on the box itself (`sudo cat`, hashes agree), because a
+  # pinned key copied from a scan alone is exactly the thing this file exists to avoid.
+  # Their comment field still reads `root@hp-z240-xeon-1240v6-nixos` — the name the
+  # box had when these keys were generated in Aug 2025, three renames ago.  A comment is
+  # not an identity; the bytes are the identity, and they are unchanged by the box being
+  # renamed to services3, which is why the hop works before and after the first switch.
+  "services3-rsa" = {
+    hostNames = [HOSTS.services3];
+    publicKey = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQC0BfNrOnoOrrrWSrWcsRhzmUMd2B620VeB9wxppvPBjZr8c64oKMOVo0PQsf5fagO6WCmoDVPamkUPSdJkLye2sZ3Bj8lQYK63Srr/tL6uGam6gBRD5VV1tV0KDfrimesJQ4zuf4fAyJXc5CYzpaq3LfRsCnOMwKqzLn6J0QWqa3/RyJ4BJTfz+R9Zlk8CZ3s/bd+ZnCy544m3FYSfVU3jZ3Ver+k3CQG6y8aaDqmlcH59MgjY52YylXeDcVI+jF0dOZeWCzqCsWa3eRNtHZhrQETi3qpwG2KAky4aauuYOuJJF/6AByn5LPcJExPaSGz2wHe0GN7G0gQFMd1FNTkRZL2zvTuYeCM2TXoygd927SSUHA9+aV1Jq+5cGZW+vUj9t9tldMNMJTFN0TGthUP72m9YmtWcoMi1BBqgaW/MlgwhAIHjyu0VszHuWmO50rMPJeCe4hFFnR4ICYmbGPc3wNfCFt8GbUY1Lc4+FiNmM39jJXn4U5fWWrsnAqNG+ZAsMyrPjaqU0+RcGHRjTRypzQjTYHxWFvHN8QJG21GitxoeUOQL+t1CIDcnbW0G24bLrkrFeF1c66MlxKVNwNwYQH0+2V1WdXpvXSIepU00xGuEMpureYsgCY4YUUKRxIDpRwJwbQx3o19dLruESph3tBgA1lzVZ9kZgYbsYsTo5w==";
+  };
+  "services3-ed25519" = {
+    hostNames = [HOSTS.services3];
+    publicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICEUwlnQnO5m1rTpxH/VKCXL9VoaROvBRY4eQvwHyACO";
+  };
   "aibox-rsa" = {
     hostNames = [HOSTS.aibox];
     publicKey = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQCam5Ma/6m7t/ZBwOLOnFUdbMguNYbt6KZnDHTC7q5hsb5wbyH1rXznOd6LiN+8xUM/9zK/+TVpD1gW0w2YoekmlH+3qQ8hM4dG3GInsr57kMeWK6yhGLtv6Y/b5O2yXoQI14BwD6CCVt6cciPPdzRyL9AonowkDOY0IllRFe62+lY7VXdlM7+tqWzlSrpFg6Byb8MsTXSCgeXfl249aCFjkYXyr3rD9CEvy6l+q0rmo19CYUMYxXasZ+4gttBFcQzaV/kzB3uzGDapPHmkvpcm9UzDirSJWeWq4Y+1YdrcsmKJ6M7u81MktpzD4XhiWzXmi/LD5gGRTDqC7+HaIG6krJDT1lrCOFhbB5N/dSYwrWx0z8CoOmNa23nqHZQBL8OgMeY/lPjrr7rKf2UtZ9jyj/YxwL4tIndHyGkJGAfUp/MfVyTExWwtLysujla5uKcMRtcQLPegVv98dAmAn87td2ifAodkZels9AJ1ZGIRySC0vItUkmyzJ+lFrNlm8F2uXu/+9JWn/hrvTs/DSWs1BvlNHQNgXB5HRa4PM4PQPMu7fVxaLUSWBbzSqSSV1kgLkt5cuNK0rlOor1oMTyQoN/pM/DYCG0QRIR8j1of770DWs9AgOrJFnF5imAhw1fjSaB9YXeVumNXGEpnSbEseaq7SkbCcoIGjp3AXEX9Bdw==";

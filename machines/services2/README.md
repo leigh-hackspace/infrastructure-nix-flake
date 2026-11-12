@@ -161,7 +161,7 @@ sudo nixos-rebuild switch --flake .#services2 && sudo nixos-confirm
 This flake evaluates here with no local checkouts of its own: every input is a
 network-wide source, and the two programs it builds live in the tree
 (`crates/whisper-ws/`, `machines/pi-room-sys/`). `nix flake check` / `just check`
-evaluate all five configurations, so they work from this box too — that is the
+evaluate all six configurations, so they work from this box too — that is the
 change the 2026-10-15 move bought.  It no longer makes this box the network's
 builder (that is aibox since 2026-10-17), but it does mean a check or a build run
 here is meaningful rather than a partial answer.

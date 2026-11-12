@@ -2,7 +2,7 @@
 # NAS client: the NFS mounts, their automount units, and the `wait-for-nas`
 # gate that NAS-dependent services order themselves against.
 #
-# Imported for the three boxes that mount the NAS (services1, services2, aibox) in
+# Imported for the boxes that mount the NAS (services1, services2, services3, aibox) in
 # flake.nix — never for gw, which is the thing the NAS's DNS depends on.  A machine
 # declares its shares in `machines/<name>/hardware-configuration.nix`:
 #

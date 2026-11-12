@@ -13,6 +13,18 @@ today — **`cam5` (10.3.2.10)** and **`cam8` (10.3.2.112 dynamically that day; 
 evaluation is superseded at its headline and stands as history at its receipts; re-read the
 four re-check commands there before repeating the old sentence to anyone.
 
+**Superseded in part on 2026-11-11 — read this before using anything in the endpoints table.**
+Both units took a **thingino 2 (Figata)** payload that day, and the two RTSP facts recorded here
+moved: the endpoints are now `endpoint_main = ch0` / `endpoint_sub = ch1` (**`/stream0` answers
+`404 Unknown stream endpoint`, `/ch0` answers**), and RTSP is **Digest-gated** (`realm "Raptor"`,
+user `thingino`) where it was open. So this document's "a first attempt had set it to `/ch0`,
+which is also a 404" and "no auth by default" are true of the 2026-10-31 payload and false of the
+fleet today. What the frigate end now looks like, including why both feeds are `ffmpeg:`-sourced
+(go2rtc 1.9.14 cannot complete this server's `qop`-less digest handshake, ffmpeg and curl can), is
+measured in **`cameras/README.md`, §"thingino 2 (Figata), pushed to both units 2026-11-11"**. This
+document is left as written otherwise: the changeover procedure, the data-partition rule and the
+overlay-shadowing diagnosis all still hold.
+
 Everything below was measured today on cam5 and cam8 hardware. **The firmware-side narrative —
 hashes, the flashing procedure, the rescue design, every payload pushed since — is kept in that
 repository** (`docs/cameras/tapo-c110.md` and its outcome log, plus

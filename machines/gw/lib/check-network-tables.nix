@@ -370,7 +370,12 @@ in
   # and this is what says the router's reservations cover it.  The router's own
   # address is the exception, and it is answered by VLAN 225's `ipv4` rather
   # than by a reservation (the router has no lease of its own — see
-  # common/dns-records.nix's header).
+  # common/dns-records.nix's header).  It says nothing about *which* VLAN a
+  # machine lives on, and since 2026-11-11 that is worth saying out loud:
+  # `services3` is on the bench and answers on VLAN 226, so a green run here is
+  # not evidence that a flake machine is wired or in the services block —
+  # machines/services3/README.md owns that, and the assertion above is only the
+  # "the address is reserved" half of it.
   assert (
     need
     (
@@ -380,9 +385,9 @@ in
           builtins.any (r: r.ipv4 == a) recordValues
           || builtins.any (v: v.ipv4 == a) VLANS
       )
-      [HOSTS.services1 HOSTS.services2 HOSTS.aibox HOSTS.nas HOSTS.router]
+      [HOSTS.services1 HOSTS.services2 HOSTS.services3 HOSTS.aibox HOSTS.nas HOSTS.router]
     )
-    ''an address common/hosts.nix promises that no reservation answers: ${builtins.toJSON [HOSTS.services1 HOSTS.services2 HOSTS.aibox HOSTS.nas HOSTS.router]}''
+    ''an address common/hosts.nix promises that no reservation answers: ${builtins.toJSON [HOSTS.services1 HOSTS.services2 HOSTS.services3 HOSTS.aibox HOSTS.nas HOSTS.router]}''
   );
   # The generated lines, exercised through the same functions ./dns.nix and
   # ./firewall.nix use rather than a copy of them: the VLAN tag in a dhcp-range

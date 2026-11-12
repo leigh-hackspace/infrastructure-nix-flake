@@ -245,6 +245,28 @@ in {
         request carrying a base64 picture or a long transcript is not a 1 MiB body.'';
     };
 
+    # services3's llama.cpp (Vulkan, GTX 1080 Ti) serving LFM3-1.7B —
+    # `machines/services3/llama.nix`.  Direct row, LAN-only by the default `acl`, and
+    # deliberately carrying **no** `strataBearer`: that field injects `strata_api_key`,
+    # one secret shared by the two Strata engines precisely because the door injects one
+    # header, and pointing a third, unrelated engine at the same credential to save
+    # adding a field is how secrets quietly acquire an audience.  The gate on this name
+    # is the LAN ACL, which is also what the engine itself sees (services3 binds its own
+    # address and has no firewall — the decision is in `machines/services3/networking.nix`).
+    # If this ever gets a public name, it takes `sso = true` with `acl = "none"` the way
+    # `strata.leighhack.org` does, and a key of its own at the same time.
+    "llama.int.leighhack.org" = {
+      upstream = "http://${hosts.services3}:8080";
+      bodySize = "64M";
+      timeouts = "3600s";
+      proxyBuffering = false;
+      note = ''
+        the timeouts and `proxyBuffering = false` are the whole reason the row is not one
+        line: llama.cpp's web UI and /v1/chat/completions stream by SSE, and a buffered or
+        60-second proxy turns a working engine into a silent one; 64M because a
+        base64 image in a chat body is the largest thing this endpoint is for.'';
+    };
+
     # The 10.3.1.30 VM (5).
     "access-api.int.leighhack.org" = {
       upstream = "http://10.3.1.30:8083";

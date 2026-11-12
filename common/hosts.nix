@@ -8,6 +8,15 @@
 {
   services1 = "10.3.1.20";
   services2 = "10.3.1.21";
+  # Not with the others, and read that before trusting the name: services3 is on the
+  # bench, and its only uplink is a USB Wi-Fi dongle, so this is the dongle's lease on
+  # VLAN 226 (the wireless block) rather than a wired address in 10.3.1.x.  It is the
+  # same fact as every other row here — a fixed address, reserved by MAC in
+  # ./dns-records.nix — reached by a different physical path, which is why the deploy
+  # and the scrape targets work unchanged and why `machines/services3/networking.nix`
+  # keeps NetworkManager.  Racking it moves this line (procedure:
+  # `machines/services3/README.md`, "The move to VLAN 225").
+  services3 = "10.3.2.213";
   aibox = "10.3.1.32";
   router = "10.3.1.1";
   nas = "10.3.1.6";

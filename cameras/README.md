@@ -3,10 +3,13 @@
 `cam5` `cam7` `cam9` (10.3.2.10 / 10.3.2.12 / 10.3.2.17) are **Buildroot/OpenIPC
 surveillance cameras**, and `cam1` (10.3.2.6) is a device on the same VLAN that
 is **not** OpenIPC.  **Update 2026-10-31: `cam5` and `cam8` (10.3.2.11 since that evening —
-it had been on a dynamic 10.3.2.112, and the router now reserves it by MAC) now run thingino** on a SigmaStar port built on the operator's bench — new endpoints
-(`rtsp://…:554/streamN`, unauthenticated by default), and the changeover rule that the data
-partition **must** be wiped, all in
-**[`../docs/camera-thingino-migration-2026-10-31.md`](../docs/camera-thingino-migration-2026-10-31.md)**;
+it had been on a dynamic 10.3.2.112, and the router now reserves it by MAC) now run thingino** on a SigmaStar port built on the operator's bench; the changeover rule that the data
+partition **must** be wiped, and that payload's endpoints (`:554/streamN`, open by default), are
+in **[`../docs/camera-thingino-migration-2026-10-31.md`](../docs/camera-thingino-migration-2026-10-31.md)**.
+**Those two endpoint/auth facts were superseded on 2026-11-11**, when both units took a
+**thingino 2 (Figata)** payload: the endpoints are now `/ch0` (main) and `/ch1` (sub), RTSP is
+**Digest-gated**, and both frigate feeds had to be re-pointed — measured in
+**thingino 2 (Figata), pushed to both units 2026-11-11** below;
 `cam7`/`cam9` remain OpenIPC and everything below that names a firmware describes them
 unless restated there.  None of them runs NixOS, none has systemd, none is a module
 in the flake: their entire state is files under `/etc` sitting on a **jffs2 volume on the
@@ -65,10 +68,10 @@ identity, not by guesswork (verified below).  VLAN 226's `dhcp-mode` is `gateway
 
 | device | address (reserved by MAC) | VLAN | MAC (device == DNS row) | firmware / majestic | board (self-reported) | signature line | frigate camera | feed (go2rtc) |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `cam5` | 10.3.2.10 | 226 | `3c:52:a1:48:fa:b2` ✓ | **thingino since 2026-10-31** (was 2.4.08.22 / `master+9371591`; raptor `rvd`/`rsd`, sensor autodetected **sc3336**) | `INFINITY6B0 SSC009A-S01A QFN88` | — (thingino MOTD prints u-boot `ssc333-infinity6b0+1286efb`) | `pi_room` | **thingino path `rtsp://cam5.int.leighhack.org:554/stream0`** — frigate's `/stream=0` URL 404s until services1's config is updated |
+| `cam5` | 10.3.2.10 | 226 | `3c:52:a1:48:fa:b2` ✓ | **thingino since 2026-10-31** (was 2.4.08.22 / `master+9371591`; raptor `rvd`/`rsd`, sensor autodetected **sc3336**) | `INFINITY6B0 SSC009A-S01A QFN88` | — (thingino MOTD prints u-boot `ssc333-infinity6b0+1286efb`) | `pi_room` | **`ffmpeg:rtsp://thingino:<rtsp pw>@cam5.int.leighhack.org:554/ch0`** (since 2026-11-11; `/stream0` 404s on thingino 2, and the `ffmpeg:` prefix is load-bearing — go2rtc's own RTSP client cannot pass this server's qop-less Digest) |
 | `cam7` | 10.3.2.12 | 226 | `3c:52:a1:49:24:0a` ✓ | **2.3.11.22** / build 2023.02.7 (no sysinfo at all) | `INFINITY6B0 SSC009A-S01A QFN88` | `ssc333 (infinity6b0 family), sc3338, …, 2.3.11.22-lite, cam7, …` | `cnc` | `rtsp://cam7.int.leighhack.org:554/stream=0` |
 | `cam9` | 10.3.2.17 | 226 | `3c:52:a1:49:1b:f7` ✓ | 2.4.08.22 / build 2024.02.1 / `master+9371591, 2024-08-21` | (sysinfo present, **no board line**) | `ssc337 (infinity6b0 family), sc3338, …, openipc-ssc337, …` | `social_space` | `rtsp://cam9.int.leighhack.org:554/stream=0` |
-| `cam8` | 10.3.2.11 — **pinned by MAC 2026-10-31** (was a dynamic 10.3.2.112) | 226 | `3c:52:a1:49:01:05` | **thingino since 2026-10-31** (was OpenIPC `nightly-20261010-a40b399`); in production, bench-built u-boot `I61286efbd` with SD-rescue bootcmd | C110 v1, `INFINITY6B0 SSC009A-S01A QFN88` | — | `cam8` | **`rtsp://cam8.int.leighhack.org:554/stream0`** — in frigate since 2026-10-31 (5/5 fps, `quality=fair`); ssh is **not** keyed since the changeover, run `just cam-key cam8` |
+| `cam8` | 10.3.2.11 — **pinned by MAC 2026-10-31** (was a dynamic 10.3.2.112) | 226 | `3c:52:a1:49:01:05` | **thingino since 2026-10-31** (was OpenIPC `nightly-20261010-a40b399`); in production, bench-built u-boot `I61286efbd` with SD-rescue bootcmd | C110 v1, `INFINITY6B0 SSC009A-S01A QFN88` | — | `cam8` | **`ffmpeg:rtsp://thingino:<rtsp pw>@cam8.int.leighhack.org:554/ch0`** — in frigate since 2026-10-31 (5/5 fps, `quality=excellent`); **keyed from services1 2026-11-11** (`cam-keytest` → `keyed`) after the payload moved |
 | `cam1` | 10.3.2.6 | 226 | `10:a4:be:03:0d:36` | **not OpenIPC, and not Ingenic either** — Xiongmai-family application firmware, by its own banners (2026-10-25) | SoC still unknown; `:23` **open** (telnet), `:80` open (302 → `/index.asp`, `/login.cgi` → `401`), `:85 :8080 :8000 :10554 :37777` closed | RTSP `Server: TAS-Tech Streaming Server V100R001`, HTTP `Server: Ginatex-HTTPServer`; `DESCRIBE /0/av0` and `/1/1` → **`200` with no credentials** (fault 13) | `rack_corridor` | `rtsp://cam1.int.leighhack.org:554` with `ffmpeg:` transcode (its go2rtc line asks `:554/0/av0`, the Novastorm path — commented out, see faults) |
 
 All four rows above are also rows in `common/dns-records.nix`; the router
@@ -94,6 +97,73 @@ not OpenIPC devices we have looked at, and they are out of scope here; the fact
 recorded is that **the feed names and the device names are different tables**
 and both are needed to answer "is this camera's picture alive?".
 
+## thingino 2 (Figata), pushed to both units 2026-11-11 — what this repo had to change
+
+Both thingino units (`cam5` 10.3.2.10, `cam8` 10.3.2.11) now run **Thingino 2 (Figata)**
+(`/etc/os-release`), kernel `4.9.84 #2 PREEMPT Wed Nov 11 14:34:09 UTC 2026`, `/etc/raptor.conf`
+dated `17:26`.  The payload itself is the firmware repository's story (rule 30) and came off the
+bench — there is no `thingino-firmware` tree on services1 **or** on aibox.  What follows is only
+what this network measured, and the two feeds were **Stream Offline for 2 h 35 min** (16:59–19:35)
+while it was diagnosed, because the first symptom is a `404` from go2rtc, which is a long way from
+the cause:
+
+* **RTSP is gated now.** Every path answers `401` with `WWW-Authenticate: Digest realm="Raptor"`.
+  The user is `thingino`; the password is `[rtsp] password` in `/etc/raptor.conf`, identical on
+  both units, and **it is thingino's factory default, not a fleet credential** — it is now written
+  into `/srv/frigate/config/config.yaml` next to the other cameras' (which is fault 11, exactly).
+  The `root` login on the same two boxes is a **different** credential, so "the camera password" is
+  no longer a single answer; a 401 on RTSP does not refute a web-login password and vice versa.
+* **The endpoints moved again.** `[rtsp] endpoint_main = ch0`, `endpoint_sub = ch1`; `/ch0` and
+  `/ch1` answer and `/stream0` — the path recorded here and in
+  `../docs/camera-thingino-migration-2026-10-31.md` — now answers `404 Unknown stream endpoint`.
+  That migration doc's "a first attempt had set it to `/ch0`, which is also a 404" was true of the
+  Oct-31 payload and is false of this one.  **`cam-probe` lied in one respect:** `curl -w '%{http_code}'`
+  reported `200` for `/stream0` on the new build while ffmpeg's `DESCRIBE` got the `404` — its `401
+  = up and gated` heuristic is sound, but a `200` from it is **not** evidence a path works.
+* **go2rtc cannot authenticate to this server.** The challenge carries **no `qop`**, and frigate's
+  go2rtc 1.9.14 answers its own digest attempt with `streams: wrong response on DESCRIBE` and a
+  reset connection, while `curl --digest` and the container's ffmpeg 7.0/8.0 both complete the same
+  handshake.  So both feeds are now `ffmpeg:rtsp://thingino:<rtsp pw>@…:554/ch0` — go2rtc's `ffmpeg:`
+  source, i.e. the bundled ffmpeg does the auth and the remux (`-c copy`, no transcode), which is
+  the same workaround `rack_corridor` already uses for `cam1`'s odd server.  Confirmed back to
+  `camera_fps≈5, quality=excellent` on both.
+* `max_clients = 2` on the RTSP server: go2rtc plus one direct viewer fills it.  Every consumer
+  should stay behind go2rtc's restream.
+* `just cam-fw-build` / `cam-fw-verify` still pin `1286efbd3` / `c110-fleet-20261031` and that
+  payload's five artifact hashes, so they now describe a firmware **no camera here runs** — the
+  drift item in `../docs/follow-ups.md` is two payloads deep, and re-pinning needs the new commit
+  and hashes read off the bench tree.
+
+* **`cam5`'s audio track is broken at the source, and that, not the picture, is what made
+  `pi_room` fail a second time after the auth fix.** go2rtc's `ffmpeg:` source opens *all* media,
+  and cam5's PCM (`[audio] codec = l16`, `enabled = true`) carries **non-monotonically-increasing
+  DTS**: ffmpeg logs `Application provided invalid, non monotonically increasing dts to muxer in
+  stream 1: …` continuously and go2rtc gives up with `streams: exec/rtsp … Invalid data found when
+  processing input`, so the feed crash-looped even with the right credential and the right path.
+  Measured 2026-11-11: `ffmpeg -an` on cam5 `/ch0` is clean, with audio it is not, `/ch1` is
+  **equally broken** (so the substream is not a workaround), and **`cam8`, whose `/etc/raptor.conf`
+  is byte-identical (`md5 968c5a589a171cc188f24e855782887e` on both), is clean** — this is
+  per-unit, not a config difference. Note the firmware's own comment above that `enabled`:
+  *"Not brought up on this board… nothing here has confirmed what the KD110 v2 has fitted"*, i.e.
+  audio is enabled on a half-brought-up path. **Shipped workaround:** the `pi_room` source carries
+  `#video=h264`, so frigate's `pi_room` feed is **video-only** — no audio detection, silent
+  recordings. **Proper fix (not done, device write):** `[audio] enabled = false` in cam5's
+  `/etc/raptor.conf` (and in that board's profile upstream), which repairs every consumer at once
+  and is what the hardware says it wants.
+
+* **The new profile is `1920x1080 @ 20 fps, bitrate = 2000000, rc_mode = cbr` on `[stream0]`**
+  (`[stream1]` is `640x360 @ 5`), and the wire measure through the fix is **~447 KB/s ≈ 3.7 Mbit/s**
+  for `pi_room`.  The OpenIPC-era figure in fault 14 was 1280x720 @ 5 fps, so **the thingino 2 main
+  stream is roughly twice the load on the same radio**, and `cam5` is still joined to
+  `bssid 78:8a:20:f1:db:24, freq 2437` — AP2 in the Pi Room, channel 6, the congested cell fault 14
+  measured at 61 KB/s.  `cam8` has the identical config file and streams `excellent` because it sits
+  alone on AP1's channel 11.  So the auth/path/audio faults are closed and `pi_room` still reports
+  `fair` with stalls: **that residue is fault 14, now with a bigger stream in it.**  Options, in
+  ascending order of nerve: point `pi_room` at `/ch1` (640x360 @ 5, fits the cell, detection gets
+  coarser), lower `[stream0] bitrate` on `cam5` (a device write, and `docs/camera-wifi-cells-2026-10-31.md`
+  §7 is the read-first doc), or the cell itself — and per that doc §8, **never** by re-associating
+  the camera over ssh.
+
 ## How to reach one
 
 ```
@@ -117,7 +187,10 @@ not the fleet hop key) - so re-keying belongs on the migration checklist.  cam5 
 step before any recipe works: the operator account's `known_hosts` still carries the **pre-reflash
 OpenIPC host key**, so every recipe dies there until `ssh-keygen -R 10.3.2.10` is run and the new
 key accepted.  A reflashed dropbear really is a new host, and accepting its key is a TOFU
-decision: notched in `../docs/follow-ups.md` rather than done quietly by an agent.  They were unkeyed when this directory was written,
+decision: notched in `../docs/follow-ups.md` rather than done quietly by an agent.  **That step
+was taken by the operator on 2026-11-11** — the stale `.10`/`.11` entries were removed and both
+thingino units are keyed from services1 again (`just cam-keytest cam5`; the new fingerprints are
+recorded in *thingino 2 (Figata)* above, so a later change of host key is still detectable).  They were unkeyed when this directory was written,
 and the claim that keying needed an operator at a terminal because *"the password is not
 named anywhere in this repo"* was **also wrong**: the cameras' admin password is the RTSP
 password, and the RTSP passwords are written into services1's frigate config

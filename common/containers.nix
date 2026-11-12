@@ -1,7 +1,7 @@
 # MODULE — NixOS module; in a machine's module list or a directory's imports, never read as data.
 # Podman and the "never give up" policy for every oci-containers unit.
 #
-# Imported for the three boxes that run containers (services1, services2, aibox) in
+# Imported for the boxes that run containers (services1, services2, services3, aibox) in
 # flake.nix — deliberately not for gw, which runs dnsmasq instead.  The per-machine
 # copies of this file were byte-identical apart from services1's container-update
 # timer, which now lives in machines/services1/containers.nix.

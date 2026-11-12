@@ -103,6 +103,7 @@
     "ha"
     "id"
     "jenkins"
+    "llama"
     "login"
     "mcp"
     "monster"

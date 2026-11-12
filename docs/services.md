@@ -13,6 +13,9 @@ index, not the final word.
 Machines: `services1` (10.3.1.20, the services box and an **origin** — it holds no
 TLS certificate and no public name), `services2` (10.3.1.21, strata — the
 observability stack that used to live there moved to services1 on 2026-10-17),
+`services3` (10.3.2.213 — llama.cpp/LFM3 on a GTX 1080 Ti; **on the bench, Wi-Fi, and the
+one services box answering on VLAN 226**, which is why its front-door row is the first
+whose upstream is off the wired block: `machines/services3/README.md`),
 `aibox` (10.3.1.32, the network's build machine since 2026-10-17), and `gw`
 (10.3.1.1, the router and **front door**: TLS, the certificate, `nginx-sso`,
 `anubis`, `headscale`/`headplane` and every vhost).
@@ -34,6 +37,7 @@ Every address is in `common/hosts.nix`.
 | moonraker-exporter | `crates/moonraker-exporter/` | metrics | `docs/printer-servers.md` |
 | MQTT broker (mosquitto) | `machines/services1/services/mqtt.nix` | services1:1883 (no HTTP, no 8883) | `docs/mqtt-int-legacy-answer-2026-11-02.md` |
 | strata | `machines/*/strata.nix` | services2:8080 → `strata.int.leighhack.org` (LAN, key injected) and `strata.leighhack.org` (public, API key); aibox:8080 → `strata2.int.leighhack.org` (LAN, key injected) | `machines/aibox/STRATA.md`, `machines/services2/STRATA.md` |
+| llama.cpp (LFM3) | `machines/services3/llama.nix` + `nvidia.nix` | services3:8080 → `llama.int.leighhack.org` (LAN only, **no** key injected) | `machines/services3/README.md` |
 | ups-watchdog | `crates/ups-watchdog/` | no port: it is a oneshot, and it calls out (ssh `wall`, ssh `poweroff`) | `docs/ups-and-fleet-shutdown.md`, `machines/gw/ups.nix` |
 
 ---
@@ -510,6 +514,38 @@ header upstream, so a vhost added without the name in
 `strata2.int.leighhack.org` — answers 403 to every request.  That protection is
 switched off by the API key, which is why the public name is *not* in the list:
 remove the key and the public vhost 403s instead of serving an open engine.
+
+## `machines/services3/llama.nix` + `nvidia.nix` — llama.cpp (Vulkan) serving LFM3
+
+The network's second inference box, and its only one whose engine is llama.cpp rather than
+Strata: `llama-server` from the `llama-cpp-upstream` input (0.9.0 — the GGUF declares
+`general.architecture = lfm3`, which the 0.3.0 fork this flake already carries and nixpkgs'
+0.6.0 both lack) on a **GTX 1080 Ti**, on **services3** (10.3.2.213).
+
+The contract, in the rows that matter to anyone routing to it:
+
+| | |
+| --- | --- |
+| Listens | `10.3.2.213:8080` — **the LAN address, not loopback**, because the front door is a different box; so this is one of the few apps here whose socket is reachable from the whole LAN and the LAN ACL in `common/config.nix` is the only gate |
+| Served as | `llama.int.leighhack.org` — a row in `common/front-door.nix` with the LAN ACL, TLS at `gw`, `proxyBuffering = false` for SSE, and **no `strataBearer`**: `strata_api_key` is another engine's credential and reusing it here would widen its audience for free |
+| Paths | OpenAI-compatible: `/health`, `/props`, `/v1/models`, `/v1/chat/completions`, `/completion`. **No web UI** — the chat page is aibox's `ai.*`; llama.cpp's embedded UI is built by neither nixpkgs' recipe nor this one (./llama.nix's header is the measurement of why) |
+| Model | `/home/leigh-admin/Models/LFM3-1.7B-Q4_K_M.gguf` (1,050 MiB, sha256-checked in by hand). Runtime data outside the store: no switch fetches it, an engine bump does not re-prepare it, and a missing file is a unit that restarts forever and a door that answers 502 |
+| GPU path | **Vulkan, not CUDA** — CUDA 13's nvcc has no Pascal target, so `GGML_VULKAN` + `legacy_580` + `open = false` is the only way this card is a compute device at all. `--device Vulkan0`, and index 0 is the card *because* index 1 is llvmpipe: check `vulkaninfo --summary` by name |
+
+Four checks, in the order that answers something:
+
+```bash
+systemctl is-active llama-server                      # and: journalctl -u llama-server -n 20
+curl -m 5 http://10.3.2.213:8080/health                # "ok" (note: not localhost — see Listens)
+sudo nvidia-smi --query-compute-apps=pid,used_memory    # llama-server holding ~1.3 GiB = on-GPU
+vulkaninfo --summary | grep -E 'deviceName|driverName'  # NVIDIA GeForce GTX 1080 Ti, not llvmpipe
+```
+
+The box's own half — the measured numbers (105.6 tok/s, 1,368 MiB at 32K ctx), why a driver
+change needs a **reboot** and what llama.cpp does to `nouveau` in the interval, how the engine
+is built out of nixpkgs' expression instead of the input's flake, and the Wi-Fi/disk/bootstrap
+state of the machine — is `machines/services3/README.md`. The front-door mechanics are
+`docs/router-front-door-migration.md`; the row's ACL semantics are rule 14.
 
 ## `crates/status-dashboard/` and `crates/moonraker-exporter/`
 

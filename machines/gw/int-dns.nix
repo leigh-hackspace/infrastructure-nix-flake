@@ -11,7 +11,7 @@
 # is the one `just check` can run on the router), and this file checks the *config*
 # and runs wherever this machine is evaluated — every `just deploy gw`,
 # `nixos-rebuild dry-run` and `just check-build`, plus `nix flake check`, which
-# evaluates all five configurations.  Neither replaces the other, and the argument
+# evaluates all six configurations.  Neither replaces the other, and the argument
 # for the pair is the same one that file makes: this is the check that **cannot be
 # fixed by deploying**, because the file that would be wrong —
 # `/etc/dnsmasq-int-vhosts.hosts` — is generated from the same table this compares
