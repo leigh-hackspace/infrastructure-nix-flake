@@ -187,16 +187,29 @@
   ctxSize = 262144;
 
   # Which Vulkan device the model lands on.  `--list-devices` on the box is the only
-  # honest source for this string, and it is not a constant: the box has an HD Graphics
-  # 530 iGPU as well as the 1080 Ti, and which one is `Vulkan0` is decided by the order
-  # the Vulkan ICDs load, not by the PCI slot.  Re-measure after any driver or nixpkgs
-  # change with:
+  # honest source for this string, and it is not a constant.  Measured 2026-11-12, it is
+  # exactly one device — `Vulkan0: NVIDIA GeForce GTX 1080 Ti (11510 MiB, 8135 MiB free)`
+  # — so nothing is currently competing for index 0.  What *would* compete: a second card
+  # (DMI says `PCIEX16_2`/`PCIEX16_3` free — see ./README.md, which also answers the
+  # recurring "where is the 1060?": it was **aibox's**, pulled 2026-09-02, and is not in
+  # this box at all), and Mesa's `llvmpipe`, which `vulkaninfo` does enumerate as a second
+  # device even though llama.cpp's own list filters it out.  Order is decided by ICD load
+  # order, not by PCI slot.  **The first version of this comment claimed the iGPU was a
+  # second Vulkan device and it was wrong** — inherited from the pre-onboarding notes
+  # without measuring; `lspci -nn | grep -ciE 'intel.*(vga|display|3d)'` is **0**, the HD
+  # Graphics 530 has no display function on this bus at all.  Re-measure after any driver,
+  # card or nixpkgs change with:
   #
   #   sudo systemd-run --property=Environment=HOME=/root -p Environment=PATH=$(ls -d /run/current-system/sw) -p Environment=LD_LIBRARY_PATH=/run/opengl-driver/lib \
   #   …   or simply:  nvidia-smi ; vulkaninfo --summary | grep -E 'deviceName|driverName'
   #
-  # and, if the iGPU has appeared ahead of the NVIDIA card, fix it here (by name, which
-  # `--device` accepts, in preference to an index).
+  # and if the NVIDIA card is ever *not* `Vulkan0` — a second card fitted, or a driver/ICD
+  # change — set the label `--list-devices` prints for it.  Do **not** reach for the device's
+  # display name: measured 2026-11-12 on this very engine, `--device "NVIDIA GeForce GTX 1080
+  # Ti"` is refused with `invalid device: …`, so the accepted vocabulary is the enumerated
+  # labels (`Vulkan0`, `Vulkan1`, …), not names.  That falsified what this comment used to
+  # assert ("fix it by name, which `--device` accepts"), which is the same mistake as the
+  # iGPU line above: a plausible claim about somebody else's CLI, written without running it.
   vulkanDevice = "Vulkan0";
 in {
   # The engine on PATH as well as in the unit, so `llama-server --list-devices` and a

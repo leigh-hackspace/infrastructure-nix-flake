@@ -8,7 +8,8 @@
 # added here too: the deliberate `mitigations=off` tradeoff (paired with
 # `security.sudo.wheelNeedsPassword = false` in common/base.nix, as on services2).
 #
-# ASUS Z170 PRO GAMING: i7-6700 (Skylake 4c/8t, HD Graphics 530 iGPU), 16 GiB DDR4,
+# ASUS Z170 PRO GAMING: i7-6700 (Skylake 4c/8t — **no usable iGPU on this bus**, see the
+# note at the end of this file), 16 GiB DDR4,
 # one SATA SSD (`sda`, 111.8 GiB: `sda1` 1 GiB vfat label BOOT, `sda2` 110.8 GiB
 # ext4 label ROOT), UEFI with systemd-boot, and a **GTX 1080 Ti (GP102, Pascal)** in
 # the x16 slot.  Note what that last clause means for anyone arriving from the old
@@ -85,9 +86,15 @@
   # part that is about the board rather than the card: the CPU microcode, kvm-intel, the
   # by-label mounts and the `mitigations=off` tradeoff.
   #
-  # The iGPU (HD Graphics 530) is still not configured: the box is headless, so there is
-  # no console to drive.  It is not innocent either — it is a second Vulkan device, which
-  # is why ./llama.nix's `vulkanDevice` says to measure the index rather than assume it.
+  # The iGPU is **not** a device on this bus at all, so there is nothing here to configure
+  # and nothing to exclude from `vulkanDevice`: measured 2026-11-12 with
+  # `lspci -nn | grep -ciE 'intel.*(vga|display|3d)'` → **0** (the firmware has the HD
+  # Graphics 530 off, which is the usual default once a discrete card is fitted).  This
+  # replaces a claim that the 530 was "a second Vulkan device" — never measured, and wrong
+  # in a way that would have misled whoever picked a `--device` index: the second Vulkan
+  # device on this box is Mesa's `llvmpipe`, and llama.cpp filters it out of
+  # `--list-devices`, which prints exactly one line here.  ./README.md "Measured" carries
+  # the whole one-GPU question, including where the network's other Pascal card is.
 
   nixpkgs.hostPlatform = lib.mkDefault "x86_64-linux";
   hardware.cpu.intel.updateMicrocode = lib.mkDefault config.hardware.enableRedistributableFirmware;
