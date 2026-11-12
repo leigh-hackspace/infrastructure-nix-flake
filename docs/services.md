@@ -530,6 +530,7 @@ The contract, in the rows that matter to anyone routing to it:
 | Served as | `llama.int.leighhack.org` — a row in `common/front-door.nix` with the LAN ACL, TLS at `gw`, `proxyBuffering = false` for SSE, and **no `strataBearer`**: `strata_api_key` is another engine's credential and reusing it here would widen its audience for free |
 | Paths | OpenAI-compatible API — `/health`, `/props`, `/v1/models`, `/v1/chat/completions`, `/completion` — **and llama.cpp's own web UI at `/`** (SvelteKit: `/_app/immutable/bundle.*.js` 2.88 MB, `/_app/immutable/assets/bundle.*.css` 305 KB, manifest, icons). **The UI is stored gzipped, so a client that sends no `Accept-Encoding: gzip` gets `415 Error: gzip is not supported by this browser` at `/`** — every browser sends it, a plain `curl` does not, and a monitoring probe must (`curl -H 'Accept-Encoding: gzip' …`). aibox's `ai.*` remains the network's prettier chat UI; this one is the engine's own |
 | Model | `/home/leigh-admin/Models/LFM3-1.7B-Q4_K_M.gguf` (1,050 MiB, sha256-checked in by hand). Runtime data outside the store: no switch fetches it, an engine bump does not re-prepare it, and a missing file is a unit that restarts forever and a door that answers 502 |
+| Context | **262,144 tokens** — the GGUF's trained `ctx_train`, and 3,026 MiB of the card's 11,264. It is the model's ceiling, not a memory one: the measured KV ladder is ~1,137 MiB + 7.4 KiB/token, so 393 KiB would fit too (3,971 MiB) — that would be rope *extrapolation* on an unmeasured model, so it is not what runs; the lever is `--rope-scaling yarn --yarn-orig-ctx 262144` plus a retrieval re-measure. Verified retrieving a needle ~105k tokens in from a 117,839-token request; prefill is ~1,350 tok/s at 18k depth and decode falls from 105.6 to 84.0 tok/s |
 | GPU path | **Vulkan, not CUDA** — CUDA 13's nvcc has no Pascal target, so `GGML_VULKAN` + `legacy_580` + `open = false` is the only way this card is a compute device at all. `--device Vulkan0`, and index 0 is the card *because* index 1 is llvmpipe: check `vulkaninfo --summary` by name |
 
 Four checks, in the order that answers something:
@@ -543,7 +544,7 @@ sudo nvidia-smi --query-compute-apps=pid,used_memory    # llama-server holding ~
 vulkaninfo --summary | grep -E 'deviceName|driverName'  # NVIDIA GeForce GTX 1080 Ti, not llvmpipe
 ```
 
-The box's own half — the measured numbers (105.6 tok/s, 1,368 MiB at 32K ctx), why a driver
+The box's own half — the measured numbers (the KV ladder, 105.6 → 84.0 tok/s, the 117,839-token retrieval proof), why a driver
 change needs a **reboot** and what llama.cpp does to `nouveau` in the interval, how the engine
 is built out of nixpkgs' expression instead of the input's flake, and the Wi-Fi/disk/bootstrap
 state of the machine — is `machines/services3/README.md`. The front-door mechanics are

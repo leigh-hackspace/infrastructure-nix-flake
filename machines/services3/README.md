@@ -247,9 +247,11 @@ nix eval --raw .#nixosConfigurations.services3.config.systemd.services.llama-ser
 | --- | --- |
 | Driver | `nvidia 580.178.04` (the `legacy_580` branch ./nvidia.nix pins — the last one with Pascal), `open = false`, 11,264 MiB total |
 | Vulkan | `vulkaninfo --summary` → deviceName `NVIDIA GeForce GTX 1080 Ti`, driverName `NVIDIA`, Vulkan 1.4.312 — **device 0**, which is what `--device Vulkan0` in ./llama.nix names. Device 1 is `llvmpipe (LLVM 21.1.8, 256 bits)`: a working llvmpipe is normal here and useless for this, so read the *name*, not the count |
-| VRAM at `--ctx-size 32768`, q8_0 KV, `--n-gpu-layers all` | **1,368 MiB** (`nvidia-smi --query-compute-apps=pid,used_memory` shows llama-server holding 1,363 MiB of it). Weights are 1,050 MiB, so the KV cache is ~300 MiB — the headroom in the Open items table is real |
+| VRAM as configured — `--ctx-size 262144`, q8_0 KV, `--n-gpu-layers all` | **3,026 MiB of 11,264 MiB** (27%; `nvidia-smi --query-compute-apps` shows llama-server holding 3,015 MiB). Weights are 1,050 MiB, so ~1,900 MiB is KV. The measured ladder from 32 KiB to 393 KiB — ~1,137 MiB fixed + **7.4 KiB/token** — is in ./llama.nix; it is what shows the ceiling is the model, not the card |
+| Context ceiling | **262,144 = the GGUF's trained `ctx_train`**, which llama.cpp reports as `ctx_train (262144)` the moment you ask for more. 393,216 runs (3,971 MiB) but is rope extrapolation on an unmeasured model, so it is not configured; the lever for going past 262 KiB is `--rope-scaling yarn --yarn-orig-ctx 262144` **plus a retrieval re-measure** |
+| Long-context retrieval | proven, not assumed: a 502 KB request through the door, **117,839 prompt tokens**, needle placed ~105k tokens in → returned correctly (`KESTREL-9-THISTLE`). Prompt evaluation at that depth ran ~680 tok/s; at 18k depth it was **1,349 tok/s** — a long prompt is seconds-to-minutes of prefill on Pascal, which is why the door row's `timeouts` are 3600s |
 | Serving | `/` → the embedded llama.cpp UI (`<!doctype html>`…), with `/_app/immutable/bundle.CSvj5_dP.js` 2,884,479 b, `/_app/immutable/assets/bundle.T5LmKmrW.css` 304,601 b, `manifest.webmanifest`, icons — **200 direct and through the door**; `--ui`/`--no-ui` is the runtime switch and defaults to enabled |
-| Decode | **105.6 tok/s** (`/completion`, `n_predict=180`, `predicted_per_second`; a 10-token prompt evaluated in 608 ms) |
+| Decode | **105.6 tok/s** at short context, **84.0 tok/s** with ~18k tokens already in the KV (`/completion`, `predicted_per_second`). Decode is where the long context actually costs, and it costs about a fifth |
 | Answering | `curl http://10.3.2.213:8080/v1/chat/completions` returns a `reasoning_content` body — the model spends the first tokens thinking, so `content` is empty at `max_tokens: 12`. That is the model, not a broken endpoint |
 
 **A GPU driver change needs a reboot, and between the switch and the reboot the box is worse
@@ -267,6 +269,40 @@ reboot; then `readlink -f /run/current-system /nix/var/nix/profiles/system-good`
 `sudo modprobe nvidia` as a shortcut answers "why isn't it loaded" with a lie — `Module nvidia
 not found in directory /run/booted-system/…` is about the *booted* (old) tree, not the new
 generation's.
+
+### Re-measuring the KV ladder
+
+The table's VRAM row is a property of the KV quantisation, `--flash-attn on` and the engine, not
+of the box, so it is worth re-deriving after any of those three move. This is the probe that
+produced it — it stops the service, walks `--ctx-size` upward, samples the peak, and puts the
+service back whatever happens:
+
+```bash
+BIN=$(systemctl show llama-server -p MainPID --value); BIN=$(sudo readlink /proc/$BIN/exe)
+M=/home/leigh-admin/Models/LFM3-1.7B-Q4_K_M.gguf
+sudo systemctl stop llama-server
+for c in 131072 262144 393216; do
+  $BIN --model $M --device Vulkan0 --n-gpu-layers all --ctx-size $c \
+       --cache-type-k q8_0 --cache-type-v q8_0 --flash-attn on \
+       --host 127.0.0.1 --port 8099 >/tmp/probe-$c.log 2>&1 &
+  pid=$!; peak=0
+  for i in $(seq 1 20); do
+    sleep 3; m=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | head -1)
+    [ "${m:-0}" -gt "$peak" ] && peak=$m
+    kill -0 $pid 2>/dev/null || break
+    grep -q "listening on" /tmp/probe-$c.log && [ $i -gt 6 ] && break
+  done
+  echo "ctx=$c peak=${peak}MiB $(kill -0 $pid 2>/dev/null && echo LISTENING || echo EXITED)"
+  kill $pid 2>/dev/null; wait $pid 2>/dev/null
+done
+sudo systemctl start llama-server
+```
+
+Two things it will teach you if you run it blind: the model complains about `ctx_train` the
+moment you pass its trained length (grep the probe log for `ctx_train`), and a `LISTENING` row
+proves allocation, not quality — beyond 262,144 the rows are *numbers about VRAM*, and whether
+the model still reads its own context is a different measurement, which is why the row above
+proves retrieval with a needle instead of trusting the flag.
 
 ## Deploying it
 
@@ -384,7 +420,7 @@ remember `gw` is the box that has previously run *ahead* of its own line —
 | --- | --- |
 | Endpoint auth | `llama.int.leighhack.org` is **LAN-only and keyless** — the LAN ACL is the gate, and the model is a public weight. A public name takes `sso = true` + `acl = "none"` **and a key of its own** in the same change; `strataBearer` is not it, being `strata_api_key` and another engine's credential. |
 | Privileges | `llama-server` runs as root, reading the weights out of `/home/leigh-admin` (mode `0700`), which is what both Strata engines do. The cheap upgrade is a system account plus the weights somewhere group-readable outside a home; the home's mode is the actual blocker, so it is a move, not a `chmod`. |
-| Context headroom | `--ctx-size 32768` with q8 KV is a deliberate floor, not a ceiling: 1.1 GB of weights on an 11 GB card. The previous owner measured this file committing 4,457 MiB at the full 262,144-token context with default KV types on a 6 GiB card, so there is room — raise it deliberately, re-measure with `nvidia-smi`. |
+| ~~Context headroom~~ | **Closed 2026-11-12 at 262,144** — the model's trained `ctx_train`, at 3,026 MiB of 11,264. What is left as a *decision*, not a gap: going past the trained length with yarn (./llama.nix has the ladder and the reasoning), which needs a retrieval measurement, not a bigger number. |
 | Power | Not in `machines/gw/ups.nix`'s `shutdownTargets` (see above), and `crates/ups-watchdog/src/plan.rs`'s order list is the same three. |
 | Wi-Fi PSK | Off-flake (see above). Decide when it is racked: delete it with the dongle's reservation, or make it declarative. |
 | 20 GiB free | Prune the old generations (see above) or add disk before giving the box a build. Measured **9.7 GiB free** with the engine and driver installed. |
