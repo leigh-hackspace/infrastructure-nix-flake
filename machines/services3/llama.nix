@@ -48,11 +48,15 @@
 # **Two flags are a pair, and the pair is load-bearing.** `--flash-attn on` is what lets
 # `--cache-type-v q8_0` exist at all: with `--flash-attn off` this engine refuses to start,
 # `llama_init_from_model: quantized V cache requires flash_attn to be enabled` (measured
-# 2026-11-12). And `--flash-attn on` is still only half honoured: the loader answers
-# `resolve_fused_ops: layer N is assigned to device Vulkan0 but Flash Attention over K/V
-# rows is assigned to device CPU (usually due to missing support)` — the same warning the
-# Qwen2.5-VL run on this box printed, so the K/V reduce is CPU work on Pascal. Removing
-# `--flash-attn on` therefore means removing the q8_0 V cache in the same change.
+# 2026-11-12).  And `on` is honoured only halfway, in the two wordings this box prints: the
+# **cli** answers `resolve_fused_ops: layer N is assigned to device Vulkan0 but Flash Attention
+# over K/V rows is assigned to device CPU (usually due to missing support)` and the **server**
+# — what actually runs here — answers the shorter `resolve_fused_ops: Flash Attention over K/V
+# rows not supported, set to disabled`, both measured 2026-11-12 and both the same class of line
+# the Qwen2.5-VL run printed on this box.  Either way: the flag is accepted, and the K/V
+# reduction is not a Vulkan graph, so flash attention is not what makes this model fast on this
+# card.  Removing `--flash-attn on` therefore means removing the q8_0 V cache in the same change,
+# not just the flag.
 #
 # The bigger member of the family is on the shelf beside it and was measured too, because
 # "advanced" was the question and this is the boundary. `Ternary-Bonsai-2-27B-Q2_0` (7,626,008,928 B

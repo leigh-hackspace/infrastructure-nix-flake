@@ -340,11 +340,14 @@ blocks — what it does not carry is the pruned geometry the other builds trade 
 **`--flash-attn on` and `--cache-type-v q8_0` are one decision, not two.** With
 `--flash-attn off` the engine will not initialise at all: `llama_init_from_model: quantized V
 cache requires flash_attn to be enabled` (measured 2026-11-12, on the shipped flag set with one
-flag removed).  And `on` is still only half honoured on Pascal: the loader prints
-`resolve_fused_ops: layer N is assigned to device Vulkan0 but Flash Attention over K/V rows is
-assigned to device CPU (usually due to missing support)` — the same warning the Qwen2.5-VL run
-printed — so the K/V reduce is CPU work.  Neither sentence is a fault; both are why the two
-flags move together.
+flag removed).  And `on` is honoured only halfway, in the two wordings this box prints: the
+cli's `resolve_fused_ops` line says `layer N is assigned to device Vulkan0 but Flash Attention
+over K/V rows is assigned to device CPU (usually due to missing support)`, and the live server
+answers the shorter `resolve_fused_ops: Flash Attention over K/V rows not supported, set to
+disabled` — the same class of line the Qwen2.5-VL run produced on this box.  Either way the
+flag is accepted and the K/V reduction is not a Vulkan graph, so flash attention is not what
+makes this model fast on this card.  Neither sentence is a fault; both are why the two flags
+move together.
 
 **Raw `/completion` on a reasoning model answers 1–8 tokens and stops with `stop_type: "eos"`.**
 Both models did it today on the bare prompt `"Q: … A:"`; the decode figures above come from
