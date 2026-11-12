@@ -200,8 +200,17 @@
   # Graphics 530 has no display function on this bus at all.  Re-measure after any driver,
   # card or nixpkgs change with:
   #
-  #   sudo systemd-run --property=Environment=HOME=/root -p Environment=PATH=$(ls -d /run/current-system/sw) -p Environment=LD_LIBRARY_PATH=/run/opengl-driver/lib \
-  #   …   or simply:  nvidia-smi ; vulkaninfo --summary | grep -E 'deviceName|driverName'
+  #   sudo systemd-run --collect --wait --pty -p Environment=HOME=/root \
+  #       -p Environment=LD_LIBRARY_PATH=/run/opengl-driver/lib \
+  #       "$(sudo readlink /proc/$(systemctl show llama-server -p MainPID --value)/exe)" --list-devices
+  #
+  #   …  or without touching systemd at all:  nvidia-smi -L ; vulkaninfo --summary | grep -E 'deviceName|driverName'
+  #
+  # `--collect --wait` is not decoration.  A `systemd-run --pty` probe **left two failed
+  # transient units behind on this box** (2026-11-12, from checking what `--device` accepts),
+  # and `is-system-running` then read `degraded` for the rest of the session — the exact
+  # state that `docs/follow-ups.md` has a whole section about on services1, manufactured out
+  # of a diagnostic.  If a probe does leave one: `systemctl reset-failed`.
   #
   # and if the NVIDIA card is ever *not* `Vulkan0` — a second card fitted, or a driver/ICD
   # change — set the label `--list-devices` prints for it.  Do **not** reach for the device's
