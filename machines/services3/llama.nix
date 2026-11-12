@@ -29,12 +29,39 @@
 # ## Sizing, and what was measured rather than guessed
 #
 # 8 threads = the i7-6700's SMT pair count. `-ngl all` fits easily: the whole model is
-# 1.1 GB against an 11 GB card, so the context is what decides VRAM here, and 32 KiB of
-# q8 KV is a deliberate floor rather than a limit — the previous owner measured this
-# exact file at **4,457 MiB committed for the full 262,144-token context** on a 6 GiB
-# GTX 1060 with default KV types, so on this card with `-ctk/-ctv q8_0` there is room to
-# raise `ctxSize` by a lot.  Raise it deliberately and re-measure with `nvidia-smi`;
-# do not copy aibox's 256 KiB, which was sized for a 36 B model on a much bigger card.
+# 1.1 GB against an 11 GB card, so **the context is what decides VRAM here** — and the ladder
+# below is measured on this card, not modelled: same flags as the unit, one probe per row, the
+# peak `nvidia-smi` reading while the server was listening (2026-11-11; the recipe is in
+# `README.md`).
+#
+#   | `--ctx-size` |                  peak VRAM |
+#   | ------------ | --------------------------: |
+#   | 32,768       |             1,368 MiB (shipped value for the first day) |
+#   | 65,536       |                    1,610 MiB |
+#   | 131,072      |                    2,082 MiB |
+#   | 196,608      |                    2,554 MiB |
+#   | **262,144**  |   **3,026 MiB** ← `ctxSize` below |
+#   | 393,216      |                    3,971 MiB |
+#
+# Straight-line: ~1,137 MiB fixed plus **7.4 KiB per token**, so even the 393 KiB row leaves
+# 7 GiB of the 11,264 MiB card untouched — **memory is not what caps this endpoint**.  What caps
+# it is the model: the GGUF's own trained context is **262,144**, which llama.cpp volunteers as
+# soon as you ask for more (`ctx_train (262144)`).  So `ctxSize` is exactly that — the biggest
+# context this model was *trained* for, on 27% of the card.  Above it is rope extrapolation on a
+# model nobody has measured past its trained length, i.e. a bigger number that answers worse; if
+# that is ever genuinely wanted the change is `--rope-scaling yarn --yarn-orig-ctx 262144` plus a
+# re-measure of retrieval, not a larger `--ctx-size`.  KV stays q8_0 for the same reason: q4_0
+# would roughly halve the slope and buy nothing against a ceiling that is not memory.
+#
+# Two cross-checks on that line, because a table like this is worth doubting: the previous owner
+# measured **this file** committing **4,457 MiB** at 262,144 tokens with *default* KV types on a
+# 6 GiB GTX 1060 — which is the same intercept with a f16 slope, and it lands within 2% of
+# 1,137 + 262,144 × 13.3 KiB.  And 1,368 MiB, the row this file shipped with, is what
+# `nvidia-smi --query-compute-apps` reported on the live box that day.
+#
+# Re-measure after any engine, driver or KV-type change (the slope belongs as much to
+# `--flash-attn on` and `q8_0` as it does to the model), with:
+#   sudo systemctl stop llama-server && for c in 131072 262144 393216; do … done   # README
 #
 # ## Reachability, and why the bind is not loopback
 #
@@ -154,7 +181,10 @@
   modelName = "LFM3-1.7B-Q4_K_M.gguf";
 
   port = 8080;
-  ctxSize = 32768;
+
+  # The model's trained maximum (`ctx_train = 262144`), not a memory limit — see the ladder
+  # in the header.  3,026 MiB of an 11,264 MiB card, all slots sharing one unified KV pool.
+  ctxSize = 262144;
 
   # Which Vulkan device the model lands on.  `--list-devices` on the box is the only
   # honest source for this string, and it is not a constant: the box has an HD Graphics
