@@ -270,8 +270,9 @@ X first", X has already cost someone a day.
   this repo evaluates every machine and `just check` runs anywhere. Machines:
   `services1` (main services box, 10.3.1.20), `services2` (strata + its own status
   dashboard, 10.3.1.21 — `machines/services2/README.md`), `services3` (assimilated
-  2026-11-11 from another fleet, on the bench, Wi-Fi-only, running llama.cpp/LFM3 on a
-  GTX 1080 Ti as `llama.int.leighhack.org` — `machines/services3/README.md`; it answers on
+  2026-11-11 from another fleet, on the bench, Wi-Fi-only, running llama.cpp/Ternary-Bonsai
+  (a 9B-class `Q2_0` + vision) on a GTX 1080 Ti as `llama.int.leighhack.org` —
+  `machines/services3/README.md`; it answers on
   10.3.2.213, **not** in 10.3.1.x),
   `aibox` (10.3.1.32,
   the network's build machine since 2026-10-17), `gw` (the network's **router**, live at

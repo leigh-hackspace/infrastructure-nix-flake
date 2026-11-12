@@ -115,7 +115,8 @@ and not the role. Concretely, a switch to `.#services3` removes:
 What it **brought with it** and kept: `/home/cjdell/Models/LFM3-1.7B-Q4_K_M.gguf`
 (1,099,627,808 bytes) — the only thing on the box worth more than the box. It was
 **copied**, not moved, to `/home/leigh-admin/Models/` (the path both Strata engines use,
-and the path `./llama.nix` points at), sha256-verified on both sides; the original is
+and the path `./llama.nix` pointed at until the model changed on 2026-11-12), sha256-verified
+on both sides; the original is
 still there, and removing it is a decision for whoever owns `/home/cjdell`, not a
 side-effect of onboarding.
 
@@ -165,13 +166,13 @@ the password-authenticated way back onto a box whose only uplink is Wi-Fi — ve
   <numbers> && sudo nix-collect-garbage -d`. That destroys the rollback path to the
   folding configuration, so it is a decision, not housekeeping.
 
-## The engine: llama.cpp (Vulkan) serving LFM3
+## The engine: llama.cpp (Vulkan) serving Ternary-Bonsai-2-9B-Q2_0 (+ vision)
 
 One service, `llama-server`, from the flake's **`llama-cpp-upstream`** input — the second
 llama.cpp in this flake, and the comment on that input in `flake.nix` is the reason it
-exists (the model's GGUF header declares `general.architecture = lfm3`; the fork this
-network already carries is llama.cpp 0.3.0 and nixpkgs' `llama-cpp-vulkan` at this lock is
-0.6.0, and neither has the arch). The card is driven by ./nvidia.nix — Pascal ⇒
+exists (the model that first made it so, LFM3, declares `general.architecture = lfm3`; the
+fork this network already carries is llama.cpp 0.3.0 and nixpkgs' `llama-cpp-vulkan` at this
+lock is 0.6.0, and neither has that arch). The card is driven by ./nvidia.nix — Pascal ⇒
 `legacy_580`, `open = false`, and Vulkan rather than CUDA because CUDA 13's nvcc has no
 Pascal target — the unit is ./llama.nix, and the front-door row is
 `llama.int.leighhack.org` in `common/front-door.nix`: LAN ACL, no injected key, with the
@@ -243,7 +244,7 @@ nix build --no-link 'github:ggml-org/llama.cpp#packages.x86_64-linux.vulkan'   #
 nix eval --raw .#nixosConfigurations.services3.config.systemd.services.llama-server.serviceConfig.ExecStart
 ```
 
-### Driven, measured (2026-11-11)
+### Driven, measured (2026-11-11) — the LFM3 configuration this replaced
 
 | | |
 | --- | --- |
@@ -256,8 +257,105 @@ nix eval --raw .#nixosConfigurations.services3.config.systemd.services.llama-ser
 | Decode | **105.6 tok/s** at short context, **84.0 tok/s** with ~18k tokens already in the KV (`/completion`, `predicted_per_second`). Decode is where the long context actually costs, and it costs about a fifth |
 | Answering | `curl http://10.3.2.213:8080/v1/chat/completions` returns a `reasoning_content` body — the model spends the first tokens thinking, so `content` is empty at `max_tokens: 12`. That is the model, not a broken endpoint |
 
-**A GPU driver change needs a reboot, and between the switch and the reboot the box is worse
-than it was.** After the switch that first installed the driver, `nvidia-smi` still failed and
+### Model changeover 2026-11-12: LFM3-1.7B → **Ternary-Bonsai-2-9B-Q2_0** (+ its `mmproj`)
+
+The question that chose the new one was *what is the most advanced model this card can
+actually serve*, asked of the card rather than of a leaderboard: every number below was
+measured on this box with the shipped flags, and the candidates were bounded first by the
+engine's own quant table and the card's 11,017 MiB of usable memory, not by taste.  What the
+engine says of the served file on the live unit: `/v1/models` answers `n_params 8,953,803,264`,
+`ftype Q2_0`, `size 2,545,600,512`, `n_ctx 262144 = n_ctx_train`, `n_embd 4096`,
+`capabilities ["completion","multimodal"]`; the loader's banner says `general.architecture = qwen35`,
+`n_layer 32`, `full_attention_interval 4`, `ssm_d_inner 4096` — a hybrid/SSM model, which is the
+shape of every claim below.
+
+Weights: **`Ternary-Bonsai-2-9B-Q2_0.gguf` 2,556,640,128 B** and its
+**`Ternary-Bonsai-2-9B-mmproj-Q8_0.gguf` 624,229,664 B**, fetched 2026-11-12 out of
+`prism-ml/Ternary-Bonsai-2-9B-gguf` into `/srv/models` — a directory the flake creates
+(`systemd.tmpfiles.rules` in `./llama.nix`, a `d` rule that owns a directory without emptying
+it) and nobody else populates: no switch downloads 2.4 GB of runtime weights, and the fetch
+that did happen was a `systemd-run` unit (a 4m42s curl outlives a tool call) that needed
+`--setenv=PATH=/run/current-system/sw/bin`, without which its first command is
+`curl: command not found` and its log is the only witness.  LFM3's file (1,099,627,808 B) is
+still at `/home/leigh-admin/Models/` and serves nothing; deleting it is a decision, not a
+side-effect.
+
+Measured on this card, whole card to itself — `systemctl stop llama-server` first:
+
+| | measured |
+| --- | ---: |
+| offloaded | `33/33 layers` to Vulkan0 — 2,154.86 MiB of weights there, 272.81 MiB CPU-mapped |
+| KV at 262,144 cells | **4,352.00 MiB** (q8_0 K 2,176 + V 2,176 over the 8 full-attention layers of 32 → **16.6 KiB/token**) |
+| recurrent state | **50.25 MiB per slot** (32 layers: S 48.00 + R 2.25) — `n_slots = 4`, `kv_unified = 'true'` |
+| compute buffers | 360.02 MiB on Vulkan0, 288.02 on `Vulkan_Host` |
+| **peak VRAM, shipped flags including `mmproj`** | **8,005 MiB of 11,264 MiB** — 3.26 GiB free |
+| decode | **63.1–64.0 tok/s** (`/v1/chat/completions` `predicted_per_second` 63.11; cli `-n 128`/`-n 256` 64.0, `graphs reused = 22`) |
+| prefill | **305.6 tok/s** over a 1,650-token prompt (cli `print_timing`); 287.8 tok/s at 87 tokens, cold |
+
+LFM3's decode, read off the journal of the configuration that was *still running* that
+afternoon, is **60.1–66.3 tok/s** (`print_timing` lines: 60.08 and 66.34) — the table above's
+105.6/84.0 was a 2026-11-11 measurement at a different depth.  So this swap bought a **5×
+bigger model at the same tokens per second**, which is only possible because both models are
+hybrid: hybrid models on this card move at ~100 GB/s *effective* (LFM3 measured 111 GB/s; the
+dense Qwen2.5-VL at 290 GB/s), so an SSM layer costs about the same per token whatever its
+width, and the per-parameter bandwidth penalty a dense 9B would pay — 2.6× at this size — never
+appears here.  Do not carry the dense figure into a decision about a hybrid model.
+
+**The 27B of the same family was fetched and measured too, because it is the boundary.**
+`Ternary-Bonsai-2-27B-Q2_0` (**7,626,008,928 B**) + its 629,246,976 B `mmproj`:
+
+| | measured |
+| --- | ---: |
+| offloaded | `65/65 layers` — **6,921.11 MiB** of weights on Vulkan0 (341.02 MiB CPU-mapped) |
+| KV | 16 full-attention layers of the 64 → **33.0 KiB/token** (65,536 cells = 2,176 MiB) |
+| recurrent state | **149.62 MiB per slot** (S 144.00, R 5.62) — four slots is 598 MiB of state |
+| `-c 131072` | **fails**: `ggml_vulkan: Device memory allocation of size 570425344 failed` → `llama_init_from_model: failed to initialize the context: failed to allocate buffer for kv cache` |
+| `-c 65536` + `mmproj`, 4 slots, shipped flags | starts at **10,788 MiB of 11,264 MiB** — 476 MiB of headroom |
+| decode | **24.8–26.7 tok/s** (cli, `-n 128`, cold graphs included) |
+
+So shipping the 27B is `modelName`/`mmprojName` + `ctxSize = 65536`, and the trade is 3× the
+parameters for **2.4× slower decode, 4× less context, and 476 MiB of headroom instead of 3.26
+GiB** — one Vulkan graph reallocation or one driver update takes it over the edge.  That is why
+the 9B ships and the 27B waits on the shelf; and what "the better model" would mean here is an
+eval, which nobody has run on the text side, so the 27B is a documented option and not a
+recommendation.
+
+**What cannot be considered at all, and why:** every Bonsai-2 size above 27B, and the dense
+Qwen3.5 quants (`Q3_K_S` 11.45 GiB, `IQ4_XS` 13.95 GiB), do not fit the 11,017 MiB of usable
+card at all — not "tightly", not at all.  And CPU spill is not a fallback on this box: four
+Skylake cores decoding a 12 GB model spend their time on single-digit tok/s, which is a chat
+timeout rather than a slow answer.
+
+**Two refusals that look like the filename you typed.** prism-ml publishes each size in a
+pruned/ternary build (`-PTQ1_0`, `-PQ2_0-MTP-Q8_0`) and a plain one (`-Q2_0`); **only the plain
+one loads at this pin**, the others are refused at load.  `Ternary-Bonsai-2-9B-DFlash2-Q8_0`
+(1,574,233,856 B, sitting on the shelf beside the two that loaded) is refused the same way:
+`--spec-draft-model` answers `failed to load draft model`, and its header says
+`general.architecture = dflash`, an arch 0.9.0 does not have.  So **no spec-decoding flag is
+shipped**, and `--spec-type ngram-simple`, measured instead, bought nothing (62.8 t/s against
+64.0 plain).  Ask the loader, not the filename: its banner prints `ftype : Q2_0`, and 2,545,600,512
+bytes over 8,953,803,264 parameters is 2.27 bits/weight, i.e. this `Q2_0` *is* carrying ternary
+blocks — what it does not carry is the pruned geometry the other builds trade for that name.
+
+**`--flash-attn on` and `--cache-type-v q8_0` are one decision, not two.** With
+`--flash-attn off` the engine will not initialise at all: `llama_init_from_model: quantized V
+cache requires flash_attn to be enabled` (measured 2026-11-12, on the shipped flag set with one
+flag removed).  And `on` is still only half honoured on Pascal: the loader prints
+`resolve_fused_ops: layer N is assigned to device Vulkan0 but Flash Attention over K/V rows is
+assigned to device CPU (usually due to missing support)` — the same warning the Qwen2.5-VL run
+printed — so the K/V reduce is CPU work.  Neither sentence is a fault; both are why the two
+flags move together.
+
+**Raw `/completion` on a reasoning model answers 1–8 tokens and stops with `stop_type: "eos"`.**
+Both models did it today on the bare prompt `"Q: … A:"`; the decode figures above come from
+`/v1/chat/completions` or from the cli's `-p`, which is where `--reasoning-preserve` and the chat
+template do their job.  A probe that reads a tiny `predicted_n` out of `/completion` is not a
+broken endpoint.
+
+This change moved no name, no port, no vhost and no ACL — `llama.int.leighhack.org` is the same
+row in `common/front-door.nix` (its comment says what is behind it now), so `just check`'s
+drift guards see nothing; what re-deploys is the unit's `--model`, `--mmproj`, `--alias` and the
+directory that holds them. After the switch that first installed the driver, `nvidia-smi` still failed and
 `lsmod` still showed `nouveau`: a `switch` cannot unbind a driver the running kernel has
 already bound, so the new generation's `nvidia.ko` sat unused in
 `/run/current-system/kernel-modules` while llama.cpp opened **Mesa's NVK** Vulkan device over
@@ -281,7 +379,8 @@ service back whatever happens:
 
 ```bash
 BIN=$(systemctl show llama-server -p MainPID --value); BIN=$(sudo readlink /proc/$BIN/exe)
-M=/home/leigh-admin/Models/LFM3-1.7B-Q4_K_M.gguf
+M=$(ls /srv/models/*-Q2_0.gguf)   # the served file; the ladder below was produced with
+                                  # M=/home/leigh-admin/Models/LFM3-1.7B-Q4_K_M.gguf
 sudo systemctl stop llama-server
 for c in 131072 262144 393216; do
   $BIN --model $M --device Vulkan0 --n-gpu-layers all --ctx-size $c \
@@ -421,7 +520,7 @@ remember `gw` is the box that has previously run *ahead* of its own line —
 | | |
 | --- | --- |
 | Endpoint auth | `llama.int.leighhack.org` is **LAN-only and keyless** — the LAN ACL is the gate, and the model is a public weight. A public name takes `sso = true` + `acl = "none"` **and a key of its own** in the same change; `strataBearer` is not it, being `strata_api_key` and another engine's credential. |
-| Privileges | `llama-server` runs as root, reading the weights out of `/home/leigh-admin` (mode `0700`), which is what both Strata engines do. The cheap upgrade is a system account plus the weights somewhere group-readable outside a home; the home's mode is the actual blocker, so it is a move, not a `chmod`. |
+| Privileges | `llama-server` still runs as root, but since 2026-11-12 the weights are no longer under `/home/leigh-admin` (mode `0700`): `./llama.nix` creates `/srv/models` (`0755`, root) by `tmpfiles` rule and reads the model there. What is left of that upgrade is the **system account** — the unit is still uid 0, still inherits root's `HOME` unless `StateDirectory` says otherwise, and both Strata engines remain in the first half. The home's mode was the actual blocker, so this half of the change is the half that mattered. |
 | ~~Context headroom~~ | **Closed 2026-11-12 at 262,144** — the model's trained `ctx_train`, at 3,026 MiB of 11,264. What is left as a *decision*, not a gap: going past the trained length with yarn (./llama.nix has the ladder and the reasoning), which needs a retrieval measurement, not a bigger number. |
 | Power | Not in `machines/gw/ups.nix`'s `shutdownTargets` (see above), and `crates/ups-watchdog/src/plan.rs`'s order list is the same three. |
 | Wi-Fi PSK | Off-flake (see above). Decide when it is racked: delete it with the dongle's reservation, or make it declarative. |

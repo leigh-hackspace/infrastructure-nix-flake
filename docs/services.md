@@ -13,7 +13,8 @@ index, not the final word.
 Machines: `services1` (10.3.1.20, the services box and an **origin** — it holds no
 TLS certificate and no public name), `services2` (10.3.1.21, strata — the
 observability stack that used to live there moved to services1 on 2026-10-17),
-`services3` (10.3.2.213 — llama.cpp/LFM3 on a GTX 1080 Ti; **on the bench, Wi-Fi, and the
+`services3` (10.3.2.213 — llama.cpp/Ternary-Bonsai-2 on a GTX 1080 Ti since 2026-11-12;
+**on the bench, Wi-Fi, and the
 one services box answering on VLAN 226**, which is why its front-door row is the first
 whose upstream is off the wired block: `machines/services3/README.md`),
 `aibox` (10.3.1.32, the network's build machine since 2026-10-17), and `gw`
@@ -38,7 +39,7 @@ Every address is in `common/hosts.nix`.
 | MQTT broker (mosquitto) | `machines/services1/services/mqtt.nix` | services1:1883 (no HTTP, no 8883) | `docs/mqtt-int-legacy-answer-2026-11-02.md` |
 | Frigate (NVR) | `machines/services1/services/frigate.nix` (podman; the **camera config is off-flake**, `/srv/frigate/config/config.yaml`) | services1:5000 insecure, :8971 secure, :1984 go2rtc, :8554-5 | `docs/frigate-false-positives-2026-11-12.md` (detection quality, detectors, and why there is no GPU offload) |
 | strata | `machines/*/strata.nix` | services2:8080 → `strata.int.leighhack.org` (LAN, key injected) and `strata.leighhack.org` (public, API key); aibox:8080 → `strata2.int.leighhack.org` (LAN, key injected) | `machines/aibox/STRATA.md`, `machines/services2/STRATA.md` |
-| llama.cpp (LFM3) | `machines/services3/llama.nix` + `nvidia.nix` | services3:8080 → `llama.int.leighhack.org` (LAN only, **no** key injected) | `machines/services3/README.md` |
+| llama.cpp (Ternary-Bonsai-2-9B-Q2_0 + vision) | `machines/services3/llama.nix` + `nvidia.nix` | services3:8080 → `llama.int.leighhack.org` (LAN only, **no** key injected) | `machines/services3/README.md` |
 | ups-watchdog | `crates/ups-watchdog/` | no port: it is a oneshot, and it calls out (ssh `wall`, ssh `poweroff`) | `docs/ups-and-fleet-shutdown.md`, `machines/gw/ups.nix` |
 
 ---
@@ -516,12 +517,17 @@ header upstream, so a vhost added without the name in
 switched off by the API key, which is why the public name is *not* in the list:
 remove the key and the public vhost 403s instead of serving an open engine.
 
-## `machines/services3/llama.nix` + `nvidia.nix` — llama.cpp (Vulkan) serving LFM3
+## `machines/services3/llama.nix` + `nvidia.nix` — llama.cpp (Vulkan) serving
+Ternary-Bonsai-2-9B-Q2_0 (+ vision)
 
 The network's second inference box, and its only one whose engine is llama.cpp rather than
-Strata: `llama-server` from the `llama-cpp-upstream` input (0.9.0 — the GGUF declares
-`general.architecture = lfm3`, which the 0.3.0 fork this flake already carries and nixpkgs'
-0.6.0 both lack) on a **GTX 1080 Ti**, on **services3** (10.3.2.213).
+Strata: `llama-server` from the `llama-cpp-upstream` input (0.9.0 — upstream's because the
+model that first made it so, LFM3, declares `general.architecture = lfm3`, absent from the
+0.3.0 fork this flake already carries; nixpkgs' `llama-cpp-vulkan` is 0.6.0 at this lock and
+has not been re-checked since) on a **GTX 1080 Ti**, on **services3** (10.3.2.213).  What is
+served since 2026-11-12 has arch `qwen35` and `full_attention_interval = 4` — a hybrid/SSM
+model, which is why its per-token cost barely moves with its size (the measured GB/s of both
+models is in `machines/services3/README.md`).
 
 The contract, in the rows that matter to anyone routing to it:
 
@@ -530,8 +536,8 @@ The contract, in the rows that matter to anyone routing to it:
 | Listens | `10.3.2.213:8080` — **the LAN address, not loopback**, because the front door is a different box; so this is one of the few apps here whose socket is reachable from the whole LAN and the LAN ACL in `common/config.nix` is the only gate |
 | Served as | `llama.int.leighhack.org` — a row in `common/front-door.nix` with the LAN ACL, TLS at `gw`, `proxyBuffering = false` for SSE, and **no `strataBearer`**: `strata_api_key` is another engine's credential and reusing it here would widen its audience for free |
 | Paths | OpenAI-compatible API — `/health`, `/props`, `/v1/models`, `/v1/chat/completions`, `/completion` — **and llama.cpp's own web UI at `/`** (SvelteKit: `/_app/immutable/bundle.*.js` 2.88 MB, `/_app/immutable/assets/bundle.*.css` 305 KB, manifest, icons). **The UI is stored gzipped, so a client that sends no `Accept-Encoding: gzip` gets `415 Error: gzip is not supported by this browser` at `/`** — every browser sends it, a plain `curl` does not, and a monitoring probe must (`curl -H 'Accept-Encoding: gzip' …`). aibox's `ai.*` remains the network's prettier chat UI; this one is the engine's own |
-| Model | `/home/leigh-admin/Models/LFM3-1.7B-Q4_K_M.gguf` (1,050 MiB, sha256-checked in by hand). Runtime data outside the store: no switch fetches it, an engine bump does not re-prepare it, and a missing file is a unit that restarts forever and a door that answers 502 |
-| Context | **262,144 tokens** — the GGUF's trained `ctx_train`, and 3,026 MiB of the card's 11,264. It is the model's ceiling, not a memory one: the measured KV ladder is ~1,137 MiB + 7.4 KiB/token, so 393 KiB would fit too (3,971 MiB) — that would be rope *extrapolation* on an unmeasured model, so it is not what runs; the lever is `--rope-scaling yarn --yarn-orig-ctx 262144` plus a retrieval re-measure. Verified retrieving a needle ~105k tokens in from a 117,839-token request; prefill is ~1,350 tok/s at 18k depth and decode falls from 105.6 to 84.0 tok/s |
+| Model | `/srv/models/Ternary-Bonsai-2-9B-Q2_0.gguf` — **2,556,640,128 B**, fetched 2026-11-12 by hand from `prism-ml/Ternary-Bonsai-2-9B-gguf` with `Ternary-Bonsai-2-9B-mmproj-Q8_0.gguf` (624,229,664 B) beside it; the flake creates `/srv/models` (`systemd.tmpfiles.rules`) and never the weights. LFM3-1.7B's file (1,099,627,808 B) is still at `/home/leigh-admin/Models/` and serves nothing. Runtime data outside the store either way: no switch fetches it, an engine bump does not re-prepare it, and a missing file is a unit that restarts forever and a door that answers 502 |
+| Context | **262,144 tokens** — the served model's trained `n_ctx` (`n_ctx_train = 262144`), and it fits here with room to spare: **8,005 MiB of the card's 11,264** including the 624 MB vision projector, measured 2026-11-12 with the whole card to itself. Its KV slope is **16.6 KiB/token** (q8_0 K+V over the 8 full-attention layers of the 32) plus 50.25 MiB of recurrent state **per slot** (`n_slots = 4`, `kv_unified = true`), so one doubling past the trained length wants ~4 GiB more card than exists — the trained length is the ceiling, not a generous margin. LFM3's own ladder (~1,137 MiB fixed + 7.4 KiB/token; 3,026 MiB here, 3,971 MiB at 393 KiB) is history, kept in `machines/services3/README.md`. Decode here is **63–64 tok/s**, prefill **305 tok/s** at 1,650 tokens. **The new model's retrieval at depth has not been measured** — LFM3's was proven with a needle at ~105k of a 117,839-token request, and the rope lever (`--rope-scaling yarn --yarn-orig-ctx`) has never been tried on either |
 | GPU path | **Vulkan, not CUDA** — CUDA 13's nvcc has no Pascal target, so `GGML_VULKAN` + `legacy_580` + `open = false` is the only way this card is a compute device at all. `--device Vulkan0`, and index 0 is the card *because* index 1 is llvmpipe: check `vulkaninfo --summary` by name |
 
 Four checks, in the order that answers something:
@@ -541,7 +547,7 @@ systemctl is-active llama-server                      # and: journalctl -u llama
 curl -sS -m 8 http://10.3.2.213:8080/ | head -c 80     # "<!doctype html>" = the UI is embedded
                                                        # (with no gzip header this answers 415, which is not a fault)
 curl -m 5 http://10.3.2.213:8080/health                # "ok" (note: not localhost — see Listens)
-sudo nvidia-smi --query-compute-apps=pid,used_memory    # llama-server holding ~1.3 GiB = on-GPU
+sudo nvidia-smi --query-compute-apps=pid,used_memory    # llama-server holding ~2.5 GiB = the 9B's weights are on-GPU (the shipped shape peaks at 8,005 MiB of the card's 11,264)
 vulkaninfo --summary | grep -E 'deviceName|driverName'  # NVIDIA GeForce GTX 1080 Ti, not llvmpipe
 ```
 

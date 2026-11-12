@@ -1,5 +1,76 @@
-# llama.cpp (Vulkan) serving LFM3-1.7B on the GTX 1080 Ti, and the network's third
-# inference endpoint.
+# llama.cpp (Vulkan) serving **Ternary-Bonsai-2-9B-Q2_0** and its vision projector on the
+# GTX 1080 Ti, and the network's third inference endpoint.
+#
+# ## Served since 2026-11-12, and what this card can actually hold
+#
+# Chosen against what the card holds at this pin, not against a leaderboard.  The engine's
+# own `/v1/models` on the live unit says what is in the file: `n_params 8,953,803,264`,
+# `ftype Q2_0`, `size 2,545,600,512`, `n_ctx 262144 = n_ctx_train`, `n_embd 4096`,
+# `capabilities: completion, multimodal`.
+#
+# **`Q2_0` is a name that means two different things in this family, and only one loads.**
+# prism-ml publishes each Bonsai-2 size in a pruned/ternary build (`-PTQ1_0`,
+# `-PQ2_0-MTP-Q8_0`) and a plain build (`-Q2_0`); the plain one loads at this pin and the
+# others are refused at load.  So ask the loader, not the filename: its banner prints
+# `ftype : Q2_0`, and 2,545,600,512 bytes over 8,953,803,264 parameters is 2.27 bits/weight,
+# i.e. the file *is* carrying ternary blocks; what it does not carry is the pruned layer
+# geometry the other builds trade for that name.  Same class of refusal, measured 2026-11-12:
+# `--spec-draft-model` on `Ternary-Bonsai-2-9B-DFlash2-Q8_0.gguf` answers
+# `failed to load draft model`, because that file's header says `general.architecture = dflash`
+# and 0.9.0 has no such arch — which is also why **no spec-decoding flag is shipped here**:
+# `--spec-type ngram-simple` was measured too, and bought nothing (62.8 t/s vs 64.0 plain).
+#
+# Everything below was measured on this card 2026-11-12 with the unit's own flags (`-ngl all`,
+# q8_0 KV, `--flash-attn on`, 8 threads) and the whole card to itself (`llama-server` stopped
+# first — a probe that runs beside the served model measures the *probe's* headroom minus a
+# model, which is a different question):
+#
+#   | what | measured |
+#   | ---- | -------: |
+#   | model buffers | 2,154.86 MiB on Vulkan0 + 272.81 MiB CPU-mapped (`offloaded 33/33 layers`) |
+#   | KV at 262,144 cells | **4,352.00 MiB** — 8 full-attention layers of 32, K q8_0 2,176 + V q8_0 2,176 = **16.6 KiB/token** |
+#   | recurrent state | 50.25 MiB **per slot**, not per token (32 layers: S 48.00 + R 2.25) |
+#   | compute buffers | 360.02 MiB Vulkan0 + 288.02 MiB host |
+#   | peak VRAM, shipped flags **including** `mmproj` | **8,005 MiB of 11,264 MiB** — 3.26 GiB free |
+#   | decode | **63.1–64.0 tok/s** steady (`-n 128`/`-n 256`, `graphs reused = 22`) |
+#   | prefill | **305.6 tok/s** over a 1,650-token prompt |
+#
+# Two things that fact buys.  The served model keeps its **trained** 262,144-token context
+# (the KV slope is 16.6 KiB/token against ~3.4 GiB of free card → the arithmetic's next
+# doubling will not fit; the ladder below is LFM3's, see "Sizing") and it decodes at
+# **63–64 t/s, the same speed as the LFM3 it replaced** — the live journal of the old
+# configuration read 60.1–66.3 t/s — so this is a 5× bigger model at the same tokens per
+# second, not the 2.6× decode penalty a dense model of this size would pay.  Hybrid
+# (SSM) models on this card run at ~100 GB/s *effective* (LFM3 measured 111 GB/s, the dense
+# Qwen2.5-VL at 290 GB/s), which is why the SSM layers cost about the same per token
+# whatever the width, and why per-token speed barely moved.
+#
+# **Two flags are a pair, and the pair is load-bearing.** `--flash-attn on` is what lets
+# `--cache-type-v q8_0` exist at all: with `--flash-attn off` this engine refuses to start,
+# `llama_init_from_model: quantized V cache requires flash_attn to be enabled` (measured
+# 2026-11-12). And `--flash-attn on` is still only half honoured: the loader answers
+# `resolve_fused_ops: layer N is assigned to device Vulkan0 but Flash Attention over K/V
+# rows is assigned to device CPU (usually due to missing support)` — the same warning the
+# Qwen2.5-VL run on this box printed, so the K/V reduce is CPU work on Pascal. Removing
+# `--flash-attn on` therefore means removing the q8_0 V cache in the same change.
+#
+# The bigger member of the family is on the shelf beside it and was measured too, because
+# "advanced" was the question and this is the boundary. `Ternary-Bonsai-2-27B-Q2_0` (7,626,008,928 B
+# + its 629,246,976 B `mmproj`) puts **6,921.11 MiB of weights on the card** (`offloaded 65/65
+# layers`, CPU-mapped 341.02), its 16 full-attention layers of the 64 make KV **33.0 KiB/token**
+# (65,536 cells = 2,176 MiB), and its recurrent state is **149.62 MiB per slot** — all four
+# slots' state is 598 MiB. `-c 131072` **fails** on this card: `ggml_vulkan: Device memory
+# allocation of size 570425344 failed`, `llama_init_from_model: failed to initialize the
+# context: failed to allocate buffer for kv cache`. At `-c 65536` it starts and decodes at
+# **24.8–26.7 tok/s**. So shipping it is one filename plus one `ctxSize`, and the trade is
+# 3× the parameters for 2.4× slower decode and 4× less context; what it is *not* is a
+# stronger model per second of wall clock, which nobody here has measured (an eval, not a
+# guess — `machines/services3/README.md` has the VLM eval harness for the image side of it).
+#
+# What is **not** on the shelf, and why: every Bonsai-2 size above 27B and the dense Qwen3.5
+# quants (Q3_K_S 11.45 GiB, IQ4_XS 13.95 GiB) do not fit 11,017 MiB of usable card at all, and
+# CPU spill is not a fallback here — four Skylake cores on a 12 GB model decode at single-digit
+# tok/s, which is a chat timeout rather than a slow answer.
 #
 # ## Why a third engine, and why this llama.cpp
 #
@@ -16,10 +87,15 @@
 #
 # ## The model file is runtime data, outside the store
 #
-# `/home/leigh-admin/Models/LFM3-1.7B-Q4_K_M.gguf` (1,099,627,808 bytes, 1.1 GB, copied
-# 2026-11-11 from `/home/cjdell/Models/` on this box, where the original remains until
-# someone decides it is dead weight).  This is the same arrangement both Strata engines
-# document: the weights are not built by the flake, are not re-prepared by an engine
+# The served file is `/srv/models/Ternary-Bonsai-2-9B-Q2_0.gguf` — **2,556,640,128 bytes**,
+# fetched 2026-11-12 from `prism-ml/Ternary-Bonsai-2-9B-gguf` on Hugging Face together with
+# `Ternary-Bonsai-2-9B-mmproj-Q8_0.gguf` (624,229,664 B), into a directory the flake creates
+# (`systemd.tmpfiles.rules` below) and nobody else populates.  LFM3's file (1,099,627,808 B)
+# is no longer served and is still where it was: `/home/leigh-admin/Models/`, itself copied
+# 2026-11-11 from `/home/cjdell/Models/`, where the original remains.  Two changes came from
+# the same measurement pass: the model moved, **and** its home moved out of `/home/leigh-admin`
+# (whose mode is `0700`) into `/srv/models` (`0755`, root-owned, files `0644`).  This is the
+# same arrangement both Strata engines document: the weights are not built by the flake, are not re-prepared by an engine
 # bump, and are the one thing a switch cannot fetch for you.  The service therefore
 # points at a path and will restart forever if it is missing (`INFRA.mkNeverGiveUp`) —
 # which is the right failure mode for a bench box someone moves disks around on, and the
@@ -43,8 +119,12 @@
 #   | **262,144**  |   **3,026 MiB** ← `ctxSize` below |
 #   | 393,216      |                    3,971 MiB |
 #
-# Straight-line: ~1,137 MiB fixed plus **7.4 KiB per token**, so even the 393 KiB row leaves
-# 7 GiB of the 11,264 MiB card untouched — **memory is not what caps this endpoint**.  What caps
+# That ladder is **LFM3's**, kept because it is the measured shape of the old model and the
+# story of what capped it.  The served model's slope is **16.6 KiB/token** (the KV rows
+# quoted above): one doubling past the trained 262,144 would need ~4 GiB more than the card
+# has, which is what makes the trained length the ceiling rather than a generous margin.
+# Straight-line on LFM3: ~1,137 MiB fixed plus **7.4 KiB per token**, so even its 393 KiB row
+# leaves 7 GiB of the 11,264 MiB card untouched — **memory is not what caps this endpoint**.  What caps
 # it is the model: the GGUF's own trained context is **262,144**, which llama.cpp volunteers as
 # soon as you ask for more (`ctx_train (262144)`).  So `ctxSize` is exactly that — the biggest
 # context this model was *trained* for, on 27% of the card.  Above it is rope extrapolation on a
@@ -75,10 +155,12 @@
 # this VLAN, which is the same exposure aibox's leaf apps have, and it is why this box's
 # firewall staying off is a decision recorded in ./networking.nix rather than an accident.
 #
-# It runs as root, reading a model from a user's home, exactly like both Strata engines.
-# The cheap upgrade is a system account plus the weights in a group-readable directory
-# outside `/home/leigh-admin` (whose mode is `0700`, which is the actual blocker) —
-# ./README.md's open items.
+# It still runs as **root**, like both Strata engines, but no longer out of a user's home:
+# the weights moved to `/srv/models` on 2026-11-12, which the flake creates `0755` root-owned
+# and populates by hand.  What that change does **not** buy is the system account — the unit
+# is still uid 0, still inherits root's `HOME` unless `StateDirectory` says otherwise (and it
+# does, for the Vulkan shader cache), and a `0700` home is still what a fresh box's `~/Models`
+# would be.  ./README.md's open items own the rest of that upgrade.
 {
   pkgs,
   INFRA,
@@ -177,13 +259,29 @@
       doCheck = false;
     });
 
-  modelsDir = "/home/leigh-admin/Models";
-  modelName = "LFM3-1.7B-Q4_K_M.gguf";
+  # Where the served weights live.  `/home/leigh-admin` is `0700`, so a root unit reading a
+  # model under it works only because uid 0 ignores the mode bits — the arrangement the
+  # README's open items name as the cheap upgrade, taken 2026-11-12: the flake creates the
+  # directory (`tmpfiles.rules` below; a `d` rule owns a directory that already holds files
+  # without emptying it), and the weights are fetched into it by hand, because no switch can
+  # download 2.4 GB of runtime data for you.
+  modelsDir = "/srv/models";
+  modelName = "Ternary-Bonsai-2-9B-Q2_0.gguf";
+
+  # The vision projector for the model above, loaded by the same `-ngl all` decision.  This
+  # is what makes `/v1/models` answer `capabilities: ["completion","multimodal"]` and
+  # `input_modalities: ["text","image","video"]`; `--no-mmproj` is the opt-out and the
+  # engine also has `--mmproj-offload`.  Measured: +624 MiB of weights, and the shipped
+  # context still fits (8,005 MiB of 11,264 MiB).
+  mmprojName = "Ternary-Bonsai-2-9B-mmproj-Q8_0.gguf";
 
   port = 8080;
 
-  # The model's trained maximum (`ctx_train = 262144`), not a memory limit — see the ladder
-  # in the header.  3,026 MiB of an 11,264 MiB card, all slots sharing one unified KV pool.
+  # The served model's trained maximum (`/v1/models` reports `n_ctx 262144 = n_ctx_train`),
+  # and it does fit here: 8,005 MiB of the 11,264 MiB card including the vision projector,
+  # measured 2026-11-12 with the whole card to itself.  LFM3's 3,026 MiB at this same number
+  # is history, in the header.  `n_slots = 4`, `kv_unified = 'true'` (the server's own load
+  # line), so the 4,352 MiB KV pool is shared, but 4 × 50.25 MiB of recurrent state is not.
   ctxSize = 262144;
 
   # Which Vulkan device the model lands on.  `--list-devices` on the box is the only
@@ -226,8 +324,15 @@ in {
   # hunt — which is how the device string above gets re-measured.
   environment.systemPackages = [engine];
 
+  # The weights' home is the flake's; the weights themselves are runtime data.  A `d` rule
+  # owns the directory on every activation without touching what is in it, so a reinstalled
+  # box gets the path and a moved model file still fails the way the header says it fails: a
+  # unit that restarts forever and a door that answers 502, with `failed to load model` in the
+  # journal.
+  systemd.tmpfiles.rules = ["d ${modelsDir} 0755 root root -"];
+
   systemd.services.llama-server = INFRA.mkNeverGiveUp {
-    description = "llama.cpp (Vulkan) — LFM3-1.7B on the GTX 1080 Ti, services3";
+    description = "llama.cpp (Vulkan) — Ternary-Bonsai-2-9B-Q2_0 + vision on the GTX 1080 Ti, services3";
 
     after = ["wait-for-network.service"];
     wants = ["wait-for-network.service"];
@@ -240,6 +345,7 @@ in {
           --port ${toString port} \
           --model ${modelsDir}/${modelName} \
           --alias ${builtins.substring 0 (builtins.stringLength modelName - 5) modelName} \
+          --mmproj ${modelsDir}/${mmprojName} \
           --device ${vulkanDevice} \
           --n-gpu-layers all \
           --ctx-size ${toString ctxSize} \

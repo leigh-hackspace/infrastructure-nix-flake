@@ -245,7 +245,8 @@ in {
         request carrying a base64 picture or a long transcript is not a 1 MiB body.'';
     };
 
-    # services3's llama.cpp (Vulkan, GTX 1080 Ti) serving LFM3-1.7B —
+    # services3's llama.cpp (Vulkan, GTX 1080 Ti), serving Ternary-Bonsai-2-9B-Q2_0 +
+    # vision since 2026-11-12 (LFM3-1.7B before that) —
     # `machines/services3/llama.nix`.  Direct row, LAN-only by the default `acl`, and
     # deliberately carrying **no** `strataBearer`: that field injects `strata_api_key`,
     # one secret shared by the two Strata engines precisely because the door injects one

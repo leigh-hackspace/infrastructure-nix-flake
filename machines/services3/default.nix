@@ -8,7 +8,8 @@
 }: {
   networking.hostName = "services3";
 
-  # The engine: llama.cpp (Vulkan) on the GTX 1080 Ti, serving LFM3-1.7B, reached from
+  # The engine: llama.cpp (Vulkan) on the GTX 1080 Ti, serving **Ternary-Bonsai-2-9B-Q2_0
+  # and its vision projector** since 2026-11-12 (LFM3-1.7B before that), reached from
   # the front door as `llama.int.leighhack.org`.  ./nvidia.nix is what makes the card a
   # Vulkan device at all, and ./llama.nix carries the sizing, the model path and the
   # reachability argument.
