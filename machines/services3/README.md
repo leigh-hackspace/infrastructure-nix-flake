@@ -196,7 +196,11 @@ the embedded web UI taken out. That is a failure-driven choice, and the whole ar
 `.override`, and what each line of the `overrideAttrs` removes) is in the header of
 ./llama.nix — the short version is that upstream's flake makes `webui` an attribute of the
 `mkDerivation` set, which makes it a *derivation input*, so asking for "no UI" does not stop
-~830 npm derivations being built and then one of them failing.
+its **808 npm tarball derivations** from being built — measured at this pin with
+`grep -c "^building .*\.tgz\.drv"` over the failing build's log, because the first version of
+this sentence said "~830" off the top of an agent's head, which is the exact failure mode
+`docs/nix-dev-workflow.md` warns about (a doc's "measured on the box" quoting somebody's
+earlier guess). One of those 808 then fails.
 
 Two commands re-verify the claim, because it is a claim about somebody else's build:
 

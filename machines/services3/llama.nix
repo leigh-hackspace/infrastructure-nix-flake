@@ -69,8 +69,9 @@
   #   * **Why not upstream's flake package:** its web UI is not optional in practice.
   #     `webui` is an attribute of the `mkDerivation` set, which makes it a
   #     *derivation input* whatever `useWebUi` says, so neither `.override { useWebUi =
-  #     false; }` nor a scope override stops ~830 npm fetch derivations being built —
-  #     and then the UI build itself fails in the sandbox:
+  #     false; }` nor a scope override stops the **808 npm tarball derivations** it needs
+  #     from being built (measured at this pin: `grep -c "^building .*\.tgz\.drv"` over the
+  #     build log) — and then the UI build itself fails in the sandbox:
   #
   #       EACCES: copyfile '/nix/store/…-source/logo/svg/app/web/favicon-dark.svg'
   #               → '/build/source/static/favicon-dark.svg'
