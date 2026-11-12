@@ -825,6 +825,19 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
      `/`**: llama.cpp's UI is gzipped into the binary and `/` answers `415` to a client that
      sends no `Accept-Encoding: gzip` (`machines/services3/README.md`).
 
+- **`machines/services3/README.md` describes a box that no longer exists: it says "running
+  nothing yet" and "20 GiB free", and both were untrue when the box was read on
+  2026-11-12** (`llama-server.service` active since the 2026-11-11 engine work; disk at
+  **9.3 GB free of 109 GB (91 %)**, GC'd to 84 GB the same day by the operator). The header
+  line and the "What it runs" section were written before the engine landed, and the disk row
+  predates a store whose growth nobody was watching. **Blocks:** nothing, but it is the file
+  an agent is told to read *before* deciding whether that box can host anything — "20 GiB
+  free" is the difference between "yes, try it" and "no". **To do:** update the header,
+  "What it runs" and the Disk row, and add the thing the investigation actually needed:
+  that the free space on this box is the constraint on every experiment, and that `/tmp` is
+  on `/`. Re-verify with: `df -h /`, `systemctl is-active llama-server`,
+  `grep -n "nothing yet\|GiB free" machines/services3/README.md`.
+
 ## Nightly units that are red on services1 (found 2026-11-03 while reading `is-system-running`)
 
 `systemctl is-system-running` on services1 says **degraded**, and it has been saying it for
@@ -2354,3 +2367,91 @@ line and the units' own read of `ups.status` returned `OL`; `upsd` binds
 `ups-notice` in one boot does fire (`Type=oneshot`, no `RemainAfterExit`), so every
 outage of a boot gets its broadcast; and `usbhid-ups` on `port = auto` finds this
 one UPS cleanly and reports it as an APC HID unit.
+
+## Frigate detection quality (services1) — opened 2026-11-12, `docs/frigate-false-positives-2026-11-12.md` owns it
+
+- **The measured fix for Frigate's `person` false positives is two `min_area` lines, and they
+  are not applied** (opened 2026-11-12, `machines/services1/services/frigate.nix`,
+  `docs/frigate-false-positives-2026-11-12.md` §7). Box **height** in detect pixels separates
+  the two populations almost cleanly: a floor at 150 px drops **66.5 % of never-moving `person`
+  tracks and 3.9 % of moving ones**, and Frigate expresses that only as an area, so the
+  measured per-camera cuts are `main_space: 22932` (`0.00276` of frame, 74.9 % / 6.9 %) and
+  `workshop: 472236` (`0.05693`, 74.7 % / 6.5 %) at each cohort's p75. The same table says
+  **do not** do it on `cam8`, `woodwork` or `rack_corridor` (cost 22–51 % of moving detections
+  — the populations overlap there). **Blocks:** nothing; it is detection-quality debt —
+  18.4 % of `person` events and 20.5 % of `person` event-hours network-wide, main_space
+  25.8 % / 24.2 %, are tracks that never move a fiftieth of the frame width. **To do:** add
+  `objects.filters.person.min_area` to those two cameras in `/srv/frigate/config/config.yaml`
+  — which is a runtime bind mount, so the edit is **out-of-band and the flake will not notice
+  it** (see the 2026-10-22 item "frigate's camera config is not in the repo and is deciding to
+  do nothing") — restart `podman-frigate`, read the values back from `/api/config` rather than
+  evaluating anything (rule 21), and re-measure after seven days with the query in §9 of the
+  doc. Both of the operator-confirmed false positives fall under these floors: 82 px and
+  147 px tall. Re-verify with:
+  `curl -s http://127.0.0.1:5000/api/config | jq '.cameras.main_space.objects.filters.person'`.
+
+- **`stationary.max_frames` was recommended on 2026-11-11 and withdrawn on 2026-11-12 — do not
+  re-recommend it from the old numbers** (opened 2026-11-12,
+  `docs/frigate-false-positives-2026-11-12.md` §7). The expiry is
+  `motionless_count - detect.stationary.threshold > max_frames` (`track/centroid_tracker.py:95-106`,
+  default unset = never), and `250` frames at 5 detect-fps ≈ 50 s of stillness measured as
+  704 events (4.8 % of all, 25.9 % of never-moving) and 163.5 hours (19.5 % of hours) — with
+  36.4 % of *moving* events longer than the same cutoff. The reason it is withdrawn is that the
+  never-moving cohort is not all junk: labelling crops from it produced "a person sitting on a
+  bench" and an 11.7-hour track that is a real person per the detector's own account, so
+  expiring stillness at 50 s risks suppressing people who sit still, bought with hours nobody
+  asked to keep. **Blocks:** nothing. **To do:** only revisit if the size filter lands and
+  leaves a residue, and then only with labelled crops. Re-verify with: label 20 crops from the
+  never-moving cohort first; the proxy is not the ground truth.
+
+- **The GPU question for Frigate is closed on this box and re-opens only with a Turing or newer
+  card** (opened 2026-11-12, `docs/frigate-false-positives-2026-11-12.md` §3–§4). Recorded so it
+  is not re-derived: the Coral is at ~37 % of its ceiling so throughput is not the cause of any
+  false positive; the iGPU matches the Coral at 300² (8.2 ms vs 8.87 ms) but cannot run a 640²
+  model (34.8 ms → ~28 inf/s against ~41 inf/s of demand); and **no detector plugin in Frigate
+  0.18.2 can address sm_61**, so the `services3` GTX 1080 Ti — 8 GB free of VRAM, plenty of
+  FP32 — can only be a sidecar, through `type: zmq` (`tcp://` endpoints work; the request is
+  `[header_json, tensor_bytes]`, the reply `[20,6] float32`, `request_timeout_ms` defaults to
+  200) or `type: deepstack` (whose own docstring says *Not recommended*, 0.1 s timeout). Both
+  **return a zero array on timeout**, so a dead sidecar is indistinguishable from a quiet
+  building. **Blocks:** nothing. **To do:** if a bigger primary model is ever wanted, buy the
+  Turing-or-newer card and use upstream's `tensorrt` path rather than writing the ncnn+`zmq`
+  server this network would then own and feed, on a card whose driver is `legacy_580` — the last
+  branch with Pascal, verified present only at this flake's nixpkgs pin. Re-verify with:
+  `ls /opt/frigate/frigate/detectors/plugins/` in the container, and
+  `nix-instantiate --eval -E '(import <nixpkgs>{}).linuxPackages.nvidiaPackages.legacy_580.version'`.
+
+- **A vision-LLM verifier is possible on `services3` with no new code, and its *verdict* is not
+  usable — only its self-consistency is** (opened 2026-11-12,
+  `docs/frigate-false-positives-2026-11-12.md` §6). `Qwen2.5-VL-7B-Instruct` Q4_K_M + mmproj
+  (5.6 GB) ran on the installed `llama-cpp-0.9.0` (`bin/llama-mtmd-cli` proves mtmd is compiled
+  in) at 9,445 / 11,264 MiB **alongside** production LFM3, at a median 1.62 s/image. Across two
+  rounds the verdict flipped with the order of two output lines (round 1: verdict-first said
+  PERSON 7/7, description-first 4/7; round 2: verdict-first NOT_PERSON 6/8, description-first 7/8
+  PERSON), and it offered `a photo of a person` nine times including on moving humans. What
+  separated the populations was **disagreement between the two orders**: 7/8 of never-moving
+  crops vs 3/15 of moving ones, so "both orders agree it is a person" is 92 % precise and
+  escalates 7/8 of the junk — a triage ranker, not a filter. **Blocks:** nothing. **To do:**
+  nothing unless §7's filter proves insufficient; if it is, round 3 is one download, because the
+  pinned `llama-cpp-upstream` (`7bcbc04`) already has `QWEN3VL` in `tools/mtmd/mtmd.cpp` and
+  official `Qwen3-VL-2B/4B-Instruct-GGUF` repos exist. Note two hard constraints learned the
+  expensive way: **retention makes verification retrospective- impossible** (the same
+  `snapshot.jpg` URL answered 200 on 2026-11-11 and 404 on 2026-11-12), and a 2193×2160 crop
+  costs 17.9 s of vision prefill (~214 tok/s, against text prefill at 1,618) — cap inputs at
+  ~1024 px. The 5.6 GB of model files are parked at `services3:~/vlm-eval/`, off-flake, on the
+  box with the least free disk. Re-verify with: `ls $(dirname $(readlink /proc/$(systemctl show
+  llama-server -p MainPID --value)/exe)) | grep mtmd`, and the two prompt-order scripts in §6.
+
+- **Three Frigate API/MQTT facts that invert an obvious design** (opened 2026-11-12,
+  `docs/frigate-false-positives-2026-11-12.md` §5). `PUT /api/events/{id}/false_positive` is
+  **not a local flag** — it is the Frigate+ submission endpoint, 400s without `PLUS_API_KEY`, and
+  it uploads the crop off-box; the local surfaces are `POST /api/events/{id}/sub_label`,
+  `PUT /api/events/{id}/end` and the review routes `set_multiple_reviewed` / `set_not_reviewed`,
+  all `require_role(["admin"])`. `review.genai` writes descriptions and sub-labels only — severity
+  is computed by `review/maintainer.py` from config, so **GenAI cannot demote an alert**.
+  And `average_estimated_speed` is 0.0 in every event not because the feature is broken but
+  because it is only computed inside a zone with `distances` (`track/tracked_object.py:242,250`) —
+  so a speed gate is available, not dead. **Blocks:** nothing; it blocks *designs*. **To do:**
+  nothing; write any future alert-triage integration against the local routes and zones.
+  Re-verify with: `grep -n "false_positive\|sub_label" /opt/frigate/frigate/api/event.py` and
+  `grep -n "distances" /opt/frigate/frigate/track/tracked_object.py` in the container.
