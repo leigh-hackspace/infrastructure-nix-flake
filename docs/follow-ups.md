@@ -2612,6 +2612,22 @@ Three consequences to know before debugging anything else on this box:
   last started. `97dahyfv…` at 02:54 today, `f0jwild…` at 2026-11-04, matching the bench passes
   `machines/aibox/STRATA.md` records.
 
+*And it is the live engine, not a stale leftover.* Re-running the aibox toplevel build from
+services1 at the **new** pin (2026-11-14, after the deploy) fails on that same path:
+
+```
+error: hash mismatch importing path '/nix/store/97dahyfv…-strata-unstable';
+         specified: sha256:1qz5jabmdmmhgcfcizbj30cxc5ksk6j59fjgf62q6wi321mv4h3n
+         got:       sha256:1vzph3ijra05z1z8glr6c5gw10a2lg94v02gclmdsgyrzdhn4k2r
+```
+
+which is the output of the drv the current `flake.lock` wants, the path
+`systemctl show strata -p ExecStart` names, and therefore **the engine aibox is running is not
+reproducible from the flake by anyone but aibox** — the box will happily serve its own copy
+forever (`just deploy aibox` succeeded at 16:0x today, reusing exactly this path, so the engine
+never even restarted), and every other machine's attempt to obtain it fails. `verify` →
+"modified", `find -newer` → `__pycache__`: the two readings belong to the one mechanism.
+
 **The fix is one line per engine box**, and it is deliberately not applied here because it
 restarts a loaded inference box and lands in the middle of the 2026-11-14 tuning work
 (`machines/services2/STRATA-TUNE-2026-11-14.md`, and aibox's engine was started at 03:16 today):
