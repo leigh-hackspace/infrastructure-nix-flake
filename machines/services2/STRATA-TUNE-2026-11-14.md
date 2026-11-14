@@ -14,9 +14,11 @@ power-capped, not clock-throttled, not PCIe-bound and not CPU-scheduling-bound**
 prefill and decode both run at ~1,900 MHz of a 1,950 MHz maximum, drawing 157 W and 98 W
 of a 170 W limit that cannot be changed (min = max = 170 W on this VBIOS), and a card
 pushing its **full bf16 peak of 26 TFLOP/s** under cuBLAS draws only **95 W**.  The one
-thing that moved a meter was `STRATA_PF_FUSED=1` (**+5 to +11 % on 8k prompts, +1.7 % at
-28k**) and it is listed upstream among "options that change answers", so it is **not
-deployed** — the measured drift is below, and the decision is the owner's.
+thing that moved a meter was `STRATA_PF_FUSED=1` — **+5 to +11 % on 8k prompts, +1 to +3 %
+at 28k, decode unmoved** — and since it is listed upstream among "options that change
+answers", it sat undeployed until the question was answered with an answer key rather than
+a hash: **8 items scored, 8 correct before it and 8/8 after** (§"The one win").  **It is
+deployed now.**
 
 ---
 
@@ -157,7 +159,7 @@ What each group says:
   `STRATA_SELECT_TWO_PASS`, `STRATA_EMB_REUSE_ACCOUNT` are all within noise, and the two
   28k numbers that moved at all moved the wrong way.
 
-## The one win, and why it is sitting here undeployed
+## The one win, and the measurement that decided it
 
 `STRATA_PF_FUSED=1` at start-up prints `strata: prompt experts on the fused int8 kernels
 (STRATA_PF_FUSED=1, #136)` and changes the chunking decision the log explains on its own:
@@ -167,38 +169,58 @@ What each group says:
 > layer-major walk`
 
 With the fused kernels the chunk becomes 8192, so an 8,089-token prompt is **one** chunk
-instead of 6656 + a tail.  Measured twice:
+instead of 6656 + a tail.  Measured in the arms, then again on the live endpoint after
+deploying:
 
-| | 8k prompt | 28k prompt |
-|---|---|---|
-| control (five clean passes) | 1,048-1,056 tok/s | 1,123-1,146 |
-| `STRATA_PF_FUSED=1` | **1,170.5** and **1,099.4** | **1,160.2** and **1,160.7** |
+| | 8k prompt | 28k prompt | decode |
+|---|---|---|---|
+| control (five clean arm passes) | 1,048-1,056 tok/s | 1,123-1,146 | 31.2-32.6 |
+| `STRATA_PF_FUSED=1`, arms | **1,170.5**, **1,099.4** | **1,160.2**, **1,160.7** | unmoved |
+| **`STRATA_PF_FUSED=1`, live endpoint through the door** | **1,105.3**, **1,167.0** | **1,156.3**, **1,156.2** | 22.5 short / 32.3 |
 
-**+8 % ± 4 % at 8k, +1.7 % at 28k.**  What it costs is stated by upstream's own row —
-"Fused int8 prompt experts … Replaces the MMQ prompt kernels", in the table headed
-*Options that change answers* — and this sweep put a number on it for **this** pack with
-three greedy prompts: `fib` `7c8cd8` → `455df6`, `sortdoc` `84ffb8` → `4b5d4b`, `arith`
-`f8423c` → `f8423c` (the arithmetic one, "237 * 48 + 19", still answers 11395).  Two of
-three first-96-token continuations change.  Not a crash and not a correctness failure,
-but a different model output on a coding endpoint, on a box whose only user is a person
-whose prompts they are.
+### Why "the hash changed" was not the evidence to decide on
 
-So `STRATA.md`'s rule applies verbatim: *shipping one of these is a decision, not a
-tuning win: ask, with the number attached.*  **The ask is: +8 % prompt speed at 8k and
-+1.7 % at 28k, in exchange for two-thirds of greedy continuations changing on a
-three-prompt probe, `STRATA_PF_FUSED=1` in `strata.nix`'s `env`.**  If the answer is yes,
-add it to `configFile.env` next to `CUDA_VISIBLE_DEVICES`, redeploy, and put the receipt
-in the table above.  If the answer is "measure it properly first", the shape of that
-measurement is a real eval (perplexity or a KL against the unfused path over held-out
-completions), not three greedy prompts.
+Upstream's own row is honest — "Fused int8 prompt experts … Replaces the MMQ prompt
+kernels", in the table headed *Options that change answers* — and
+`strata-answer-check.py` confirmed the drift on this pack with three greedy prompts:
+`fib 7c8cd8→455df6`, `sortdoc 84ffb8→4b5d4b`, `arith f8423c→f8423c`.  **But a changed
+fingerprint is not a worse answer, and treating it as one would be a category error:**
+under greedy decoding a single tie-break diverges the entire continuation, so *any*
+last-bit rounding change reads as "2 of 3 continuations differ".  That number measures
+sensitivity, not quality, and the honest question is whether the model is still **right**.
 
-One more datum, because it may save someone time: `STRATA_HC_SPLIT=0`'s fingerprints are
-`d97d83 / 4b5d4b / f8423c` — **`sortdoc` agrees with `PF_FUSED`'s** and not with control.
-These two switches plausibly perturb the same rounding step, which is worth knowing if
-either is ever bisected against a bad completion.
+So `strata-answer-score.py` exists: nine short items with an **answer key** (arithmetic,
+integer division, a negative, a slice length, a required Rust expression, a Python `len`,
+a binary literal, a modulus, a small sum), greedy, scored by regex on the emitted
+`content` — with a third state, `INCOMPLETE`, because a reasoning model whose token budget
+runs out mid-calculation has not answered *wrongly*.  (That distinction paid for itself on
+the first control run: at `max_tokens=64` two items "failed", one of them showing
+`…=1139` with the correct answer one token away.  A budget artefact nearly decided a
+deploy.)
+
+| | scored | correct | incomplete |
+|---|---|---|---|
+| control (live, before the line was added) | 8 | **8/8** | `bit` |
+| `STRATA_PF_FUSED=1` (live, after) | 8 | **8/8** | `bit` |
+
+Same score, same items, same one abstention — and the speed arrived.  **Deployed**,
+`env.STRATA_PF_FUSED = "1"` in `strata.nix`'s `configFile`, with the numbers and the
+revert in the comment above it.
+
+What that does *not* claim: that 8 arithmetic-and-one-liner items are a code-quality
+benchmark.  They are a guard against the blunt failure mode ("it got dumber in a way you
+can see").  A real eval — perplexity, or KL against the unfused path over held-out
+completions — is still the thing that would prove more, and it is still worth doing if
+this switch is ever suspected.  And one datum worth keeping: `STRATA_HC_SPLIT=0`'s
+fingerprints are `d97d83 / 4b5d4b / f8423c` — **`sortdoc` agrees with `PF_FUSED`'s** and
+not with control, so the two switches plausibly perturb the same rounding step, which is
+worth knowing if either is ever bisected against a bad completion.
 
 ## Shipped
 
+- **`env.STRATA_PF_FUSED = "1"`** in `strata.nix`'s `configFile` — the one measured win
+  (§above): +5 to +11 % at 8k, +1 to +3 % at 28k, decode unmoved, and answer-key-correct
+  before and after.  It is not answer-*neutral*, and the revert is one line.
 - **`boot.kernel.sysctl."vm.swappiness" = 10`** in `machines/services2/strata.nix`.  The
   arena is 23.9 GiB of *swappable* shmem on a 30 GiB box with a 16 GiB swap file, and at
   the kernel's default 60 the arena is the cheapest thing to reclaim — the pool's next
@@ -226,7 +248,9 @@ pack (Swift 1.5's IQ1_M is a different geometry), reopens the question.
 
 What is genuinely still open, in the order I would try it:
 
-1. **`STRATA_PF_FUSED=1`** — the ask above.  It is the only measured win.
+1. ~~**`STRATA_PF_FUSED=1`**~~ — **done, deployed 2026-11-14** (see §"The one win").  Its
+   follow-up, if anyone wants a stronger claim than nine answer-keyed items: a real eval
+   (KL or perplexity against the unfused path over held-out completions).
 2. **A different prompt-shaped workload than a synthetic 8k wall of text.** Every prefill
    number here is `Repeat the digit N exactly.` × 9,000, which is the *best* case for the
    prefix cache and probably not what a pi session's context looks like.  Real receipts
@@ -257,6 +281,11 @@ sudo machines/services2/strata-tune/strata-exp.sh auto auto '{}' '["--aux-cpus",
 sudo machines/services2/strata-tune/strata-exp.sh auto auto '{"STRATA_PF_FUSED":"1"}' '[]' \
     machines/services2/strata-tune/strata-bench.py strata-answer-check.py
 python3 machines/services2/strata-tune/strata-tune-report.py   # /tmp/arm-*.log -> a table
+
+# the greedy answer checks: the fingerprint (does output move) and the score (is it right)
+python3 machines/services2/strata-tune/strata-answer-check.py http://127.0.0.1:8123
+python3 machines/services2/strata-tune/strata-answer-score.py  http://127.0.0.1:8123
+python3 machines/services2/strata-tune/strata-answer-score.py  https://strata.int.leighhack.org  # live, via the door
 
 # the box under real traffic, phases labelled in one CSV, no downtime (~3 min)
 sudo python3 machines/services2/strata-tune/strata-phases.py   # -> /tmp/strata-phases.csv

@@ -1049,9 +1049,12 @@ Asked, while pi is being served by this very unit, "can `git@github.com:Zagitta/
   retrying in the meantime.
 - **The arms table for this box is `STRATA-TUNE-2026-11-14.md`** — read it before adding
   an arm, because most of the obvious dials are already measured flat (and it carries the
-  noise floor a claim has to clear).  Its one open decision is `STRATA_PF_FUSED=1`:
-  +8 % prompt at 8k, +1.7 % at 28k, and two of three greedy continuations change, so it is
-  undeployed pending the owner's answer.
+  noise floor a claim has to clear).  Its one win is **deployed**:
+  `STRATA_PF_FUSED=1` in `strata.nix` — +5 to +11 % at 8k, +1 to +3 % at 28k, decode
+  unmoved.  It changes answers in the sense that any last-bit rounding change does under
+  greedy decoding, which is why the decision was taken on `strata-answer-score.py` (nine
+  greedy items with an answer key: **8/8 correct before it, 8/8 after**) rather than on a
+  changed hash.  Revert = delete the line, `just switch`.
 - **The `AIBOX` box has no equivalent — re-read aibox's `STRATA.md` before
   touching engine flags.** Every knob there (cache size, `--pcie-frac`,
   `--spec`, `--pool-workers`) was measured on the iGPU and does not transfer

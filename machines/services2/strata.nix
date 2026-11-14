@@ -210,6 +210,35 @@ let
       # driver, which NixOS exposes here (hardware.graphics + hardware.nvidia).
       lib_dirs = ["/run/opengl-driver/lib"];
       env.CUDA_VISIBLE_DEVICES = "0";
+      # The fused int8 prompt-expert kernels (#136).  **This is the one switch in the
+      # 2026-11-14 sweep (23 arms) that measured faster, and it is not answer-neutral: it
+      # is listed upstream among "options that change answers".**  Numbers on this pack,
+      # 8,089-token prompt: control 1,048 / 1,048 / 1,050 / 1,056 / 1,056 tok/s against
+      # fused **1,170.5** and **1,099.4** (+4 to +12 %, two reps); 28k: 1,123-1,146 against
+      # **1,160.2** and **1,160.7** (+1.7 %).  Decode does not move - the fused kernels are
+      # the *prompt* path.  Mechanism, read off the engine's own log: the chunk ceiling goes
+      # 6,656 -> 8,192, so an 8k prompt is one chunk instead of 6,656 + a tail.
+      #
+      # What it costs, measured rather than assumed.  Greedy fingerprints move on 2 of 3
+      # prompts (`fib`, `sortdoc`; `arith` holds) - which is what ANY last-bit change does
+      # under greedy decoding, so it is not evidence of degradation, and the question that
+      # actually decides a deploy is whether the model is still *right*.  It is:
+      # `strata-answer-score.py` (nine short greedy items with an answer key), run through
+      # the front door **before** this line: 8 scored, **8 correct**, `bit` incomplete; and
+      # **after** it: 8 scored, **8 correct**, the same `bit` incomplete.  Same score, same
+      # incomplete item, and the speed arrived - live endpoint, 8k **1,105.3 / 1,167.0**
+      # against control's 1,048-1,056, 28k **1,156.3 / 1,156.2** against 1,123-1,146, decode
+      # where it always was, and the engine's own `prompt chunk auto: 8192 tokens` (was
+      # 6656) in `/var/lib/strata/strata.log`.
+      #
+      # So this is a different model output, honestly labelled, at +5 to +11 % prompt speed:
+      # this endpoint serves pi's coding, and if completions ever read worse the revert is
+      # deleting the line below and `just switch`.
+      # Re-verify with:
+      #   sudo grep "fused int8" /var/lib/strata/strata.log | tail -1
+      #   python3 machines/services2/strata-tune/strata-answer-score.py https://strata.int.leighhack.org
+      #   python3 machines/services2/strata-tune/strata-bench.py https://strata.int.leighhack.org
+      env.STRATA_PF_FUSED = "1";
     }
   );
 in {
