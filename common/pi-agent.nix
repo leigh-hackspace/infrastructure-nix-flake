@@ -227,20 +227,19 @@
       note = e.note;
     };
 
-  endpointsJson = pkgs.writeTextFile {
-    name = "pi-agent-endpoints.json";
-    destination = "/endpoints.json";
+  # `writeText`, not `writeTextFile`: the latter's store path is a **directory** with the
+  # file inside it, and handing that path to `--config` was this module's first deploy
+  # failure — `read /nix/store/…-pi-agent-endpoints.json: Is a directory (os error 21)`, the
+  # tool exits 1, and because a freshly started unit failing *is* an activation failure,
+  # `nixos-rebuild switch` exited 4 on a box whose configuration had otherwise applied
+  # completely (measured 2026-11-14, services1). `writeText` yields a path that *is* the file.
+  endpointsJson = pkgs.writeText "pi-agent-endpoints.json" (builtins.toJSON {
     # `endpoints` is a **list**, not an attrset: the order is the order the tool probes
     # and prints in, and a list keeps the journal stable across boxes instead of
     # alphabetical-by-luck. `builtins.attrValues` on an attrset is already sorted by
     # name, which is what the tool re-sorts models by for the same reason.
-    text = builtins.toJSON {
-      # `map (id: …)`, not `map endpointRow`: the latter half-applies a curried
-      # function and `toJSON` then fails on a function (measured 2026-11-14, on the
-      # first `nix build` of this file).
-      endpoints = map (id: endpointRow id cfg.endpoints.${id}) (lib.attrNames cfg.endpoints);
-    };
-  };
+    endpoints = map (id: endpointRow id cfg.endpoints.${id}) (lib.attrNames cfg.endpoints);
+  });
 
   unitsFor = user: let
     u = config.users.users.${user};
@@ -287,10 +286,14 @@
         Environment = "HOME=${u.home}";
         TimeoutStartSec = 30 + cfg.probeTimeout * 2 * builtins.length (builtins.attrNames cfg.endpoints);
         # A failed probe is a *result* here (the tool exits 0 and records it), so
-        # anything reaching `on-failure` is the config or the filesystem: worth one
-        # retry, not a retry loop.
-        Restart = "on-failure";
-        RestartSec = "1min";
+        # anything non-zero is the config or the filesystem — and the answer is one loud
+        # failed unit, not a retry loop. `Restart` was set until the first deploy, where
+        # one bad argument left the unit restarting every minute and sitting in
+        # `activating` indefinitely: that keeps `systemctl is-system-running` off
+        # `operational` on an otherwise healthy box (the false-incident shape
+        # `docs/follow-ups.md` already objects to), and it re-tries a mistake that cannot
+        # fix itself. The timer asks again in `refreshInterval`, which is the retry.
+        Restart = "no";
         # `getExe'` with the program named rather than `getExe`: the crane-built
         # crates in this repo set no `meta.mainProgram`, and nixpkgs now warns about
         # guessing it — and a warning is a finding (AGENTS.md rule 9).

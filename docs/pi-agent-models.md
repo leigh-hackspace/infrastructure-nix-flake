@@ -131,6 +131,7 @@ design: a config tool that succeeds silently is indistinguishable from one that 
 
 | situation | behaviour |
 | --- | --- |
+| the generated config cannot be read | the tool exits 1 and names the finding, **and the deploy fails with it** — a newly started unit that fails *is* an activation failure, so `switch` exits 4. Right trade for a file nothing can be done without, and it is how the first deploy caught `--config` naming a `writeTextFile` **directory** rather than the file inside it (`read …: Is a directory`; the module uses `pkgs.writeText` now, whose path *is* the file). `Restart = "no"` on the unit for the same reason: a retry loop buries the one loud failure and holds `systemctl is-system-running` off `operational` on an otherwise healthy box. What the *operator* must not do is chain a confirm through a pipe — see AGENTS.md rule 4, bitten 2026-11-14 on this very switch |
 | engine stopped / door 502s | provider keeps its previous `models` list; `keptStale` in the status; `note: <id>: keeping the previous model list (N model(s)) — GET …: HTTP 502` |
 | engine answers `200` with **no models** | treated as *not usable* — a loading engine must not delete every model from every box. The status records the empty answer with both HTTP codes |
 | `/props` unreachable, `/models` fine | context and modality fall back to the last run; `reasoning` likewise (a lost `/props` must not turn thinking off). Recorded as `ctxSource: "previous run"`, `propsSaysThinking: null` |

@@ -423,6 +423,14 @@ X first", X has already cost someone a day.
   readlink /run/current-system /nix/var/nix/profiles/system-good   # equal = confirmed
   ```
 
+  **A pipeline in that chain lies to the `&&`.** `nixos-rebuild switch … | tail -6 && sudo
+  nixos-confirm` confirms whatever `tail` decided, and `tail` decides 0 — hit 2026-11-14 on
+  services1, where the switch died at status 4 (one bad unit argument: `--config` naming a
+  directory) and the confirm ran anyway, so the two `readlink`s came back equal and looked
+  like a healthy deploy while the activation had in fact failed and auto-rollback was off.
+  Redirect and test the status (`cmd > log 2>&1; rc=$?`) rather than piping it, or just use
+  `just switch`, which is already correct.
+
   **An activation that runs longer than five minutes outruns its own safety net.** The timer
   is armed when a configuration is activated, so a switch that takes over five minutes — one
   where `security.acme` has to issue a certificate, because `nginx` is ordered after the acme
