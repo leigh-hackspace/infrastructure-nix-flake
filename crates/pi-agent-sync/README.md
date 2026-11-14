@@ -6,7 +6,7 @@ is Nix and the model list is a probe — is `docs/pi-agent-models.md`; this file
 code-level trap list.
 
 ```
-pi-agent-sync --config /etc/pi-agent/endpoints.json --out ~/.pi/agent/models.json \
+pi-agent-sync --config /nix/store/…-pi-agent-endpoints.json --out ~/.pi/agent/models.json \
               --status ~/.pi/agent/pi-agent-status.json [--settings ~/.pi/agent/settings.json]
 pi-agent-sync --report ~/.pi/agent/pi-agent-status.json
 ```
@@ -18,7 +18,7 @@ pi-agent-status` runs the second. `--dry-run` prints the document with credentia
 
 | file | job |
 | --- | --- |
-| `src/config.rs` | read `/etc/pi-agent/endpoints.json`. Absent field → default; malformed field → **refuse the whole file, listing every finding** |
+| `src/config.rs` | read the generated endpoint document (a `pkgs.writeText` store path the unit is handed directly — there is no `/etc/pi-agent`). Absent field → default; malformed field → **refuse the whole file, listing every finding** |
 | `src/probe.rs` | the two GETs, the two dialects, and what each engine said. Never fails: a dead endpoint is a `Report` with an `error` |
 | `src/render.rs` | the merge with the file that is already there, the fallback ladders, and the redaction |
 | `src/main.rs` | arguments, one line per endpoint, the status document, `--report` |

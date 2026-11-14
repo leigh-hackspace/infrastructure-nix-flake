@@ -1,8 +1,9 @@
 # DATA — plain attrset read by `import` from anywhere in the tree; it is not a module and defines no options.
 #
 # Every inference endpoint the fleet's `pi` installs may dial, and what `pi-agent-sync`
-# is allowed to assume about each one. Rendered into `/etc/pi-agent/endpoints.json` by
-# `common/pi-agent.nix`, read by `crates/pi-agent-sync`, which turns it into
+# is allowed to assume about each one. Rendered by `common/pi-agent.nix` into a
+# `pkgs.writeText` store path, which the unit hands straight to `--config` (there is no
+# `/etc/pi-agent`), read by `crates/pi-agent-sync`, which turns it into
 # `~/.pi/agent/models.json` on every box. `docs/pi-agent-models.md` owns the mechanism;
 # this file is the table.
 #

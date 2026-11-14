@@ -13,16 +13,19 @@ change is three files and a rule about where each fact is allowed to live.
 ## The three pieces
 
 ```
-common/pi-endpoints.nix  ──(submodule defaults)──▶  /etc/pi-agent/endpoints.json   0444, no secrets
-   the endpoint table                                      │
-   (name, URL, dialect, verified compat,                    ▼
-    output-limit policy)                        pi-agent-<user>.service  (oneshot, User=<user>)
-                                                pi-agent-<user>.timer    (OnBootSec=2min,
-                                                         │                OnUnitActiveSec=15min,
-                                                         │                Persistent)
-                                                         ▼
-                                          $HOME/.pi/agent/models.json         ← pi reads this
-                                          $HOME/.pi/agent/pi-agent-status.json ← what was probed
+common/pi-endpoints.nix  ──(pkgs.writeText)──▶  <store>/pi-agent-endpoints.json
+   the endpoint table                              world-readable, because it holds no secret;
+   (name, URL, dialect, verified compat,           and a path that *is* the file — `writeTextFile`
+    output-limit policy)                           hands back a directory, which is the first
+                                         │         deploy's activation failure, below
+                                         ▼
+                        pi-agent-<user>.service   (oneshot, User=<user>, --config <store path>)
+                        pi-agent-<user>.timer     (OnBootSec=2min, OnUnitActiveSec=15min, Persistent)
+                                         │
+                                         ▼
+                        $HOME/.pi/agent/models.json          ← pi reads this
+                        $HOME/.pi/agent/pi-agent-status.json ← what was probed, and where each
+                                                               number came from
 ```
 
 * `common/pi-endpoints.nix` (DATA) — every endpoint, one row each.
