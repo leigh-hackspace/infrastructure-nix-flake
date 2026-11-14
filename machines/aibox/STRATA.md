@@ -1181,6 +1181,222 @@ scripts that CUDA's ritual used are not in the repo (`machines/aibox/strata-tune
   and nothing in `machines/pi-room-sys/` changed in this commit. Open, deliberately: the
   clients are still booting the previous image's closure.
 
+## Update: engine 0.1.56 → **0.1.59.1** (app 0.2.13), deployed — 2026-11-14
+
+The shared `strata` input moved `ffa80d73133ea5c548aefe57889a16e8085a938f` →
+**`13eedf552417a6a791a7d13c6597e24300ee3a09`**: engine **0.1.59.1** (`CMakeLists.txt:13
+`project(strata VERSION 0.1.59.1 LANGUAGES CXX)`), app **0.2.13** (`apps/desktop/package.json:4`),
+upstream head authored 2026-11-11 / pushed 2026-11-12, **682 commits**. One `nix flake update strata`
+and both of this network's engines move in the same switch, which is why this section exists next to
+the CUDA one.
+
+**The bump's size is written up once, on `services2`, and not repeated here**:
+`machines/services2/STRATA.md`, "Update: engine 0.1.56 → 0.1.59.1 (app 0.2.13), deployed — 2026-11-14"
+— the 682-commit range, the tree diff (**606 files differ, 299 added, 115 removed** — the first bump
+in either file's history with removals, all of them `apps/host/docs/**`, `docs/work/**`, `tools/dgx_*.py`
+and friends: nothing the install phase copies), the `CMakeLists.txt` **2,950 → 645** split into
+`cmake/*.cmake` + `cmake/backends/*.cmake`, `third_party/strata-ggml` vendored at the same
+`3cf03257f…` pin `strata-package.nix` already fetches, the re-check of all 13 `engineArgs` flag pairs,
+the `configFile` keys, `/v1/messages`, `reasoning_content`, the Host check, the 274-module import
+closure, the unchanged data md5s (**no re-prep** of pack / MTP runtime / expert-profile) and the
+unchanged IQ1_M reader. Both engines were built from this lock with **no edit to either
+`strata-package.nix`** and both installed clean, guard included.
+
+What follows is what is different on this side: the HIP gates, the control measurement, one genuinely
+new instrument for this box's oldest open fault, and the deploy shape an aibox switch has to have.
+
+### Nothing in this bump is for gfx1030, and the engine's own lines say so
+
+Four header files are new this bump — `include/strata/core/{gpu_pause_time,pcie_share_rule,nv_chunk,
+resident_ram_copy}.hpp` are **all absent from the 0.1.56 tree** (`ls include/strata/core` in both) — and
+of those four, exactly one touches this card, and it is not a speed switch. Everything else is named
+for a different device. Comparing this box's own two starts, `0.1.56` at 13:55 and `0.1.59.1` at
+02:54, from `/var/lib/strata/strata.log`:
+
+| Line | 0.1.56 | 0.1.59.1 | Reading |
+|---|---|---|---|
+| `strata: AMD community tuning (STRATA_AMD_COMMUNITY_TUNING=0 turns it off): on: community rocBLAS tables for gfx1030 are loaded when the running rocBLAS is exactly 5.4.0.ad84daa81c or 5.2.0.dabb6df2b98-dirty and STRATA_ROCBLAS_TUNING points at them (#3343/#3924); the simt2 QSA selector is the default (STRATA_SELECT_SIMT=0 or 1 overrides) (#3073); community-tested only` | present | **byte-identical** | Not a new consequence of this bump: the simt2 selector (whose "answers move slightly" is recorded under 0.1.56) was already in force, and the community rocBLAS tables stay inert because nixpkgs' rocBLAS reports **5.2.70203**, which is not one of the two exact pins. `amd_community.hpp` exists in the old tree |
+| `strata generate: PCIe probe: 31.5 → 31.4 GB/s host->device … -> pcie_frac 0.55 (default 0.55)` | 0.55 | **0.55** | The new auto-share rule (`pcie_share_rule.hpp`, k 1.85→0.8, ceiling 0.60→0.95) is gated on **one CUDA GPU without `--pcie-frac`**, and integrated cards keep the old numbers either way. It does not reach this box — unlike `services2`, whose `pcie_frac` moved 0.50 → 0.70 in the same hours. Our `--pcie-mode direct` is still our dial, unchanged |
+| `strata generate: expert cache 4292 slots, 5.76 GiB of VRAM` / `R4 hit path ON` / `token graph hit path: 4292 resident experts` | same | same | The cache the plateau is pinned at (`--expert-cache 4096` → 4 292 usable) is unchanged |
+| `strata verify: window up to 6 tokens, 58.3 MiB of device buffers` | same | same | Still capped by our `--spec 4`, not by the new `--lookup-max-t 12` default (which is CUDA-8-row and was already on at 0.1.56) |
+| `strata prefill: HIP device 0 gfx1030 - STRATA_HIP_PROMPT_F16=1: the prompt's 16-bit GEMMs run FP16 in and out` | same | same | Ours since 2026-10-28 (the 2.2× prefill switch); this bump neither added nor removed it |
+
+Not for this card, each gate read where it is decided rather than from a changelog: `STRATA_HC_Q8`
+(HIP **gfx12 / gfx1151** — `native_dense.cpp:hc_q8_env()`, and its CUDA branch is `return false`, so off
+on *both* boxes despite the commit message saying "on CUDA"), the gfx12 `--prefill auto` 32 768 ceiling
+and its staging ring (`STRATA_GFX12_RING`), `STRATA_PF_FUSED_Q50` / `STRATA_PF_DM16` /
+`STRATA_EXPERT_V2K` (gfx1151 Windows), `STRATA_GDN_CHUNKED=1` by default (Linux, **all cards gfx12**),
+`STRATA_IQ4_W4A8` / `STRATA_W4A8_*` (CUDA, IQ4_XS/IQ4_NL experts only — this pack is IQ2_XS),
+`STRATA_MMQ_KQ=1` (NVIDIA cc ≥ 8 and K-quant experts only), `STRATA_MMQ_TAB`/`STRATA_MMQ_DIRECT=1`
+(default OFF, costs 36-38 MiB of VRAM per GPU), `STRATA_VNNI_TIER` (opt-in, changes CPU rounding),
+`src/dsv41` (`STRATA_BUILD_DSV41` OFF), `src/split` (`STRATA_BUILD_SPLIT` OFF — that is the multi-GPU split
+engine, *not* this box's `bin/strata-alias-check`, which the HIP build does install and `alias-check.sh`
+drives), the sm_121/GB10 table, and `STRATA_SPEC_ADAPT_SM86`
+(still opt-in: the owner's 3060 A/B is "length-confounded, not adopted", `nv_defaults.cpp`).
+
+The one switch that *does* reach this box is serve-layer and output-neutral: **`serve_stop_bound` is now
+on for every backend** (`include/strata/core/serve_stop_bound.hpp`, whose own comment is the record:
+"#4677: the bound is on by default on every backend; `STRATA_SERVE_STOP_BOUND=0` … turns it off. It only
+limits which accepted rows enter the cached conversation: **the tokens a request emits are the same either
+way**"). **Methodological consequence for this
+directory's favourite instrument:** the conversation cache parks *identities* (see "The conversation
+cache parks identities, not prefixes"), and which rows are eligible to be parked can differ across this
+boundary — so across this bump compare **cold-to-cold**, not warm-to-warm, and read `reused` in the
+`prompt N tokens = X reused + Y read` line before believing any tok/s.
+
+### One new instrument, and it is aimed at this box's oldest open fault
+
+`include/strata/core/gpu_pause_time.hpp` is new and reads **`/sys/class/kfd/kfd/proc/<pid>/stats_<gpu>/evicted_ms`**:
+the amdgpu driver's KFD part suspends ("evicts") *every* GPU queue of a process while the kernel moves or
+reclaims host-mapped pages, and counts the total. Upstream wrote it for the same fault this file has been
+carrying under **"Crash: verify-window timeout (#267)"** and the stall watchdog: "a slow prompt read lost
+about exactly that time while background compaction moved pages (… "GPU queue evictions from page
+migration"), **and no log showed it**". The counter is read once when a request begins, once when it ends,
+and in the stall report — *never on the hot path* — and a missing or unreadable counter means "not
+available": no line, no warning. HIP builds on Linux only; everywhere else it is "not available".
+
+**It works here, and the first reading is not small.** aibox runs kernel **7.2.10**, the counter exists
+for the engine's own process, and it read **15088 ms** about twenty minutes after the engine started,
+immediately after two bench passes. Read it as root, on the **engine**, not on the unit's main pid — `strata.service`'s `ExecMainPID` is the
+python server wrapper and has no KFD directory (`pgrep -f 'strata-unstable/bin/strata --serve'` answers
+two pids and only one of them opened the GPU, so walk the KFD tree instead, which is self-identifying):
+
+```bash
+for p in $(sudo ls /sys/class/kfd/kfd/proc); do           # one line per GPU-using process
+  printf "%s %s evicted_ms=" "$p" "$(sudo tr '\0' ' ' < /proc/$p/cmdline | cut -c1-46)"
+  sudo cat /sys/class/kfd/kfd/proc/$p/stats_*/evicted_ms
+done
+```
+
+Run on the box 2026-11-14, it prints exactly one line — the engine — which is also how you tell it apart
+from anything else that touches the card. (The 02:54 start's pair was wrapper 3240667 / engine 3240785,
+whose counter file was `stats_23001/evicted_ms`.)
+
+That is ~15 s of GPU work the driver held off, on a box whose experts live in host memory the GPU maps —
+exactly the configuration the header describes. And it is not one process's artefact: the engine restarted
+at 03:22 (to measure the GEMM-warm line below) read **6978 ms** about twelve minutes into its own life,
+the same order. Two honest limits on both numbers: they are **cumulative since the process opened the
+GPU**, not per request, and there is **no 0.1.56 figure to compare them with**, because the file does not
+exist in that tree — the finding is that the instrument now exists and does not read zero, not a
+before/after.
+
+What to look for at the next slow request or stall, verbatim from the header: a request line
+`strata serve: the graphics driver paused the GPU for N ms during this request while Linux moved memory
+the GPU uses; the request was slower by up to that much`, written only when the pause inside that
+request reached **100 ms** (`kGpuPauseReportMs`; "a normal request on p620 shows 0-16 ms (the runtime's
+own buffer changes); the slow reads lost 245-954 ms"), and inside the stall report
+`  GPU work paused by the graphics driver: N ms since the engine started, N ms in this request, N ms in
+the last 2 s (the AMD driver pauses all of the engine's GPU work while Linux moves memory the GPU uses)`.
+**If a stall prints that second line, the fault is Linux moving memory and not the engine** — which is
+the distinction this file has been unable to make from logs until now. Worth knowing before the next
+"the prompt took 349 s" investigation: `mm`, `ksmd`, and anything else that touches THP move memory
+the GPU is mapping, and this box has 33 GiB of it.
+
+### The control measurement (the plateau band is the control)
+
+Run through the front door (`https://strata2.int.leighhack.org` — the door injects the key, so the
+bench holds no secret), with this directory's own `strata-bench.py`:
+
+| arm | 0.1.56, 2026-11-04 | 0.1.59.1 pass 1 | 0.1.59.1 pass 2 | 0.1.59.1 pass 3 (patched script) |
+|---|---|---|---|---|
+| short-decode, 200 tok | 9.3 tok/s | 9.0 (draft 106/168) | 10.0 (draft 117/166) | **10.9** (draft 125/149) |
+| long-prefill, 6,943 tok | 90.3 tok/s | **90.6** (16/24) | *cache hit, not a read* | **90.5** (21/25) |
+| long-prefill, 2nd variant | 90.1 tok/s | **90.5** (9/19) | *cache hit, not a read* | **81.4** (16/25) |
+| load | 33.02 GiB at 4.30 GiB/s (14 s) | 33.02 GiB at **3.63 GiB/s (20 s)** | | |
+
+**Verdict: the bump is speed-neutral on this box, which is what the gate reading predicts — and this
+box's own spread is wider than anything a bump with no switch for it could produce.** Six cold prefill
+reads across the two revisions span **81.4-90.6 tok/s** (the low one is a *repetition* of the same length
+in the same pass, so it is not a prompt-shape effect), and decode spans **9.0-10.9 tok/s** on the same
+script, all of it around the plateau this directory is pinned to (**9.4-9.6 tok/s at 4096 slots**). Still
+*not* comparable to the 82-84 tok/s of 2026-10-28, for the reason recorded under that heading. The
+engine's own decode hit rates over the passes: **75.7-83.9 %**. The slower load (3.63 vs 4.30 GiB/s, same
+33.02 GiB) is one sample taken minutes after a 42 GB build — not a regression claim; re-read it at the
+next start.
+
+**The second pass is the trap this box has always had, caught live.** Its two `long-prefill` arms
+printed 17.0 and 14.1 "tok/s"; those are not prefills. The engine says so: `prompt 6943 tokens =
+**6938 reused** + 5 read in 294 ms (17.0 tok/s)` — the conversation cache parked the prompt on the first
+pass and answered the identical repeat from the parked identity. `strata-bench.py`'s `long-prefill` case
+had a *fixed* variant marker, so a second run of the same script hit the cache on both long arms. Now
+fixed (`machines/aibox/strata-tune/strata-bench.py`, same change the CUDA bench shipped with): the marker
+is random per process **and** per case, and **the check is the script's own `prompt_n` column — a
+`long-prefill` arm that does not print ≈6,950 measured no read at all.** (Same failure shape as the CUDA
+side's 1,100-tok/s-on-a-3060 misread that 0.1.56's record refuses to repeat.)
+
+The other number worth one line, and it is a measurement rather than an inference because the second
+start was taken on purpose: `strata prefill: warmed the BF16 and FP16 GEMM libraries on GPU 0 in
+**16755 ms** (STRATA_PREFILL_WARM=0 skips)` at the first 0.1.59.1 start, against **5652 ms** at the second
+start of the same binary (taken 03:22, a plain `systemctl restart strata` to test exactly this), against
+**2979 / 3374 ms** at 0.1.56's two starts. So: **the first start after any engine bump pays this, and the
+second does not** — a new binary means a cold Tensile/rocBLAS kernel cache. Budget ~13 s of extra load time
+once per bump and do not read it as the bump being slow. `systemctl restart strata` costs ~40 s of
+endpoint downtime (33 GiB load + cache fill) and needs no confirm, being no activation.
+
+**And the run config moved exactly where the engine moves, re-proved at this rev rather than inherited
+from 11-04:** diffing the 0.1.56 config (`/nix/store/1ndcfbc6iq4hck44p5cgv2wyjybkq3h3-strata-iq2xs.json`)
+against the 0.1.59.1 one (`…fc03a1cvqw7dh3p2x541m61cmmagcwqz…`) through `python3 -m json.tool` answers
+**two lines**: `exe` and the `--expert-profile` entry in `args` — both store paths of the engine, because
+the profile ships *inside* the package. Every flag and all five `env` keys are byte-identical
+(`HIP_VISIBLE_DEVICES=0`, `HSA_OVERRIDE_GFX_VERSION=10.3.0`, `HSA_USERPTR_FOR_PAGED_MEM=0`,
+`STRATA_HIP_ADAPT_KERNEL_COPY=1`, `STRATA_HIP_PROMPT_F16=1`) — so `--pcie-mode direct`, `--expert-cache
+4096`, `--spec 4 --spec-min-p 0.5`, the 1536 MiB / 3-slot / 2048-token conversation cache, 262 144 context
+and the F16 prompt switch are **our dials, unchanged by this bump**. On selecting the card while this is
+being re-read: there is **no `STRATA_ROCM_AGENT` anywhere in the engine** (grep of the whole 0.1.59.1 tree
+answers nothing) — upstream's word is "Select the AMD device with `ROCR_VISIBLE_DEVICES` or
+`HIP_VISIBLE_DEVICES` if needed" (`docs/AMD_HIP.md:249`, and `:72` adds that it never overrides them), and
+that is exactly what we deploy.
+
+### Deploy record, 2026-11-14 — the umount goes **before** the switch, and that is the whole trick
+
+The 2026-11-04 record below says a plain `just switch` on this box fails with status 4 on
+`exports-netboot\x2dsquashfs.mount` and that the failed activation then **armed the rollback countdown
+and rebooted the box into the old generation**. This time the dance was planned rather than improvised,
+and the result is worth writing down as the recipe:
+
+- Build both engines first, with the inference stopped: `systemctl stop strata` (57 GiB available then,
+  ~7-10 GiB with the engine loaded), then one detached unit — `systemd-run --no-block --unit=aibox-strata-build
+  --uid=leigh-admin`, script `/tmp/aibox-strata-build.sh`, log `/var/tmp/aibox-strata-build-20261114.log`
+  — building `packages.aibox.strata-hip` **and** `packages.aibox.strata-cuda` (services2 still needs it
+  buildable here). Exit 0, **02:29:47 → 02:39:54 = 10 min 7 s wall, 26 derivations**, and the two engine
+  jobs compile in parallel. Outputs: HIP `/nix/store/97dahyfvskvdgq559bbk3d63cs62402r-strata-unstable`,
+  CUDA `/nix/store/h40ij73r2r34wgagk1hs6a6zr55yyac8-strata-unstable` — tell them apart without running
+  either: the HIP one's `bin/` installs `strata-alias-check`, the CUDA one's installs
+  `libstrata_kq.so` (both packages install into `bin/` and ship no `lib/`; that `.so` is not new to this
+  bump, and neither name is a runtime signal — the pack decides which engines get opened).
+- **One unit for the switch, because the GOLDEN RULE's same-shell chaining has to survive an umount.**
+  `systemd-run --no-block --unit=aibox-sw` running `umount -f -l /exports/netboot-squashfs` →
+  `nixos-rebuild switch --flake .#aibox` → **`&& sudo nixos-confirm`** → `mount -a`, each exit code
+  echoed to `/var/tmp/aibox-sw-20261114.log`. Receipts in order: `START 02:48:12`, `-- export before:
+  /dev/nvme0n1p2[/nix/store/cpf4f8lkkcb27c3mxrv8dsqhgpdh3jlv-squashfs]`, `UMOUNT_EXIT=0`,
+  `SWITCH_EXIT=0`, `'/nix/var/nix/profiles/system-good' -> '…9lwa77jc…'`, `CONFIRM_EXIT=0`,
+  `MOUNTA_EXIT=0`, `-- export after: /dev/nvme0n1p2[/nix/store/775smggc9b942dlpdlfdr7j96agpa8ph-squashfs]`,
+  `END 02:54:30` — **6 min 17 s wall**, 35 min 59 s CPU, 42.5 GB peak RSS, 29.3 GB written, 4.8 GB in.
+- **With the lazy umount done first, activation restarts that mount itself and the export follows the
+  new generation: no reboot, and the rollback countdown never fired** (the switch exited 0, so the timer
+  armed once, at the end, and `nixos-confirm` disarmed it inside the window).
+  `findmnt -no SOURCE /exports/netboot-squashfs` afterwards names the **new** squashfs store path.
+- What the switch cost: `these 481 derivations will be built` + `these 1 747 paths will be fetched
+  (4.3 GiB download, 14.1 GiB unpacked)` — and **`strata-unstable.drv` appears zero times in the switch
+  log**, i.e. the engine the build unit produced is exactly the one switched to, as 11-04 said. The 481
+  are the closure's own rebuilds that aibox's GC had collected since 11-04 (largest groups `python3.*`,
+  the Qt stack, `hdf5-cpp`) — which is the honest version of "a strata bump is cheap on aibox": the
+  *engine* is cheap, the toplevel is cheap only if the box has not been GC'd in a fortnight.
+- State after: `strata.service` active, **0 failed units**, `/run/current-system` == `system-good` ==
+  `/nix/store/9lwa77jc381yig608sn3rrbx1a407dg8-nixos-system-aibox-26.11.20261014.319e4ce`, engine
+  `session is up (engine 0.1.59.1)`, `ready: http://10.3.1.32:8080/v1 … context 262144 tokens, API key
+  required`, **9235 MiB of VRAM free with everything loaded** (11-04: 9234), cgroup `MemoryCurrent`
+  40,448,520,192 B ≈ 37.7 GiB, `free` 7 GiB available.
+- **The pi Room clients were not rebooted, again, deliberately.** The export moved to the new squashfs
+  inside the switch, so the next client boot takes this image; nothing in `machines/pi-room-sys/`
+  changed in this commit. Still open on purpose: the clients are booting the previous image's closure.
+- **What gated it**: `just check-eval` (the four assertion evals, `just check-source-size`, alejandra)
+  passes at this lock, and this box's `system.build.toplevel` is what the switch built. `just check`'s
+  flake step still dies exactly where 11-04 recorded it — `error: path
+  'w1qfxxfc0wwjzfqivfnqfqjf60dily0h-sops-secret-pg_pass.drv' is not valid`, under `services.outline.databaseUrl`
+  on **services1** — and `nix build` of that drv answers "don't know how to build these paths", so it is
+  an eval-time secret read to fix over there, not a bump symptom.
+
 ## Re-measuring
 
 `strata-tune/` in this directory: `sudo ./strata-exp.sh <expert-cache> <prefill>

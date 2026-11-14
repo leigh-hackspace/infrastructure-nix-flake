@@ -692,6 +692,13 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   directory holding a symlink (or a copy step) instead of a bind of a store path, so a switch
   updates a symlink rather than remounting an nfsd-pinned mount; failing that, order the mount
   restart around nfsd (stop `nfs-server`, remount, start it) rather than racing it.
+  **Receipt that the pre-emptive lazy umount is enough (2026-11-14, the strata bump):** doing
+  `umount -f -l /exports/netboot-squashfs` **before** `nixos-rebuild switch` inside one detached unit
+  (`systemd-run --unit=aibox-sw`, so the confirm stays chained) made the switch exit **0** first time:
+  activation restarted the mount itself, `findmnt -no SOURCE` then names the **new** generation's squashfs,
+  and `auto-rollback` never fired. That is the recipe in practice — `machines/aibox/STRATA.md`, "Deploy
+  record, 2026-11-14" — and it does not close this item, because the next operator has to remember to do it
+  by hand; the declarative fixes above still own the problem.
 
 - **The boot path resolves a name, and it does not have to** (2026-10-26, the same
   investigation). Every URL in
