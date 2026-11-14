@@ -29,10 +29,17 @@
     # the scraper and one of the scraped — see services/observability.nix and
     # common/exporters.nix for what that costs).
     ../../common/exporters.nix
+    # Whose inference endpoints pi may dial, discovered rather than asserted:
+    # ../../common/pi-agent.nix, common/pi-endpoints.nix, docs/pi-agent-models.md.
+    # This box held one of the four hand-written `models.json` copies it replaces, and
+    # one of the copies of the engine's Bearer key it removes.
+    ../../common/pi-agent.nix
     ./hardware-configuration.nix
     ./http.nix
     ./networking.nix
 
     flakeInputs.sops-nix.nixosModules.sops
   ];
+
+  programs.pi-agent.enable = true;
 }

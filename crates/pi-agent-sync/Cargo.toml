@@ -1,0 +1,22 @@
+[package]
+name = "pi-agent-sync"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "pi-agent-sync"
+path = "src/main.rs"
+
+# House style is zero external crates (`crates/ups-watchdog` keeps it stricter still).
+# The two in-tree ones are not external: the hand-rolled JSON parser/emitter and the
+# argument helpers every service here shares.
+#
+# HTTP is `curl` on the child path, not a crates.io client. This program needs TLS to
+# the front door, and `common-rs/web` is *server* plumbing only; a hand-rolled TLS
+# client is not a thing anyone should want to review, and a `reqwest`/`rustls`
+# dependency tree is not justified by three GET requests an hour. `ups-watchdog` sets
+# the precedent (it shells out to `ssh`, `systemctl` and `upsc`, each of which the unit
+# puts on PATH); here the unit puts `curl` on PATH and `--curl` can name it absolutely.
+[dependencies]
+common-json = { path = "../common-rs/json" }
+common-service = { path = "../common-rs/service" }

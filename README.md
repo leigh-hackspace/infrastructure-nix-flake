@@ -62,6 +62,7 @@ matter.
 | A runtime secret's path | `common/config.nix` (the `*_FILE` options) | per-service `CONFIG.X` reads, and `machines/<m>/sops.nix` | nothing — a typo is a missing `/run/secrets/<name>` at runtime |
 | A build-time secret's name | the files that `builtins.readFile` a `config.sopsSecretText` path at eval time | the header comment of `machines/services1/sops.nix` | nothing (and reading a derivation at eval time is what makes `just check` machine-dependent — `docs/flake-simplification-audit-2026-10-22.md` §4) |
 | Which services run | `machines/services1/services/default.nix` | `docs/services.md` (by crate, not by machine) | `nix flake check`, for the *imported* ones only — a parked module is not evaluated at all |
+| Which models pi may dial, and their context windows | **the running engines** — `crates/pi-agent-sync` asks `GET {base}/models` and `/props` on every box | the endpoint rows in `common/pi-endpoints.nix` (URL, dialect, verified `compat`, output-limit policy). Nothing else: the checked-in `machines/aibox/pi-models.json` is deleted, because every hand-written copy had drifted | `just pi-agent-status` prints each number *and where it came from*; `docs/pi-agent-models.md` |
 
 ## The four commands
 

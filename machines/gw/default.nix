@@ -124,6 +124,15 @@
     # without a deploy.
     ./lib/assert-network-tables.nix
 
+    # pi's endpoint list (docs/pi-agent-models.md). Yes, on the router: the front door
+    # is what injects the Strata key, so the box that terminates every inference
+    # session is also a place a person may want to run pi, and rule 22 is respected —
+    # the crate is built on aibox and substituted here, exactly like
+    # network-status and wan-manager.
+    ../../common/pi-agent.nix
+
     flakeInputs.sops-nix.nixosModules.sops
   ];
+
+  programs.pi-agent.enable = true;
 }

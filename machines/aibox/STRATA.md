@@ -823,9 +823,11 @@ key - anyone on your network can use this model", and this box's firewall is off
 It is `strata_api_key`, the same secret services2's engine holds, because
 `strataBearer` in the door renders exactly one `proxy_set_header Authorization` — a
 per-engine key would 401 the door's own path. Clients that used
-`http://10.3.1.32:8080/v1` directly now need that key; `pi-models.json` is pointed at
+`http://10.3.1.32:8080/v1` directly now need that key; the pi clients are pointed at
 `https://strata2.int.leighhack.org/v1` instead, where the door injects it and no client
-holds a secret.
+holds a secret (`common/pi-endpoints.nix`, and the finding in `machines/aibox/STRATA.md`
+"Pi clients" — the direct addresses had crept back into four boxes' `models.json`, with the
+key beside them).
 
 **And the trade that is not free:** enabling strata clears `llama-server`'s
 `wantedBy`, so `ai.int.leighhack.org` and `ai.leighhack.org` — origin vhosts on
@@ -992,20 +994,37 @@ anything above about what does and does not reuse; filed in `docs/follow-ups.md`
 
 ## Pi clients
 
-`~/.pi/agent/models.json` on **aibox** and **services1** (10.3.1.20) was written
-from `pi-models.json` in this directory (the canonical copy, kept here because
-`~/.pi` is per-user state and not in the flake):
+**Superseded 2026-11-14 by `programs.pi-agent` — `docs/pi-agent-models.md` owns this now.**
+What remains true of the description below is the *why* of the URLs; what is false is every
+number in it, which is the reason the mechanism changed. `pi-models.json` in this directory
+is deleted: it was the canonical copy of `~/.pi/agent/models.json`, hand-written, and asked
+to carry exactly the two facts only a running engine knows — which models it serves and with
+how large a context. Measured the day it was removed:
 
-- `strata` → `https://strata2.int.leighhack.org/v1`, model
-  `qwen3.8-flash-next-iq2xs`, context 131 072, maxTokens 16 384. It is the front-door
-  URL on purpose: `strataBearer = true` on that row injects the engine's `api_key`,
-  so no client holds an inference secret and the `"apiKey": "strata"` placeholder in
-  `pi-models.json` never reaches anything that reads it. Pointing it back at
-  `http://10.3.1.32:8080/v1` is a 401 for anyone without `strata_api_key`.
-- `strata-zen3` → `https://llm.ai.chrisdell.info/v1`, model
-  `qwen3.8-flash-next-iq3xxs`, context 262 144 — the fast fallback (51 tok/s
-  decode, 1184 tok/s prefill), worth using for anything with a big context until
-  aibox's prefill gets better.
+- `strata` claimed context **131 072**; the engine answers `meta.n_ctx` **262 144**;
+- `strata-zen3` claimed `qwen3.8-flash-next-iq3xxs` at **262 144**; that endpoint now serves
+  **`qwen3.8-flash-next-unsloth-ud-iq4-xs-v31`** at **393 216**, so the provider had been
+  offering a model id that answers nothing, on every box, for as long as nobody noticed;
+- and the copies on the boxes were no longer the copies in this file: they dialled
+  `http://10.3.1.21:8080/v1` and `http://10.3.1.32:8080/v1` directly, which is how the real
+  `strata_api_key` came to be sitting in `~/.pi/agent/models.json` on four machines. Rotation
+  is the open item in `docs/follow-ups.md`.
+
+Now: `common/pi-endpoints.nix` declares the endpoints (including the front-door URLs and why,
+below), `common/pi-agent.nix` renders them and runs a timer per box, and
+`crates/pi-agent-sync` discovers the rest. `just pi-agent-status` on any box prints what each
+engine said and where each number came from.
+
+What has **not** changed, and is the part worth keeping:
+
+- `strata` is `https://strata2.int.leighhack.org/v1` on purpose. `strataBearer = true` on that
+  door row injects the engine's `api_key`, so no client holds an inference secret and the
+  placeholder `apiKey` never reaches anything that reads it. Pointing a client back at
+  `http://10.3.1.32:8080/v1` is a 401 for anyone without `strata_api_key` — and putting the
+  address in a client is also how the key ends up next to it, which is what just happened.
+- `strata-zen3` (`https://llm.ai.chrisdell.info/v1`) is the fast fallback (51 tok/s decode,
+  1184 tok/s prefill), worth using for anything with a big context until aibox's prefill gets
+  better.
 
 To make either the default, set in `~/.pi/agent/settings.json`:
 `"defaultProvider": "strata"`, `"defaultModel": "qwen3.8-flash-next-iq2xs"`

@@ -40,6 +40,12 @@
     # ./README.md "Open items" and docs/follow-ups.md.
     ../../common/exporters.nix
 
+    # pi's endpoint list (docs/pi-agent-models.md). On this box the sync will most
+    # likely print `SKIP: /home/leigh-admin/.pi/agent does not exist`: pi is not
+    # installed here, and that is a message rather than a silence *because* the next
+    # person to install pi gets the config without setting anything up.
+    ../../common/pi-agent.nix
+
     flakeInputs.sops-nix.nixosModules.sops
   ];
 
@@ -48,4 +54,6 @@
   # would leave the box with no address at all, because the network's Wi-Fi hands out
   # VLAN 226.  Its own header is the parking notice (AGENTS.md rule 23);
   # ./README.md owns the move.
+
+  programs.pi-agent.enable = true;
 }

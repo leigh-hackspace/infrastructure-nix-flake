@@ -66,6 +66,7 @@ members = [
   "gocardless-dashboard/dto",
   "moonraker-exporter",
   "network-status",
+  "pi-agent-sync",
   "status-dashboard",
   "switch-gui",
   "switch-gui/dto",

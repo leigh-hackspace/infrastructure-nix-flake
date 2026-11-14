@@ -38,10 +38,18 @@
     # observability.nix), which scrapes 10.3.1.21 over the LAN.
     ../../common/exporters.nix
 
+    # `programs.pi-agent` (docs/pi-agent-models.md): this box is both a client of the
+    # fleet's endpoints and one of them (`strata-services2` in
+    # common/pi-endpoints.nix), so its own engine being stopped is the ordinary case —
+    # the timer keeps the model list it last saw and writes nothing else.
+    ../../common/pi-agent.nix
+
     flakeInputs.sops-nix.nixosModules.sops
   ];
 
   # The Qwen3.8-Flash-Next Coder engine on the RTX 3060; see ./strata.nix for
   # the one-time model prep and the memory sizing.
   services.strata.enable = true;
+
+  programs.pi-agent.enable = true;
 }

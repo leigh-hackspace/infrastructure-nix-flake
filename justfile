@@ -832,6 +832,42 @@ install-sops-key:
 edit-secrets:
     sops edit secrets/secrets.yaml
 
+# --- pi's inference endpoints (common/pi-agent.nix, docs/pi-agent-models.md) ------
+#
+# `programs.pi-agent` declares the network's inference endpoints once
+# (common/pi-endpoints.nix) and `crates/pi-agent-sync` asks each one, on every box,
+# which models it is running and with how large a context, writing
+# `~/.pi/agent/models.json`. A timer does it every 15 minutes; these two recipes are
+# the operator's half — read what the last run saw, or make it run now. Both invoke
+# the **installed** binary, so neither is build-shaped and both are safe on the router.
+#
+# There is deliberately no recipe that edits `models.json`: it is generated, and a
+# hand-written provider is preserved by id but overwritten the moment an endpoint of
+# that name is probed. Put an endpoint in the table instead.
+pi-agent-status user="leigh-admin":
+    @pi-agent-sync --report "/home/{{user}}/.pi/agent/pi-agent-status.json"
+
+pi-agent-sync user="leigh-admin":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    unit="pi-agent-{{user}}.service"
+    if ! systemctl list-unit-files "$unit" --no-legend | grep -q .; then
+        echo "$unit is not a unit on $(hostname): programs.pi-agent is not enabled here,"
+        echo "or this box has not switched to a generation that has it. 'just pi-agent-status'"
+        echo "is the other half and needs no unit at all."
+        exit 1
+    fi
+    # A oneshot: `restart` blocks until it exits. A dead engine is not a failed unit
+    # (the tool exits 0 and records the failure in the status file), so `is-failed`
+    # here means the config or the filesystem, and the journal is the answer.
+    sudo systemctl restart "$unit"
+    if systemctl is-failed "$unit"; then
+        echo "$unit failed:"
+        journalctl -u "$unit" -n 30 --no-pager
+        exit 1
+    fi
+    pi-agent-sync --report "/home/{{user}}/.pi/agent/pi-agent-status.json"
+
 # --- the cameras (OpenIPC on the WiFi VLAN) ---------------------------------
 #
 # `cam5` `cam7` `cam9` are Buildroot/OpenIPC boxes on VLAN 226 (10.3.2.10/.12/.17,

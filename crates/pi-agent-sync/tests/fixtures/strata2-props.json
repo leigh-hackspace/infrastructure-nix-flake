@@ -1,0 +1,28 @@
+{
+ "default_generation_settings": {
+  "n_ctx": 262144,
+  "params": {
+   "temperature": 1.0,
+   "top_p": 0.95,
+   "top_k": 20,
+   "n_predict": -1
+  }
+ },
+ "total_slots": 1,
+ "model_alias": "qwen3.8-flash-next-iq2xs",
+ "chat_template": "<TRIMMED for the fixture: the real value is the model's whole Jinja chat template, ~40 KB. Kept here: the tail that emits the thinking block, which is the only part pi-agent-sync reads.>\n\n    {%- if enable_thinking is defined and enable_thinking is false %}\n        {{- '<think>\\n\\n</think>\\n\\n' }}\n    {%- else %}\n        {{- '<think>\\n' }}\n    {%- endif %}\n{%- endif %}\n{#- Unsloth fixes - developer role, merged system messages, tool calling #}",
+ "chat_template_caps": {
+  "supports_tools": true,
+  "supports_tool_calls": true,
+  "supports_system_role": true,
+  "supports_parallel_tool_calls": true,
+  "supports_preserve_reasoning": true
+ },
+ "modalities": {
+  "vision": false
+ },
+ "models_autoload": true,
+ "is_sleeping": false,
+ "model_path": "/home/leigh-admin/Models/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/IQ2_XS/Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf",
+ "build_info": "Strata 0.1.59.1"
+}

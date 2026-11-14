@@ -2455,3 +2455,151 @@ one UPS cleanly and reports it as an APC HID unit.
   nothing; write any future alert-triage integration against the local routes and zones.
   Re-verify with: `grep -n "false_positive\|sub_label" /opt/frigate/frigate/api/event.py` and
   `grep -n "distances" /opt/frigate/frigate/track/tracked_object.py` in the container.
+
+## pi's inference endpoints (every box) — opened 2026-11-14, `docs/pi-agent-models.md` owns it
+
+- **Rotate `strata_api_key`.** Until 2026-11-14, `~/.pi/agent/models.json` on **gw,
+  services1, services2 and aibox** dialled the engines' addresses directly
+  (`http://10.3.1.21:8080/v1`, `http://10.3.1.32:8080/v1`) and so held the engine's real
+  Bearer key in a home directory on four machines — four copies of a credential that the
+  flake otherwise keeps in exactly one place precisely so the door can inject it. The
+  `programs.pi-agent` rewrite removed all four (the row in `common/pi-endpoints.nix` is the
+  front-door URL and `apiKey` is a placeholder; a kept-stale provider rebuilds its shape from
+  the config, so an off endpoint cannot preserve the old key either). **Blocks:** nothing
+  technical — it is a decision with a blast radius: the key is read by `common/nginx/front-door.nix`
+  (`strataBearer`) and by both engines' own generated run configs (`machines/services2/strata.nix`,
+  `machines/aibox/strata.nix`), and those two engines must keep one key because the door
+  renders a single `proxy_set_header Authorization`. So it is: re-issue in sops, switch
+  `gw` and both engine boxes in the same pass, then re-run `just pi-agent-sync` on a client and
+  `curl -fsS -o /dev/null -w '%{http_code}' https://strata2.int.leighhack.org/v1/models` (200
+  proves the door has the new one). Never print it (rule 13). Re-verify the exposure is gone
+  with: `grep -c strata_api_key ~/.pi/agent/models.json` on each box — 0.
+
+- **Nothing watches the timer.** `pi-agent-<user>.timer` re-runs the discovery every 15
+  minutes and its status file carries `lastSuccessUtc`, but no health check reads it, so
+  "the model list is three days old because the timer is dead" is indistinguishable from a
+  quiet config. `machines/gw/lease-reader.nix`'s `lease-reader-watch.timer` is the precedent
+  for a unit that goes red when its channel dies. **Blocks:** a decision about who is paged
+  for a stale model list (nobody has asked to be), and a place to put it — Prometheus scrapes
+  the boxes that matter and gatus checks endpoints, not local files. **To do:** export
+  `pi_agent_last_success_seconds` from somewhere the monitoring already reaches, or a
+  `pi-agent-watch.timer` that fails past N hours, whichever the owner prefers.
+
+- **`strata-services2` answered late, not never.** First probe of 2026-11-14: the engine was
+  `inactive` and the door 502s, so the run kept the previous list (`ctxSource: "previous run"`)
+  — the designed behaviour, exercised for real within minutes of the change landing. At 15:09
+  the same day it answered `meta.n_ctx` **131072**, which is what the hand-written row had
+  always claimed: that one number was right, and the two that were wrong were aibox's (131072
+  in the file, 262144 live) and zen3's model id. Nothing to fix here — the value of the item is
+  the contrast: two engines, same model family, 262144 and 131072, and only the endpoint knows
+  which is which. **Blocks:** nothing. **To do:** nothing; see the table in
+  `docs/pi-agent-models.md`.
+
+- **`llama-services3` has no `compat` block because nothing has been verified about it, and
+  its `input: [text image]` is the *engine's* claim, not a tested one.** pi's guidance is to
+  describe verified differences rather than enable them because an endpoint advertises OpenAI,
+  so this is deliberately empty; nobody has run a picture through pi on that endpoint or
+  checked its usage-in-streaming. **Blocks:** nothing but effort. **To do:** one image
+  session and one long tool-call session on `llama-services3`, then either write the `compat`
+  row or write down that the defaults held.
+
+- **pi now has two ways of finding local models, both switched on.** `settings.json` carries
+  `llamaServerUrl = "https://ai.int.leighhack.org"`, which gives pi its own `llama.cpp`
+  provider via the router integration (four GGUFs on aibox's `llama-server`), while
+  `programs.pi-agent` writes a `llama-services3` provider for services3's engine. Different
+  servers, so no conflict — `pi --list-models` (measured 2026-11-14) lists both families side
+  by side — but the overlap is a decision nobody wrote down, and `machines/aibox/STRATA.md`
+  tells the next person to drop `llamaServerUrl` if llama-server stays displaced. **Blocks:**
+  nothing. **To do:** per box, choose the endpoint row or the router integration for each
+  server and retire the other; `ai.int.leighhack.org` as a row would fold the displaced
+  `llama-server` in and make `pi --list-models` one story.
+
+- **`settings.json` (`defaultProvider`, `defaultModel`, `defaultThinkingLevel`) is still
+  hand-edited per-person state, and it names a model id.** `pi-agent-sync` does not touch it
+  (it is a preference, and the program has no business rewriting one) but it *can* see when the
+  saved default has vanished from the discovered list and says so as a note. The next step, if
+  the owner wants it, is for the module to be able to *declare* a default per machine
+  (`programs.pi-agent.settingsDefaults`) — which needs a decision first about whether the
+  flake may write into a person's settings file at all, given it already writes into their
+  agent directory. **Blocks:** that decision, not any code.
+
+## `just clippy` has been failing, unobserved, on services1 (found 2026-11-14)
+
+`just clippy` exits 1 with:
+
+```
+/run/user/1234/just/just-XXXXXX/clippy: line 193: out: unbound variable
+```
+
+— before cargo runs. **It is not the tree's fault**: the same failure reproduces from an
+unmodified `git show HEAD:justfile` (`just -f ./justfile.headcheck clippy`), so no
+`pi-agent-sync` change is involved; the recipe's `out=$(mktemp)`/`trap … "$out" EXIT` pair is
+inside the single-quoted argument to `nix develop --command bash -c '…'`, and by the time
+bash expands it the quoting is gone. The recipe was hardened in the pass that made a clippy
+*failure* fatal ("a lint gate that cannot fail is worse than no gate") — and the effect here is
+the same failure mode one level up: **a gate that always dies looks identical to a gate that
+ran and found nothing**, except in reverse, so anyone who typed it and saw red assumed the
+code was at fault (this author did, twice) and anyone who saw it green had never seen it.
+
+**Blocks:** nothing, because the workaround is one line and is what was actually used for the
+2026-11-14 change:
+
+```bash
+nix develop --command bash -c 'set -euo pipefail; cd crates; cargo clippy --workspace --all-targets --offline'
+```
+
+(reports the same diagnostics; workspace currently has ~35 pre-existing warnings in
+`wan-manager`, `common-pg`, `filestore`, `frigate-monitor`, `network-status`, and **none** in
+`pi-agent-sync` or `common-json`). **To do:** rewrite the recipe without a shell variable
+across the `nix develop` boundary — a fixed log path under `${TMPDIR:-/tmp}` chosen by the
+outer shell, or drop the `grep -v` filter and let `--message-format=short` do the trimming —
+then verify it can both fail and pass: `just clippy` on a tree with an introduced
+`let _ = 1u8 as usize;`-style lint must exit non-zero.
+
+## aibox's store has a Strata engine binary modified in place, so `just check-build` cannot pass (found 2026-11-14, while checking the `pi-agent` change)
+
+`just check-build` dies on the aibox toplevel — not in anything it was compiling, but while
+**substituting the engine**:
+
+```
+error: hash mismatch importing path '/nix/store/f0jwild16n6wjxjly1h1shslsrnw87x4-strata-unstable';
+         specified: sha256:061a7b4dlh02pqzvnlrsfrsyhqc154clx1fh5d9rpfj78j0jhc03
+         got:       sha256:1rr5l8ahsz2nivz18a5cvq601dadplsf3sdgjp8jf5v7ccr903x9
+error: Cannot build '…-unit-strata.service.drv'  →  system-units  →  etc  →  nixos-system-aibox
+```
+
+`nix store verify` on the builder says the reason in one line:
+
+```
+$ sudo nix store verify --no-trust /nix/store/f0jwild…-strata-unstable
+checking '…'...
+path '…' was modified! expected hash 'sha256:061a7b4d…', got 'sha256:1rr5l8ah…'
+```
+
+So **the 39 MB `bin/strata` inside that store path is not the bytes the path names**. It is
+`ultimate`-signed (`nix path-info --sigs`), i.e. built on that box, which is why nothing ever
+complained until something tried to *copy it out*: local use never re-checks a path's nar
+hash, substitution does. Four `*-strata-unstable` paths are in aibox's store; the one the
+current pin wants is the modified one, and the one the service actually runs is a fifth
+(`systemctl show strata -p ExecStart` → `/nix/store/97dahyfv…-strata-unstable/bin/strata-server`).
+Note what that mismatch means for reading `machines/aibox/STRATA.md`: its "What the HIP engine
+at 0.1.56 actually is" section names `f0jwild…` as *the* engine and quotes `strata --version`
+from it. Whoever patched that binary left the documentation describing a path whose contents
+are no longer the flake's, and the running service is a different store path again —
+AGENTS.md rule 20 (a box running other bytes than its checkout says) seen from the store side.
+
+**Not caused by the `pi-agent` change**, proved the way rule 13/9 says to prove it:
+`nix derivation show .#packages.x86_64-linux.strata` is byte-identical at clean HEAD and with
+the change — same drv path, no differing fields (checked by diffing the parsed JSON, 2026-11-14)
+— and services1, services2, services3 and gw all built in the same pass.
+
+**To do:** find out whether the edit was deliberate (STRATA.md keeps a long list of engine
+experiments, one of which may have replaced a binary by hand), and then either express it — a
+patch or an `overrideAttrs` in `machines/aibox/strata-package.nix`, with a paragraph saying
+what it changes — or `nix store delete` it (mind the `nix store delete` gotcha already written
+up in `docs/nix-dev-workflow.md`) and let the flake rebuild the pin. **Blocks:** any honest
+`just check-build` after an aibox-touching change, and any claim that aibox can be rebuilt
+from the flake as it stands. Until then, an agent that runs `just check-build` and sees this
+must not conclude its own change broke it. Re-verify with:
+`sudo nix store verify --no-trust /nix/store/f0jwild16n6wjxjly1h1shslsrnw87x4-strata-unstable`
+(no output = repaired) and `just check-build`.

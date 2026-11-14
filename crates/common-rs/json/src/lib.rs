@@ -5,7 +5,15 @@
 //! Field order is not preserved (we only ever look values up by key).
 //!
 //! Emitting: [`quoted`] and [`error_object`], for the services that hand-build a
-//! response body with `format!` and need a value they did not write escaped.
+//! response body with `format!` and need a value they did not write escaped, and
+//! [`emit`] for the one program that has to write back a document it did not fully
+//! author (`pi-agent-sync` merges its providers into somebody else's `models.json`,
+//! so everything it does not understand has to survive the round trip byte-for-byte
+//! in meaning — which is what the round-trip tests below are for).
+//!
+//! Object key order is not preserved by [`parse`] (`BTreeMap`), so [`emit`] writes
+//! keys sorted. That is invisible to every reader here (JSON objects are unordered)
+//! and it is what makes a generated file stable enough to diff.
 //!
 //! This is the superset of what the callers need: `get`/`at` for lookup,
 //! `as_str`/`as_f64`/`as_bool`/`as_u64`/`as_array` for values, and the two
@@ -324,6 +332,121 @@ pub fn error_object(msg: &str) -> String {
     format!(r#"{{"error":{}}}"#, quoted(msg))
 }
 
+/// Serialise a document. `indent` is spaces per level; 0 means one line.
+///
+/// The reason this is here rather than inside the one caller that needs it: the
+/// alternative is a caller that parses a file, keeps the parts it does not
+/// understand as [`Json`] and has nowhere to put them back. Keys come out sorted
+/// because [`parse`] does not keep order, and writing a *stable* file matters more
+/// here than writing the input's order — a config that shuffles on every run cannot
+/// be diffed, and `pi-agent-sync` rewrites its output on a timer.
+pub fn emit(value: &Json, indent: usize) -> String {
+    let mut out = String::new();
+    write_value(&mut out, value, indent, 0);
+    out
+}
+
+fn write_value(out: &mut String, value: &Json, indent: usize, depth: usize) {
+    match value {
+        Json::Null => out.push_str("null"),
+        Json::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+        Json::Num(n) => out.push_str(&number(*n)),
+        Json::Str(s) => out.push_str(&quoted(s)),
+        Json::Arr(items) => {
+            if items.is_empty() {
+                out.push_str("[]");
+                return;
+            }
+            out.push('[');
+            for (i, item) in items.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                newline_indent(out, indent, depth + 1);
+                write_value(out, item, indent, depth + 1);
+            }
+            newline_indent(out, indent, depth);
+            out.push(']');
+        }
+        Json::Obj(map) => {
+            if map.is_empty() {
+                out.push_str("{}");
+                return;
+            }
+            out.push('{');
+            for (i, (k, v)) in map.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                newline_indent(out, indent, depth + 1);
+                out.push_str(&quoted(k));
+                out.push(':');
+                if indent > 0 {
+                    out.push(' ');
+                }
+                write_value(out, v, indent, depth + 1);
+            }
+            newline_indent(out, indent, depth);
+            out.push('}');
+        }
+    }
+}
+
+fn newline_indent(out: &mut String, indent: usize, depth: usize) {
+    if indent == 0 {
+        return;
+    }
+    out.push('\n');
+    for _ in 0..indent * depth {
+        out.push(' ');
+    }
+}
+
+/// Numbers round-trip through [`Json`] as `f64`, so an integer in a config file
+/// would otherwise come back as `262144.0`. Pi wants a number either way, but the
+/// files are read by people too, and a context window written `262144.0` is a
+/// context window that looks like a bug.
+fn number(n: f64) -> String {
+    if n.is_finite() && n.fract() == 0.0 && n.abs() < 9.007_199_254_740_992e15 {
+        format!("{}", n as i64)
+    } else {
+        let s = format!("{n}");
+        // `{:}` on a float gives `inf`/`NaN` for the non-finite cases, which JSON
+        // has no spelling for.  Emit `null` rather than a document `parse` would
+        // reject: silent data loss beats a file that cannot be read at all, and the
+        // only way to get here is a caller that put a NaN in.
+        if s == "inf" || s == "-inf" || s == "NaN" {
+            "null".to_string()
+        } else {
+            s
+        }
+    }
+}
+
+/// A JSON string value, for callers building a document.
+pub fn string(s: impl Into<String>) -> Json {
+    Json::Str(s.into())
+}
+
+/// A JSON number from an integer, so callers do not each write `Json::Num(x as f64)`.
+pub fn number_from_int(n: u64) -> Json {
+    Json::Num(n as f64)
+}
+
+/// A JSON object from pairs, in any order (they are sorted on the way out).
+pub fn object(pairs: impl IntoIterator<Item = (String, Json)>) -> Json {
+    let mut map = std::collections::BTreeMap::new();
+    for (k, v) in pairs {
+        map.insert(k, v);
+    }
+    Json::Obj(map)
+}
+
+/// A JSON array of strings.
+pub fn string_array(items: impl IntoIterator<Item = String>) -> Json {
+    Json::Arr(items.into_iter().map(Json::Str).collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -569,5 +692,33 @@ mod emitting_tests {
             doc.get("error").and_then(|j| j.as_str()),
             Some("line one\nline two")
         );
+    }
+
+    /// The property `pi-agent-sync` depends on: it parses a file it does not own,
+    /// replaces the keys it does own, and writes the rest back. Anything it did not
+    /// understand has to still be there, with the same values.
+    #[test]
+    fn emit_round_trips_a_document_it_did_not_write() {
+        let src = r#"{"$schema":"https://pi.dev/schemas/models.schema.json",
+                       "providers":{"hand":{"baseUrl":"http://x/v1","apiKey":"k","models":[],"n":3,"t":true,"z":null}},
+                       "oddKey":[1,2.5,"s",[true],{"a":{"b":[]}}]}"#;
+        let doc = parse(src).unwrap();
+        let out = emit(&doc, 2);
+        let again = parse(&out).unwrap();
+        assert_eq!(doc, again, "emit(parse(x)) must equal parse(x): {out}");
+        // Integers stay integers on the page, and nesting is indented.
+        assert!(out.contains("\"n\": 3"), "{out}");
+        assert!(out.contains("2.5"), "{out}");
+        assert!(!out.contains("3.0"), "{out}");
+    }
+
+    #[test]
+    fn emit_is_stable_and_empty_containers_are_compact() {
+        let doc = parse(r#"{"b":1,"a":{"y":[],"z":{}},"c":"\u0001"}"#).unwrap();
+        let once = emit(&doc, 2);
+        assert_eq!(once, emit(&parse(&once).unwrap(), 2));
+        assert!(once.contains("\"z\": {}"), "{once}");
+        assert!(once.starts_with("{\n  \"a\""), "keys sorted: {once}");
+        assert_eq!(parse(&emit(&doc, 0)).unwrap(), doc);
     }
 }

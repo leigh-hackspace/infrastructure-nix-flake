@@ -19,6 +19,11 @@
     ./hardware-configuration.nix
     ./immich.nix
     ../../common/exporters.nix
+    # pi's endpoint list (docs/pi-agent-models.md). This box is `strata` in
+    # common/pi-endpoints.nix: the engine it runs is dialled through the front door
+    # like everywhere else, so aibox asks gw a question rather than reading its own
+    # key out of its own config.
+    ../../common/pi-agent.nix
     ./netboot.nix
     ./networking.nix
     # aibox is the far end of the router's declared relay path (./wan-relay.nix):
@@ -50,6 +55,8 @@
   infra.buildFarm.serveBuilds = true;
 
   services.strata.enable = true;
+
+  programs.pi-agent.enable = true;
 
   # llama-server (./ai.nix) is displaced by strata at boot - the two cannot be
   # resident at once (llama-server holds ~33 GB of GTT for its model, the IQ2_XS arena
