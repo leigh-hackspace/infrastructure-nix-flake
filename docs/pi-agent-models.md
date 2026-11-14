@@ -141,6 +141,27 @@ design: a config tool that succeeds silently is indistinguishable from one that 
 | every engine down for hours | `lastSuccessUtc` goes stale while `generatedUtc` stays fresh: "the timer is running and nothing answers" is a different diagnosis from "the timer is not running", so the status carries both |
 | a hand-written provider in the file | preserved untouched (every other provider id, and every other top-level key, including `$schema`) |
 
+**This was found twice, on two boxes, within four minutes of each other (2026-11-14).** The
+row above owns the mechanism and the fix; what only the second report adds is how close the
+rollback net came to firing. On services2 the switch exited 4 **after** `/run/current-system`
+had already flipped, so `auto-rollback.timer` armed a reboot of a loaded inference box five
+minutes later, mid-work, into `system-good`. The window went into stopping the timer, fixing
+one line, re-switching and confirming — the move AGENTS.md allows only if you finish before
+the timer would have fired — and the manual way back is worth writing down because the
+obvious command is the wrong one: `sudo /nix/store/<the-path-readlink-printed>/bin/switch-to
+-configuration switch`, **not** `/run/booted-system/…`, which is whatever was booted this
+morning rather than the last generation anyone confirmed good.
+
+Two generalisations out of the pair. **Nothing in `just check`, `nix flake check --no-build`
+or `nixos-rebuild dry-build` can see this class of fault** — a store path's *type* is not
+something evaluation looks at, and the crate has its own tests — so for a module whose whole
+job is handing a path to a program, **the first real activation is the first test**
+(`just check-build` would not have caught it either: it builds the toplevel and activates
+nothing). What does catch it is making a machine read the path once. And **a unit an
+activation starts is a deploy risk, not a runtime detail**: a diagnostic that can fail can
+fail a switch and arm the rollback, which is the shape `d1f561f` had already concluded about
+a probe that left a box `degraded`.
+
 The file is written by rename-and-replace with the previous mode preserved. That is safe here
 and is *not* a general lesson: pi opens `models.json`, reads it and closes it, whereas the
 dnsmasq lease file of rule 29 is rewritten in place on a long-lived descriptor, where replacing

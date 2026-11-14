@@ -8,9 +8,12 @@
 # The program that does it is `crates/pi-agent-sync`; `docs/pi-agent-models.md` owns the
 # mechanism, the measurements and the failure modes. What this file owns is the shape:
 #
-#   common/pi-endpoints.nix  ──(writeTextFile)──▶  /etc/pi-agent/endpoints.json  (0444, no secrets)
-#          │                                              │
-#          └── options.programs.pi-agent.endpoints        ▼
+#   common/pi-endpoints.nix ──(pkgs.writeText)──▶  <store>/pi-agent-endpoints.json  (0444, no secrets)
+#          │                       │ a path that IS the file - writeTextFile's path is a DIRECTORY,
+#          │                       │ and handing that to --config is the activation failure recorded
+#          │                       │ in docs/pi-agent-models.md
+#          │                       ▼
+#          └── options.programs.pi-agent.endpoints   --config (the store path; nothing is copied to /etc)
 #                                            pi-agent-<user>.service  ──▶  $HOME/.pi/agent/models.json
 #                                            + pi-agent-<user>.timer        $HOME/.pi/agent/pi-agent-status.json
 #
