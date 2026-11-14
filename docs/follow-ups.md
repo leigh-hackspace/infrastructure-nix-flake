@@ -2563,50 +2563,102 @@ outer shell, or drop the `grep -v` filter and let `--message-format=short` do th
 then verify it can both fail and pass: `just clippy` on a tree with an introduced
 `let _ = 1u8 as usize;`-style lint must exit non-zero.
 
-## aibox's store has a Strata engine binary modified in place, so `just check-build` cannot pass (found 2026-11-14, while checking the `pi-agent` change)
+## Strata's engine corrupts its own store path, which is why aibox's substitution has kept failing (diagnosed 2026-11-14, while deploying `pi-agent`)
 
-`just check-build` dies on the aibox toplevel — not in anything it was compiling, but while
-**substituting the engine**:
+`just check-build` dies on the aibox toplevel while **substituting the engine**:
 
 ```
-error: hash mismatch importing path '/nix/store/f0jwild16n6wjxjly1h1shslsrnw87x4-strata-unstable';
-         specified: sha256:061a7b4dlh02pqzvnlrsfrsyhqc154clx1fh5d9rpfj78j0jhc03
-         got:       sha256:1rr5l8ahsz2nivz18a5cvq601dadplsf3sdgjp8jf5v7ccr903x9
+error: hash mismatch importing path '/nix/store/97dahyfv…-strata-unstable';
+         specified: sha256:1qz5jabmdmmhgcfcizbj30cxc5ksk6j59fjgf62q6wi321mv4h3n
+         got:       sha256:1vzph3ijra05z1z8glr6c5gw10a2lg94v02gclmdsgyrzdhn4k2r
 error: Cannot build '…-unit-strata.service.drv'  →  system-units  →  etc  →  nixos-system-aibox
 ```
 
-`nix store verify` on the builder says the reason in one line:
+`nix store verify` on aibox agrees, and named two paths, not one — every `*-strata-unstable`
+that has ever **run** there:
 
 ```
-$ sudo nix store verify --no-trust /nix/store/f0jwild…-strata-unstable
-checking '…'...
-path '…' was modified! expected hash 'sha256:061a7b4d…', got 'sha256:1rr5l8ah…'
+$ sudo nix store verify --no-trust /nix/store/97dahyfv…-strata-unstable
+path '…' was modified! expected hash 'sha256:1qz5jabd…', got 'sha256:1vzph3ij…'
+$ find /nix/store/97dahyfv…-strata-unstable -newer "$P" -type f
+  2026-11-14 02:54  share/strata/strata_control/__pycache__/tune_machine.cpython-314.pyc
+  2026-11-14 02:54  share/strata/strata_control/__pycache__/private_files.cpython-314.pyc
+  …                      (every entry: `__pycache__/*.cpython-314.pyc`, nothing else)
+$ find /nix/store/f0jwild…-strata-unstable -name "*.pyc" -printf "%TY-%Tm-%Td\n" | sort -u
+  2026-11-04        (the 0.1.56 build, pycache from the day it was benched)
 ```
 
-So **the 39 MB `bin/strata` inside that store path is not the bytes the path names**. It is
-`ultimate`-signed (`nix path-info --sigs`), i.e. built on that box, which is why nothing ever
-complained until something tried to *copy it out*: local use never re-checks a path's nar
-hash, substitution does. Four `*-strata-unstable` paths are in aibox's store; the one the
-current pin wants is the modified one, and the one the service actually runs is a fifth
-(`systemctl show strata -p ExecStart` → `/nix/store/97dahyfv…-strata-unstable/bin/strata-server`).
-Note what that mismatch means for reading `machines/aibox/STRATA.md`: its "What the HIP engine
-at 0.1.56 actually is" section names `f0jwild…` as *the* engine and quotes `strata --version`
-from it. Whoever patched that binary left the documentation describing a path whose contents
-are no longer the flake's, and the running service is a different store path again —
-AGENTS.md rule 20 (a box running other bytes than its checkout says) seen from the store side.
+**The cause is that the Strata engine is a Python program with its control layer in `$out/share`,
+and it writes its bytecode caches into its own store path.** The unit runs as root, root may
+write to a `0555` directory it owns, so the first import creates `__pycache__/`, and from then on
+the path's contents no longer match the hash in its own name. Reading it never notices (local use
+does not re-hash); **copying it out does** — so the failure appears as `hash mismatch importing
+path` on whatever machine asks for the closure: services1 substituting from aibox, `nix copy`, or
+`just check-build`. It is not bit-rot, nobody patched a binary, and it is not aibox being sick: it
+is the shape of the package.
 
-**Not caused by the `pi-agent` change**, proved the way rule 13/9 says to prove it:
-`nix derivation show .#packages.x86_64-linux.strata` is byte-identical at clean HEAD and with
-the change — same drv path, no differing fields (checked by diffing the parsed JSON, 2026-11-14)
-— and services1, services2, services3 and gw all built in the same pass.
+Three consequences to know before debugging anything else on this box:
 
-**To do:** find out whether the edit was deliberate (STRATA.md keeps a long list of engine
-experiments, one of which may have replaced a binary by hand), and then either express it — a
-patch or an `overrideAttrs` in `machines/aibox/strata-package.nix`, with a paragraph saying
-what it changes — or `nix store delete` it (mind the `nix store delete` gotcha already written
-up in `docs/nix-dev-workflow.md`) and let the flake rebuild the pin. **Blocks:** any honest
-`just check-build` after an aibox-touching change, and any claim that aibox can be rebuilt
-from the flake as it stands. Until then, an agent that runs `just check-build` and sees this
-must not conclude its own change broke it. Re-verify with:
-`sudo nix store verify --no-trust /nix/store/f0jwild16n6wjxjly1h1shslsrnw87x4-strata-unstable`
-(no output = repaired) and `just check-build`.
+* `just check-build` **cannot pass for aibox** while the pinned engine path has been run, so any
+  agent that runs it after an aibox-touching change will be handed a red gate that has nothing to
+  do with their change. It is worth being explicit about, because the failure text names the
+  engine and the ordering suggests a build bug.
+* The `nix store delete` mystery in the §Nix / build item above ("the unreferenced ones still
+  refused as `still alive` … unexplained, so check `nix store verify --all` if it recurs") is now
+  explained by the same class of thing: a store path whose contents drifted cannot be treated as
+  a pure, disposable copy — `verify` is the tool that says so, and for the strata paths it says it
+  every time.
+* The mtime of the `__pycache__` files is a useful clock: it says when an engine from that build
+  last started. `97dahyfv…` at 02:54 today, `f0jwild…` at 2026-11-04, matching the bench passes
+  `machines/aibox/STRATA.md` records.
+
+**The fix is one line per engine box**, and it is deliberately not applied here because it
+restarts a loaded inference box and lands in the middle of the 2026-11-14 tuning work
+(`machines/services2/STRATA-TUNE-2026-11-14.md`, and aibox's engine was started at 03:16 today):
+
+```nix
+# machines/aibox/strata.nix and machines/services2/strata.nix, in the unit's serviceConfig:
+Environment = "PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/run/strata/pycache";
+```
+
+(`PYTHONPYCACHEPREFIX` alone is friendlier: caches still get written, to a tmpfs the service owns.
+`RuntimeDirectory=strata` would give it the directory. A non-root `User=` is the deeper fix and a
+bigger question — the engine touches `/dev/kfd` and the card.) Then, to repair what is already
+dirty, delete the caches — they are not in the original nar, so removing them restores the
+recorded hash: `sudo find /nix/store/*-strata-unstable -name __pycache__ -type d -exec rm -rf {} +`
+and re-check with `nix store verify`. **Blocks:** `just check-build` for aibox, and any
+`nix copy`/substitution of an engine closure. **To do:** the two lines above plus the cleanup, in
+the same pass as the next engine deploy so it costs no extra restart. **Re-verify with:**
+`sudo nix store verify --no-trust $(systemctl show strata -p ExecStart --value | grep -oE "/nix/store/[^ ]*strata-unstable")`
+(no output = repaired), and `just check-build`.
+
+## aibox's own system depends on the Pi Room image's whole desktop closure, so aibox switches rebuild browsers
+
+The `pi-agent` deploy to aibox (2026-11-14) began with **405 local builds on aibox** —
+`firefox-158.0`, `code-1.140.0` with its `electron`/`fhsenv` halves, `squashfs`, ~400 more — on
+the box that is also the fleet's builder. Load average 11 on 12 cores inside two minutes, and
+every other machine's build queued behind it. The change being deployed adds a oneshot unit and a
+timer.
+
+It is not aibox's desktop: `programs.firefox` and `vscode.fhsWithPackages` are in
+`machines/pi-room-sys/configuration.nix` (the netboot image's own config), and
+`machines/aibox/netboot.nix` makes **aibox's system** depend on building that image and
+bind-mounting `build.squashfsStore` at `/exports/netboot-squashfs`. So the Pi Room image's entire
+package closure is an input to aibox's `system.build.toplevel`: any heavy package added to, or
+version-bumped in, the netboot image becomes a multi-hour compile on the fleet's builder, and it
+surfaces on whichever aibox switch happens to be first. It landed all at once here because
+aibox's checkout was 28 commits behind (see the divergence note below), so one switch carried
+every intervening closure change.
+
+**Blocks:** nothing — the builds finish, and the next switch of that same closure is instant.
+But it means an aibox deploy has an unbounded, invisible cost budget that belongs to a *different
+machine's* config, which is the wrong place for it to be discovered. **To do,** pick one: build
+the netboot image somewhere that is not the fleet's builder (or push `squashfsStore` to a
+substituter aibox reads, so the image is copied rather than compiled); or keep aibox's dependency
+on the image *narrow* (export a path to the already-built squashfs, produced by a job rather than
+by the system's own closure); or simply decide that the Pi Room image gets no browser-class
+packages, which is the cheapest fix and probably the honest one for a kiosk netboot.
+**Re-verify with:** `grep -cE "^building " <deploy log>` for an aibox switch (a routine one should
+be near zero), `nix eval --raw .#nixosConfigurations.aibox.config.system.build.toplevel | xargs nix
+path-info -S | numfmt --to=iec`, and `nix path-info -S` on
+`${build.squashfsStore}`'s output closure from `machines/aibox/netboot.nix`.
