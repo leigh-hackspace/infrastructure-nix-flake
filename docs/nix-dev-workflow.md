@@ -398,6 +398,41 @@ system — that blank line is the module, running). Then, tracked, the call died
 the filestore read above. Both halves of this section are now measurements, not
 predictions.
 
+
+### Prove your own client before you diagnose the remote box (2026-11-14)
+
+A run of three unrelated self-inflicted faults on this workstation produced one confident
+and completely wrong conclusion: *aibox is dead*. It wasn't — ping 0.1 ms, `:22` and `:8080`
+open, `/health` 200 in 16 ms, and Prometheus reporting load 0.08 with 0 failed units. Every
+symptom was in my own ssh path:
+
+- **A wedged forwarded agent.** `SSH_AUTH_SOCK` pointed at
+  `~/.ssh/agent/s.…​.sshd.…` from a login whose peer was gone hours earlier. OpenSSH asks the
+  agent for identities *during* publickey auth, so **every** ssh — including one to
+  `127.0.0.1` — hung after `debug1: Next authentication method: publickey` while KEX had
+  already completed. That combination (KEX fine, auth silent, HTTP fine, metrics healthy)
+  is the signature; nothing about it points at the client until you try localhost. Fix per
+  command: `env -u SSH_AUTH_SOCK ssh …`. `-o IdentitiesOnly=yes` does **not** help — it still
+  consults the agent. Reap the socket only if it is yours to reap: it may belong to someone's
+  live login session.
+- **`pkill -f PATTERN` matching its own command line.** The bracket trick
+  (`pkill -f "[a]ibox-probe"`) stops the *pattern* self-matching, but not a second occurrence
+  of the same literal later in the same line: `pkill -f "[a]ibox-probe\.sh"; … rm -f
+  /tmp/aibox-probe.sh` still killed the session it was running in, and ssh reported the bare
+  `255` that means "the remote end hung up". One purpose per ssh call, or no shared substring.
+- **A backgrounded job that inherits the session's stdout** (`sudo -b cmd`, `setsid nohup cmd &`
+  without redirects) keeps the ssh session alive forever, which is both a hung tool call and,
+  in quantity, an sshd session pile-up that makes the next connection look slow or dead. Use
+  `systemd-run --collect --unit=… ` (the recipe above in this file) — it detaches by
+  construction and leaves a journal to read.
+
+The ladder that costs seconds and would have ended it immediately: **`ssh` to 127.0.0.1** (if
+that hangs, it is you) → `ssh -G host` (instant ⇒ not config) → the remote's own metrics
+(fresh scrape, 0 failed units ⇒ not the box). Three commands, then diagnose. What made it
+worse is the same thing this file keeps saying about every other tool: the first reading of a
+hung `ssh` was recorded as a fact about the remote machine, and the next three commands were
+spent chasing that.
+
 ### Closed 2026-10-25, one read at a time: the pairing shipped, the source read is a decision
 
 The `cargoLock`/`cargoLockContents` pairing landed on 2026-10-25 in `common/crane.nix` as

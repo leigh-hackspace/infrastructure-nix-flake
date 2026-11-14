@@ -509,6 +509,122 @@ So the remaining paths are hardware and engine kernels, not config: an eGPU
 better AVX2 IQ2 dequant in the CPU expert kernels. **Nothing from this section
 was deployed** — the control is the deployed config.
 
+## Can we overclock it? The three ceilings, measured (2026-11-14)
+
+The plateau above ends with "the remaining paths are hardware and engine kernels", and
+**both halves of the chain being compute-bound is exactly the case where clocks are worth
+asking about** - so this is that question, measured rather than reasoned about. Short
+version: **the GPU cannot be overclocked (it already runs at its ceiling), the memory cannot
+be overclocked (and would not help), and the one ceiling with real slack under it is the
+package's power window - which on this kernel is not reachable by a one-liner.**
+
+Method: `strata-tune/power-probe.sh` at 1 Hz (read-only; its header explains which columns
+lie if read wrong) while `strata-tune/strata-bench.py` runs against the live endpoint
+through the door, as a transient unit (`systemd-run --collect`) rather than a backgrounded
+`ssh` job.  Control band reproduced first, so the numbers below are comparable to this
+file's: **decode 9.5 short / 12.0-12.6, prefill 88.1-90.3 tok/s** - the same band as
+"The control measurement" above.
+
+| phase | package W (mean/max) | Tctl | iGPU die | gpu busy | CPU MHz (mean/max of 3 cores) | active sclk |
+|---|---|---|---|---|---|---|
+| idle | 8.4 / 9.7 | 39 °C | 37 °C | 0 % | 1,774 / 2,942 | 1900 |
+| short-decode (26 s) | 36.2 / 58.2 | 65 °C | 71 °C | 100 % | 4,055 / 4,542 | 1900 |
+| **prefill 6,962 tok** | **44.1 / 56.9** | 78 °C | **79 °C** | 100 % | 2,943 / 4,559 | 1900 |
+| **prefill, 2nd** | **43.6 / 63.4** | 77 °C | **81 °C** | 100 % | 3,132 / 4,561 | 1900 |
+
+**1. The GPU has nothing left to give.** `pp_od_clk_voltage` *is* exposed on this APU, and
+its `OD_RANGE: SCLK 200Mhz 1899Mhz` is **the same number as the top DPM state** (`pp_dpm_sclk`
+lists 200 / 1900 / 1899, and the active state under load is 1900).  A ceiling you are
+already sitting on is not headroom; there is no offset to apply, only the risk of applying
+one.  (The `sclk` column also showed 400 and 533 in some samples: the DPM does drop the GPU
+when the verify window is waiting on the CPU pool - so `power_dpm_force_performance_level`
+from `auto` to `high` is a *testable* arm.  It is not obviously a win: with the package
+sitting at ~44 W of a ~45 W window, keeping 6 CUs clocked while they wait buys nothing and
+steals watts from the pool.  Untested; `echo auto` reverts it, and this is the only clock
+lever left that is OS-level and reversible.)
+
+**2. Memory: no headroom, and the workload is not the kind it would help.** `dmidecode`
+reads `CMSX64GX5M2A4800C40` at `Configured Memory Speed: 4800 MT/s`, `1.1 V` - the kit is
+running at its rated JEDEC speed, it is a SODIMM laptop part with no XMP/EXPO above that,
+and a Rembrandt APU gives no memory multiplier to argue with.  Even if it did, the plateau
+above measured the CPU pool at ~21 GB/s because **Zen 3 has no AVX-512 and the expert
+kernels are AVX2** - that is a compute limit, not a bus limit, so extra MT/s lands on the
+half of the chain that is not waiting for bytes.
+
+**3. The slack that is real is power, and it is 18 °C of it.** Sustained 43.6-44.1 W with
+63.4 W of burst means the platform is clamping at a ~45 W window while the die sits at
+77-81 °C of a 95 °C limit.  That is the textbook shape of a firmware clamp wasting thermal
+margin, and raising `sPPT/fPPT/slowPPT` (ryzenadj `-a/-b/-c`, optionally a negative curve
+via `--set-cogfx`) is the one change with physical headroom behind it.  Three things stop it
+being a command I would run unsupervised:
+
+- **The tool cannot see the thing it is changing.** `ryzenadj` 0.19 on kernel 7.2.10 here:
+  `no compatible ryzen_smu kernel module found, fallback to /dev/mem … Unable to get memory
+  access … Unable to init power metric table: -5`.  So the current limits cannot even be
+  *read*, let alone verified after a write.  Doing this properly needs the out-of-tree
+  `ryzen_smu` module (not in nixpkgs; a kernel-module input of its own) or `iomem=relaxed`
+  - which weakens a security boundary on a machine this flake deploys to.  The one meter
+  that does work is `power1_input` in this probe, so an experiment is *judgeable* by
+  watts+tok/s even while blind to the SMU values.
+- **Unmeasured silicon.** Nothing here reports VRM or mosfet temperature; `nvme` sits at
+  44-55 °C in the same airflow.  Pushing 60-70 W continuously through a small chassis
+  without that reading is how you trade a fast endpoint for a dead board - and a hard hang
+  here costs a power cycle at the box, because there is no console and no BMC.
+- **It is the builder.** aibox compiles every machine in this flake. A limit that makes the
+  box unstable delays everyone's deploys, and the failure is not auto-rollback-shaped (the
+  box does not boot into anything bad; it just stops).
+
+If it is ever done, do it as `just switch`-able state (a unit that writes the limits, so
+removal is a switch), one step at a time (45 → 54 → 65 W), with this probe running and
+`strata-bench.py` as the measurement, and stop at the first sign of the clocks *dropping*
+(thermal re-limit is a loss, not a plateau).
+
+**4. The cheapest untried thing is not a clock at all.** `amd_pstate-epp` reports
+`balance_performance` (the kernel default; nothing in this flake sets it) with
+`scaling_max_freq` at the full 4,566 MHz - so the OS is not clamping, but EPP `performance`
+raises boost aggressiveness for exactly the AVX2-bound pool that owns ~50 % of the verify
+window.  Free, declarative, reversible; unmeasured here.  One arm of `strata-bench.py` with
+`echo performance > /sys/devices/system/cpu/cpufreq/policy0/energy_performance_preference`
+answers it, revert with `balance_performance`.
+
+**5. And the log handed over a better lead than any clock.** Every start-up says:
+
+> `expert arena: cudaHostRegister PORTABLE ok; MAP_HUGETLB unavailable (needed 16907 2 MiB
+> pages, vm.nr_hugepages=0); transparent huge pages NOT requested: only 10 GiB of free 2 MiB
+> blocks for a 33 GiB arena, compaction would stall the load (STRATA_ARENA_THP=1 requests
+> them anyway) (#2126)`
+
+**The 33 GiB arena the CPU pool streams through is running on 4 KiB pages**, and upstream
+*refuses* to ask for THP because on a box with under half the arena available in free 2 MiB
+blocks the request costs minutes of per-fault compaction (its #2126: 148 K failed
+compactions, 100 % system time, "the load never ended").  aibox is 10 GiB-of-16.5-needed
+side of that line, so the refusal is correct behaviour, not a miss.  But it leaves a real
+hypothesis: the plateau's central number - the pool at ~21 GB/s against upstream's ~40 GB/s
+reference - is a per-byte *time* measurement that TLB walks over 33 GiB of 4 KiB pages would
+directly explain.  The clean version is a **boot-time** huge-page reservation (before
+fragmentation, no compaction: `vm.nr_hugepages` sized to the arena, or `hugepages=` on the
+kernel line), which makes `MAP_HUGETLB` succeed outright - and that is a RAM-capacity
+decision against frigate, immich and whisper on the same box, not a flag.  Do **not** start
+by setting `STRATA_ARENA_THP=1`: on a box already holding ~50 GiB that is the documented
+stall, on the machine that builds the fleet.  If the huge-page experiment is ever run, it
+should be measured as pool-GB/s and tok/s with this probe attached, and the honest
+expectation is "maybe a few percent, possibly nothing" - a 28 GiB reservation is a large
+price for a TLB effect that has not been isolated.
+
+Re-measure with:
+
+```
+sudo machines/aibox/strata-tune/power-probe.sh /tmp/ap.csv &      # read-only
+python3 machines/aibox/strata-tune/strata-bench.py https://strata2.int.leighhack.org
+sudo pkill -f power-probe.sh
+```
+
+(Do not start the probe by backgrounding it inside the `ssh` command: it inherits the
+session's stdout and the session then never exits - which is how this investigation spent
+ten minutes believing aibox was dead.  Use `systemd-run --collect`, as the repo's detached
+recipe says, and see `docs/nix-dev-workflow.md`, "Prove your own client before you diagnose
+the remote box".)
+
 ## Update: engine 0.1.42 — 2026-10-11
 
 0.1.40.2 → **0.1.42** (`strata-package.nix`, rev `61b3fb5`; the two releases between are the
