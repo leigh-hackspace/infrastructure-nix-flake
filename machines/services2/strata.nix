@@ -218,6 +218,21 @@ in {
   };
 
   config = lib.mkIf cfg.enable {
+    # vm.swappiness 10, not the kernel's default 60.  `--resident-experts` keeps the pack
+    # resident as *shared memory* - `/proc/meminfo` reads `Shmem: 25,041,688 kB` (23.9 GiB)
+    # on a box with 30 GiB of RAM and a 16 GiB swap file - and shmem is swappable, so at 60
+    # the kernel's first reclaim target under page-cache pressure is the expert arena and
+    # the CPU pool's next expert read is a swap read.  **Measured, so nobody oversells it:
+    # 10 does not make this box swap-free.** Swap use sat near 450 MiB with the engine idle
+    # and grew to 1.70 GiB (engine `VmSwap` 1,077,456 kB, `SwapCached` 156 MiB) across three
+    # 63,052-token prompts, at swappiness 10.  What it changed is *what the kernel reaches
+    # for first*, and decode did not move either way - 31.9 / 32.0 / 32.6 / 31.2 tok/s on
+    # control repeats.  So this is a churn dial, not a speed dial; the reason it is in the
+    # config at all is that it had been applied with `sysctl -w` and would have died at the
+    # next boot.  The whole sweep, and the fact that this box's memory pressure is
+    # unmeasured as a speed factor, is machines/services2/STRATA-TUNE-2026-11-14.md.
+    boot.kernel.sysctl."vm.swappiness" = 10;
+
     # The house "never give up" policy (common/systemd.nix): Restart=always plus
     # startLimitIntervalSec=0, so a startup that fails while a leftover engine
     # still holds VRAM keeps retrying instead of parking in `failed`.
