@@ -259,6 +259,20 @@ X first", X has already cost someone a day.
    Re-verify with: `git -C ~/Projects/thingino-firmware log --oneline
    c110-fleet-20261031..ssc333-infinity6b0`, `just cam-fw-verify`, and
    `grep -rn "c110\|thingino" AGENTS.md justfile cameras docs`.
+31. **Do not hand-copy a fact a running process can answer.** The worked example is pi's model
+   config (`machines/aibox/pi-models.json`, now deleted): a checked-in list of model ids,
+   context windows and output limits, hand-copied onto four boxes, where **every class of it had
+   already drifted** — aibox reports `n_ctx` 262144 against its file's 131072, and the
+   off-network row named a model id the endpoint no longer serves, so that provider offered a
+   dead model everywhere, indefinitely. Those copies also dialled the engines' addresses
+   directly, which is how the real `strata_api_key` came to sit in `~/.pi/agent/models.json` on
+   four boxes (rule 13; rotation open in `docs/follow-ups.md`). The shape that fixes it —
+   **declare the endpoint in Nix, discover the rest at run time, and never let one overwrite the
+   other** — is `common/pi-endpoints.nix` + `common/pi-agent.nix` + `crates/pi-agent-sync`, and
+   the test reaches past pi: if the truth lives behind a socket, put the socket in the flake and
+   ask it on a timer with the answer's provenance recorded, because a build cannot ask and an
+   eval must not (rule 22). A stale answer beats a deleted one, so keep the last known value
+   while the socket is down — and say which of the two you are serving. `docs/pi-agent-models.md`.
 
 ---
 
@@ -296,7 +310,9 @@ X first", X has already cost someone a day.
   findable.
 - `common/` — shared modules imported by more than one machine: `tools.nix`, `users.nix`,
   `sops.nix`, `nixbld.nix` (the build-user invariant), `crane.nix` (the shared crane
-  helpers), `frontend-build-spa.sh` (the one SPA build recipe all five Dioxus
+  helpers), `pi-agent.nix` + `pi-endpoints.nix` (rule 31: the inference endpoints pi may dial,
+  declared here; the models and context windows discovered from them by `crates/pi-agent-sync`),
+  `frontend-build-spa.sh` (the one SPA build recipe all five Dioxus
   frontends call). **Every file in `common/` starts by naming its kind** — `MODULE`,
   `DATA`, `HELPER`, `CHECK`, `PACKAGE` — because the directory mixes all five and you
   cannot otherwise tell a NixOS module from a bare table from a `{lib}: …` functor **Network-wide facts live here, not per machine:** `config.nix`
