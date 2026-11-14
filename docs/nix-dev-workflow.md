@@ -568,6 +568,41 @@ thing holding the truth.
   is what the unit is really for. Re-measure a load-bearing premise instead of
   inheriting it, and write down the command, not just the conclusion.
 
+## One sample per side cannot attribute anything
+
+The shape of the mistake: measure A once, change one thing, measure B once, read the gap
+as the effect. It is the same error whether the measurement is a throughput number, a
+lease count, an HTTP status, or a model's output — and it has cost this fleet real days,
+usually by producing a confident sentence in a doc.
+
+Receipts, all from one day (2026-11-14, `machines/services2/STRATA-TUNE-2026-11-14.md`):
+
+- **Timings.** Four control repeats of one benchmark on one box read 31.2 / 31.9 / 32.0 /
+  32.6 decode tok/s, and one control pass produced 807 tok/s of prompt against the others'
+  ~1,050. A "+4 %" engine-bump claim written that morning (from one warm pass per side, in
+  the same file) was inside that spread and is corrected there.
+- **Output.** A greedy answer fingerprint, taken once per config, "showed" that
+  `STRATA_PF_FUSED=1` changed 2 of 3 completions — and, worse, that a *second* flag shared
+  one of the new hashes, which invited a mechanism story. Three runs of **one** config with
+  nothing changed gave three distinct hashes for two of the three probes. Both the
+  difference and the agreement were draws from one variable distribution; the flags had
+  never been measured.
+
+What is required instead, and it is cheap: **run each side N times and report the spread,
+or score against a key that does not care about exact bytes.** That is why
+`strata-answer-check.py` runs N repetitions and prints `stable N/M` per item (only a
+STABLE item can carry a before/after claim — here that was 1 of 3), and why
+`strata-answer-score.py` exists at all: it checks answers against a key, so output noise
+cannot masquerade as regression or improvement. The same rule in the harness's own voice is
+the noise-floor paragraph at the top of the tune doc, and the same rule about *state* rather
+than numbers is rule 29 (a frozen lease table looked like a quiet network) and rule 20 (a
+box's behaviour blamed on a config change it had never received).
+
+One asymmetry worth naming, because it is why this trap feels safe: **a large-looking gap
+is not the tell.** The 807-tok/s control pass was a 25 % gap and was noise; the effect that
+survived (prompt speed on one flag) was ~5 % and replicated, on both prompt sizes, on the
+live endpoint, after the fact. Size is not evidence; repetition is.
+
 ## Common checks
 
 ```bash

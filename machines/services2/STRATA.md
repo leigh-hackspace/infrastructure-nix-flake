@@ -1051,10 +1051,17 @@ Asked, while pi is being served by this very unit, "can `git@github.com:Zagitta/
   an arm, because most of the obvious dials are already measured flat (and it carries the
   noise floor a claim has to clear).  Its one win is **deployed**:
   `STRATA_PF_FUSED=1` in `strata.nix` — +5 to +11 % at 8k, +1 to +3 % at 28k, decode
-  unmoved.  It changes answers in the sense that any last-bit rounding change does under
-  greedy decoding, which is why the decision was taken on `strata-answer-score.py` (nine
-  greedy items with an answer key: **8/8 correct before it, 8/8 after**) rather than on a
-  changed hash.  Revert = delete the line, `just switch`.
+  unmoved.  Upstream lists it among the switches that change answers, and my first
+  measurement of that (a greedy fingerprint per config) turned out to be measuring this
+  box's own non-reproducibility — **three runs of one config, three different answers for
+  two of three probes** — so the decision rests on `strata-answer-score.py`: nine greedy
+  items with an answer key, **8/8 correct before it and 8/8 after**.  Revert = delete the
+  line, `just switch`.
+- **Greedy output on this engine is not reproducible run to run.**  Ask "did this change
+  what the model says?" by running each side N times (`strata-answer-check.py` prints
+  `stable N/M`) or by scoring against an answer key; one run per config attributes noise to
+  the change, in both directions — it produced a false difference *and* a false agreement
+  here before either was caught.
 - **The `AIBOX` box has no equivalent — re-read aibox's `STRATA.md` before
   touching engine flags.** Every knob there (cache size, `--pcie-frac`,
   `--spec`, `--pool-workers`) was measured on the iGPU and does not transfer

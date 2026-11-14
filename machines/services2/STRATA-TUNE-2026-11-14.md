@@ -16,9 +16,12 @@ of a 170 W limit that cannot be changed (min = max = 170 W on this VBIOS), and a
 pushing its **full bf16 peak of 26 TFLOP/s** under cuBLAS draws only **95 W**.  The one
 thing that moved a meter was `STRATA_PF_FUSED=1` — **+5 to +11 % on 8k prompts, +1 to +3 %
 at 28k, decode unmoved** — and since it is listed upstream among "options that change
-answers", it sat undeployed until the question was answered with an answer key rather than
-a hash: **8 items scored, 8 correct before it and 8/8 after** (§"The one win").  **It is
-deployed now.**
+answers", it sat undeployed until that question was answered properly, which took two
+tries: my first answer (a greedy fingerprint per config) turned out to have measured this
+box's own non-reproducibility rather than the flag, and **is retracted below**; the answer
+that holds is an answer key — **8 items scored, 8 correct before the change and 8/8
+after**, with no hash difference attributable to the flag in either direction
+(§"The one win").  **It is deployed now.**
 
 ---
 
@@ -89,10 +92,14 @@ down per arm**, plus ~40 s of bench for the fast script and ~3.5 min for the ful
 
 **Noise floor (measured, not guessed): control repeats gave 31.9 / 32.0 / 32.6 / 31.2
 decode tok/s and 1,048-1,056 tok/s of 8k prefill, and one control pass produced 807.**
-So a single-digit percentage is nothing; an effect has to replicate.  Two harness bugs
-found by this sweep are now fixed in `strata-exp.sh` — `/tmp/exp-strata.log` was shared
-between arms (an arm's tail could quote its predecessor's `PCIe share:` line), and an
-unresolvable bench path exited 0 without benchmarking (it silently ate the speed numbers
+So a single-digit percentage is nothing; an effect has to replicate.  **The floor is not
+only in the timings:** greedy *output* is not reproducible either — three runs of one
+config on the live unit gave three distinct answers for two of three probe items
+(§"Why 'the hash changed' was not evidence"), so a one-run-per-config comparison of what
+the model says attributes noise to whatever you changed.  Two harness bugs found by this
+sweep are now fixed in `strata-exp.sh` — `/tmp/exp-strata.log` was shared between arms (an
+arm's tail could quote its predecessor's `PCIe share:` line), and an unresolvable bench
+path exited 0 without benchmarking (it silently ate the speed numbers
 of arms 18 and 21).
 
 ## The arms
@@ -178,25 +185,50 @@ deploying:
 | `STRATA_PF_FUSED=1`, arms | **1,170.5**, **1,099.4** | **1,160.2**, **1,160.7** | unmoved |
 | **`STRATA_PF_FUSED=1`, live endpoint through the door** | **1,105.3**, **1,167.0** | **1,156.3**, **1,156.2** | 22.5 short / 32.3 |
 
-### Why "the hash changed" was not the evidence to decide on
+### Why "the hash changed" was not evidence — and why I have retracted it
 
 Upstream's own row is honest — "Fused int8 prompt experts … Replaces the MMQ prompt
-kernels", in the table headed *Options that change answers* — and
-`strata-answer-check.py` confirmed the drift on this pack with three greedy prompts:
-`fib 7c8cd8→455df6`, `sortdoc 84ffb8→4b5d4b`, `arith f8423c→f8423c`.  **But a changed
-fingerprint is not a worse answer, and treating it as one would be a category error:**
-under greedy decoding a single tie-break diverges the entire continuation, so *any*
-last-bit rounding change reads as "2 of 3 continuations differ".  That number measures
-sensitivity, not quality, and the honest question is whether the model is still **right**.
+kernels", in the table headed *Options that change answers* — and `strata-answer-check.py`
+appeared to confirm the drift: control `fib 7c8cd8`, `sortdoc 84ffb8`; fused
+`fib 455df6`, `sortdoc 4b5d4b`; `arith f8423c` in both.  **That comparison was invalid and
+the claim is retracted.**  The tool now runs each prompt N times and reports `STABLE` or
+`VARIABLE` per item; three runs of one config on the live unit, nothing changed between
+them, settle it (2026-11-14, fused deployed):
 
-So `strata-answer-score.py` exists: nine short items with an **answer key** (arithmetic,
-integer division, a negative, a slice length, a required Rust expression, a Python `len`,
-a binary literal, a modulus, a small sum), greedy, scored by regex on the emitted
-`content` — with a third state, `INCOMPLETE`, because a reasoning model whose token budget
-runs out mid-calculation has not answered *wrongly*.  (That distinction paid for itself on
-the first control run: at `max_tokens=64` two items "failed", one of them showing
-`…=1139` with the correct answer one token away.  A budget artefact nearly decided a
-deploy.)
+| item | three runs, one config, same prompts | |
+|---|---|---|
+| `fib` | `9f9844  d97d83  ec9049` | **VARIABLE** — three distinct |
+| `sortdoc` | `22455f  298e5a  4b5d4b` | **VARIABLE** — three distinct |
+| `arith` | `f8423c` | STABLE — six runs, two configs, two days |
+
+**Greedy output on this engine is not reproducible run to run.**  "2 of 3 continuations
+change under `PF_FUSED`" was therefore two draws from one variable distribution, and every
+fingerprint this file ever recorded must be read that way: the `fib` value I had attributed
+to `STRATA_HC_SPLIT=0` (`d97d83`) reappeared in a run with that flag off, and so did the
+`sortdoc` value I had attributed to `STRATA_ROUTE_TAIL_SKIP=9` (`22455f`) — they were never
+those flags' signatures.  **The worse half of the error points the other way:** the
+*agreement* I built an inference on — `PF_FUSED` and `HC_SPLIT` sharing a `sortdoc` hash,
+therefore "plausibly perturbing the same rounding step" — is just as meaningless, and it
+was the agreement that tempted me, because hashes recur out of a small set of modes
+(`4b5d4b` walked back in uninvited on the third run).  One run per config attributes
+neither a difference nor a match.
+
+This is the mistake the rest of this sweep kept making at another layer — a speed number
+read once, a probe answering 200 read once, a table read once — and the remedy was already
+written in this file: measure the spread before interpreting a gap.  Measuring it turned
+most of this particular signal into noise: 1 of 3 items stable, and that one stable
+identically across both configs, so **no answer-level difference from this flag is
+measurable by this method, in either direction.**
+
+What can carry the decision is an instrument that does not care whether the prose is
+byte-identical: `strata-answer-score.py`, nine short greedy items with an **answer key**
+(arithmetic, integer division, a negative, a slice length, a required Rust expression, a
+Python `len`, a binary literal, a modulus, a small sum), scored on the emitted `content`,
+with `INCOMPLETE` as a third state because a reasoning model whose budget ran out
+mid-calculation has not answered *wrongly*.  (That distinction paid for itself immediately:
+at `max_tokens=64` two items "failed", one of them `…=1139` with the answer one token
+away — a budget artefact nearly deciding a deploy, which is the same trap one level down: a
+wrong score from a non-answer.)
 
 | | scored | correct | incomplete |
 |---|---|---|---|
@@ -211,10 +243,13 @@ What that does *not* claim: that 8 arithmetic-and-one-liner items are a code-qua
 benchmark.  They are a guard against the blunt failure mode ("it got dumber in a way you
 can see").  A real eval — perplexity, or KL against the unfused path over held-out
 completions — is still the thing that would prove more, and it is still worth doing if
-this switch is ever suspected.  And one datum worth keeping: `STRATA_HC_SPLIT=0`'s
-fingerprints are `d97d83 / 4b5d4b / f8423c` — **`sortdoc` agrees with `PF_FUSED`'s** and
-not with control, so the two switches plausibly perturb the same rounding step, which is
-worth knowing if either is ever bisected against a bad completion.
+this switch is ever suspected.
+
+And the reproducibility result outlives this flag, because it is a property of the box:
+**anything that asks "did this change what the model says" must run each side N times and
+compare distributions, or score against an answer key.**  `strata-answer-check.py` does the
+former and prints `stable N/M`; `strata-answer-score.py` does the latter.  Neither is
+optional for a question of that shape here.
 
 ## Shipped
 
@@ -277,9 +312,9 @@ What is genuinely still open, in the order I would try it:
 ```bash
 # one arm, fast (3 decode reps + prefill), strata is down for ~2.5 min
 sudo machines/services2/strata-tune/strata-exp.sh auto auto '{}' '["--aux-cpus","auto"]'
-# with a full prefill sweep and the greedy answer fingerprints as well
+# with a full prefill sweep and both answer checks as well (reproducibility, then score)
 sudo machines/services2/strata-tune/strata-exp.sh auto auto '{"STRATA_PF_FUSED":"1"}' '[]' \
-    machines/services2/strata-tune/strata-bench.py strata-answer-check.py
+    machines/services2/strata-tune/strata-bench.py strata-answer-check.py strata-answer-score.py
 python3 machines/services2/strata-tune/strata-tune-report.py   # /tmp/arm-*.log -> a table
 
 # the greedy answer checks: the fingerprint (does output move) and the score (is it right)

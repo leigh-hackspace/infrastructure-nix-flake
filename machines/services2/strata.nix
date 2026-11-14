@@ -211,18 +211,26 @@ let
       lib_dirs = ["/run/opengl-driver/lib"];
       env.CUDA_VISIBLE_DEVICES = "0";
       # The fused int8 prompt-expert kernels (#136).  **This is the one switch in the
-      # 2026-11-14 sweep (23 arms) that measured faster, and it is not answer-neutral: it
-      # is listed upstream among "options that change answers".**  Numbers on this pack,
+      # 2026-11-14 sweep (23 arms) that measured faster.**  Upstream lists it among "options
+      # that change answers", and the first thing I did with that was measure a change - see
+      # the retraction below, because the measurement was invalid.  Numbers on this pack,
       # 8,089-token prompt: control 1,048 / 1,048 / 1,050 / 1,056 / 1,056 tok/s against
       # fused **1,170.5** and **1,099.4** (+4 to +12 %, two reps); 28k: 1,123-1,146 against
-      # **1,160.2** and **1,160.7** (+1.7 %).  Decode does not move - the fused kernels are
+      # **1,160.2** and **1,160.7** (+1 to +3 %).  Decode does not move - the fused kernels are
       # the *prompt* path.  Mechanism, read off the engine's own log: the chunk ceiling goes
       # 6,656 -> 8,192, so an 8k prompt is one chunk instead of 6,656 + a tail.
       #
-      # What it costs, measured rather than assumed.  Greedy fingerprints move on 2 of 3
-      # prompts (`fib`, `sortdoc`; `arith` holds) - which is what ANY last-bit change does
-      # under greedy decoding, so it is not evidence of degradation, and the question that
-      # actually decides a deploy is whether the model is still *right*.  It is:
+      # What it costs, measured rather than assumed.  Greedy fingerprints APPEARED to move on
+      # 2 of 3 prompts and **that observation is retracted**: three runs of ONE config on this
+      # live unit gave three distinct hashes for two of the three probe items, so greedy
+      # output here is not reproducible run to run and a one-run-per-config hash comparison
+      # attributes run noise to whatever you changed.  `strata-answer-check.py` now measures
+      # the reproducibility instead of assuming it; the receipts, and the cross-flag
+      # "agreement" the same mistake produced, are in
+      # machines/services2/STRATA-TUNE-2026-11-14.md.
+      #
+      # So no answer-level difference from this flag is measurable by hashing, in either
+      # direction.  What is measurable is whether it is still *right*, and it is:
       # `strata-answer-score.py` (nine short greedy items with an answer key), run through
       # the front door **before** this line: 8 scored, **8 correct**, `bit` incomplete; and
       # **after** it: 8 scored, **8 correct**, the same `bit` incomplete.  Same score, same
@@ -231,9 +239,10 @@ let
       # where it always was, and the engine's own `prompt chunk auto: 8192 tokens` (was
       # 6656) in `/var/lib/strata/strata.log`.
       #
-      # So this is a different model output, honestly labelled, at +5 to +11 % prompt speed:
-      # this endpoint serves pi's coding, and if completions ever read worse the revert is
-      # deleting the line below and `just switch`.
+      # So: +5 to +11 % prompt speed with no measurable answer-level difference either way -
+      # which is the honest strength of that claim and also its limit.  This endpoint serves
+      # pi's coding; if completions ever read worse, the revert is deleting the line below and
+      # `just switch`.
       # Re-verify with:
       #   sudo grep "fused int8" /var/lib/strata/strata.log | tail -1
       #   python3 machines/services2/strata-tune/strata-answer-score.py https://strata.int.leighhack.org
