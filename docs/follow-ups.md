@@ -33,21 +33,41 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
 - **`services3`'s llama.cpp is nixpkgs' build recipe over the upstream flake's source, and a
   nixpkgs bump moves that recipe under it** (opened 2026-11-11, `machines/services3/llama.nix`).
   The engine is `pkgs.llama-cpp.override { vulkanSupport = true; }.overrideAttrs (… src =
-  flakeInputs.llama-cpp-upstream.outPath; version = "0.9.0"; patches = []; npmDepsHash =
+  flakeInputs.llama-cpp-upstream.outPath; version = "1.0.0"; patches = []; npmDepsHash =
   <this tree's>; makeCacheWritable = true; cmakeFlags += [ LLAMA_BUILD_UI=ON and
   LLAMA_USE_PREBUILT_UI=OFF ]; doCheck = false)` because upstream's own flake cannot build here
   — its `tools/ui` web UI is a *derivation input* whatever `useWebUi` says, and
   `webui-0.0.0.drv` fails on `EACCES: copyfile … /build/source/static/favicon-dark.svg`. Every
-  one of those lines is pinned to a fact about **this** nixpkgs pin (20261014, llama-cpp 0.6.0):
-  its `fetchpatch`, its `nativeBuildInputs`, its CTest list, and above all its **`npmDepsHash`,
-  which is for 0.6.0's `tools/ui` lockfile and must be *replaced*, not deleted, whenever the
-  source moves**. **Blocks:** nothing today. **To do:** the moment nixpkgs' `llama-cpp` is
-  ≥ the release that has `lfm3`, delete the source swap *and* the input and take the package
-  straight — the whole reason for the pin is an arch that will arrive upstream. Re-verify
-  before either half:
-  `nix-instantiate --eval -E 'with import <nixpkgs> {}; llama-cpp.version'`, and
-  `grep -n lfm3 $(nix-build --no-out-link '<nixpkgs>' -A llama-cpp.src)/common/src/llama-arch.cpp`.
-  To see whether upstream's flake has fixed its UI build:
+  one of those lines is pinned to a fact about **this** nixpkgs pin, and **the condition this
+  item was waiting on has now arrived**: at the 2026-11-12 nixpkgs lock `pkgs.llama-cpp` is
+  **0.9.0** (`src` = tag `v0.9.0`) and that tag ships `src/models/lfm3.cpp` *and*
+  `src/models/qwen35.cpp` — the two arches this box actually serves.  So "the moment nixpkgs'
+  `llama-cpp` is ≥ the release that has `lfm3`" is satisfied, and taking the package straight
+  is now a real option; **it is not a simplification any more, it is an engine downgrade**
+  (1.0.0 → 0.9.0) whose KV ladder, flash-attention refusals and `--mmproj` measurements were
+  all taken at the pinned tree, which is why it has not been taken here.
+  `machines/services3/llama.nix`'s `npmDepsHash` and `version` are **not** derived from the
+  input — they are hand-written copies of a fact about it, and the 2026-11-15 repin proved the
+  drift is real: upstream changed one UI dependency's `resolved` URL from a `codeload` tarball
+  to a `git+ssh` ref, the lock hash moved, and the failure surfaced only as `ERROR: npmDepsHash
+  is out of date` part-way through a *toplevel* build (the same class as rule 31: a fact about
+  a moving thing, hand-copied).  **Blocks:** nothing today; the pins are corrected at the
+  2026-11-15 lock and the engine moved to 1.0.0 with the input.
+  **To do (a decision, not a chore):** decide whether to take nixpkgs' package straight — at
+  0.9.0 that is a downgrade of a live endpoint, so it needs the per-card measurements re-run
+  first, and if it stays, then say so in `llama.nix` and stop describing the input as temporary.
+  Re-verify before either half — these three ask the tree and cost no build:
+
+  ```bash
+  V=$(python3 -c "import json;print(json.load(open('flake.lock'))['nodes']['llama-cpp-upstream']['locked']['rev'])")
+  RAW=https://raw.githubusercontent.com/ggml-org/llama.cpp/$V
+  curl -s $RAW/CMakeLists.txt | grep -E 'LLAMA_VERSION_(MAJOR|MINOR|PATCH)'   # the tree's own version
+  curl -s $RAW/src/models/lfm3.cpp   -o /dev/null -w '%{http_code} lfm3\n'     # 200 = arch still there
+  curl -s $RAW/src/models/qwen35.cpp -o /dev/null -w '%{http_code} qwen35\n'
+  nix eval --raw .#nixosConfigurations.services3.pkgs.llama-cpp.version        # what nixpkgs now ships
+  ```
+
+  And to see whether upstream's flake has fixed its own UI build:
   `nix build --no-link 'github:ggml-org/llama.cpp#packages.x86_64-linux.vulkan'`.
   The UI half has two failure modes of its own, both written up in
   `machines/services3/README.md`: `LLAMA_USE_PREBUILT_UI` defaults **ON** and *downloads* the UI

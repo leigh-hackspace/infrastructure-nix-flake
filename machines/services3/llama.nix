@@ -83,8 +83,10 @@
 # load this model: it is a **Liquid LFM3**, and its GGUF header says
 # `general.architecture = lfm3` — read out of the file's own KV section, not inferred
 # from the filename — and `lfm3` is in neither of the llama.cpp trees this flake could
-# otherwise build from (the fork input is 0.3.0, nixpkgs' `llama-cpp-vulkan` at this lock
-# is 0.6.0; both know only `lfm2`/`lfm2moe`).  The engine here therefore comes from the
+# otherwise build from at the time (the fork input is 0.3.0, and nixpkgs' `llama-cpp` was
+# 0.6.0, knowing only `lfm2`/`lfm2moe`) — **but not any more**: nixpkgs' `llama-cpp` at the
+# 2026-11-12 lock is 0.9.0, which ships `lfm3.cpp`.  What keeps the override is the pin, not
+# the capability; see the header of `engine` below and `docs/follow-ups.md`.  The engine here therefore comes from the
 # upstream input `llama-cpp-upstream`, whose header in ../..//flake.nix carries the whole
 # argument.  If that input is ever moved or replaced, `llama-server --model <file>` here
 # fails with an unknown-architecture error at startup, not quietly.
@@ -173,7 +175,7 @@
 }: let
   HOSTS = import ../../common/hosts.nix;
 
-  # Upstream llama.cpp **0.9.0** (the `llama-cpp-upstream` input) — but built with
+  # Upstream llama.cpp **1.0.0** (the `llama-cpp-upstream` input) — but built with
   # nixpkgs' `llama-cpp` expression rather than llama.cpp's own flake, and with the
   # embedded web UI **on, built from this same tree**.  Both halves of that sentence are
   # load-bearing, and both were chosen by failure rather than taste:
@@ -195,12 +197,11 @@
   #     measured on aibox 2026-11-11; the failing drv is nested inside upstream's
   #     `package.nix` (`finalAttrs.webui`) and is unreachable from an override, so the
   #     choice is "carry the bug" or "build the same source elsewhere".
-  #   * **Why nixpkgs' expression, and what the override actually does:** nixpkgs' `llama-cpp`
-  #     at this lock is 0.6.0, which has no `lfm3` arch, so only its *build* is reused —
-  #     `src` becomes the input's tree and the version says so. `patches = []` because nixpkgs'
-  #     single `fetchpatch` is a 0.6.0-era fix for test-model generation under
-  #     `GGML_BACKEND_DL` — not wanted with dynamic dispatch off, and not applicable to 0.9.0's
-  #     tree anyway. `cpuArchDynamicDispatch = false` because this is one known x86-64 CPU, not
+  #   * **Why nixpkgs' expression, and what the override actually does:** only its *build* is
+  #     reused — `src` becomes the input's tree and the version says so. `patches = []` because
+  #     nixpkgs' single `fetchpatch` is a 0.6.0-era fix for test-model generation under
+  #     `GGML_BACKEND_DL` — not wanted with dynamic dispatch off. `cpuArchDynamicDispatch =
+  #     false` because this is one known x86-64 CPU, not
   #     a binary distribution. Everything else of nixpkgs' recipe is kept, **including the UI**:
   #     `preConfigure` runs `npm run build` in `tools/ui` against the `node_modules` that
   #     `npmConfigHook` links out of `npmDeps`, and cmake's `scripts/ui-assets.cmake` gzips
@@ -218,11 +219,29 @@
   # (`LLAMA_BUILD_UI=ON`) and refuse the network fallback (`LLAMA_USE_PREBUILT_UI=OFF`), so the
   # failure cannot be silent again — either the assets are there or the build fails.
   #
-  # `npmDepsHash` is deliberately **not** nixpkgs', whose pin is for 0.6.0's lockfile: it is
-  # what *this* tree's `tools/ui/package-lock.json` hashes to, read off the mismatch the first
-  # attempt reported (`got: sha256-73PXSTOtXjdk97azLoaGUHam7Ua/nC2jMrHjAhLTSXM=` in the
-  # `…-llama-cpp-0.9.0-npm-deps` fetch). A `nixpkgs` bump that moves `llama-cpp` past the
-  # release that has `lfm3` should delete the whole `overrideAttrs` — see docs/follow-ups.md.
+  # `npmDepsHash` is deliberately **not** nixpkgs': it is what *this* tree's
+  # `tools/ui/package-lock.json` hashes to, read off the mismatch the fetch reports
+  # (`got: sha256-…` in the `…-llama-cpp-<version>-npm-deps` fetch). **It moves with
+  # `llama-cpp-upstream`, and nothing checks that it did** — the 2026-11-15 repin is the proof:
+  # upstream changed one dep's `resolved` URL from a `codeload` tarball to a `git+ssh` ref, the
+  # lock hash changed, and `npmConfigHook` refused the build with `ERROR: npmDepsHash is out of
+  # date` *inside* a toplevel build. So a repin of that input owes two edits here, and the
+  # version is the quiet one — the tree now declares `LLAMA_VERSION_MAJOR 1`, so `version`
+  # above said `0.9.0` about a 1.0.0 source.
+  #
+  # **`lfm3`, and why the override is now optional rather than necessary:** it exists because
+  # nixpkgs' `llama-cpp` at the 2026-10-14 lock was 0.6.0 and knew no `lfm3`. At the 2026-11-12
+  # lock nixpkgs ships **0.9.0** (`src` = tag `v0.9.0`), which *does* ship `src/models/lfm3.cpp`
+  # — measured by listing that tag's `src/models/`, and the live engine still needs the arch
+  # (its served file's header says `general.architecture = lfm3`). So the reason below for not
+  # using nixpkgs' version has expired; deleting the `overrideAttrs` would drop this box from
+  # 1.0.0 to 0.9.0, which is an engine downgrade, not a simplification — the flags are measured
+  # per pin. `docs/follow-ups.md` owns that decision; it is not tonight's.
+  #
+  # Re-verify the arch and the version the tree declares, without building:
+  #   curl -s $RAW/src/models/lfm3.cpp -o /dev/null -w '%{http_code}\n'   # 200 = still supported
+  #   curl -s $RAW/CMakeLists.txt | grep -E 'LLAMA_VERSION_(MAJOR|MINOR|PATCH)'
+  #   curl -s $RAW/tools/ui/package-lock.json | sha256sum                 # changes => npmDepsHash must
   #
   # Checks, in the order that tells you which of the three stories you are in:
   #
@@ -236,9 +255,9 @@
       cpuArchDynamicDispatch = false;
     }).overrideAttrs (final: prev: {
       src = flakeInputs.llama-cpp-upstream.outPath;
-      version = "0.9.0";
+      version = "1.0.0";
       patches = [];
-      npmDepsHash = "sha256-73PXSTOtXjdk97azLoaGUHam7Ua/nC2jMrHjAhLTSXM=";
+      npmDepsHash = "sha256-0OJIueUN5oD/V2NtVcXTiRW59u2tJIG3OxW8aJ8JDBY=";
 
       # `npmConfigHook` points `npm_config_cache` at `$npmDeps` (fetcher v1 layout), and npm
       # 11 still wants `_cacache/tmp` in that cache even for an offline install — i.e. it tries
@@ -253,7 +272,7 @@
           "-DLLAMA_USE_PREBUILT_UI=OFF"
         ];
 
-      # nixpkgs runs CTest for this package, and four of 0.9.0's tests cannot pass in a
+      # nixpkgs runs CTest for this package, and four of 1.0.0's tests cannot pass in a
       # sandbox: `test-download-model` (wants the network), `test-conversion-fp8` and
       # `test-kv-cache-scales` (python behaviour), and `test-llama-context-model`, which
       # CTest reports `Not Run` behind them; the other ~60 behaviour tests pass. That is a

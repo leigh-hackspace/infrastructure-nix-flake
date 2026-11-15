@@ -171,8 +171,10 @@ the password-authenticated way back onto a box whose only uplink is Wi-Fi — ve
 One service, `llama-server`, from the flake's **`llama-cpp-upstream`** input — the second
 llama.cpp in this flake, and the comment on that input in `flake.nix` is the reason it
 exists (the model that first made it so, LFM3, declares `general.architecture = lfm3`; the
-fork this network already carries is llama.cpp 0.3.0 and nixpkgs' `llama-cpp-vulkan` at this
-lock is 0.6.0, and neither has that arch). The card is driven by ./nvidia.nix — Pascal ⇒
+fork this network already carries is llama.cpp 0.3.0 and nixpkgs' `llama-cpp` was 0.6.0, and
+neither had that arch — **that second half has since expired: nixpkgs ships 0.9.0 at the
+2026-11-12 lock, which has `lfm3.cpp`; the input now buys a pin rather than a capability, and
+`docs/follow-ups.md` owns whether to collapse it**). The card is driven by ./nvidia.nix — Pascal ⇒
 `legacy_580`, `open = false`, and Vulkan rather than CUDA because CUDA 13's nvcc has no
 Pascal target — the unit is ./llama.nix, and the front-door row is
 `llama.int.leighhack.org` in `common/front-door.nix`: LAN ACL, no injected key, with the

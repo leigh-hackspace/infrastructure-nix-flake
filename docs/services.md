@@ -521,10 +521,12 @@ remove the key and the public vhost 403s instead of serving an open engine.
 Ternary-Bonsai-2-9B-Q2_0 (+ vision)
 
 The network's second inference box, and its only one whose engine is llama.cpp rather than
-Strata: `llama-server` from the `llama-cpp-upstream` input (0.9.0 — upstream's because the
-model that first made it so, LFM3, declares `general.architecture = lfm3`, absent from the
-0.3.0 fork this flake already carries; nixpkgs' `llama-cpp-vulkan` is 0.6.0 at this lock and
-has not been re-checked since) on a **GTX 1080 Ti**, on **services3** (10.3.2.213).  What is
+Strata: `llama-server` from the `llama-cpp-upstream` input (upstream's because the model that
+first made it so, LFM3, declares `general.architecture = lfm3`, which the 0.3.0 fork this flake
+already carries does not have; nixpkgs' `llama-cpp` was 0.6.0 and had neither, **and is now
+0.9.0 at the 2026-11-12 lock with both `lfm3.cpp` and `qwen35.cpp` — so the input survives on
+pinning rather than on capability, which `docs/follow-ups.md` has open as an engine decision**)
+on a **GTX 1080 Ti**, on **services3** (10.3.2.213).  What is
 served since 2026-11-12 has arch `qwen35` and `full_attention_interval = 4` — a hybrid/SSM
 model, which is why its per-token cost barely moves with its size (the measured GB/s of both
 models is in `machines/services3/README.md`).

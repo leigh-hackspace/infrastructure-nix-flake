@@ -35,24 +35,37 @@
 
     # llama.cpp **upstream**, and the second llama.cpp in this flake on purpose.
     #
-    # The reason is a tensor-architecture name rather than taste: services3 serves
+    # The reason was a tensor-architecture name rather than taste: services3 serves
     # Liquid's LFM3, and that GGUF's own header says `general.architecture = lfm3`
     # (read out of the file, not inferred from its filename). `lfm3` exists in
     # upstream's arch registry (`src/llama-arch.cpp`, `src/models/lfm3.cpp`) and in
-    # neither of the trees this flake could otherwise build a Vulkan llama-server
-    # from: the fork above is llama.cpp 0.3.0 and nixpkgs' `llama-cpp-vulkan` at this
-    # lock is 0.6.0 — both know `lfm2`/`lfm2moe` and nothing else in the family, so
-    # either refuses the file with an unknown-architecture error rather than serving
-    # something wrong. Re-pinning the fork was not an option: aibox's `ai.*` endpoint
-    # is built from it, and moving aibox's inference engine to make room for a
+    # neither of the trees this flake could otherwise build a Vulkan llama-server from
+    # *at the time*: the fork above is llama.cpp 0.3.0 and nixpkgs' `llama-cpp` was
+    # 0.6.0 — both know `lfm2`/`lfm2moe` and nothing else in the family, so either
+    # refused the file with an unknown-architecture error rather than serving something
+    # wrong. **Half of that has since expired, and the input did not move with it:** at
+    # the 2026-11-12 nixpkgs lock `pkgs.llama-cpp` is 0.9.0 and that tag *does* ship
+    # `src/models/lfm3.cpp` (measured by listing the tag, `nix eval
+    # .#nixosConfigurations.services3.pkgs.llama-cpp.version` → `0.9.0`). What keeps the
+    # input is no longer capability but *pinning*: services3's flags, KV ladder and
+    # flash-attention refusals are measured against the tree this input names, and
+    # nixpkgs' version moves whenever `nixpkgs` moves — which is the same argument
+    # `llama-cpp` above gets for a different reason. Collapsing services3 onto nixpkgs'
+    # tree is therefore a real option now, but it is an engine *decision* (it would move
+    # the box to whatever 0.x nixpkgs ships), so it is open in `docs/follow-ups.md`
+    # rather than taken here. Re-pinning the fork was never an option: aibox's `ai.*`
+    # endpoint is built from it, and moving aibox's inference engine to make room for a
     # second model is the kind of coupling this flake has been deleting for a month.
     #
     # So: one input, one job — the upstream tree, tracked on its default branch like
     # `strata`, and only services3 builds from it. `nix flake update
     # llama-cpp-upstream` moves services3's engine and nothing else; `llama-cpp` stays
-    # the fork aibox depends on. Re-verify the arch is still there (and which version
-    # introduced it) with:
+    # the fork aibox depends on. **Moving it owes two edits in `machines/services3/llama.nix`**
+    # — that module's `npmDepsHash` (its UI lock changed, and the refusal only appears inside
+    # a toplevel build) and its hardcoded `version` — see the header there.
+    # Re-verify the arch is still there, and which version the tree declares, with:
     #   curl -s https://raw.githubusercontent.com/ggml-org/llama.cpp/master/src/llama-arch.cpp | grep -i lfm
+    #   curl -s https://raw.githubusercontent.com/ggml-org/llama.cpp/master/CMakeLists.txt | grep LLAMA_VERSION_MAJOR
     llama-cpp-upstream = {
       url = "github:ggml-org/llama.cpp";
       inputs.nixpkgs.follows = "nixpkgs";
