@@ -33,6 +33,12 @@
     ./llama.nix
     ./users.nix
 
+    # Refuse to start llama-server while the loaded NVIDIA kernel module and the driver
+    # this system was built for disagree — the state a `nixpkgs` bump leaves between
+    # `switch` and reboot, which is what took `llama.int` down on 2026-11-15 while every
+    # unit looked healthy. ./llama.nix turns it on for the unit.
+    ../../common/gpu-driver-match.nix
+
     # Measured like every other box, by services1's Prometheus:
     # machines/services1/services/observability.nix has the three scrape rows for this
     # box. They are not *scraping* yet — they land when services1 next switches, which is

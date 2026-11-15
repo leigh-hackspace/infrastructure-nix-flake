@@ -354,6 +354,17 @@ in {
   # journal.
   systemd.tmpfiles.rules = ["d ${modelsDir} 0755 root root -"];
 
+  # The 2026-11-15 upgrade is the reason this line exists: a nixpkgs bump moves the NVIDIA
+  # driver, `switch` installs the new user-space while the old kernel module is still
+  # loaded, and llama-server did not fail — it sat in `activating` with `llama.int`
+  # 502ing and zero failed units. The guard turns that into a refusal that names the cause
+  # and the fix, and `mkNeverGiveUp` below makes it self-heal at the reboot.
+  # common/gpu-driver-match.nix owns the mechanism.
+  infra.nvidiaDriverMatchGuard = {
+    enable = true;
+    units = ["llama-server"];
+  };
+
   systemd.services.llama-server = INFRA.mkNeverGiveUp {
     description = "llama.cpp (Vulkan) — Ternary-Bonsai-2-9B-Q2_0 + vision on the GTX 1080 Ti, services3";
 

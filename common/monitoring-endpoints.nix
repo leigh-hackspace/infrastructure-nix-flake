@@ -172,6 +172,43 @@
       group = "Infrastructure";
     })
 
+    # --- Inference --------------------------------------------------
+    # Three engines, three boxes, three GPU backends — and until 2026-11-15 none of them
+    # had a check here, which is why two of them went down during a whole-network upgrade
+    # and nothing said so. Both failures had **zero failed units**: activation restarted
+    # the engine into new NVIDIA user-space while the old kernel module was still loaded,
+    # so the unit neither crashed nor reported — it just could not reach the card, and the
+    # endpoint 502'd until a reboot (`docs/work-log-2026-11.md`; the unit-level guard is
+    # `common/gpu-driver-match.nix`). The lesson is that for an inference box the *endpoint*
+    # is the only thing that can tell you the engine is serving: a unit state, a port
+    # listening, or a healthy generation all fail to distinguish "loading" from "cannot see
+    # the GPU". `/health` on each, not `/`: llama.cpp's UI is gzipped into the binary and
+    # `/` answers oddly to a client that sends no `Accept-Encoding: gzip`
+    # (`machines/services3/README.md`).
+    #
+    # `ai.int.leighhack.org` / `ai.leighhack.org` are deliberately **absent**. They proxy to
+    # `aibox`'s llama.cpp fork, and `machines/aibox/strata.nix` clears that unit's
+    # `wantedBy` because its ~33 GB of GTT and strata's arena cannot be resident at once —
+    # so those two names answer 502 as the designed steady state while strata owns the box.
+    # A check that is red by design is worse than no check: it trains everyone to ignore the
+    # board. Adding them means first giving the check a stated expectation; that is open in
+    # `docs/follow-ups.md`.
+    (mkHttp {
+      name = "Strata (services2, CUDA)";
+      url = "https://strata.int.leighhack.org/health";
+      group = "Inference";
+    })
+    (mkHttp {
+      name = "Strata2 (aibox, HIP)";
+      url = "https://strata2.int.leighhack.org/health";
+      group = "Inference";
+    })
+    (mkHttp {
+      name = "Llama (services3, Vulkan)";
+      url = "https://llama.int.leighhack.org/health";
+      group = "Inference";
+    })
+
     # --- Top-level ---------------------------------------------------
     (mkHttp {
       name = "Leigh Hackspace Website";

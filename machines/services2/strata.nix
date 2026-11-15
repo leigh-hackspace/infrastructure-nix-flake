@@ -271,9 +271,20 @@ in {
     # unmeasured as a speed factor, is machines/services2/STRATA-TUNE-2026-11-14.md.
     boot.kernel.sysctl."vm.swappiness" = 10;
 
+    # A driver bump and a `switch` leave this box running the old NVIDIA module under
+    # new user-space, and strata does not fail in that state — it just cannot reach the
+    # card, so `strata.int` 502s with a healthy-looking generation. The guard makes the
+    # unit say that out loud and keep retrying until the reboot fixes it.
+    # common/gpu-driver-match.nix has the mechanism and the 2026-11-15 measurement.
+    infra.nvidiaDriverMatchGuard = {
+      enable = true;
+      units = ["strata"];
+    };
+
     # The house "never give up" policy (common/systemd.nix): Restart=always plus
     # startLimitIntervalSec=0, so a startup that fails while a leftover engine
     # still holds VRAM keeps retrying instead of parking in `failed`.
+    # The driver-match guard above depends on that: it is a wait, not a failure.
     systemd.services.strata = INFRA.mkNeverGiveUp {
       description = "Strata (Qwen3.8-Flash-Next Coder across the RTX 3060, RAM and NVMe)";
       after = ["network-online.target"];

@@ -95,8 +95,18 @@ deploy machine:
     me=$(hostname)
     if [ "$me" = "$machine" ]; then
         echo "=== $machine is this box: switching here"
-        sudo nixos-rebuild switch --flake ".#$machine" && sudo nixos-confirm
-        exit $?
+        # `&&` and a real exit test, never a pipeline: confirming a switch that died is how
+        # a half-activated generation gets marked good and the rollback net is disarmed.
+        if sudo nixos-rebuild switch --flake ".#$machine" && sudo nixos-confirm; then
+            just pending-reboot || true
+        else
+            echo "switch FAILED here: nothing was confirmed." >&2
+            echo "  If /run/current-system is already the new generation, the auto-rollback" >&2
+            echo "  timer is armed and this box reboots itself in five minutes — decide" >&2
+            echo "  inside that window: fix the activation and confirm, or let it roll back." >&2
+            exit 1
+        fi
+        exit 0
     fi
     # Where the commit comes from when the target cannot reach GitHub itself (only the
     # operator's key can, and a box without one has no business holding a copy of it).
@@ -105,12 +115,34 @@ deploy machine:
     case "$me" in gw) mkey=router ;; *) mkey=$me ;; esac
     here=$(nix eval --impure --raw --expr "let h = import ./common/hosts.nix; in if builtins.hasAttr \"$mkey\" h then h.$mkey else \"\"" 2>/dev/null || echo "")
     repo=$(git rev-parse --show-toplevel)
+    # aibox's /etc/fstab bind-mounts the Pi Room netboot squashfs **from a store path**,
+    # so every nixpkgs bump moves the mount's source and activation's restart of a
+    # boot-generated unit fails: `switch-to-configuration` exits 4 *after* flipping
+    # /run/current-system, which arms the five-minute rollback countdown on the network's
+    # builder.  Unmounting first (lazily, so any client mid-boot keeps its handles) makes
+    # activation start the mount on the new path and exit 0 — measured 2026-11-15.  See
+    # docs/network-upgrade-runbook.md Phase 7.
+    if [ "$machine" = aibox ]; then
+        echo "=== aibox: re-pointing the netboot export before the switch"
+        ssh -i "$HOME/.ssh/agent-hop-key" -o BatchMode=yes -o ConnectTimeout=5 \
+            "leigh-admin@$addr" bash -s <<'NETBOOT'
+        set -uo pipefail
+        echo "  NFS clients on :2049: $(sudo -n ss -tn sport = :2049 2>/dev/null | tail -n +2 | wc -l)"
+        if findmnt -no SOURCE /exports/netboot-squashfs >/dev/null 2>&1; then
+            sudo -n umount -f -l /exports/netboot-squashfs \
+                && echo "  unmounted (lazy): activation will mount the new store path"
+        else
+            echo "  not mounted already"
+        fi
+        NETBOOT
+    fi
     echo "=== $machine ($addr): fetch, switch and confirm on the box"
     ssh -i "$HOME/.ssh/agent-hop-key" -o BatchMode=yes -o ConnectTimeout=5 \
         "leigh-admin@$addr" bash -s -- "$machine" "$here" "$repo" <<'REMOTE'
     set -euo pipefail
     machine=$1 here=$2 repo=$3
     cd ~/Projects/infrastructure-nix-flake
+    echo "  disk before: / $(df --output=avail -BG / | tail -1 | tr -dc '0-9')G free"
     if git fetch -q origin 2>/dev/null; then
         git merge -q --ff-only origin/main
     else
@@ -125,6 +157,11 @@ deploy machine:
     sudo nixos-rebuild switch --flake ".#$machine"
     sudo nixos-confirm
     REMOTE
+    # The switch succeeded and is confirmed; say out loud whether the box is finished.
+    # A GPU box here is very likely running the new NVIDIA user-space against the old
+    # kernel module, which is an outage the unit now reports — but the operator should
+    # hear it from the deploy, not from the endpoint.  Read-only; does not gate.
+    just pending-reboot "$machine" || true
 
 # Kept because the docs and the router's own README name it: deploying the router is
 # deploying gw like any other box — the difference is only that gw cannot compile, and it
@@ -734,6 +771,113 @@ check-source-size:
     fi
     echo "source sizes ok: $(echo "$over" | grep -c . || true) file(s) over 1000, all on the baseline"
 
+# --- upgrade safety probes ------------------------------------------------------
+#
+# Three things cost a day each on the 2026-11-15 whole-network repin, and none of them
+# were visible from the recipes then available: a disk that filled mid-gate, a store lock
+# held by an editor, and a GPU box switched but not rebooted.  Each has a probe now.
+# Receipts: docs/work-log-2026-11.md; the procedure text is in the runbook.
+
+# Free space on /, and the refusal the build recipes use.
+#
+# `just check-build` builds five system toplevels and nix copies every one of them back
+# into the store of the box you run it from: on 2026-11-15 that took services1 from 72 %
+# to 99 % (3.6 GB free) while it was serving postgres, nginx, SSO and frigate.  Asking
+# before starting costs one `df`; discovering it means a GC in the middle of a deploy.
+_disk-headroom need_gib="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    free_gib=$(df --output=avail -BG / | tail -1 | tr -dc '0-9')
+    if [ -n "{{ need_gib }}" ] && [ "$free_gib" -lt "{{ need_gib }}" ] && [ -z "${INFRA_ALLOW_LOW_DISK:-}" ]; then
+        echo "refusing: / has ${free_gib}G free and this wants {{ need_gib }}G." >&2
+        echo "  Reclaim first — sudo nix-collect-garbage — but NEVER between the build gate" >&2
+        echo "  and the deploy: 'nix build --no-link' creates no GC root, so a GC there" >&2
+        echo "  deletes the very outputs the gate produced and the deploy recompiles.  Use" >&2
+        echo "  'just check-build', which roots its own outputs, then 'just check-build-clean'." >&2
+        echo "  Override with INFRA_ALLOW_LOW_DISK=1 if you really mean it." >&2
+        exit 1
+    fi
+    echo "=== disk: ${free_gib}G free on /"$([ -n "{{ need_gib }}" ] && echo " (wants {{ need_gib }}G)")
+
+# Who holds the nix store big lock, with the parent process that explains it.
+#
+# Empty/"free" means the store is idle.  A nix command that hangs with no CPU, no output
+# and no timeout is queued behind this lock, and "slow" is what it looks like — measured
+# twice on 2026-11-15, once for 1 h 56 min, both times held not by a build but by `nixd`
+# (an editor's language server) via a `nix-daemon` child, which no `pgrep -f "nix eval|nix
+# build"` finds.  `/proc/locks` names the inode and the pid directly, so this needs no
+# scan and no sudo.  Run it before blaming a slow build; the fix is in docs/nix-dev-workflow.md.
+store-lock:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    inode=$(stat -c %i /nix/var/nix/db/big-lock)
+    hits=$(awk -v i=":$inode " 'index($0, i)' /proc/locks || true)
+    if [ -z "$hits" ]; then
+        echo "store lock: free"
+        exit 0
+    fi
+    echo "store lock: HELD"
+    for pid in $(echo "$hits" | awk '{print $5}'); do
+        cmd=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || echo "(process gone)")
+        ppid=$(awk '/^PPid:/{print $2}' "/proc/$pid/status" 2>/dev/null || echo "?")
+        pcmd=$(tr '\0' ' ' <"/proc/$ppid/cmdline" 2>/dev/null | cut -c1-70 || echo "?")
+        age=$(ps -o etimes= -p "$pid" 2>/dev/null | tr -d ' ' || echo "?")
+        echo "  pid=$pid held=${age}s  ${cmd:0:70}"
+        echo "    parent pid=$ppid  $pcmd"
+    done
+    echo "  If the parent is nixd / an editor server: that is not a build to wait out."
+    echo "  kill -9 the holder and its parent (SIGTERM does nothing to a process blocked"
+    echo "  in flock), then re-run.  docs/nix-dev-workflow.md, 'the nix big lock'."
+
+# A switched-but-not-rebooted box, and whether that is cosmetic or an outage.
+#
+# A nixpkgs bump moves the kernel and the NVIDIA driver together.  `switch` installs both
+# into the new generation but changes neither running one, so on a GPU box the GPU unit
+# restarts into new user-space with the old kernel module still loaded — and the unit does
+# not fail, it just cannot reach the card: llama-server sat in `activating`, strata came
+# back 502, both with zero failed units.  common/gpu-driver-match.nix makes the unit say
+# so; this says so about the *box*, from either side of the ssh.
+#
+# Read-only.  Exit code is 0 either way (it is a report, not a gate); the verdict line is
+# the thing to read.
+pending-reboot machine="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    probe='set -u
+        new=$(readlink /run/current-system/kernel 2>/dev/null | grep -oE "linux-[0-9][0-9.]*" | head -1 | sed "s/linux-//")
+        run=$(uname -r)
+        echo "kernel: running=$run generation=${new:-unknown}"
+        if [ -n "${new:-}" ] && [ "$new" != "$run" ]; then
+            echo "  pending reboot: the running kernel is not the one this generation was built for."
+        fi
+        if [ -e /sys/module/nvidia/version ]; then
+            loaded=$(cat /sys/module/nvidia/version)
+            echo "nvidia: loaded module=$loaded"
+            if out=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>&1); then
+                echo "  nvidia-smi: ok ($(echo "$out" | head -1)) — user-space and module agree"
+            else
+                echo "  BROKEN NOW: $(echo "$out" | head -1)"
+                echo "  The GPU endpoint on this box cannot work until a reboot. Fix:"
+                echo "    just deploy $(hostname)   # or: sudo reboot — the guarded unit self-heals after it"
+            fi
+        fi'
+    if [ -z "{{ machine }}" ] || [ "{{ machine }}" = "$(hostname)" ]; then
+        echo "=== $(hostname)"; bash -c "$probe"
+    else
+        case "{{ machine }}" in
+            services1|services2|services3|aibox|gw) ;;
+            *) echo "unknown machine: {{ machine }}" >&2; exit 2 ;;
+        esac
+        case "{{ machine }}" in gw) hkey=router ;; *) hkey="{{ machine }}" ;; esac
+        addr=$(nix eval --impure --raw --expr "let h = import ./common/hosts.nix; in h.$hkey")
+        echo "=== {{ machine }} ($addr)"
+        # Over stdin, not as ssh arguments: ssh concatenates its command arguments into one
+        # string for the remote shell, which word-splits the script and runs `bash -c set`
+        # (i.e. prints the environment) instead of the probe.
+        printf '%s\n' "$probe" | ssh -i "$HOME/.ssh/agent-hop-key" -o BatchMode=yes -o ConnectTimeout=5 \
+            "leigh-admin@$addr" bash -s
+    fi
+
 # Deploy-readiness: build every machine's system derivation without touching the
 # running system.  `nix flake check` only *evaluates*, so a module that evaluates
 # but fails to build (bad package, bad derivation arg, broken SPA bundle) still
@@ -757,14 +901,49 @@ check-source-size:
 # work is delegated to aibox (common/build-farm.nix), which has 59 GiB, 6 cores and
 # no strata engine any more, so poll load/swap there as well as this log: a build
 # storm competes with the apps aibox hosts (frigate, immich, whisper).
-check-build: _build-host-guard
+#
+# Two things it does that a bare `nix build` loop does not, both learned the hard way on
+# 2026-11-15 (docs/work-log-2026-11.md):
+#
+#   * It **roots what it built**, in /nix/var/nix/gcroots/check-build/<machine>.  A
+#     `--no-link` build output has no GC root, so a `nix-collect-garbage` anywhere in the
+#     interval between this gate and the deploy deletes every output it produced and the
+#     deploy silently recompiles — that cost ~700 derivations on services1 and a second
+#     full engine build on services2 in one run.  Release it with `just check-build-clean`
+#     once the fleet is landed, or the roots hold superseded closures forever.
+#   * It checks the **disk** first, because it assembles all five system closures in the
+#     store of whichever box you ran it on.
+#
+# `just check-build <machine>` builds one machine's toplevel (20 GiB headroom) instead of
+# all five (60 GiB), for when only one box's config moved.
+check-build machine="all": (_disk-headroom "60") _build-host-guard
     #!/usr/bin/env bash
     set -euo pipefail
-    for m in services1 services2 services3 aibox gw; do
+    target="{{ machine }}"
+    case "$target" in
+        all) machines=(services1 services2 services3 aibox gw) ;;
+        services1|services2|services3|aibox|gw) machines=("$target"); just _disk-headroom 20 >/dev/null ;;
+        *) echo "unknown machine: $target — expected all, or one of services1 services2 services3 aibox gw" >&2; exit 2 ;;
+    esac
+    sudo -n mkdir -p /nix/var/nix/gcroots/check-build
+    for m in "${machines[@]}"; do
         echo "=== nix build $m toplevel"
-        nix build --no-link --print-out-paths ".#nixosConfigurations.$m.config.system.build.toplevel"
+        out=$(nix build --no-link --print-out-paths ".#nixosConfigurations.$m.config.system.build.toplevel")
+        # A symlink in a gcroots directory *is* a GC root — verified by deleting an
+        # unrooted copy of the same path first (it went), then registering it (it stayed).
+        sudo -n ln -sfn "$out" "/nix/var/nix/gcroots/check-build/$m"
+        echo "    $out  [rooted: /nix/var/nix/gcroots/check-build/$m]"
+        echo "    / free now: $(df --output=avail -BG / | tail -1 | tr -dc '0-9')G"
     done
-    echo "all five systems build"
+    echo "all requested systems build"
+    echo "when the fleet has landed: just check-build-clean"
+
+# Drop the gate's GC roots once the fleet has landed (see check-build).
+check-build-clean:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    sudo -n rm -rf /nix/var/nix/gcroots/check-build
+    echo "dropped /nix/var/nix/gcroots/check-build (the gate's outputs are collectable again)"
 
 # Offload a build to aibox and refuse to fall back (common/build-farm.nix).
 # `nix.distributedBuilds` is true, so nix already prefers the external builder for

@@ -12,23 +12,92 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
 
 ## Nix / build
 
-- **A commit re-downloads `whisper-ws`'s whole npm tree on aibox, and a registry hiccup there
-  fails `just check-build` for the whole fleet** (hit 2026-11-12, on the aibox toplevel:
-  `whisper-ws-web-0.1.0-npm-deps` failed with `couldn't fetch
-  node_modules/@rolldown/binding-win32-arm64-msvc at https://registry.npmjs.org/… : [92]
-  Stream error in the HTTP/2 framing layer`, which cascaded
-  `unit-whisper-ws.service.drv → system-units → etc → nixos-system-aibox`). It was transient —
-  the immediate re-run got past it — but the reason it ran at all is the finding: `fetchNpmDeps`
-  takes `inherit src`, so **any** commit anywhere in the repo dirties that fixed-output and
-  re-streams ~all of `web/`'s tarballs through aibox, and one TCP reset in a few-minute download
-  therefore blocks the build of a machine that has nothing to do with the change. **Blocks:**
-  nothing permanently (retry works), but it makes `just check-build` flaky in a way that reads
-  like the deployed change being broken. **To do:** narrow what the fetch sees — the standard
-  shape is a filtered source for the npm half (`lib.cleanSourceWith { filter = ./web only }`,
-  or `npmRoot`/`npmLockFile` pointing at a subpath whose contents do not move on a docs commit).
-  Re-verify by touching a `.md` and asking whether the npm drv's hash moved:
-  `nix eval --raw .#nixosConfigurations.aibox.pkgs.whisper-ws.pname` before and after is not
-  enough — compare `nix derivation show -R` on the `-npm-deps` drv.
+- **A registry hiccup while fetching `whisper-ws`'s npm tree fails `just check-build` for
+  the whole fleet — and the reason it had to fetch at all is the builder's GC, not the
+  commit** (hit 2026-11-12, on the aibox toplevel: `whisper-ws-web-0.1.0-npm-deps` failed
+  with `couldn't fetch node_modules/@rolldown/binding-win32-arm64-msvc at
+  https://registry.npmjs.org/… : [92] Stream error in the HTTP/2 framing layer`, which
+  cascaded `unit-whisper-ws.service.drv → system-units → etc → nixos-system-aibox`).
+  **The diagnosis written here on 2026-11-12 was wrong and is corrected as of 2026-11-15.**
+  It claimed `fetchNpmDeps` takes `inherit src`, so any commit anywhere dirties that
+  fixed-output and re-streams the whole npm tree. It does not, measured: touching a
+  `.md` and asking the same question before and after gives an identical
+  `whisper-ws-0.1.0.drv`, an identical `src`
+  (`/nix/store/rv3kba0jcc44xwqpkyypn6zyrmvh8sjw-whisper-ws`) and an identical
+  `whisper-ws-web-0.1.0.drv` — and because a drv path hashes its entire input spec, an
+  unchanged web-app drv *proves* its npm-deps input is unchanged too. The crate's source
+  is already content-keyed to its own directory (`crates/whisper-ws` is added to the store
+  on its own; it is not a subpath of the flake's copied tree), which is exactly the
+  narrowing this item proposed to add.
+
+  What does make that fetch re-run: **the output was not in the builder's store**, because
+  outputs `aibox` produced for *other* machines are unreachable there and its GC collects
+  them (measured the same day: 21 150 / 39 848 store paths, 55 GiB and 85 GiB, including
+  crate outputs other boxes had just been built against — and every one of them was then
+  rebuilt or re-fetched on the next deploy). A fixed-output fetch that has to happen again
+  is a network flake with the fleet's build behind it.
+
+  **Blocks:** nothing permanently (retry works), but it makes `just check-build` flaky in a
+  way that reads like the deployed change being broken. **To do:** make the useful part of
+  the builder's store reachable rather than trying to narrow sources that are already
+  narrow — see `machines/aibox/deployed-closure-cache.nix` (roots each box's current
+  toplevel, so its dependency closure survives the GC) and finish it by widening that to
+  whatever else the fleet demonstrably rebuilds. Re-verify the claim above (the command
+  this item used to suggest, `nix derivation show -R` on the package, returns **nothing**
+  here — it exits 1 — so use this instead):
+
+  ```bash
+  nix derivation show ".#packages.x86_64-linux.whisper-ws" | grep -oE '[a-z0-9]{32}-whisper-ws[^"]*\.drv' | sort -u
+  # run it, edit any .md, run it again: the paths must be identical
+  ```
+
+- **The builder throws away the fleet's dependency graph, and making it stop is blocked on
+  a declared ssh identity, not on a missing idea** (measured end to end 2026-11-15 while
+  fixing it — the fix was designed, tested, and **not shipped** because step 1 is missing).
+  `aibox` compiles for every other box, and the outputs it produces for them are
+  unreachable *on `aibox`*: nothing in its profiles refers to them, so its GC collects the
+  fleet's crate set, engines and npm trees as litter, and the next deploy buys them back
+  with compile minutes. That day: three GC passes deleted 21 150 / 2 339 / 39 848 store
+  paths (55 / 30 / 85 GiB), after which `services1` rebuilt ~700 derivations it had already
+  built hours earlier, `services2` rebuilt the shared cargo workspace and its CUDA engine
+  from source, and a few hundred npm tarballs came back from the registry.
+
+  The shape that would fix it is one symlink per machine on `aibox` —
+  `/nix/var/nix/gcroots/deployed/<machine> -> <that box's current toplevel>` — bounded by
+  construction to five roots, because `ln -sfn` replaces the link, so a box's previous
+  generation becomes collectable the moment the box moves. Four things were measured about
+  it, and the last one is why it is not in tree:
+
+  1. **A symlink in a gcroots directory is honoured; a text file of store paths is not.**
+     Both were tested against `nix store delete` on the same otherwise-unreachable path:
+     the symlink made the delete refuse (`still alive`), the text root did not — the path
+     was deleted anyway. So the mechanism has to be symlinks, one per path.
+  2. **A root only protects a path the machine has.** `aibox` currently holds **zero** of
+     the services3 generation that is deployed and running on services3 (`find /nix/store
+     -maxdepth 1 -name "<toplevel>*" | wc -l` → 0): the client kept its own toplevel, and
+     the GC took the rest. A root pointing at it would be a lie that protects nothing.
+  3. **`nix copy` from a client to the builder fails on the documented identity trap** —
+     `Too many authentication failures`, the same one the justfile already works around for
+     `git fetch` with `IdentitiesOnly=yes`. There is no `~/.ssh/config` on these boxes and
+     `nix copy --to ssh://` cannot pass `-i`, so the client→builder copy that would make
+     `aibox` a real cache cannot start. That is item 5 of the root-ssh-config list above.
+  4. Derivations survive where outputs do not: 26 `nixos-system*.drv` and 1 578
+     `cargo-package-*` paths are still in `aibox`'s store, all from the **previous** lock.
+     So `keep-outputs = true` plus rooting drvs is a second candidate shape, but `aibox`
+     does not hold the *other* boxes' toplevel drvs either (only its own and `pxeclient`),
+     so it has the same missing precondition.
+
+  **Blocks:** nothing; it is a cost, not a fault — roughly a full engine rebuild per
+  post-GC deploy. **To do, in this order:** (1) declare the ssh identity for machine-to-
+  machine `nix` traffic (the open item above — `IdentitiesOnly` plus `IdentityFile` for
+  `10.3.1.*`, in `common/build-farm.nix` or `common/ssh-known-hosts.nix`'s neighbourhood,
+  and delete the hand-written `/root/.ssh/config` at the same time); (2) have `just deploy
+  <m>` `nix copy --to ssh://aibox` the new toplevel, which is cheap because `aibox` built
+  most of it already and `nix copy` sends only the delta; (3) root it with the one symlink.
+  Verify each step rather than assuming it: `nix copy` from a client must succeed; the
+  rooted toplevel must survive `sudo nix-collect-garbage` on `aibox`; and the proof the
+  whole thing worked is that the *next* deploy of that box reports fewer built derivations
+  than the one before it.
 
 - **`services3`'s llama.cpp is nixpkgs' build recipe over the upstream flake's source, and a
   nixpkgs bump moves that recipe under it** (opened 2026-11-11, `machines/services3/llama.nix`).
@@ -845,12 +914,33 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   6. **Disk: 9.7 GiB free** with the engine and driver installed. The recipe is in
      `machines/services3/README.md` and it destroys the rollback path to the folding@home
      configuration, so it is a decision. Nothing is blocked until a nixpkgs bump lands.
-  7. `llama.int.leighhack.org/health` is not in `common/monitoring-endpoints.nix` yet, so
-     gatus does not watch the network's only llama.cpp. It could not have been watched before
-     the door row existed; it can be now, and it rides the same deferred services1 switch as
-     item 3 rather than costing that box a second restart of six apps. Probe **`/health`, not
-     `/`**: llama.cpp's UI is gzipped into the binary and `/` answers `415` to a client that
-     sends no `Accept-Encoding: gzip` (`machines/services3/README.md`).
+  7. ~~`llama.int.leighhack.org/health` is not in `common/monitoring-endpoints.nix` yet~~ —
+     **done 2026-11-15**: `strata.int`, `strata2.int` and `llama.int` `/health` are now a
+     gatus **Inference** group, because the two inference outages of the 2026-11-15 repin
+     were both 502-ing with zero failed units and the board had no row that could have shown
+     either. Probe **`/health`, not `/`**: llama.cpp's UI is gzipped into the binary and `/`
+     answers `415` to a client that sends no `Accept-Encoding: gzip`
+     (`machines/services3/README.md`). What is still open is the other half: see the next
+     item.
+
+- **`ai.int.leighhack.org` and `ai.leighhack.org` answer 502 as the designed steady state, and
+  no check can say so** (found 2026-11-15; the endpoints were probed while diagnosing the
+  repin's inference outages, `docs/work-log-2026-11.md`). Both door rows proxy to `aibox`'s
+  llama.cpp fork, and `machines/aibox/strata.nix` clears that unit's `wantedBy` because
+  llama-server's ~33 GB of GTT and strata's 35.5 GiB arena cannot be resident at once — so
+  with strata on the box (the deployed state since 2026-10-28) the two names 502 forever,
+  and their own comments already say they should. The gap is not the 502, it is that
+  `common/monitoring-endpoints.nix` cannot express "502 is correct here": every `mkHttp` is
+  `>= 200 && < 300`, so the choices are a permanently-red row (worse than none — it trains
+  everyone to ignore the board) or silence, and today it is silence.
+  **To do:** give `mkHttp` an optional per-endpoint expectation (`condition`, or a `status`
+  argument already supported by gatus's own schema) and a row that asserts the *right* answer
+  per the door's current owner of `aibox`'s GPU — which means the check needs to know which
+  engine is wanted, so the honest form may be a row on `strata2.int` only plus a comment here
+  saying `ai.*` is a known-502 alias. **Blocks:** nothing. **Re-verify with:** `curl -s -o
+  /dev/null -w '%{http_code}\n' https://ai.int.leighhack.org/` (502 while strata owns aibox),
+  `systemctl is-enabled llama-server.service` on `aibox` (currently `linked` = not wanted),
+  and `grep -c 'ai\.int\|ai\.leighhack' common/monitoring-endpoints.nix` (0 today).
 
 - **`machines/services3/README.md` describes a box that no longer exists: it says "running
   nothing yet" and "20 GiB free", and both were untrue when the box was read on

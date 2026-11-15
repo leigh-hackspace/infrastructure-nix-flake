@@ -167,3 +167,158 @@ without building.
   **clients not rebooted** — `aibox` re-exported `/exports/netboot-squashfs` from the old
   store path to the new one with zero NFS clients on `:2049`, so the ten clients pick the
   new image up at their own next boot.
+
+## Part two — the inference outages, the safety net that worked, and what the checks missed
+
+Written after the fleet had landed, because three things the morning's write-up could not
+see turned out to be the part worth keeping.
+
+### Both inference endpoints went down, and the reason was not the repin
+
+`strata.int` (services2) and `llama.int` (services3) were both 502 from the front door while
+every unit on both boxes read `active`, `just check-eval` was green, and each box's
+generation read `cur == good`. The cause was neither the repin nor the front door:
+**the switch had installed new NVIDIA user-space over the kernel module the old generation
+loaded.** The repin moved both driver packages, and each box's running kernel was still
+loaded with the previous module, so the CUDA/HIP stacks could not talk to the cards:
+
+```
+nvidia-smi: Failed to initialize NVML: Driver/library version mismatch
+NVML library version: 595.112      ← user-space, from the new generation
+/sys/module/nvidia/version: 595.112.01  ← kernel module, from the running kernel
+config.hardware.nvidia.package: 595.112.07  ← what the new toplevel belongs to
+```
+
+The mistake in the reasoning was checking `strata.service` and finding it `active`. With
+`INFRA.mkNeverGiveUp` a unit in this state does not crash — it starts, cannot initialise the
+card, and the engine answers 502 or never finishes loading. **Unit state is not proof an
+engine can see its GPU.** The fix was the reboot the runbook already told me to defer, and
+it is exactly why Phase 9 exists — the procedure was sound, and I talked myself out of it at
+02:55 to save a few minutes of inference downtime.
+
+The same trap exists for a kernel bump that is not a driver bump. On the box with no failed
+units, no disk problem and a green check, `uname -r` is the only thing that says whether the
+generation you switched to is the generation you are running: services1 and gw are both on
+`6.18.63` generations and were still running `6.18.56`.
+
+### The fleet's own safety net fired, and I nearly walked into it
+
+The first `just deploy services2` did not get as far as the switch. Its remote half died at
+status 4, and the answer was not in the service logs but in `journalctl -u auto-rollback`:
+
+```
+Nov 15 03:41:01 aibox auto-rollback[472794]: aibox has been switched to a new generation
+Nov 15 03:41:01 aibox auto-rollback[472794]: but the operator has not confirmed ...
+Nov 15 03:42:31 aibox auto-rollback[472794]: REBOOTING into /nix/var/nix/profiles/system-good
+```
+
+aibox had been switched minutes earlier and left unconfirmed, so the five-minute countdown
+expired and the box rebooted itself into `system-good` — correctly, exactly as designed
+(`AGENTS.md` rule 4). Two consequences worth knowing: `just deploy aibox` then **fast-
+forwarded its checkout while the box was mid-boot**, which is what made the following
+services2 switch fail while its checkout was at `00a85f5` with no generation built from it;
+and the deploy of whatever you are standing on can reboot under you without you having typed
+anything. **The rule this teaches is not "be careful with `deploy`" — it is that a fleet-wide
+run must land and confirm every box it switches, including its own, and confirm it in the
+same invocation.**
+
+### Three findings about how this repo is actually built
+
+1. **The big lock was held for 1 h 56 min by an editor, not a build.** `just check-build`
+   and `just deploy` both hung with no CPU and no output. The command this repo recommends
+   for that symptom (`pgrep -f "nix eval|nix build"`) found nothing, because the holder was
+   `nixd` (a Zed remote-server language server from a session opened earlier) driving
+   `nix-daemon --stdio` children — the same shape on services1 and services2. `/proc/locks`
+   names it directly: resolve the `big-lock` inode, match the `->  FLOCK` line, read the pid
+   **and its parent**. `SIGTERM` did not release the lock (the daemon retried); `kill -9` on
+   the daemon children did. `just store-lock` is that lookup.
+2. **`check-build` is not disk-safe on a live services box.** Five fleet closures on
+   services1 took `/:` 72 % → 99 % (3.6 GB free) while it served postgres, nginx, SSO and
+   frigate. Recovery needs a GC, and a GC at that moment deletes the gate's own outputs —
+   `nix build --no-link` writes no GC root, so "run the gate, reclaim space, deploy" is a
+   trap: every later deploy recompiles. (Measured the hard way: after one GC, services1
+   rebuilt ~700 derivations it had already built hours earlier, and services2 rebuilt its
+   CUDA engine and a few hundred npm tarballs.)
+3. **The remote-builder failure mode has changed, and the old workaround is obsolete.** The
+   runbook's Phase 7 note described the hop dying with `kex_exchange_identification:
+   Connection reset by peer` seconds in and needing a hand-written `/root/.ssh/config`. That
+   fault is fixed — `common/ssh-known-hosts.nix` is now the pin and
+   `common/build-farm.nix` writes `/etc/ssh/ssh_known_hosts` (rule 25), and this run's
+   remote builds were clean. The failure mode now is *mid-build* (`builder dies during a
+   long crate compile` → `error: cannot build ... on the remote machine`) which is harmless:
+   `nix.distributedBuilds` falls back to local and the rebuild continues. So the note about
+   root's ssh config is history and says so.
+
+### What the checks did not cover
+
+The gate proved it catches the class it was built for, and its limits are now written down:
+
+- `just check-eval` is green while a **runtime** mismatch between kernel module and
+  user-space is certain. No eval can see it; only a run-time check can (see the guard below).
+- `nix flake check --no-build` cannot run on a *new* source path — the first build-shaped
+  command after any tracked edit fails on `…-sops-secret-<name>.drv is not valid`, because
+  every build-time secret drv is keyed to the flake source. So the flake step answers
+  "has this source been built here yet?", not "does this lock evaluate?" — worth knowing
+  before chasing it.
+- `check-doc-pointers` §2 (every tracked file in a machine dir must be reachable from an
+  import list) fired on the parked module and passed when it was imported, proving the
+  `# PARKED` marker is the only thing that keeps such a module inert — a new parked module
+  must go through the same two steps (import it so §2 is satisfied; mark its own header).
+- gatus watched nothing in the inference group, so neither outage was visible on the board.
+
+## What was made structural out of it
+
+Written the same day, from the measurements above rather than from the narrative — each one
+exists because this upgrade paid for it.
+
+- **`common/gpu-driver-match.nix`** — `infra.nvidiaDriverMatchGuard.units = [ "strata" ]`
+  (services2) and `[ "llama-server" ]` (services3) prepend an `ExecStartPre` comparing the
+  version `config.hardware.nvidia.package.version` this system was **built** for against
+  `/sys/module/nvidia/version` the running kernel **has**, and refuses to start with the
+  reason and the fix. It fails loudly rather than silently because `INFRA.mkNeverGiveUp` is
+  already on both units, so a refusal becomes a legible `activating` retry state that
+  self-heals on reboot — and it replaces the "`strata.service` is active" reasoning that
+  fooled the morning. It exits 0 when no module is loaded at all, because on a box where GPU
+  passthrough is in flight that is not this fault. Both branches were exercised on the box
+  before shipping: the match, and a copy of the rendered script with the expected version
+  perturbed.
+- **`just pending-reboot [machine]`** — running kernel vs the current generation's kernel,
+  plus the NVIDIA module and whether `nvidia-smi` agrees. It answers "the deploy said
+  Success and the inference is down", and it found three boxes (services1, aibox, gw) still
+  running the previous kernel because the upgrade did not reboot them — a fact no unit
+  state, profile listing, or `just check` expresses.
+- **`just store-lock`** — resolves the `big-lock` inode through `/proc/locks` and prints the
+  holding pid **and its parent**, which is the only way to see that an editor's `nixd` owns
+  the store.
+- **`just check-build` takes a machine and roots its output.** It was a hard loop over all
+  five toplevels; it is now `check-build [machine|all]`, because the 2026-11-15 shape of the
+  job was one box's service config, and there is no reason to assemble five fleet closures
+  on the live services box to answer it. It refuses below a disk floor (`_disk-headroom`,
+  overridable), prints free space as it goes, and symlinks each toplevel into
+  `/nix/var/nix/gcroots/check-build/<m>`. Measured while writing it: an unrooted
+  `nix build --no-link` output is deleted by the next GC, a symlink-rooted one is not
+  (`nix store delete` refuses with *still alive*), and **a text gcroot file listing store
+  paths is silently ignored** — the path was deleted anyway — which is worth knowing because
+  the nix docs make you expect it to work. `just check-build-clean` drops the roots.
+- **`just deploy` does the `aibox` netboot dance itself** (lazy-unmount the squashfs export
+  before the switch, since a nixpkgs bump moves its store path and activation cannot restart
+  a boot-generated mount onto the new one), prints the target's disk first, never confirms a
+  failed switch on the local path, and finishes by printing `just pending-reboot <machine>`
+  so "switched but not rebooted" is said when it becomes true rather than discovered at the
+  endpoint.
+- **Three inference endpoints are now watched.** `strata.int`, `strata2.int` and `llama.int`
+  `/health` joined `common/monitoring-endpoints.nix` as an **Inference** group: both failures
+  of this upgrade were engines 502-ing with zero failed units, and gatus had no row for any
+  of them, so the board could not have shown either. The public `ai.*` names are deliberately
+  absent — they answer 502 as the *designed* state while `strata` owns aibox's GTT, and a
+  check that is red by design trains people to ignore the board; giving it a stated
+  expectation is open in `docs/follow-ups.md`.
+- **The builder's GC cost is specified rather than suffered** — `docs/follow-ups.md` carries
+  the design (one symlink per machine under `/nix/var/nix/gcroots/deployed` on aibox,
+  `ln -sfn` so the previous generation ages out automatically), the measurements that say why
+  it is not in tree yet (aibox holds **zero** paths of the services3 generation running on
+  services3, so there is nothing to root; a client→builder `nix copy` dies on `Too many
+  authentication failures`, the `IdentitiesOnly` trap that same item lists), and the order
+  the fix has to go in. It was written, tested, and **removed** rather than shipped
+  half-working: a GC root pointing at a path the machine does not have protects nothing and
+  reads like protection.

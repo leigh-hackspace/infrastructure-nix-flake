@@ -33,6 +33,12 @@
     ./nvidia.nix
     ./networking.nix
 
+    # Refuse to start strata while the loaded NVIDIA kernel module and the driver this
+    # system was built for disagree — which is exactly the state a `nixpkgs` bump leaves
+    # the box in between `switch` and the reboot. ./STRATA.md's receipts and
+    # docs/work-log-2026-11.md have the measurement; ./strata.nix turns it on for the unit.
+    ../../common/gpu-driver-match.nix
+
     # Metrics exporters — the per-box half of monitoring.  This box is still
     # measured, now by services1's Prometheus (machines/services1/services/
     # observability.nix), which scrapes 10.3.1.21 over the LAN.
