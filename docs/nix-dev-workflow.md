@@ -924,7 +924,7 @@ What each of the three options is for, and why nothing else is in the stanza:
 - **`ConnectTimeout 5`** so a hop to a box that is not answering fails inside a tool call
   rather than hanging it (rule 11: bound every wait).
 - **deliberately *not* `PasswordAuthentication no`.** services3's owner account keeps a
-  password logins as the spare path onto a box whose only uplink is a Wi-Fi dongle
+  password login as the spare path onto a box whose only uplink is a Wi-Fi dongle
   (`machines/services3/users.nix`, which warns to check
   `sudo sshd -T | grep -i passwordauthentication` after any ssh change). A stanza keyed by
   **host**, not by user, would retire that fallback for whoever types it; pubkey is tried
@@ -937,9 +937,13 @@ What each of the three options is for, and why nothing else is in the stanza:
 
 What this changes, in one line per habit: a LAN `git pull`/`git fetch`/`nix copy` typed as
 `leigh-admin` now works **by itself**, with no `GIT_SSH_COMMAND` and no `-i`; a bare
-`git pull` on a box with no GitHub credential still dies at **GitHub** with
-`Permission denied (publickey)` instead of prompting on a LAN peer, which is the same
-answer `gw` gives today. Root's half is **not** fixed by the tilde form — `~` expands to
+`git pull` on a box with no GitHub credential still dies **before** GitHub — measured on
+services3 after the switch: `Host key
+verification failed`, because `common/ssh-known-hosts.nix` pins the network's own
+addresses and GitHub is not in that table. A box that has pinned GitHub by hand (the
+router's root `known_hosts` has) reaches the next line and dies at `Permission denied
+(publickey)`. Both are the same fact — the box has no GitHub credential of its own — and
+neither is a prompt to fix. `gw`'s bare `git pull` has always been one of the two. Root's half is **not** fixed by the tilde form — `~` expands to
 `/root`, and `/root/.ssh/agent-hop-key` does not exist — so the hand-written
 `/root/.ssh/config` stanzas (aibox's since Sep 2025, services3's added 2026-11-11, both
 naming the **absolute** `/home/leigh-admin/.ssh/agent-hop-key`) stay the only thing that

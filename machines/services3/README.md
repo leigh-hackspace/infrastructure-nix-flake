@@ -437,9 +437,14 @@ Bootstrap facts, because the box was not always in the flake:
   `programs.ssh.hosts`, rendered into `/etc/ssh/ssh_config` — on every flake machine.
   So this box updates itself with
   **`git pull infra`** and needs no `GIT_SSH_COMMAND` noise; `git pull` bare still dies
-  at GitHub with `Permission denied (publickey)` — the box has no GitHub credential of
-  its own, exactly as `gw` has none — and a `ahead N` in `git status -sb` there is a
-  stale `origin/main` ref, not an unpushed commit (`docs/network-upgrade-runbook.md`).
+  before it reaches GitHub — measured on this box after the switch: `Host key
+  verification failed`, because `common/ssh-known-hosts.nix` pins only the network's own
+  addresses and GitHub is not in that table. A box that *has* pinned GitHub by hand (the
+  router has, in its own root `known_hosts`) dies one step later, at
+  `Permission denied (publickey)`. Both strings are the same fact — this box has no GitHub
+  credential of its own, exactly as `gw` has none — and neither is a prompt to fix. A
+  `ahead N` in `git status -sb` there is a stale `origin/main` ref, not an unpushed
+  commit (`docs/network-upgrade-runbook.md`).
   `just deploy services3` from a box that holds the commit remains the way that both
   fetches *and* switches, and it is the one that keeps the GOLDEN RULE's confirm in the
   same shell invocation.
