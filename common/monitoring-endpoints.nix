@@ -76,6 +76,24 @@
       success-threshold = 3;
     };
 
+  # Same alert, debounced for an endpoint whose *startup* is the outage window.
+  #
+  # The three inference engines answer 502 / connection-refused while they load, and that is
+  # normal: `strata.service` on services2 measured **55 s** from systemd start to `ready:` on
+  # 2026-11-15 (12:39:08 → 12:40:03), and its own banner warns "1-3 MINUTES" for the part
+  # that migrates ~30 GB of experts into RAM on a cold page cache — during which the box may
+  # look unresponsive by design. A check at the default failure-threshold 3 therefore pages
+  # on a routine engine restart, which is exactly the alert that teaches you to ignore
+  # inference alerts. At 5 failing points (~5 min at this interval) a cold start never fires
+  # and an engine that is actually dead still does inside six minutes. Same reasoning as
+  # `flappingSlackAlert` above, different cause: there the blip was radio, here it is load.
+  slowStartSlackAlert =
+    slackAlert
+    // {
+      failure-threshold = 5;
+      success-threshold = 3;
+    };
+
   # HTTP check. `status` is the status-code condition (default: any 2xx).
   # `insecure` skips TLS verification (kuma "ignore TLS").
   mkHttp = {
@@ -197,16 +215,19 @@
       name = "Strata (services2, CUDA)";
       url = "https://strata.int.leighhack.org/health";
       group = "Inference";
+      alert = slowStartSlackAlert;
     })
     (mkHttp {
       name = "Strata2 (aibox, HIP)";
       url = "https://strata2.int.leighhack.org/health";
       group = "Inference";
+      alert = slowStartSlackAlert;
     })
     (mkHttp {
       name = "Llama (services3, Vulkan)";
       url = "https://llama.int.leighhack.org/health";
       group = "Inference";
+      alert = slowStartSlackAlert;
     })
 
     # --- Top-level ---------------------------------------------------

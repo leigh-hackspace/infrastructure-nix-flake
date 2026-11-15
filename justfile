@@ -115,27 +115,16 @@ deploy machine:
     case "$me" in gw) mkey=router ;; *) mkey=$me ;; esac
     here=$(nix eval --impure --raw --expr "let h = import ./common/hosts.nix; in if builtins.hasAttr \"$mkey\" h then h.$mkey else \"\"" 2>/dev/null || echo "")
     repo=$(git rev-parse --show-toplevel)
-    # aibox's /etc/fstab bind-mounts the Pi Room netboot squashfs **from a store path**,
-    # so every nixpkgs bump moves the mount's source and activation's restart of a
+    # aibox's /etc/fstab bind-mounts the Pi Room netboot squashfs **from a store path**, so
+    # every nixpkgs bump moves the mount's source and activation's restart of a
     # boot-generated unit fails: `switch-to-configuration` exits 4 *after* flipping
     # /run/current-system, which arms the five-minute rollback countdown on the network's
-    # builder.  Unmounting first (lazily, so any client mid-boot keeps its handles) makes
-    # activation start the mount on the new path and exit 0 — measured 2026-11-15.  See
-    # docs/network-upgrade-runbook.md Phase 7.
-    if [ "$machine" = aibox ]; then
-        echo "=== aibox: re-pointing the netboot export before the switch"
-        ssh -i "$HOME/.ssh/agent-hop-key" -o BatchMode=yes -o ConnectTimeout=5 \
-            "leigh-admin@$addr" bash -s <<'NETBOOT'
-        set -uo pipefail
-        echo "  NFS clients on :2049: $(sudo -n ss -tn sport = :2049 2>/dev/null | tail -n +2 | wc -l)"
-        if findmnt -no SOURCE /exports/netboot-squashfs >/dev/null 2>&1; then
-            sudo -n umount -f -l /exports/netboot-squashfs \
-                && echo "  unmounted (lazy): activation will mount the new store path"
-        else
-            echo "  not mounted already"
-        fi
-        NETBOOT
-    fi
+    # builder.  Unmounting first (lazily, so a client mid-boot keeps its handles) makes
+    # activation start the mount on the new path and exit 0 - measured 2026-11-15, and the
+    # step lives *inside* the remote heredoc below rather than in a heredoc of its own,
+    # because `just` strips one indent level and a nested terminator survives indented,
+    # which bash reads as an unterminated here-document.  docs/network-upgrade-runbook.md
+    # Phase 7 owns the procedure.
     echo "=== $machine ($addr): fetch, switch and confirm on the box"
     ssh -i "$HOME/.ssh/agent-hop-key" -o BatchMode=yes -o ConnectTimeout=5 \
         "leigh-admin@$addr" bash -s -- "$machine" "$here" "$repo" <<'REMOTE'
@@ -143,6 +132,15 @@ deploy machine:
     machine=$1 here=$2 repo=$3
     cd ~/Projects/infrastructure-nix-flake
     echo "  disk before: / $(df --output=avail -BG / | tail -1 | tr -dc '0-9')G free"
+    if [ "$machine" = aibox ]; then
+        if findmnt -no SOURCE /exports/netboot-squashfs >/dev/null 2>&1; then
+            echo "  aibox: NFS clients on :2049 = $(sudo -n ss -tn sport = :2049 2>/dev/null | tail -n +2 | wc -l)"
+            sudo -n umount -f -l /exports/netboot-squashfs \
+                && echo "  unmounted (lazy): activation will mount the new store path"
+        else
+            echo "  aibox: netboot export not mounted"
+        fi
+    fi
     if git fetch -q origin 2>/dev/null; then
         git merge -q --ff-only origin/main
     else
