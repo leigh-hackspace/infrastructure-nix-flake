@@ -146,14 +146,18 @@ done
 
   ```bash
   for h in 10.3.1.20 10.3.1.21 10.3.1.32 10.3.1.1 10.3.2.213; do
-    timeout 20 ssh -i ~/.ssh/agent-hop-key -o BatchMode=yes -o ConnectTimeout=5 leigh-admin@$h \
-      'cd ~/Projects/infrastructure-nix-flake && echo $(hostname): $(git ls-remote --get-url --name | paste -sd, -) stanza=$(ssh -G 10.3.1.20 | grep -c agent-hop)'
+    timeout 20 ssh -i ~/.ssh/agent-hop-key -o BatchMode=yes leigh-admin@$h \
+      'cd ~/Projects/infrastructure-nix-flake && echo $(hostname): head=$(git log -1 --format=%h) names=$(git config --get-regexp "^remote\..*\.url$" | cut -d. -f2 | paste -sd, -) stanza=$(ssh -G 10.3.1.20 | grep -c agent-hop)'
   done
   ```
 
-  A box whose `stanza` reads `0` has not been switched since `common/build-farm.nix` grew the
-  block (the deployed block makes that count `1`); a box whose remote names are not `infra,origin`
-  is a checkout someone hand-made
+  `names` should be `origin` on the boxes that reach GitHub directly and
+  `infra,origin` on the boxes that also carry the peer remote (`gw` since its
+  cutover, and every box assimilated into the fleet — services3 gained it on
+  2026-11-15); a checkout with only a LAN remote under the name `origin` is a
+  box assimilated from elsewhere and its bare `git pull` means a peer fetch. A
+  box whose `stanza` reads `0` has not been switched since `common/build-farm.nix`
+  grew the block (the deployed block makes that count `1`);
   (`machines/services3/README.md` owns that box's repair).
 
 And a **baseline of what is already red**, because the monitor's own list contains
