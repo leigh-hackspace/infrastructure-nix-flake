@@ -745,9 +745,42 @@ ps -o pid,stat,etimes -p <pid>       # D = blocked in I/O, not computing
 sudo ls -l /proc/<pid>/fd | grep big-lock   # the holder is a nix-daemon child
 ```
 
-Killing the client takes the daemon's child, and the lock, with it.
-`nix eval --raw --expr '"ok"'` returning instantly is the proof the store is free
-again.
+**The holder is not always a survivor of *your* aborted call: an editor's language
+server can sit on the lock for hours** (measured 2026-11-15, on two boxes in one
+deploy run). Zed's remote server starts `nixd`, `nixd` forks `nixd-attrset-eval`
+workers, and each of those talks to the daemon — so the lock holder is a
+`nix-daemon <pid>` whose *parent is nixd*, not a nix CLI anyone ran. On services1
+it had held the lock **1 h 56 min** and `nixos-rebuild switch` had been sitting on
+`nix-instantiate --find-file nixos-system` for five minutes; the identical shape was
+found on services2 mid-deploy, where the switch had printed the same `copying path`
+line for 90 s. Neither showed up in `pgrep -f "nix eval|nix build"`, because neither
+is one, and SIGTERM did nothing — the eval workers were blocked in `flock`, so the
+**daemon children had to be killed with `-9`** (`kill -9` on the `nix-daemon <pid>`
+processes plus their `nixd-attrset-eval` parents). Both switches resumed the second
+the lock was free: services1 went from 77 copied paths stuck to 283 plus a running
+build within one poll.
+
+Ask *who* holds it, not just *whether* it is held — `pgrep` for nix commands is
+blind to this:
+
+```bash
+for p in $(sudo ls /proc | grep -E '^[0-9]+$'); do
+  sudo ls -l /proc/$p/fd 2>/dev/null | grep -q big-lock && \
+    echo "HOLDER pid=$p ppid=$(awk '/^PPid/{print $2}' /proc/$p/status) cmd=$(tr '\0' ' ' < /proc/$p/cmdline | cut -c1-60)"
+done   # a ppid belonging to nixd/any editor server means the lock is not yours to wait out
+```
+
+Killing the client takes the daemon's child, and the lock, with it. Killing
+`nixd`'s workers costs an editor its Nix IntelliSense until the editor restarts it,
+which is a cheap price against a deploy that is silently waiting; it does not touch
+any service. `nix eval --raw --expr '"ok"'` returning instantly is the proof the
+store is free again.
+
+**A deploy can also be starved by a *healthy* nix command on the same box**: a GC
+holds this same lock for its whole run, so `nix-collect-garbage` and
+`nixos-rebuild switch` serialise by design. That is the one case worth waiting out
+(read the GC's log to decide), and the reason the two are never started together
+here.
 
 ## Building in a detached unit (for builds that outlive the tool call)
 
