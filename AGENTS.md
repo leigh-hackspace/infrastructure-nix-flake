@@ -46,7 +46,7 @@ X first", X has already cost someone a day.
 | touch either Strata engine, or ask why the inference boxes moved at all — **services2's CUDA sm_86 (RTX 3060) and aibox's HIP gfx1030 build from the one flake `strata` input, so `nix flake update strata` moves both engines in the same switch**, and each card class gets different defaults | `machines/services2/STRATA.md` and `machines/aibox/STRATA.md` (each owns its own card's gates, measured bands and deploy receipts, **and aibox's carries "Can we overclock it?" measured 2026-11-14 — the iGPU is already at its clock ceiling, the DDR5 is at its rated speed, and the only slack is the ~45 W package window with 18 °C of thermal margin above it**; the model data under `/home/leigh-admin/{Models,Strata}` is outside the store and is *not* re-prepped by an engine bump), **and on the 3060 also `machines/services2/STRATA-TUNE-2026-11-14.md` before tuning anything** — 23 measured arms, the harness's noise floor (a control pass once read 807 tok/s of prompt, so under 10 % is nothing), the meters that say this card is neither power-capped nor clock-throttled, and the one flag that was faster but moves answers — **`STRATA_PF_FUSED=1`, deployed 2026-11-14 on the answer-key evidence (8/8 correct before and after), revert is one line + `just switch`** |
 | are new to this flake, or are about to **restructure** `flake.nix`/`common/` rather than add a service | `docs/flake-simplification-audit-2026-10-22.md` — where each fact lives, what `just check` actually does on each box, the two secret models, and the five structural changes worth making (**its Status table is current, its body is the tree at `f923c6e` — read the table first**) |
 | are about to **simplify** — delete, merge or move config, or judge what is fat | `docs/flake-simplification-pass-2026-10-24.md` — the 2026-10-24 re-measure of the same question: 91 % of the tracked bytes are one vendored asset tree, three `AGENTS.md` rules are 93 of its 151 rule-lines, 1,044 lines cannot be deployed; every finding is gated **do now / decide / don't**, and its §3 says what may **not** be cut |
-| ask "why is it shaped like this?" | `docs/work-log-2026-10.md` and the dated post-mortems in `docs/` |
+| ask "why is it shaped like this?" | `docs/work-log-2026-11.md` (the current month) and `docs/work-log-2026-10.md`, plus the dated post-mortems in `docs/` |
 
 ## The rules, in one place
 
@@ -299,7 +299,9 @@ X first", X has already cost someone a day.
   decision record: what CARP-style HA maps to on Linux, and the four things it does not fix),
   `procurve-switches.md`,
   `nas-and-borg.md`, `monster-proxmox.md`, `printer-servers.md`, `follow-ups.md`,
-  `work-log-2026-10.md`) and the dated narrative write-ups, post-mortems and audits
+  `work-log-2026-11.md` (the current month — a full-fleet repin+deploy run, and the three
+  things it changed in the upgrade runbook) and the superseded `work-log-2026-10.md`) and the
+  dated narrative write-ups, post-mortems and audits
   (gtx1060 saga, filestore gotchas, the repo audit, the gw cutover attempt). They live
   here rather than next to the modules so the flake source stays config only; module
   comments point into them when they need the backstory. **`docs/archive/` is frozen

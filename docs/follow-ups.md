@@ -2530,6 +2530,28 @@ one UPS cleanly and reports it as an APC HID unit.
   session and one long tool-call session on `llama-services3`, then either write the `compat`
   row or write down that the defaults held.
 
+- **`ai.int.leighhack.org` / `ai.leighhack.org` answer 502 by design, and nothing in this
+  repo can tell that from an outage** (found 2026-11-15 while verifying the fleet after a
+  whole-network repin: the post-run endpoint sweep showed a 502 with no baseline to diff
+  against, so it read as damage from the run and cost an investigation it did not need).
+  `machines/aibox/strata.nix` clears `llama-server`'s `wantedBy` (`displaceLlamaServer`)
+  because llama-server's ~33 GB of GTT and strata's 35.5 GiB arena cannot be resident at
+  once, and its own comment states the consequence: those two vhosts "502 while strata has
+  the box". `llama-server.service` on `aibox` is `linked`, `inactive`, last stopped
+  **2026-10-28** — so the door has been proxying `10.3.1.32:8081` to nothing for weeks,
+  legitimately. Two things are wrong with that, and neither is the 502: **(a)** neither
+  name is in `common/monitoring-endpoints.nix`, so no gate sees the row go red — same class
+  as the `llama.int` gap above, but here the endpoint is *expected* to be down, which is a
+  fact no check can currently express; **(b)** `settings.json` still carries
+  `llamaServerUrl = "https://ai.int.leighhack.org"` (the item above), so pi's
+  router-integration provider dials a known-dead endpoint on every box that keeps it.
+  **Blocks:** nothing; `programs.pi-agent`'s `llama-services3` provider is the live path.
+  **To do:** pick one — add a check whose expectation is stated (`up` iff strata is
+  displaced), or make the door answer those two names `503` with the reason rather than
+  proxying into a dead port, or retire `llamaServerUrl` per `machines/aibox/STRATA.md`.
+  Re-verify: `systemctl is-active llama-server.service` on `aibox`, and
+  `curl -sk https://ai.int.leighhack.org/health | head -c 40`.
+
 - **pi now has two ways of finding local models, both switched on.** `settings.json` carries
   `llamaServerUrl = "https://ai.int.leighhack.org"`, which gives pi its own `llama.cpp`
   provider via the router integration (four GGUFs on aibox's `llama-server`), while

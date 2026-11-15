@@ -273,6 +273,7 @@ desk".
 | `strata` (`github:Niko1221/Strata`) | **tracked on `main` on purpose** (`docs/services.md`) | both engines' upstream source; each `strata-package.nix` pins the vendored llama.cpp revision, and the model packs live outside the store | yes, but read the box's `STRATA.md` first — the engine flags were measured per card and do not transfer |
 | `door-entry-management-system` | floating GitHub | the door system's own nix | yes |
 | `llama-cpp` | **pinned to a model branch** (`github:ifm-ai/llama.cpp/model/K2Horizon`) | nothing, unless you re-pin | **leave pinned.** A branch pin is a fact about which model was built |
+| `llama-cpp-upstream` (`github:ggml-org/llama.cpp`, default branch) | floating, tracked on `main`/default like `strata` | **`services3`'s live inference engine and nothing else** — `llama.int`, the served GGUF's arch support, and its embedded UI | yes, but **it owes two edits in `machines/services3/llama.nix`**, both hand-copied facts about the tree rather than derivations of it: `npmDepsHash` (the refusal surfaces as `ERROR: npmDepsHash is out of date` *inside a toplevel build*) and `version` (the tree's `CMakeLists.txt` is the truth — it read `1.0.0` where the module said `0.9.0`). Re-verify probes: the fenced block in `docs/follow-ups.md` |
 | *(nothing)* | in-tree since `8e0430c` | `crates/whisper-ws/` and `machines/pi-room-sys/` are flake **source** now, so they move with the commit, not the lock: a change there is a change to the netboot image and the whisper gateway, and it is rebuilt by every box that builds, not only aibox | this is Phase 1's territory — do not let a half-finished crate in the tree reach a switch |
 
 Then commit `flake.lock` and re-run Phase 1's proof. The lock is the network's
@@ -321,6 +322,21 @@ with neither of the two bad alternatives: `nixos-rebuild build`/`boot` do compil
 but they write a boot loader entry, so the next reboot comes up on a configuration
 nobody ever activated. A toplevel build touches no profile, no boot entry, no
 `/run/current-system`, so it cannot arm the auto-rollback timer either.
+
+**It is also a disk hazard on the box you run it from, and its outputs are not a
+commitment.** Measured 2026-11-15 on the five-box fleet: `just check-build` builds
+**every** toplevel from wherever you are standing, and nix copies each resulting system
+closure **back to that box** — `services1` went 72 % → **99 % full, 3.6 GB free** mid-run,
+on the box holding postgres, nginx, SSO and frigate. And `check-build` is
+`nix build --no-link`, which **creates no GC root**: a `nix-collect-garbage` between the
+gate and the deploy deletes every output the gate produced, and the deploy then recompiles
+as though the gate had never run (that is how a fully-gated `services1` switch came to
+rebuild ~700 derivations). The builder has the same hole from the other side — outputs
+`aibox` built *for other machines* are unreachable **there** and its nightly GC collects
+them. So keep GC and deploy as separate steps, and if you do reclaim, re-run the gate and
+budget the compile rather than meeting it inside an activation. The cheap shape is to
+build each toplevel **on the box that will run it** (and on the builder for `gw`, which
+cannot compile) instead of assembling the whole fleet in one store.
 
 **Budget it, do not guess it.** The 2026-10-15 run (one nixpkgs bump, 2026-10-08 →
 2026-10-14, plus crane/nixos-utils/sops-nix) took **77 minutes** and produced
@@ -530,6 +546,11 @@ Notes:
   running one:
 
   ```bash
+  nix eval --raw ".#nixosConfigurations.<m>.config.boot.kernelPackages.kernel.version"
+  nix eval --raw ".#nixosConfigurations.<m>.config.hardware.nvidia.package.version"  # if it has a GPU
+  ```
+
+  ```bash
   uname -r
   sudo ls -1 /boot/EFI/nixos | grep -o 'linux-[0-9.]*-' | sort -V | tail -1
   ```
@@ -539,6 +560,19 @@ Notes:
   window of the boot — say which, and to whom (gatus will fire a Slack incident
   for every endpoint; that is the noise, not an incident). Rebooting aibox does
   not reboot its netboot clients.
+
+  **On a GPU box the reboot is part of the deploy, not a deferral** (measured
+  2026-11-15: `services3` and `services2` both went down until rebooted). A nixpkgs bump
+  moves the NVIDIA **driver** too, and activation *restarts the GPU unit into the new
+  userspace while the old kernel module is still loaded*: `llama-server` went
+  `active → activating` and stayed there, `strata` came back 502, `nvidia-smi` said
+  `Failed to initialize NVML: Driver/library version mismatch` — all with a healthy
+  generation, `cur == good`, zero failed units. So on any box whose services open an
+  out-of-tree module, the deploy is **one** invocation: `switch && nixos-confirm &&
+  reboot`. And once the mismatch is visible the reboot is the **repair rather than a risk
+  to weigh** — the endpoint is already down, so there is no outage to avoid, only one to
+  shorten. Poll the engine's own `/health` afterwards, not the unit state: `services3`'s
+  model took ~1 min to load after ssh returned.
 - **Do not add anything to `nixbld`, ever** (rule 7 / `docs/nix-build-sigkill-2026-10-11.md`): the group is the pool of UIDs builds run as and nix SIGKILLs every process of the build UID before and after each build. `common/nixbld.nix` fails the eval if you ask, and `nixbld-guard.timer` undoes an imperative `usermod` within fifteen minutes.
 - **Interrupting a build is harmless** now — the sweep lands on a throwaway `nixbldN` uid.
 - If a switch is aborted by the tool-call timeout, **the switch is still running**
@@ -670,6 +704,17 @@ run "finished but not upgraded":
   sudo nixos-rebuild switch --flake .#aibox && sudo nixos-confirm   # now exits 0
   ```
 
+  **Do the umount *before* the switch, not after its failure** (measured 2026-11-15):
+  with `ss -tn sport = :2049` empty, unmounting first meant activation *started*
+  `exports-netboot-squashfs.mount` on the new store path and the switch exited **0** — no
+  exit 4, no armed five-minute countdown, no retry. The order above (fail, dance, retry)
+  works, but it spends the one safety net this repo grows on every box to get there. The
+  new source path is readable before you switch, so the dance is a checkable pre-step:
+
+  ```bash
+  grep -o '/nix/store/[^ ]*-squashfs' <new-toplevel>/etc/fstab   # what activation will want
+  ```
+
   Lazy-umounting is safe for running clients (their open handles survive; new
   mounts get the new image), and the clients pick the new image up on their next
   boot. Check `ss -tn sport = :2049` first so you are not doing it under a client
@@ -717,6 +762,8 @@ run "finished but not upgraded":
 | **A stale `origin/main` ref on a box with no GitHub key** | `git status -sb` says `ahead 1` forever | That is a stale ref, not an unpushed commit (`machines/services2/README.md`); push through services1 |
 | **`git push` dies with `Permission denied (publickey)` on the box that has a key** | an exported `GIT_SSH_COMMAND` leaked onto the GitHub remote | Set `GIT_SSH_COMMAND` inline on the LAN `git fetch` only; the LAN fetch also needs `IdentitiesOnly=yes` (services1 offers several identities → `Too many authentication failures`) |
 | **A nix command hangs, doing nothing** | no CPU, no output, no timeout | A survivor of an aborted nix call holds `/nix/var/nix/db/big-lock`. `pgrep -a -f "nix eval|nix build"` and kill it before the next nix command |
+| **A nix command hangs and that pgrep finds nothing** | `nixos-rebuild` sits on `nix-instantiate --find-file nixos-system`; a `copying path` line repeats for minutes | The holder is **`nixd`** (an editor's language server, e.g. Zed remote's), whose `nixd-attrset-eval` workers keep `nix-daemon` children on the lock — measured at **1 h 56 min** on one box and mid-deploy on another. Scan `/proc/*/fd` for `big-lock` **and print each holder's ppid**; `SIGTERM` does nothing to a process blocked in `flock`, so `kill -9` the daemon children and their nixd parents. Both deploys resumed within one poll. Recipe: `docs/nix-dev-workflow.md` |
+| **A GPU endpoint dies on an otherwise-clean switch** | `/health` empty or 502, unit `activating`, `nvidia-smi`: `Driver/library version mismatch` | New userspace against the still-loaded old kmod. `switch && nixos-confirm && reboot` — see Phase 5; the reboot is the repair |
 | **A build copies 3 GB of `crates/target/` into the store** | you evaluated through a path literal | Never evaluate this repo through a path literal (rule 8). Read values out of the flake |
 | **A delegated build silently fell back to local** | the wrong disk fills; the builder idles | Poll for the build, not the clock; `nix flake`/`nixos-rebuild` log lines name the builder. Flip `nix.distributedBuilds = false` only deliberately |
 | **Disk full mid-build** | `df -h /` climbing; build dies at a copy | Build off-box (`just build-remote`); GC per `common/build-farm.nix` (interactive — `just gc` will not answer for a non-tty) |
@@ -761,7 +808,9 @@ Abort the run, in this order of preference:
 ## Record it
 
 A network upgrade is the thing a later agent most wants a narrative for.
-Append to `docs/work-log-2026-10.md`: the commit range, which inputs moved, the
+Append to **the current month's** work log (created 2026-11: `docs/work-log-2026-11.md`;
+`docs/work-log-2026-10.md` is the previous month and is not edited again): the commit
+range, which inputs moved, the
 order actually used (and why, if it was not the default), what each box's
 version string went from/to, what needed a reboot, what failed and how it was
 fixed, and what the monitor saw. Open anything you did not finish in
