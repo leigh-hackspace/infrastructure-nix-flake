@@ -805,6 +805,7 @@ _disk-headroom need_gib="":
 # (an editor's language server) via a `nix-daemon` child, which no `pgrep -f "nix eval|nix
 # build"` finds.  `/proc/locks` names the inode and the pid directly, so this needs no
 # scan and no sudo.  Run it before blaming a slow build; the fix is in docs/nix-dev-workflow.md.
+# Who holds the nix store big lock, with the parent that explains it (nixd is not a build).
 store-lock:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -838,6 +839,7 @@ store-lock:
 #
 # Read-only.  Exit code is 0 either way (it is a report, not a gate); the verdict line is
 # the thing to read.
+# Switched but not rebooted? Running kernel vs this generation's, plus the NVIDIA driver.
 pending-reboot machine="":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -914,6 +916,7 @@ pending-reboot machine="":
 #
 # `just check-build <machine>` builds one machine's toplevel (20 GiB headroom) instead of
 # all five (60 GiB), for when only one box's config moved.
+# Build every machine's (or one machine's) system toplevel without activating it.
 check-build machine="all": (_disk-headroom "60") _build-host-guard
     #!/usr/bin/env bash
     set -euo pipefail

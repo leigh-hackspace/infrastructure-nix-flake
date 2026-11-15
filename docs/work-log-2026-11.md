@@ -322,3 +322,20 @@ exists because this upgrade paid for it.
   the fix has to go in. It was written, tested, and **removed** rather than shipped
   half-working: a GC root pointing at a path the machine does not have protects nothing and
   reads like protection.
+
+### End state, read off the boxes rather than asserted
+
+All five deployable machines on `331f45a` with clean checkouts (services2, services3 and gw
+needed the peer-fetch fallback — they have no GitHub key of their own, and `git fetch origin`
+quietly failing is indistinguishable from "already up to date" unless the recipe says so,
+which `just deploy` does). `cur == good` on all five; `systemctl --failed` empty on all five;
+gatus reporting **37 of 37 endpoints UP**, which includes the three Inference rows answering
+200 through the front door at 2–30 ms — a better end state than the pre-upgrade baseline, on
+which `3d-{1,2,3}.int`, `woodwork.int` and `status.leighhack.org` were red. Three boxes are
+**deliberately left pending a reboot** because the kernel moved and none of them can afford
+the window yet: `services1` (`6.18.56` running, `6.18.63` wanted — it hosts postgres and the
+IdP), `aibox` (`7.2.10` → `7.3.4` — the builder, whose netboot export the Pi Room clients are
+booting from), and `gw` (`6.18.56` → `6.18.63` — the router, DNS and front door: rebooting it
+drops every tunnel and every vhost for a minute). `just pending-reboot` names exactly those
+three, which is the point of having it: the fleet now carries a list of what is not finished,
+instead of that fact living only in whoever read `uname -r`.
