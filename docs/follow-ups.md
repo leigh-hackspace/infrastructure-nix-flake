@@ -78,9 +78,22 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
      the GC took the rest. A root pointing at it would be a lie that protects nothing.
   3. **`nix copy` from a client to the builder fails on the documented identity trap** —
      `Too many authentication failures`, the same one the justfile already works around for
-     `git fetch` with `IdentitiesOnly=yes`. There is no `~/.ssh/config` on these boxes and
-     `nix copy --to ssh://` cannot pass `-i`, so the client→builder copy that would make
-     `aibox` a real cache cannot start. That is item 5 of the root-ssh-config list above.
+     `git fetch` with `IdentitiesOnly=yes`. **The operator-account half of this was answered
+     on 2026-11-15**: `common/build-farm.nix` grew `programs.ssh.hosts` — `IdentityFile ~/.ssh/agent-hop-key`,
+     `IdentitiesOnly yes`, `ConnectTimeout 5` for the network's own addresses, rendered into
+     `/etc/ssh/ssh_config` (`docs/nix-dev-workflow.md`, "The identity half of that hop is not
+     the host half, and it was missing everywhere") — and it is the *system* file because this
+     pinned nixpkgs has **no home-file option in `users.users.<name>` at all** (`just check`
+     refuses `users.users.leigh-admin.extraFiles`). It does **not** help `nix copy`, though:
+     the stanza spells the path `~`, which for the daemon expands to `/root/.ssh/agent-hop-key`,
+     where no key is, and `nix copy --to ssh://` cannot pass `-i` at all. So the client→builder
+     copy that would make `aibox` a real cache still cannot start. Closing it needs the same
+     block with an **absolute** path — already this fleet's practice for root (`mkRemoteBuilder`'s
+     `sshKey`, and the `sudo env NIX_SSHOPTS='-i /home/leigh-admin/.ssh/agent-hop-key …'` hatch
+     below) — and was not done quietly, because an absolute path in the *system* file also puts
+     `IdentitiesOnly yes` on every user of those addresses at once, the NAS's other accounts
+     included, and those have never been checked. That is item 5 of the root-ssh-config list
+     above.
   4. Derivations survive where outputs do not: 26 `nixos-system*.drv` and 1 578
      `cargo-package-*` paths are still in `aibox`'s store, all from the **previous** lock.
      So `keep-outputs = true` plus rooting drvs is a second candidate shape, but `aibox`

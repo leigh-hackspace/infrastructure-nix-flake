@@ -421,9 +421,28 @@ switch, which is what you want on a Wi-Fi box).
 Bootstrap facts, because the box was not always in the flake:
 
 - Its checkout must live at `~/Projects/infrastructure-nix-flake` — the `deploy` recipe
-  `cd`s to that path and has no other. It has no GitHub credentials of its own, so
-  `git fetch origin` fails there and the recipe's peer-fetch from `10.3.1.20` over the
-  hop key is what updates it.
+  `cd`s to that path and has no other. **Its remotes were the anomaly, not its keys:**
+  until 2026-11-15 this box's *only* remote was services1's checkout — a leftover from
+  the other fleet it was assimilated from — so `git pull` here meant something else
+  entirely, and printed `(leigh-admin@10.3.1.20) Password:` rather than an error. Both
+  halves are now written down. The remotes match the rest of the fleet (`origin` is
+  GitHub like everywhere else, `infra` is services1's checkout over the hop — the same
+  pair `machines/gw/README.md` item 3 names), and the prompt was ssh offering **no
+  identity at all**: this box's `~/.ssh` held only `agent-hop-key` (mode `0600`, no
+  `config`, no `known_hosts`), which is not one of the file names ssh tries on its own,
+  and **no ssh-agent runs on these boxes** — so a `git` ssh that carries no `-i` has
+  nothing to offer and walks through to `Password`, on a box whose sshd is
+  `prohibit-password`, inside a job with no terminal to answer it. That half is now
+  declarative in the **system** client config — `common/build-farm.nix`'s
+  `programs.ssh.hosts`, rendered into `/etc/ssh/ssh_config` — on every flake machine.
+  So this box updates itself with
+  **`git pull infra`** and needs no `GIT_SSH_COMMAND` noise; `git pull` bare still dies
+  at GitHub with `Permission denied (publickey)` — the box has no GitHub credential of
+  its own, exactly as `gw` has none — and a `ahead N` in `git status -sb` there is a
+  stale `origin/main` ref, not an unpushed commit (`docs/network-upgrade-runbook.md`).
+  `just deploy services3` from a box that holds the commit remains the way that both
+  fetches *and* switches, and it is the one that keeps the GOLDEN RULE's confirm in the
+  same shell invocation.
 - **The shared age key must be installed before the first switch**, or activation fails
   when sops-nix decrypts the two secrets `common/sops.nix` declares for every box:
   `just install-sops-key` on this box, with `SOPS_KEY_FILE` pointing at a copy of the
@@ -510,7 +529,10 @@ reason — binding the NVIDIA driver, above — and came back on the same genera
    nobody else. Adding the matching `Host 10.3.2.213` stanza made the copy work — and the
    escape hatch worth knowing without touching that file is **`sudo env NIX_SSHOPTS='-i …
    -o IdentitiesOnly=yes' nix copy …`**, because the URL form `?ssh-option=…` is not a thing
-   (`warning: unknown setting 'ssh-option'`). The identity half is still hand-written and is an
+   (`warning: unknown setting 'ssh-option'`). The identity half of the **operator** account is
+   declarative now (`common/build-farm.nix`, `programs.ssh.hosts` — see the Bootstrap bullet and
+   `docs/nix-dev-workflow.md`), so `git pull infra` needs no inline `-i` on a switched box.
+   Root's half is still hand-written and is an
    open item below.
 
 **Both boxes are now on a commit.** `services3` and `gw` were activated from an *uncommitted*
@@ -530,5 +552,5 @@ remember `gw` is the box that has previously run *ahead* of its own line —
 | Power | Not in `machines/gw/ups.nix`'s `shutdownTargets` (see above), and `crates/ups-watchdog/src/plan.rs`'s order list is the same three. |
 | Wi-Fi PSK | Off-flake (see above). Decide when it is racked: delete it with the dongle's reservation, or make it declarative. |
 | 20 GiB free | Prune the old generations (see above) or add disk before giving the box a build. Measured **9.7 GiB free** with the engine and driver installed. |
-| Root's ssh identity | `nix copy`/remote-build ssh runs as root out of `HOME=/root`, and the identity it offers comes from a **hand-written `/root/.ssh/config`** (aibox stanza since Sep 2025, services3 added 2026-11-11 — item 5 above). The *host keys* are declarative (rule 25); the identity is not, so `nix copy` to a new box fails with `Too many authentication failures` until a stanza is added by hand or `common/build-farm.nix` grows an identity for the delegating side. |
+| Root's ssh identity | `nix copy`/remote-build ssh runs as root out of `HOME=/root`, and the identity it offers comes from a **hand-written `/root/.ssh/config`** (aibox stanza since Sep 2025, services3 added 2026-11-11 — item 5 above). The *host keys* are declarative (rule 25); the identity is not, so `nix copy` to a new box fails with `Too many authentication failures` until a stanza is added by hand or `common/build-farm.nix` grows an identity for the delegating side. **The operator account's half closed 2026-11-15:** `common/build-farm.nix` now carries `programs.ssh.hosts` for the network's own addresses (`IdentityFile ~/.ssh/agent-hop-key`, `IdentitiesOnly yes`, `ConnectTimeout 5`), rendered into `/etc/ssh/ssh_config` — the *system* file, because this nixpkgs has no home-file option in `users.users.<name>` at all (`just check` refuses it; `machines/gw/README.md`'s "authorized keys are a fact about the directory sshd reads" is the same shape). Root is **not** covered by that block: `~` in `IdentityFile` expands to `/root`, where no `agent-hop-key` exists, so root still needs its absolute-path stanza and `sudo env NIX_SSHOPTS='-i /home/leigh-admin/.ssh/agent-hop-key -o IdentitiesOnly=yes' nix copy …` remains the escape hatch. Re-verify the operator half with `ssh -G 10.3.1.20 | grep -E 'identitiesonly|agent-hop'` as `leigh-admin` (two lines once deployed; `ssh -G` also prints ssh's five built-in defaults on an unswitched box, so count them) and by the checkout's own `git remote -v` answering `origin` + `infra`. |
 | Monitoring depth | Scraped **once services1 next switches**: the three scrape rows are in `machines/services1/services/observability.nix`, and a `dry-activate` of that change showed it would stop and restart six of services1's apps (`filestore`, `gocardless-dashboard`, `moonraker-exporter`, `prometheus`, `status-dashboard`, `switch-gui`) — the crates' unit paths move because the flake source moved. That is a services1 deploy decision (`docs/network-upgrade-runbook.md`), not a fee for adding a box, so it was not paid here. Until then the exporters run on this box and nobody reads them. Alerting is the same shape and now possible: `common/monitoring-endpoints.nix` is the gatus half, its guard wants an `https *.int` endpoint, and `llama.int.leighhack.org` is one since the door row landed — so `/health` can be added to that table, on the same deferred services1 deploy rather than as its own restart of six apps. |

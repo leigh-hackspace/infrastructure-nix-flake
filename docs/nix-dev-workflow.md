@@ -854,6 +854,128 @@ so the boot target follows the switch; that only needs the manual `nix-env
 --profile ... --set` fix when activating a closure by hand with
 `switch-to-configuration switch` (see `docs/nix-build-sigkill-2026-10-11.md`).
 
+### The identity half of that hop is not the host half, and it was missing everywhere
+
+Rule 25's section above fixes what an ssh **checks** (the host keys). It never touched
+what an ssh **offers** (the identity), and that half was hand-written everywhere: the
+hop key lives at `~/.ssh/agent-hop-key`, which is none of the names ssh tries on its
+own (`id_rsa`, `id_ed25519`, `id_ecdsa`, …), and **no ssh-agent runs on these boxes**. So
+any ssh that does not carry `-i ~/.ssh/agent-hop-key` has nothing to offer, and sshd's
+last offer is a **prompt** — which is what `git pull` printed on services3 on 2026-11-15,
+out of a job that had no terminal to answer it:
+
+```
+(leigh-admin@10.3.1.20) Password:
+```
+
+Read on the box that day (`ssh` from services3, all four lines of state):
+
+- `ls -l ~/.ssh` on services3 → **only `agent-hop-key`** (mode `0600`). No `config`, no
+  `known_hosts`, no `id_*`. The host half is fine anyway, because
+  `/etc/ssh/ssh_known_hosts` is rule 25's store-pinned file and every ssh reads it
+  through NixOS's `GlobalKnownHostsFile` line; the identity half is the file that does
+  not exist.
+- `ssh -o BatchMode=yes -o ConnectTimeout=5 leigh-admin@10.3.1.20 true` →
+  `Permission denied (publickey,password,keyboard-interactive)` — every mechanism
+  refused, and `BatchMode` is what turns the prompt into that line. Without it the
+  attempt simply hangs, which is why the same fault reads as "the network is down"
+  rather than as "no key was offered".
+- `git ls-remote origin` (origin = the peer checkout over the LAN, git's ssh is not
+  `BatchMode`) → two `Permission denied, please try again.` then
+  `Received disconnect … Too many authentication failures`. The runbook's trap fires on
+  a box that has **one** identity, not several: sshd's per-connection attempt limit is
+  reached by *password and keyboard retries*, since the prompt is looped three times by
+  ssh itself.
+- `ssh -V` → `OpenSSH_10.6p1`.
+- The `agent` entry in several boxes' `~/.ssh` is **not** an ssh-agent holding keys: it
+  is the socket dir of systemd's ssh-proxy, whose `Include` in `/etc/ssh/ssh_config`
+  matches only `.host`, `machine/*`, `unix/*`, `vsock/*` pseudo-hosts — nothing on this
+  network's addresses. Typing `~/.ssh/agent` and concluding "there is an agent" is the
+  wrong reading of the only ssh-adjacent thing a `git pull` on these boxes ever had.
+
+So the fleet had three different shapes of the same missing fact, and one of them is a
+lie: services1 and aibox keep hand-written `/root/.ssh/config` stanzas (aibox's since
+Sep 2025, services3's added 2026-11-11) that name an identity for *root* only, `justfile:150`
+passes `GIT_SSH_COMMAND` inline per call, and the operator account had nothing at all.
+
+The fix, in the tree: `common/build-farm.nix` — the module that already owns the
+*host* half of this hop (`programs.ssh.knownHosts`) — now also owns the identity half,
+as `programs.ssh.hosts`: one block whose attribute name is the space-joined host list
+**generated from `common/hosts.nix`** (the same table `just deploy` and `just known-hosts`
+read), carrying `IdentityFile ~/.ssh/agent-hop-key`, `IdentitiesOnly yes` and
+`ConnectTimeout 5`, which the module renders as a `Host …` block in
+`/etc/ssh/ssh_config`. The module's option is a map whose **names are `Host` patterns**
+and whose documented example is exactly this stanza (`IdentityFile` + `IdentitiesOnly`),
+so nothing here is hand-written ssh syntax.
+
+It cannot be a per-user `~/.ssh/config`, and that is not a style choice: this pinned
+nixpkgs' `users.users.<name>` submodule has **no file-writing option at all** — `just check`
+refuses `users.users.leigh-admin.extraFiles`, and this release moved authorized keys to
+`AuthorizedKeysFile` + `/etc/ssh/authorized_keys.d` (`nixos/modules/services/networking/ssh/sshd.nix`),
+leaving home files to Home Manager, which this flake does not use. The system file is the
+only declarative place left. `~` in `IdentityFile` is expanded by ssh to the **calling**
+user's home, which is what makes one line correct on six boxes without naming one of them.
+
+What each of the three options is for, and why nothing else is in the stanza:
+
+- **`IdentitiesOnly yes`** is the documented fix for `Too many authentication failures`
+  (`justfile:148`): a box that offers every identity it has is refused *before* the right
+  one is tried. Offering exactly one is what makes a LAN hop answer at all.
+- **`ConnectTimeout 5`** so a hop to a box that is not answering fails inside a tool call
+  rather than hanging it (rule 11: bound every wait).
+- **deliberately *not* `PasswordAuthentication no`.** services3's owner account keeps a
+  password logins as the spare path onto a box whose only uplink is a Wi-Fi dongle
+  (`machines/services3/users.nix`, which warns to check
+  `sudo sshd -T | grep -i passwordauthentication` after any ssh change). A stanza keyed by
+  **host**, not by user, would retire that fallback for whoever types it; pubkey is tried
+  first, so the identity above answers a LAN hop while the password path stays available
+  underneath it.
+- the NAS's address **is** in the list (it is ssh'ed with the hop key, `docs/nas-and-borg.md`),
+  the core switches **are not** (Telnet only), and off-flake hosts (`monster1` at
+  `10.3.1.11`, the `10.3.14.x` printers) are not in `common/hosts.nix` at all, so they keep
+  needing their explicit `-i` until they join the flake.
+
+What this changes, in one line per habit: a LAN `git pull`/`git fetch`/`nix copy` typed as
+`leigh-admin` now works **by itself**, with no `GIT_SSH_COMMAND` and no `-i`; a bare
+`git pull` on a box with no GitHub credential still dies at **GitHub** with
+`Permission denied (publickey)` instead of prompting on a LAN peer, which is the same
+answer `gw` gives today. Root's half is **not** fixed by the tilde form — `~` expands to
+`/root`, and `/root/.ssh/agent-hop-key` does not exist — so the hand-written
+`/root/.ssh/config` stanzas (aibox's since Sep 2025, services3's added 2026-11-11, both
+naming the **absolute** `/home/leigh-admin/.ssh/agent-hop-key`) stay the only thing that
+puts an identity on the daemon's ssh, and `docs/follow-ups.md` keeps that open. What
+*would* close it is the same block with an absolute path — root reading the operator's
+key is already this fleet's documented practice (`mkRemoteBuilder`'s `sshKey`, and
+follow-ups' `sudo env NIX_SSHOPTS='-i …'` escape hatch), which is why the choice is
+written down rather than made quietly: an absolute path in the *system* file also puts
+`IdentitiesOnly yes` on the NAS and on every user of these addresses at once, and the
+NAS's other accounts have never been checked.
+
+Re-verify after any switch of a flake machine, in this order (the first two are the
+proof, the third is what the file actually holds — rule 21's "deploy it and read the
+rendered file"):
+
+```bash
+grep -A 4 '^Host 10' /etc/ssh/ssh_config            # the rendered file (rule 21)
+ssh -G 10.3.1.20 | grep -E 'identitiesonly|agent-hop'   # stanza deployed
+# on another box, so the identity is exercised across a hop:
+timeout 20 ssh -i ~/.ssh/agent-hop-key -o BatchMode=yes leigh-admin@10.3.2.213 \
+  'cd ~/Projects/infrastructure-nix-flake && git ls-remote infra main'
+```
+
+There is nothing to `cat` in `~/.ssh`: the identity lives in the system file, and a
+`~/.ssh/config` on a flake machine is now by definition a hand-made leftover — the
+mutable-file shape this repo's own audit named, and the thing a deploy can no longer
+reproduce.
+
+The first line answers **two** lines once the stanza is deployed — `identitiesonly yes`
+and `identityfile ~/.ssh/agent-hop-key` — and six on a box that has not been switched
+since: `identitiesonly no` plus ssh's five built-in defaults (`id_rsa`, `id_ecdsa`,
+`id_ecdsa_sk`, `id_ed25519`, `id_ed25519_sk`), none of which any LAN box accepts.
+`ssh -G` prints the resolved config **without connecting**, so it is the cheap half of
+the proof; `git ls-remote infra main` is the half that proves the stanza is the thing a
+`git` ssh actually uses.
+
 ## Remote building (aibox is the builder)
 
 `common/build-farm.nix` sets `nix.distributedBuilds = true`, and nix 2.34 then

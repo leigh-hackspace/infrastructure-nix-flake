@@ -131,6 +131,30 @@ done
 - **`esp_free` matters when the kernel bumps**: three kernels' worth of a new
   generation lands in the ESP on the next boot, and a 400 MB-full ESP turns a
   reboot into a rescue job. 2026-10-15: 401-428 MB free on all three.
+- **`git remote -v` was not the same on every box, and it must be.** Every checkout in
+  the fleet now answers the same two remotes: `origin` is GitHub — everywhere, including
+  the boxes that cannot reach it — and `infra` is services1's checkout over the hop, the
+  pair `machines/gw/README.md` item 3 names. services3 arrived holding *only* the peer,
+  under the name `origin` (a leftover from the other fleet it was assimilated from), and
+  that is what made its bare `git pull` mean something else and print
+  `(leigh-admin@10.3.1.20) Password:` rather than an error. The prompt is the **identity**
+  half of the hop, now declarative in `common/build-farm.nix` (`programs.ssh.hosts`, read from
+  `/etc/ssh/ssh_config`), so a LAN `git pull infra` on any
+  box needs no `GIT_SSH_COMMAND` and no `-i` (the half that still needs `-i` is root's:
+  `nix copy` runs out of `HOME=/root`). Both halves are one line each, per box, before
+  blaming a fetch for anything:
+
+  ```bash
+  for h in 10.3.1.20 10.3.1.21 10.3.1.32 10.3.1.1 10.3.2.213; do
+    timeout 20 ssh -i ~/.ssh/agent-hop-key -o BatchMode=yes -o ConnectTimeout=5 leigh-admin@$h \
+      'cd ~/Projects/infrastructure-nix-flake && echo $(hostname): $(git ls-remote --get-url --name | paste -sd, -) stanza=$(ssh -G 10.3.1.20 | grep -c agent-hop)'
+  done
+  ```
+
+  A box whose `stanza` reads `0` has not been switched since `common/build-farm.nix` grew the
+  block (the deployed block makes that count `1`); a box whose remote names are not `infra,origin`
+  is a checkout someone hand-made
+  (`machines/services3/README.md` owns that box's repair).
 
 And a **baseline of what is already red**, because the monitor's own list contains
 checks that have never passed and you will otherwise spend the run blaming

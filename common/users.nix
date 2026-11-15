@@ -1,4 +1,12 @@
 # MODULE — NixOS module; in a machine's module list or a directory's imports, never read as data.
+#
+# The fleet's accounts. What this file owns that nobody else can: the uid (1234, a
+# fact this repo has learned is not portable — see machines/services3/users.nix for why
+# `cjdell` is *not* here) and **both halves of the inter-machine hop**:
+# `authorizedKeys` below is the half that accepts a hop; the half that *offers* the key is
+# `programs.ssh.hosts` in `./build-farm.nix` — the system client config, which is the only
+# declarative place for it in this nixpkgs (see the comment inside the account below), and the
+# half that was missing everywhere on every box.
 {pkgs, ...}: {
   users.users.leigh-admin = {
     uid = 1234;
@@ -17,6 +25,20 @@
       # Private key: ~/.ssh/agent-hop-key (copy to the other machines).
       "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICtr1ewQo09xFMODjPXlPXXvjuW94zQCMqhrpKAT/yGI machine-hop-key"
     ];
+
+    # What this account declares about the hop is the half that *accepts* it (the public
+    # key above, authorized on every flake machine). The half that *offers* the private
+    # key is not here: this pinned nixpkgs' `users.users.<name>` submodule has no file
+    # writing option of any kind — `just check` refuses
+    # `users.users.leigh-admin.extraFiles` (and `homeDirectories.<name>.extraFiles` is
+    # not an option in this release either), so home files would need Home Manager, which
+    # this flake does not use. The declarative identity is therefore in the *system*
+    # client config, `programs.ssh.hosts`, in `./build-farm.nix` — which is the file every
+    # ssh on the box reads, but not enough to cover root: that block spells the path
+    # `~/.ssh/agent-hop-key`, and for the daemon `~` is `/root`, where no copy of the key
+    # exists. So root's hand-written `/root/.ssh/config` stanzas (naming the absolute
+    # `/home/leigh-admin/.ssh/agent-hop-key`) are still the only thing standing in for
+    # root's ssh, and that half stays open in `docs/follow-ups.md`.
 
     # Lingering must be on, or an agent session takes tmux down with it.
     #

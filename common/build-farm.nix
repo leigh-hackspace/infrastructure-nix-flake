@@ -39,6 +39,17 @@
 #      Mechanism and receipts: docs/nix-dev-workflow.md, "Remote building: the
 #      hop is not the operator's ssh".
 #
+#   3b. the **identity** for the hop, on the network's own addresses
+#       (`programs.ssh.hosts`, generated from ./hosts.nix) — the half that decides
+#       what an ssh *offers*, as opposed to what it *checks*.  It is in this module
+#       rather than in ./users.nix because this nixpkgs has no per-user home-file
+#       option (the header of ./users.nix has the refusal), and because the system
+#       file is read by every ssh on the box, root's included.  The symptom it
+#       retires is a `git pull` that prints `(leigh-admin@10.3.1.20) Password:`
+#       rather than an error.  Measurements and the full argument:
+#       docs/nix-dev-workflow.md, "The identity half of that hop is not the host
+#       half, and it was missing everywhere".
+#
 # Per machine (see the two default.nix files):
 #
 #   services1:  infra.buildFarm.builderHost = HOSTS.aibox; maxJobs = 6;
@@ -170,6 +181,78 @@ in {
     # why pinning (rather than accept-new) is the point, and `just known-hosts`
     # for regenerating it after a box regenerates its keys.
     programs.ssh.knownHosts = import ./ssh-known-hosts.nix;
+
+    # The other half of the same hop, and the half that was missing on every box.
+    #
+    # `knownHosts` says what an ssh *checks*; nothing said what an ssh *offers*.
+    # The fleet's key is at `~/.ssh/agent-hop-key`, which is none of the file names ssh
+    # tries on its own (`id_rsa`, `id_ed25519`, …), and **no ssh-agent runs on these
+    # boxes** — so an ssh that does not carry `-i ~/.ssh/agent-hop-key` offers *nothing*,
+    # and sshd's last offer is a **prompt**.  That is exactly what a plain `git pull`
+    # printed on services3 on 2026-11-15:
+    #
+    # (leigh-admin@10.3.1.20) Password:
+    #
+    # on a box whose sshd is `prohibit-password`, inside a job that had no terminal to
+    # answer it.  The job wedges, and the wedge reads as "the network" rather than as
+    # "no identity was offered" — the symptom appears far from the cause, the same shape
+    # as the `Host key verification failed` receipt above, one file over.  `justfile:148`
+    # works around it per call with an inline `GIT_SSH_COMMAND`; aibox and services3 keep
+    # hand-written `/root/.ssh/config` stanzas for root's ssh.  Both are the mutable file
+    # no deploy can reproduce — this repo's own audit's shape.
+    #
+    # Why the *system* client config rather than a per-user `~/.ssh/config`: this pinned
+    # nixpkgs' `users.users.<name>` submodule has **no file-writing option at all** —
+    # `just check` refuses `users.users.leigh-admin.extraFiles`, and this release moved
+    # authorized keys to `AuthorizedKeysFile`/`/etc/ssh/authorized_keys.d`
+    # (`nixos/modules/services/networking/ssh/sshd.nix`), leaving home files to Home
+    # Manager, which this flake does not use.  `programs.ssh.hosts` is the
+    # attribute-name-as-`Host`-pattern mechanism the module already has, and its own
+    # documented example is this stanza (`IdentityFile` + `IdentitiesOnly`).  `~` in
+    # `IdentityFile` is expanded by ssh to the *calling* user's home, so it names the
+    # right file on every box without naming a box — and being the system file, it also
+    # reaches root's ssh (`HOME=/root`), which the hand-written stanzas used to be the
+    # only thing standing in for.
+    #
+    # What each line is for:
+    #
+    # * `IdentitiesOnly` is the documented fix for `Too many authentication failures`
+    #   (`justfile:148`): a box that offers every identity it has is refused *before* the
+    #   right one is tried — services1's `~/.ssh` also holds `id_ed25519`, which no LAN
+    #   machine accepts, and measured from services3 a bare `git ls-remote` against the
+    #   peer reached exactly that line.  Scoped to these hosts it is why the stanza is
+    #   safe: GitHub is not one of them, and the documented leak trap
+    #   (`docs/network-upgrade-runbook.md` — an **exported** `GIT_SSH_COMMAND` putting
+    #   the hop key on the GitHub remote, `Permission denied (publickey)`) cannot happen
+    #   from a generated file, because the host is what the block matches on.
+    # * `ConnectTimeout` so a hop to a box that is not answering fails *inside* a tool
+    #   call rather than hanging it (rule 11: bound every wait).
+    # * deliberately **no** `PasswordAuthentication no`, and no match on a *user*: services3's
+    #   owner account keeps a password login as the *spare path* onto a box whose only
+    #   uplink is a Wi-Fi dongle (`machines/services3/users.nix`, which warns to check
+    #   `sudo sshd -T | grep -i passwordauthentication` after any ssh change), and a
+    #   host-keyed `no` would retire that fallback for whoever types it.  Pubkey is tried
+    #   first, so this stanza answers a LAN hop while the password path stays available
+    #   underneath it.
+    # * the core switches are **not** in the list (Telnet only, `docs/procurve-switches.md`);
+    #   the NAS **is** (`docs/nas-and-borg.md`: `leigh-admin@10.3.1.6` is keyed with the
+    #   machine-hop key), and it is one of `./ssh-known-hosts.nix`'s pins, so the two halves
+    #   of the hop stay keyed to one address list — this one, generated from `./hosts.nix`.
+    #
+    # `order = 100` is safe because nothing else in the pinned nixpkgs declares
+    # `programs.ssh.hosts` (verified: no other module names the option) and the module
+    # throws on two blocks sharing an order; blocks are written in ascending order, so
+    # keep this low for when a catch-all `"*"` block is ever added.  Read the rendered
+    # file after any switch: `/etc/ssh/ssh_config` must carry the `Host` line and the
+    # stanza below it (rule 21 — read the rendered file, never evaluate).
+    programs.ssh.hosts = {
+      "${HOSTS.services1} ${HOSTS.services2} ${HOSTS.services3} ${HOSTS.aibox} ${HOSTS.router} ${HOSTS.nas}" = {
+        order = 100;
+        IdentityFile = "~/.ssh/agent-hop-key";
+        IdentitiesOnly = true;
+        ConnectTimeout = 5;
+      };
+    };
 
     nix.buildMachines = lib.optionals (cfg.builderHost != null) [
       {

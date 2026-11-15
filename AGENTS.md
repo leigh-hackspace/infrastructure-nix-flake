@@ -273,6 +273,30 @@ X first", X has already cost someone a day.
    ask it on a timer with the answer's provenance recorded, because a build cannot ask and an
    eval must not (rule 22). A stale answer beats a deleted one, so keep the last known value
    while the socket is down — and say which of the two you are serving. `docs/pi-agent-models.md`.
+32. **The hop has two halves, and the half that was missing is the identity, not the host
+   key.** Rule 25 pinned what an ssh *checks*; nothing in the tree said what an ssh *offers*,
+   and the fleet's key is at `~/.ssh/agent-hop-key` — not one of the names ssh tries on its
+   own, and **no ssh-agent runs on these boxes** — so every `git` ssh (and any ssh typed
+   without `-i`) offers nothing and walks through to a **password prompt in the middle of a
+   job that has no terminal**: `git pull` on services3 printed `(leigh-admin@10.3.1.20)
+   Password:` and hung, which reads as "the network is down" rather than as "no key was
+   offered". Both symptoms sit far from the cause; both are one file over from the other.
+   `common/build-farm.nix` now declares it as `programs.ssh.hosts` — one `Host` block whose
+   pattern list is generated from `common/hosts.nix`, carrying `IdentityFile ~/.ssh/agent-hop-key`,
+   `IdentitiesOnly yes` (the documented `Too many authentication failures` fix, `justfile:148`)
+   and `ConnectTimeout 5`, rendered into `/etc/ssh/ssh_config`. It is not a per-user
+   `~/.ssh/config` because this pinned nixpkgs has **no home-file option in
+   `users.users.<name>` at all** (`just check` says so), and the system file is where
+   `knownHosts` already lives. The `~` form is what keeps it operator-account-only: root's
+   ssh (`HOME=/root`) gets no identity from it, so the hand-written `/root/.ssh/config`
+   stanzas stay open in `docs/follow-ups.md`. Deliberately **no** `PasswordAuthentication
+   no`: services3's owner account keeps a password login as the spare path onto a box whose
+   only uplink is a Wi-Fi dongle, and a host-keyed `no` would retire that fallback for
+   whoever types it. Mechanism, measurements and re-verify: `docs/nix-dev-workflow.md`,
+   "The identity half of that hop is not the host half, and it was missing everywhere".
+   Re-verify with `grep -A 4 '^Host 10' /etc/ssh/ssh_config` and
+   `ssh -G 10.3.1.20 | grep -E 'identitiesonly|agent-hop'` (two lines once deployed, six
+   on an unswitched box — `ssh -G` prints ssh's five built-in defaults too).
 
 ---
 
@@ -334,7 +358,7 @@ X first", X has already cost someone a day.
   (`front-door.nix` — the renderer for `common/front-door.nix`; `origin-vhost.nix` —
   what `services1`'s app-shaped vhosts use now; `int-vhost.nix` — the door's TLS vhost
   builder; `int-vhost-names.nix`),
-  `exporters.nix`, `build-farm.nix` (GC + remote building), `monitoring-endpoints.nix`
+  `exporters.nix`, `build-farm.nix` (GC + remote building, and the ssh **identity** half of the hop — `programs.ssh.hosts`, rule 32), `monitoring-endpoints.nix`
   (the gatus endpoint data). `common/nginx/` and `common/config.nix` are shared because
   `gw` is the TLS terminator and front door for the whole network: every name is one row
   in `common/front-door.nix`, and an origin vhost can only proxy to a service running on
@@ -854,6 +878,16 @@ there is declarative. **Root SSH is keyed here** (unlike the flake machines):
   could not reconnect after the cutover, because the OPNsense box's root *was* keyed and
   `gw`'s is not (`prohibit-password`). Verified both directions on 2026-10-21:
 
+- **On the network's own addresses the `-i` is no longer needed.** `common/build-farm.nix`
+  declares `programs.ssh.hosts` for `common/hosts.nix`'s addresses — `IdentityFile ~/.ssh/agent-hop-key`,
+  `IdentitiesOnly yes`, `ConnectTimeout 5` — rendered into `/etc/ssh/ssh_config`, so a LAN
+  `ssh`/`scp`/`git pull infra` typed as `leigh-admin` offers the key by itself (rule 32). The
+  lines above keep their explicit `-i` on purpose: they are the *general* form, and the block
+  deliberately does not reach off-flake addresses (monster1, the `10.3.14.x` printers) or root's
+  ssh, where `~` resolves to `/root` and finds no key. What must not be done instead is exporting
+  `GIT_SSH_COMMAND` — that is the documented leak that puts the hop key on the GitHub remote
+  (`Permission denied (publickey)`), `docs/network-upgrade-runbook.md` and
+  `machines/services2/README.md`.
 - Connect as **`leigh-admin`, never `root`** on the flake machines — root SSH is not keyed
   there (verified both directions). `leigh-admin` has passwordless sudo, so run
   `sudo nixos-rebuild ...` / `sudo nixos-confirm` after logging in.
