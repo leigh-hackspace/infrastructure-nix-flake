@@ -1108,14 +1108,21 @@ thing to do with either is to date it (`journalctl -u … | grep "Failed with re
   keeps the old address answering so that whatever still dials it keeps working *and* logs itself
   (`just ha-legacy-watch`). Everything found so far is `apps1`'s own containers, and one of them
   was left deliberately: **`hackspace-api`** dials `HOMEASSISTANT_INSTANCE=http://apps1.int.leighhack.org:8123`, set
-  in `/etc/docker/environment_files/hackspaceapi` on `apps1` — 194 connections in the 29 minutes
-  before the move, the single biggest user of the legacy path, and the one whose restart (it is
-  the Space API the Slack bot and the public status page read) did not belong inside a move. It
+  in `/etc/docker/environment_files/hackspaceapi` on `apps1`. It looks like the loudest legacy
+  client and is actually the quietest: it holds one long-lived connection, made **zero**
+  connections in the 29 minutes before the move, and its 194 recorded SYNs are all in the four
+  minutes while `10.3.1.30:8123` was a refused port — a reconnect loop, not traffic. It is served
+  through the forwarder today, provably: every temperature `space.json` publishes is Home
+  Assistant's current value to the decimal. It
   also resolves `apps1.int.leighhack.org` to the old box by DNS, so it is one of the reasons that
   name must keep answering while `apps1` lives. **Blocks:** retiring the forwarder. **To do:**
   repoint that one env line at `10.3.1.20:8123` (or `ha.int.leighhack.org` over TLS) at a quiet
   moment, confirm `just ha-legacy-watch` stops showing `172.17.0.x`, then remove the unit when it
-  has read clean for 30 days. **Re-verify with:** `just ha-legacy-watch 7` — the retirement
+  has read clean for 30 days. **Not** "delete the client": `hackspace-api` is the hackspace's
+  public SpaceAPI endpoint, and the door logged **7,939 external `/space.json` requests in 40
+  hours** from `spacer-fetch`, `MapsOfMaking-heartbeat`, `mapall.space`, `SpacePush`,
+  `HackerspacesGlobe` and `HackerspaceNewsFeed` (plus 448 `/events.ics` calendar subscriptions) —
+  restart it at a quiet hour and watch the endpoint return to 200. **Re-verify with:** `just ha-legacy-watch 7` — the retirement
   criterion is *no source other than* `10.3.1.20` *and* `127.0.0.1`; and `systemctl
   is-enabled ha-legacy-proxy.service` on `10.3.1.30` should eventually answer `disabled`, then
   `Unit … could not be found`.

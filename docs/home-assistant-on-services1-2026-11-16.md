@@ -362,7 +362,7 @@ could not have predicted — which is the entire argument for leaving the forwar
 
 | Source | Before the move (SYN capture, ~29 min) | What it is |
 | --- | --- | --- |
-| `172.17.0.6` | **194** | `hackspace-api` (`ghcr.io/leigh-hackspace/hackspace-api:1.3.2`) on `apps1`, dialling `HOMEASSISTANT_INSTANCE=http://apps1.int.leighhack.org:8123` from `/etc/docker/environment_files/hackspaceapi`. **Left on the forwarder deliberately**: it is the Space API the Slack bot and the public status page read, its env is off-flake, and the forwarder makes retargeting it a decision for whoever owns that unit rather than a gamble inside a move. One line, and `systemctl restart hackspace-api.service`. |
+| `172.17.0.6` | **194**, all of them in 15:41–15:45 | `hackspace-api` (`ghcr.io/leigh-hackspace/hackspace-api:1.3.2`) on `apps1`, dialling `HOMEASSISTANT_INSTANCE=http://apps1.int.leighhack.org:8123` from `/etc/docker/environment_files/hackspaceapi`. **Read that number correctly, because it is not a poll rate:** in the 29 minutes *before* the move it dialled **zero** times, and all 194 land in the four minutes after `systemctl stop home-assistant.service` — it is a reconnect storm against a refused port (~48/min, which is `48 15:41 / 48 15:42 / 2 15:43 / 48 15:44 / 48 15:45`). It normally holds one long-lived connection, the forwarder started at 15:45:31, and its first successful connect after the outage was 15:45:31. **Deliberately left on this path**: it is the Space API the Slack bot and the public status page read, its env is off-flake, and retargeting it is a decision for whoever owns that unit — one line and `systemctl restart hackspace-api.service`. |
 | `10.3.1.20` | 43 | services1's own nginx origin vhost, pre-repoint. Correct — that was the thing being moved. |
 | `172.17.0.7` | 12 | `docker.io/prom/prometheus:v2.48.0`, the container behind `prometheus.service`, whose `hass` job scraped `apps1.int.leighhack.org:8123`. **Repointed to `10.3.1.20:8123` the same afternoon** (`/srv/prometheus/prometheus.yml`, timestamped `.bak` beside it): zero user-visible surface, and it removes the largest steady source of legacy traffic. `up{job="hass"} == 1` on the new target, so HA's `/api/prometheus` and the long-lived token inside the copied database both crossed the move intact. |
 
@@ -370,6 +370,82 @@ could not have predicted — which is the entire argument for leaving the forwar
 in the observation window — every source was `apps1`'s own containers or this box. That is the
 answer to the question the whole exercise was built to ask, for as long as the capture has run
 so far; the 30-day criterion is what turns it into a decision.
+
+### Counting things through a proxy is not the same as counting SYNs
+
+The one genuinely surprising measurement error in this pass, and worth internalising before
+reading any `just ha-legacy-watch` output:
+
+- **The SYN capture measures connection attempts, not use.** `hackspace-api` looked like the
+  loudest client on the old address (194) and was in fact the *quietest*: it opens one long-lived
+  connection and keeps it. Every one of those 194 was a retry after its connection was killed.
+  A busy client and a client stuck in a reconnect loop are the same shape in a SYN log.
+- **Through a forwarder, "how many things" is answered by distinct sources plus live sockets**,
+  never by a connection count either: one `accepting connection` line can be everything a client
+  ever asks (`curl -s http://10.3.1.30:8081/space.json` and HA agree because 280 KB crossed that
+  one socket once, which is roughly one `/api/states` dump of 431 entities). The read that
+  distinguishes "live" from "warm and idle" is the socket's own accounting:
+
+  ```bash
+  ss -itn state established '( sport = :8123 )'   # bytes_sent/received, lastrcv — sample it twice
+  ````
+
+  Sample it twice ~60 s apart: if `lastrcv` ages and the byte counters do not move, the
+  connection is pooled and idle, not streaming.
+- **What proves a client is genuinely served is its own output, end to end.** All seven
+  temperatures `hackspace-api` publishes are Home Assistant's current values to the decimal —
+  `Rack 1 15.6 / Pi Room 15.56 / Fabrication 14.2 / Workshop 13.0 / Main Space 15.1 / Dark Room
+  15.0 / Craft Space 13.7` against `sensor.rack_sensor_temperature = 15.6` and its siblings —
+  read at the same minute. (Which also catches the trap in the previous paragraph: HA has *two*
+  entities titled "Rack 1 Temperature", and the bluetooth-proxy one is `unavailable` because
+  `10.3.2.14` is down. The Space API reads the live one.)
+
+So the answer to "what is still on the proxy" at the time of writing is **one client**,
+`hackspace-api`, served, with current data — plus two things that are *not* clients: three
+connections from this box that were my own `curl` probes, and one `172.17.0.7` connection at
+15:46:22 which was Prometheus's scrape from *before* its 15:50 repoint and has not repeated, the
+absence being the proof that the repoint took.
+
+### …and that one client is the hackspace's public machine-readable presence
+
+Measuring what `hackspace-api` is turned the "leave it on the forwarder, it is a quiet internal
+consumer" framing inside out. Read the door's own log (`/var/log/nginx/access.log` on `gw`,
+40 h: 2026-11-15 00:00 → 11-16 16:09, 319,066 requests, 565 sources, 228,508 of them off-LAN):
+
+| Endpoint | Hits | Who |
+| --- | --- | --- |
+| `/space.json` | **8,365** — **7,939 from the public internet** | self-identifying aggregators: `spacer-fetch` (4,817, ≈ every 30 s), `Go-http-client` (2,246), `MapsOfMaking-heartbeat/1.0`, `http://mapall.space`, `SpacePush/0.3`, `HackerspacesGlobe/1.0`, `HackerspaceNewsFeed/0.1`, `MapsOfMaking` — i.e. the global hackspace/makerspace maps and status aggregators all poll us |
+| `/events.ics` | **448**, again mostly external | members' calendar clients subscribing to the space calendar |
+| `/events?calendar=…` | 3 | the internal callers (the bot) usually go straight to `10.3.1.30:8081` and do not cross the door |
+
+What it is, precisely: a small Python (uvicorn) service implementing the community **SpaceAPI**
+spec (`api: "0.13"`), configured by `SENSOR_CONFIG_FILE=/srv/hackspaceapi/sensors.yaml` — 62 lines
+mapping Home Assistant entity ids to named locations — plus `HOMEASSISTANT_INSTANCE`/`HOMEASSISTANT_TOKEN`,
+`PROMETHEUS_INSTANCE`, and `HACKSPACE_OPEN_ENTITY=input_boolean.hackspace_open`. It also serves
+`/events` (the calendar proxy `hackspace-mcp` uses) and `/events.ics`. So it is a thin
+aggregation layer: HA for sensors and open/closed, Prometheus for the rest, static YAML for the
+identity fields — but with a **standard public schema and a stable URL**, which is exactly what
+the pollers above require.
+
+Two operational facts that follow, neither of which was known before the move:
+
+- **A Home Assistant restart writes into the public API.** `state.open` comes from
+  `input_boolean.hackspace_open` in HA, and `state.lastchange` after the move read
+  `1794843913` = **15:45:13Z** — the minute HA came back. So an HA maintenance window moves the
+  public "last changed" timestamp even when the space never opened or closed. Harmless, but say
+  it out loud in any future window rather than explaining it to whoever reads the API afterwards.
+- **It is load-bearing internally too, not just externally.** `hackspace-mcp` builds
+  `{space_url}/events?calendar=…` for `space_events` — the deterministic "what's on" answer *and*
+  the renderer the Monday 09:00 `slack-agent-digest.timer` posts — and `space_status`, temps,
+  humidity, members and printers all come from `space.json`. Deleting it is a Rust change in
+  `tools_space.rs`, not a config edit. (`docs/slack-agent-2026-11-16.md` already called this one
+  endpoint "most of Vulcan"; the access log agrees.)
+
+Therefore the forwarder's retirement is gated on **repointing one env line in
+`/etc/docker/environment_files/hackspaceapi`**, never on deleting anything — and since restarting
+that container drops a service the outside world asks about ~200 times an hour (seven or eight
+named pollers, plus calendars), do it at a quiet hour and
+watch `/space.json` come back to 200, rather than treating it as a config-only change.
 
 One self-inflicted footgun worth knowing before believing a report: the `10.3.1.20` rows in the
 *after* numbers were **my own `curl` probes of the old address**, typed to prove the forwarder
