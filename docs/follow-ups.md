@@ -1103,29 +1103,47 @@ thing to do with either is to date it (`journalctl -u … | grep "Failed with re
   through the name, and what actually dials it) if headscale ever moves again.
 
 
-- **The `10.3.1.30:8123` forwarder is a crutch with a due date, and one known client is still
-  leaning on it (2026-11-16)**. Home Assistant moved to services1, but a `socat` unit on `apps1`
-  keeps the old address answering so that whatever still dials it keeps working *and* logs itself
-  (`just ha-legacy-watch`). Everything found so far is `apps1`'s own containers, and one of them
-  was left deliberately: **`hackspace-api`** dials `HOMEASSISTANT_INSTANCE=http://apps1.int.leighhack.org:8123`, set
-  in `/etc/docker/environment_files/hackspaceapi` on `apps1`. It looks like the loudest legacy
-  client and is actually the quietest: it holds one long-lived connection, made **zero**
-  connections in the 29 minutes before the move, and its 194 recorded SYNs are all in the four
-  minutes while `10.3.1.30:8123` was a refused port — a reconnect loop, not traffic. It is served
-  through the forwarder today, provably: every temperature `space.json` publishes is Home
-  Assistant's current value to the decimal. It
-  also resolves `apps1.int.leighhack.org` to the old box by DNS, so it is one of the reasons that
-  name must keep answering while `apps1` lives. **Blocks:** retiring the forwarder. **To do:**
-  repoint that one env line at `10.3.1.20:8123` (or `ha.int.leighhack.org` over TLS) at a quiet
-  moment, confirm `just ha-legacy-watch` stops showing `172.17.0.x`, then remove the unit when it
-  has read clean for 30 days. **Not** "delete the client": `hackspace-api` is the hackspace's
-  public SpaceAPI endpoint, and the door logged **7,939 external `/space.json` requests in 40
-  hours** from `spacer-fetch`, `MapsOfMaking-heartbeat`, `mapall.space`, `SpacePush`,
-  `HackerspacesGlobe` and `HackerspaceNewsFeed` (plus 448 `/events.ics` calendar subscriptions) —
-  restart it at a quiet hour and watch the endpoint return to 200. **Re-verify with:** `just ha-legacy-watch 7` — the retirement
-  criterion is *no source other than* `10.3.1.20` *and* `127.0.0.1`; and `systemctl
-  is-enabled ha-legacy-proxy.service` on `10.3.1.30` should eventually answer `disabled`, then
-  `Unit … could not be found`.
+- **The `10.3.1.30:8123` forwarder is a crutch with a due date — its last client is gone, so the
+  clock is now running (2026-11-16)**. Home Assistant moved to services1 and a `socat` unit on
+  `apps1` kept the old address answering, so that whatever still dialled it kept working *and*
+  logged itself (`just ha-legacy-watch`). What it actually found: `apps1`'s own containers and this
+  box, **and no LAN device, phone, dashboard or script at all**. The one genuine client,
+  `hackspace-api`, has itself been moved to services1 (`machines/services1/services/
+  hackspace-api.nix`) the same afternoon, so since 16:30 the forwarder has reported no source and
+  holds no established connection. **Blocks:** nothing — it is pure safety margin now. **To do:**
+  on or after **2026-12-16**, if `just ha-legacy-watch 30` has read clean, remove it on
+  `10.3.1.30`: `systemctl disable --now ha-legacy-proxy.service && rm /etc/systemd/system/ha-legacy-proxy.service`.
+  **Re-verify with:** `just ha-legacy-watch 7` (expect no sources; the classes and what each means
+  are in its own output) and `systemctl is-enabled ha-legacy-proxy.service` on `10.3.1.30`, which
+  should answer `disabled` and eventually `Unit … could not be found`. Keep the shape of this,
+  not just the outcome: the reason the client was **repointed rather than deleted** is that it is
+  the hackspace's public SpaceAPI endpoint, and the door logged **7,939 external `/space.json`
+  requests in 40 hours** from `spacer-fetch`, `MapsOfMaking-heartbeat`, `mapall.space`,
+  `SpacePush`, `HackerspacesGlobe` and `HackerspaceNewsFeed`, plus 448 `/events.ics`
+  subscriptions — measured in `docs/home-assistant-on-services1-2026-11-16.md`.
+
+- **A plaintext admin password sits in `apps1`'s Prometheus scrape config, for an application that
+  has been masked there for two weeks (2026-11-16)**. `/srv/prometheus/scrape_configs/uptimekuma.yml`
+  defines the `uptime-kuma` job with `basic_auth` and a literal username and password, on a box
+  where Uptime Kuma has been stopped, disabled and **masked** since 2026-11-01 and where
+  `uptime-kuma.int.leighhack.org` no longer resolves (`docs/monster-proxmox.md`). So the
+  credential authenticates against nothing that exists, is readable by any local user on that box,
+  and is precisely the kind of string that outlives its application by being reused. Found while
+  repointing the job beside it; not touched, because a credential rotation on an off-flake box is
+  its own decision. **Blocks:** nothing. **To do:** confirm the name still does not resolve and
+  the target is dead, then delete the file (or, if the password matters elsewhere on that box,
+  rotate it and remove it from the file); the same sweep should read the other two files in that
+  directory for `basic_auth`. **Re-verify with:** `grep -rl basic_auth
+  /srv/prometheus/scrape_configs/` on `10.3.1.30` printing nothing, and
+  `curl -s -m 5 https://uptime-kuma.int.leighhack.org/` failing on DNS rather than on auth.
+
+- **`space_status` says `ago` twice on the printer line (2026-11-16)**. `just slack-agent-call
+  space_status '{}'` renders `3D printers: 3D-1 offline (41m ago ago)`: `crates/hackspace-mcp/src/tools_space.rs:159`
+  formats `({} ago)` around `clock::ago_text`, which already ends in "ago" (line 103 does it
+  correctly). Cosmetic, but it is the string members see. **Blocks:** nothing. **To do:** drop the
+  literal ` ago` at line 159 and run the suite. **Re-verify with:** `just slack-agent-call
+  space_status '{}'` printing one `ago` per printer. (While reading that output, note both printers
+  reporting `offline` is the known `10.3.14.x` reachability state, not a new fault.)
 
 - ~~**Home Assistant on `apps1` runs whatever `:stable` meant today, and it moved on 2026-10-31**~~
   — **closed 2026-11-16 by the move to services1, where the image is a version, not a tag.** Its

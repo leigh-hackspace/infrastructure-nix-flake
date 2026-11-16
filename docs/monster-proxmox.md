@@ -76,11 +76,23 @@ container (`machines/services1/services/home-assistant.nix`), and what answers `
 here now is a `socat` forwarder to `10.3.1.20:8123` whose journal is how we find any device that
 hardcoded this address (`just ha-legacy-watch`). The address itself could not move — four
 front-doored origins (`:8081`–`:8084`), `cupsd` on `:631`, and this box's own Prometheus all still
-live here — which is the whole difference from the authentik `.36` move in
+live here at the time of that move — which is the whole difference from the authentik `.36` move in
 `docs/authentik-container-migration.md`. `home-assistant.service` is stopped and disabled, not
 removed, and `/srv/homeassistant` is untouched: that is the rollback.
 `docs/home-assistant-on-services1-2026-11-16.md` owns the move, the client map, and the ZHA radio
 collision a flag-for-flag copy would have caused.
+
+**The Space API left the same afternoon (2026-11-16), so `:8081` is gone from this box too.** It
+is `machines/services1/services/hackspace-api.nix` on services1 now, and `api.leighhack.org`
+proxies there. What remains here is what makes retiring this VM still a project rather than a
+switch: `jenkins` `:8082`, `access-api` `:8083` and `user-tweaker` `:8084` (three front-doored
+origins), `cupsd` on `:631` — which Home Assistant's `ipp` entry still dials at `10.3.1.30:631` —
+this box's own **active** Prometheus (whose `hass` and `hackspaceapi` jobs now scrape services1),
+and the docker bridge those containers live on. `hackspace-api.service` is likewise stopped,
+disabled and parked in `/var/lib/systemd/disabled-units/`, with its unit and `/srv/hackspaceapi`
+kept as the rollback. **One thing found there should be fixed:**
+`/srv/prometheus/scrape_configs/uptimekuma.yml` carries a plaintext `admin` password for an app
+this box has had masked since 2026-11-01 — see `docs/follow-ups.md`.
 
 **Three of those are parked now, and `vulcanbot` is the newest.** `vulcan-bot.service` was
 stopped, disabled, **file-removed from `/etc/systemd/system` and masked** on 2026-11-16 —

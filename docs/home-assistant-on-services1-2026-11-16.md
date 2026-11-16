@@ -20,7 +20,7 @@ podman container on **services1** (`machines/services1/services/home-assistant.n
 
 | On `apps1` | Still there? | Why that matters here |
 | --- | --- | --- |
-| `hackspaceapi` :8081, and three more front-doored origins on `:8082`/`:8083`/`:8084` | **yes** | `common/front-door.nix` proxies four names at `10.3.1.30`; `slack-agent.nix`'s `--space-url` dials `:8081`. This was never a "retire the VM" move. |
+| `hackspaceapi` :8081, and three more front-doored origins on `:8082`/`:8083`/`:8084` | `:8081` **moved too, the same afternoon**; the three others stayed | Written when the Space API was still here — it was the only reason this was "never a retire-the-VM move", and it turned out small enough to move the same day (see "Then the Space API moved too"). `jenkins` `:8082`, `access-api` `:8083` and `user-tweaker` `:8084` remain, plus `cupsd` and this box's Prometheus, so `apps1` is still a box this network needs. |
 | `cupsd` on `:631` | **yes** | HA's `ipp` entry "Big Laser Printer" dials `10.3.1.30:631`. After the move that is a *cross-host* call from services1; CUPS' `<Location />` says `Allow @LOCAL` and services1 is in the same `/24`, so it keeps working — re-verify after the switch rather than trusting the read of a config file. |
 | `prometheus` (active+enabled) | **yes** | It scrapes HA: job `hass` → `http://apps1.int.leighhack.org:8123/api/prometheus`, and on `apps1` that name resolves to **`127.0.1.1`** via its own `/etc/hosts`. So HA's Prometheus endpoint is scraped over loopback on the old box, and it is `up` today. |
 | `homeassistant` container, `/srv/homeassistant` | **stops** | The thing being moved. Its unit and image stay installed as the rollback. |
@@ -362,7 +362,7 @@ could not have predicted — which is the entire argument for leaving the forwar
 
 | Source | Before the move (SYN capture, ~29 min) | What it is |
 | --- | --- | --- |
-| `172.17.0.6` | **194**, all of them in 15:41–15:45 | `hackspace-api` (`ghcr.io/leigh-hackspace/hackspace-api:1.3.2`) on `apps1`, dialling `HOMEASSISTANT_INSTANCE=http://apps1.int.leighhack.org:8123` from `/etc/docker/environment_files/hackspaceapi`. **Read that number correctly, because it is not a poll rate:** in the 29 minutes *before* the move it dialled **zero** times, and all 194 land in the four minutes after `systemctl stop home-assistant.service` — it is a reconnect storm against a refused port (~48/min, which is `48 15:41 / 48 15:42 / 2 15:43 / 48 15:44 / 48 15:45`). It normally holds one long-lived connection, the forwarder started at 15:45:31, and its first successful connect after the outage was 15:45:31. **Deliberately left on this path**: it is the Space API the Slack bot and the public status page read, its env is off-flake, and retargeting it is a decision for whoever owns that unit — one line and `systemctl restart hackspace-api.service`. |
+| `172.17.0.6` | **194**, all of them in 15:41–15:45 | `hackspace-api` (`ghcr.io/leigh-hackspace/hackspace-api:1.3.2`) on `apps1`, dialling `HOMEASSISTANT_INSTANCE=http://apps1.int.leighhack.org:8123` from `/etc/docker/environment_files/hackspaceapi`. **Read that number correctly, because it is not a poll rate:** in the 29 minutes *before* the move it dialled **zero** times, and all 194 land in the four minutes after `systemctl stop home-assistant.service` — it is a reconnect storm against a refused port (~48/min, which is `48 15:41 / 48 15:42 / 2 15:43 / 48 15:44 / 48 15:45`). It normally holds one long-lived connection, the forwarder started at 15:45:31, and its first successful connect after the outage was 15:45:31. Left on this path at the time, and **moved off it the same afternoon** — see "Then the Space API moved too". |
 | `10.3.1.20` | 43 | services1's own nginx origin vhost, pre-repoint. Correct — that was the thing being moved. |
 | `172.17.0.7` | 12 | `docker.io/prom/prometheus:v2.48.0`, the container behind `prometheus.service`, whose `hass` job scraped `apps1.int.leighhack.org:8123`. **Repointed to `10.3.1.20:8123` the same afternoon** (`/srv/prometheus/prometheus.yml`, timestamped `.bak` beside it): zero user-visible surface, and it removes the largest steady source of legacy traffic. `up{job="hass"} == 1` on the new target, so HA's `/api/prometheus` and the long-lived token inside the copied database both crossed the move intact. |
 
@@ -400,11 +400,51 @@ reading any `just ha-legacy-watch` output:
   entities titled "Rack 1 Temperature", and the bluetooth-proxy one is `unavailable` because
   `10.3.2.14` is down. The Space API reads the live one.)
 
-So the answer to "what is still on the proxy" at the time of writing is **one client**,
-`hackspace-api`, served, with current data — plus two things that are *not* clients: three
-connections from this box that were my own `curl` probes, and one `172.17.0.7` connection at
-15:46:22 which was Prometheus's scrape from *before* its 15:50 repoint and has not repeated, the
-absence being the proof that the repoint took.
+So the answer to "what is still on the proxy" was **one client**, `hackspace-api` — and then, the
+same afternoon, that client moved too, which is the next section. Nothing has dialled
+`10.3.1.30:8123` since.
+
+## Then the Space API moved too (same afternoon, 16:15–16:30)
+
+The forwarder existed for exactly one remaining client, so the cleanest way to end the whole
+exercise was to move that client rather than wait 30 days for it to be reported idle. It is now
+`machines/services1/services/hackspace-api.nix`, and `apps1` runs neither Home Assistant nor the
+Space API.
+
+| Time (UTC) | |
+| --- | --- |
+| 16:15 | `nix build` of services1's toplevel, then **the rendered unit read back**: `-p 8081:80`, `-v /srv/hackspaceapi:/data`, `--env-file=/var/lib/hackspace-api/env`, pinned image, `--pull missing`, and the root `ExecStartPre=+ … test -s …` gate. Gate over the closure: **0 files contain the token name** |
+| 16:1x | state copied host-to-host — `sensors.yaml` (1,694 bytes) and the env file redirected straight into `/var/lib/hackspace-api/env` at `0600`, never through a terminal; key-set hash identical to the source (7 keys), `HOMEASSISTANT_TOKEN` line md5 identical, two values rewritten by `sed` |
+| 16:2x | `just switch` + confirm: `podman-hackspace-api` active. **`space.json` byte-identical to `apps1`'s instance** (3,439 bytes, one md5) while both ran — which is the proof that the *Prometheus* half crossed too, since `total_member_count` and `ext_3d_printers` come from `PROMETHEUS_INSTANCE` |
+| 16:2x | `git push` then `just deploy gw` (the recipe fetches the commit on the box, so the row had to be committed first): switch + confirm on the router, `front-door-cert-check.service` → `Result=success`, nginx/dnsmasq/wan-manager/network-status all active, `/api/leases` `total=30 expired=0 stale=null` |
+| 16:2x | `https://api.leighhack.org/space.json`, `https://api.int.leighhack.org/space.json` and `http://10.3.1.20:8081/space.json` all answer **the same document**; `/health` `{"health":"ok","version":"1.3.2"}` |
+| 16:2x | `apps1`: `systemctl stop` + `disable hackspace-api`, zero listeners on `:8081`, unit text parked as `hackspace-api.service.2026-11-16` in `/var/lib/systemd/disabled-units/` with the restore line in its header, unit file and `/srv/hackspaceapi` left in place as the rollback |
+| 16:26 | `apps1`'s Prometheus repointed and restarted: `hackspaceapi → http://10.3.1.20:8081/metrics` **health=up**, alongside `hass → 10.3.1.20:8123/api/prometheus` **health=up** |
+| 16:3x | **`just ha-legacy-watch`: no source, no established connections.** The legacy address has been silent since the last probe of it at 15:57 |
+
+What the bot does with it, checked through the real path after the repoint
+(`--space-url http://127.0.0.1:8081`, so this exercises the new container and nothing on
+`apps1`): `space_status` returns open/closed, all seven temperatures and humidities, both 3D
+printers and `39 Active Members`; `space_events` returns the calendar. So the deterministic
+answer and the Monday digest's renderer are both on-box now.
+
+### Three findings from this half, none of them about the move
+
+- **The scrape config for this job was not in the file its siblings are in.** `apps1`'s
+  `prometheus.yml` has `scrape_configs: - /prometheus/scrape_configs/*.yml`, and
+  `hackspaceapi.yml` lives in that directory. Editing the main file for this job would have been
+  a silent no-op — the same class as the unimported module earlier in this document: **find the
+  file the loader actually reads, not the one that looks like the config.**
+- **`/srv/prometheus/scrape_configs/uptimekuma.yml` holds a plaintext `admin` password** for
+  Uptime Kuma — the application that `docs/monster-proxmox.md` records as stopped, disabled and
+  **masked** since 2026-11-01, whose DNS name no longer resolves. So the credential is useless
+  against its own service and readable by whoever can read that directory, and it is exactly the
+  kind of password that outlives the app by being reused. Not touched here; opened in
+  `docs/follow-ups.md`.
+- `space_status` renders the printer line as `3D-1 offline (41m ago ago)`, and
+  `state.lastchange` still carries **15:45 UTC — Home Assistant's restart during this document's
+  maintenance**, not a real open/close. Both are cosmetic; the second is the one to mention in
+  any future HA window, because the public API shows it.
 
 ### …and that one client is the hackspace's public machine-readable presence
 
@@ -445,7 +485,10 @@ Therefore the forwarder's retirement is gated on **repointing one env line in
 `/etc/docker/environment_files/hackspaceapi`**, never on deleting anything — and since restarting
 that container drops a service the outside world asks about ~200 times an hour (seven or eight
 named pollers, plus calendars), do it at a quiet hour and
-watch `/space.json` come back to 200, rather than treating it as a config-only change.
+watch `/space.json` come back to 200, rather than treating it as a config-only change. **Done
+2026-11-16 at a quiet hour — but not by restart:** the service was rebuilt on services1 and run
+*alongside* `apps1`'s until the door row and every consumer pointed at it, so the public endpoint
+never dropped a request. Next section.
 
 One self-inflicted footgun worth knowing before believing a report: the `10.3.1.20` rows in the
 *after* numbers were **my own `curl` probes of the old address**, typed to prove the forwarder

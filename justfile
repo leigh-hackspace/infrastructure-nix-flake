@@ -1797,13 +1797,15 @@ cam-migrate name phase:
 #
 # Home Assistant moved from `apps1` to services1 on 2026-11-16: the container is
 # machines/services1/services/home-assistant.nix and the app answers 127.0.0.1:8123
-# here.  10.3.1.30:8123 still answers, because `apps1` keeps that address (four
+# here.  10.3.1.30:8123 still answers, because `apps1` keeps that address (three
 # front-doored origins, CUPS and its own Prometheus still live there, so the VM
 # cannot be retired and the address cannot move the way authentik's .36 did) and a
 # socat forwarder on that box now relays to services1 **and logs every source
 # address**.  That log is the whole point: it is how we find out which devices
-# hardcoded the old IP.  Read the design, the client map, the unit text and the
-# retirement criterion in docs/home-assistant-on-services1-2026-11-16.md.
+# hardcoded the old IP.  The Space API moved here the same afternoon, which removed
+# the last known client, so as of 2026-11-16 16:30 the forwarder has been idle and
+# its 30-day retirement clock is running.  Read the design, the client map, the unit
+# text and the retirement criterion in docs/home-assistant-on-services1-2026-11-16.md.
 #
 # Run it on services1 (read `hostname` first — rule 27).  It reads two things off
 # apps1 and changes nothing: the forwarder's journal (who used the old address
@@ -1843,7 +1845,7 @@ ha-legacy-watch days="7":
             case "$ip" in
                 127.*)    tag="apps1 ITSELF — loopback. Its Prometheus was repointed to 10.3.1.20 on 2026-11-16, so anything still arriving here is something else local to that box." ;;
                 10.3.1.20) tag="services1 — this box. Nothing here should dial the old address since the move; the usual cause of a line here is a curl typed at it during an interactive check. If it persists, re-read the proxyPass in machines/services1/http.nix and the --hass-url in machines/services1/services/slack-agent.nix." ;;
-                172.17.*) tag="a CONTAINER ON apps1's own docker bridge — NOT a device on the LAN, so it will never have a lease. Known today: 172.17.0.6 = hackspace-api, whose HOMEASSISTANT_INSTANCE lives in /etc/docker/environment_files/hackspaceapi and was deliberately left on this path. Docker reassigns these addresses, so map them with: docker network inspect bridge" ;;
+                172.17.*) tag="a CONTAINER ON apps1's own docker bridge — NOT a device on the LAN, so it will never have a lease. Both known ones have now moved to services1 (hackspace-api 2026-11-16, prometheus's hass job repointed), so a line here is either something still on that VM that names HA or the old address, or a stale address from before a container restart. Map them with: docker network inspect bridge" ;;
                 *)        tag="*** A REAL CLIENT *** — this device hardcoded 10.3.1.30:8123 and needs retargeting to https://ha.int.leighhack.org" ;;
             esac
             printf '%-15s %7s  %s\n' "$ip" "$n" "$tag"
