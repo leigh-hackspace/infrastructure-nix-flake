@@ -100,10 +100,11 @@ grep -c type=aor $T/etc/asterisk/pjsip.aor.conf  # 5
 # 1. the router first: stop the pool handing out the phone system's address
 just deploy gw
 sudo grep -n "dhcp-host=10.3.1.166" /etc/dnsmasq.d/network.conf
-#   ^ this step was run LAST, not first, and it did not land: `just deploy` builds from the
-#     target's checkout, so an uncommitted change never travels. Both halves of that are
-#     receipts below — the ARP consequence of switching services1 while the VM still held the
-#     address, and the follow-up that has the exclusion still to deploy.
+#   ^ this step was run LAST, not first, and the first time it ran it changed nothing:
+#     `just deploy` builds from the target's checkout, so an uncommitted change never
+#     travels, and the deploy exited 0 on a router that did not have the line. Both halves
+#     of that are receipts below — the ARP consequence of switching services1 while the VM
+#     still held the address, and the grep on the rendered file that is the only real check.
 # 2. the VM down (desired state `stopped`, like VM 108)
 ssh -i ~/.ssh/agent-hop-key root@10.3.1.11 'ha-manager set vm:128 --state stopped'
 # 3. this box claims the address and starts Asterisk — GOLDEN RULE in one invocation

@@ -3051,17 +3051,18 @@ behaviour; staying at an older time is this finding.
 
 ## The intercom (services1, off Proxmox on 2026-11-16) — opened 2026-11-16, `docs/pbx-on-services1-2026-11-16.md` owns it
 
-- **`do this first`: the pool exclusion for `.166` is written but not deployed.**
-  `machines/gw/dns.nix` has the `dhcp-host=10.3.1.166,ignore` line, and `just deploy gw` on
-  2026-11-16 built from **gw's own checkout at the last commit**, so the running
-  `/etc/dnsmasq.d/network.conf` does not contain it (verified: `sudo grep -n 10.3.1.166` on
-  `gw` is empty, and `dhcp-range=tag:vlan225,10.3.1.150,10.3.1.253` still covers the
-  address). Until it lands, dnsmasq may lease the intercom's address to any new DHCP client on
-  VLAN 225, and the failure is two dead handsets that report nothing. `just deploy` carries a
-  **commit**, never a working tree, so this needs the change committed and pushed (or
-  `--flake "git+file://$PWD?dirty=1#gw"` from a tree copied to the router, which is the shape
-  `machines/gw/README.md` exists to forbid). Re-verify with: `sudo grep -n "10.3.1.166"
-  /etc/dnsmasq.d/network.conf` on `gw` → one line.
+- **`do this first`: the pool exclusion for `.166` is DEPLOYED as of 2026-11-16 (c6a4592),
+  and the reason it is called out here is how it was nearly missed.** The first
+  `just deploy gw` of the day built from **gw's own checkout at the last commit**, so the
+  then-uncommitted `dhcp-host=10.3.1.166,ignore` never travelled: the deploy exited 0, the
+  router was healthy and confirmed, and `sudo grep -n 10.3.1.166 /etc/dnsmasq.d/network.conf`
+  still found nothing while `dhcp-range=tag:vlan225,10.3.1.150,10.3.1.253` went on covering
+  the address. **`just deploy` carries a commit, never a working tree** — so the check that
+  belongs at the end of any router change is the grep on the *rendered* file, not the exit
+  status. Deployed and verified now: `git log -1` on `gw` = c6a4592, exclusion at line 82,
+  `readlink /run/current-system` == `system-good`, dnsmasq active, no failed units, both
+  handsets still registered afterwards. What is left is the actual fix, in the next bullet:
+  move the address out of the pool and delete this line in the same change.
 - **The endpoints have no ACL, because every form of `acl=` tried failed closed.** Inline
   CIDRs (`/16` and dotted-netmask alike) are resolved **as names** on Asterisk 22, and the
   named form the shipped `acl.conf` sample prescribes parsed cleanly yet never loaded —
