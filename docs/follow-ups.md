@@ -529,6 +529,17 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   ".#nixosConfigurations.services3.config.system.build.toplevel.drvPath"` realised the
   decrypts in seconds and the trace then reached further before dying the same way.
 
+  **Again 2026-11-16, on services1, with two things this item does not yet say.** The
+  unblock is **per-machine, not global**: evaluating `services1`'s toplevel realised
+  `pg_pass` and the check then died on `grafana_secret_key`, then on `strata_api_key`, so
+  it took all four `commonModules` machines' `toplevel.drvPath` (`services1`, `services2`,
+  `services3`, `aibox` — each box realises the secrets its own modules read) before
+  `just check` printed `all checks passed!` — the first green flake step measured on this
+  box at the current lock, `26.11.20261112.2074cc6`. And `nix build /nix/store/<hash>-….drv`
+  is **not** a way in: it answers `error: path '…' is required, but there is no substituter
+  that can build it`, because a GC'd *drv* path is not in any substituter — only
+  re-evaluating the expression that produces it writes it back.
+
 - **Nothing runs the three Playwright suites, so a red one is only found by whoever happens to
   need it** (found 2026-11-09 while restyling network-info: `5ebe2d5` added the Uplink tab at
   17:10 and five of `crates/network-status/tests/suite.mjs`'s ten checks went red silently — a

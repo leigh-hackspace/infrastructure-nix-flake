@@ -94,6 +94,57 @@ own checkout at its own commit, and `docs/router-ha.md` names the three things k
 literal `gw` — a second router under that name would be indistinguishable from the first
 by every one of them.
 
+## tmux's keys: what pi's warning checks, and what it cannot
+
+pi warns on every start when it is running inside tmux. The check is two `tmux show -gv`
+reads and nothing else (`checkTmuxKeyboardSetup`, in pi's `interactive-mode.js`; it
+returns early when `TMUX` is unset, which is why the router — which has no tmux — never
+printed it): `extended-keys` must read `on` or `always`, then `extended-keys-format` must
+not read `xterm`. Both tmux defaults are the warning-triggering ones and **nothing in this
+repo had ever configured tmux**, on any box, so the warning was fleet-wide and permanent
+until `common/tools.nix` gained `/etc/tmux.conf` on 2026-11-16.
+
+**The warning is not the behaviour, and the warning can go away with the keys still
+broken.** Three things have to be true for tmux to report a modified Enter, and pi can see
+exactly one of them:
+
+| Gate | What it is | How to read it |
+| --- | --- | --- |
+| The server option | `extended-keys on` — *permits* a pane to ask for extended keys | `tmux show -gv extended-keys` → `on` |
+| The client terminal | tmux(1): "tmux will always request extended keys itself **if the terminal supports them**". That support is the `extkeys` entry of `terminal-features`, settled **when a client attaches** | `tmux display -p '#{client_termfeatures}'` → contains `extkeys`? |
+| The pane, in the end | the result of the two above, as the program inside sees it | `tmux display -p -t "$TMUX_PANE" -F '#{pane_key_mode}'` → `VT10x` means plain Enter still |
+
+Measured on services1, 2026-11-16, on the server already holding the session: the two
+lines below satisfied gate 1 in one second, and gate 3 stayed `VT10x` with no `extkeys`
+in gate 2 — because that client attached before the option existed and its feature set is
+computed at attach. Forcing gate 2 (`tmux set -ga terminal-features 'xterm*:extkeys'`)
+did **not** flip it either, and was reverted: it asserts a capability this box has no
+evidence for, and the outer `TERM=xterm-256color` says nothing useful about the emulator
+behind it. Cheapest first:
+
+```bash
+tmux set -g extended-keys on && tmux set -g extended-keys-format csi-u   # this server, live
+# then reconnect: a fresh ssh + `tmux attach` — a *new client* is what lets tmux re-query
+tmux display -p '#{client_termfeatures}'                          # does it now say extkeys?
+tmux display -p -t "$TMUX_PANE" -F '#{pane_key_mode}'             # and not VT10x?
+# the only real test is the keystroke: Shift+Enter must insert a newline, not submit
+```
+
+Setting the options live works on the session you are in because a session option unset on
+the session falls back to the global value — which is also why pi reads the **global**
+(`show -gv`): `tmux set -t <session> …` silences nothing. And `tmux kill-server`, which
+pi's own `docs/tmux.md` suggests, is never available from inside the session it would take
+down — the live `set` plus a reconnect is the path that does not eat the agent.
+
+If `extkeys` never appears across reconnects, the limit is the terminal on the other side
+of the ssh and there is nothing tmux-side left to fix: pi's `docs/terminal-setup.md` names
+the emulators that cannot distinguish a modified Enter at all (xfce4-terminal, Terminator,
+IntelliJ's terminal), and `Ctrl+J` is pi's newline that needs no protocol.
+
+Re-verify the declarative half after a switch with `readlink -f /etc/tmux.conf` — and
+remember a tmux server older than that switch still needs the two live lines, because tmux
+reads the file only at server start.
+
 ## Test a change without applying
 
 The standard, preferred way:

@@ -59,6 +59,61 @@
     memray
   ];
 
+  # tmux is how an agent session outlives the ssh that started it (common/users.nix
+  # turns lingering on for exactly that reason), and pi — the coding agent — asks the
+  # tmux server what it has been configured to do and warns on every start until the
+  # answer changes.  Its check (`checkTmuxKeyboardSetup` in pi's interactive-mode.js)
+  # is two
+  # `tmux show -gv` reads: `extended-keys` must answer `on` or `always`, then
+  # `extended-keys-format` must not answer `xterm`.  Both of tmux's defaults are the
+  # warning-triggering ones and nothing in this repo had ever configured tmux, so the
+  # warning was fleet-wide and permanent: measured 2026-11-16 there was no ~/.tmux.conf
+  # and no /etc/tmux.conf on any box.  (Four boxes have tmux, the ones importing this
+  # file.  `gw` has none — `routerModules` deliberately does not import tools.nix, and
+  # the first read that said otherwise was `pgrep -a`, whose `-a` implies `-f` and so
+  # matches the shell running the pgrep.)
+  #
+  # What the warning is about: with those defaults tmux reports Shift+Enter, Ctrl+Enter
+  # and plain Enter as one key, so pi's editor cannot take a newline.
+  #
+  # /etc/tmux.conf and not a ~/.tmux.conf for the reason rule 32 gives for
+  # /etc/ssh/ssh_config: this pinned nixpkgs has no home-file option under
+  # `users.users`, so a dotfile here could only be hand-copied box by box and drift.
+  # tmux reads /etc/tmux.conf first and ~/.tmux.conf second, so an account can still
+  # override it and the account that matters — the one whose server holds the agent's
+  # panes — needs nothing installed.
+  #
+  # `csi-u` rather than the `xterm` modifyOtherKeys default because pi prefers it and
+  # tmux >= 3.5 can speak it (this flake pins tmux 3.8).  `on` and deliberately not
+  # `always`: `always` forces mode 1 on the outer terminal for every program in the
+  # pane, including ones that want the standard sequences.
+  #
+  # **This file cannot fix a tmux server that is already running** — tmux reads it at
+  # server start only, and `tmux kill-server` is not an option from inside the session
+  # it would take down.  A live server takes the same two lines by hand:
+  #
+  #     tmux set -g extended-keys on && tmux set -g extended-keys-format csi-u
+  #
+  # and since a session option unset on the session falls back to the global value,
+  # that reaches the session you are standing in.  It does not on its own make the keys
+  # work: there is a third gate, the `extkeys` terminal-feature, which pi cannot see and
+  # which is negotiated when a *client attaches*.  Measured 2026-11-16 on the live
+  # server: the two lines satisfied the warning in one second and left `pane_key_mode`
+  # reading `VT10x` with no `extkeys` in `client_termfeatures`, because that client
+  # predates the change.  So the warning can go away while the keys stay broken, and
+  # `docs/nix-dev-workflow.md` ("tmux's keys: what pi's warning checks, and what it
+  # cannot") owns the sequence that settles it and what to conclude if it never does.
+  #
+  # Re-verify with: tmux show -gv extended-keys extended-keys-format   # on, csi-u
+  environment.etc."tmux.conf".text = ''
+    # Managed by NixOS — common/tools.nix.  tmux reads this file before ~/.tmux.conf,
+    # so a per-account file still wins.  pi (the coding agent) warns on every start
+    # until the first line below is not `off`; the third gate it cannot check is in
+    # docs/nix-dev-workflow.md.
+    set -g extended-keys on
+    set -g extended-keys-format csi-u
+  '';
+
   # GPU diagnostics are per-machine on purpose: services1 is the Intel/i915 box
   # (it installs intel-gpu-tools) and aibox is the AMD/ROCm box (amdgpu_top).
   # Keeping them here put both vendors' tools on both machines.
