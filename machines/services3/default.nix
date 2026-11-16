@@ -46,10 +46,14 @@
     # ./README.md "Open items" and docs/follow-ups.md.
     ../../common/exporters.nix
 
-    # pi's endpoint list (docs/pi-agent-models.md). On this box the sync will most
-    # likely print `SKIP: /home/leigh-admin/.pi/agent does not exist`: pi is not
-    # installed here, and that is a message rather than a silence *because* the next
-    # person to install pi gets the config without setting anything up.
+    # pi's endpoint list (docs/pi-agent-models.md) and, through it, web search
+    # (docs/pi-web-search.md). This file used to predict that the sync would print
+    # `SKIP: /home/leigh-admin/.pi/agent does not exist` because pi was not installed
+    # here; measured 2026-11-16 it is installed, the sync writes all three files, and
+    # Brave answers 200 from this box's USB-dongle uplink. The SKIP path is still the
+    # right design for a box where pi is genuinely absent — it is a message rather than a
+    # silence, so the next person to install pi gets the config without setting anything
+    # up.
     ../../common/pi-agent.nix
 
     flakeInputs.sops-nix.nixosModules.sops

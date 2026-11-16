@@ -190,7 +190,6 @@ just pi-agent-status       # what the last run saw, incl. managedPackages / mana
 A live end-to-end that involves no model, from 2026-11-16, is also the fastest way to
 tell "the credential is broken" from "the agent did not pick the tool" — the package
 ships a standalone MCP server that reads the same config:
-
 ```bash
 cd ~/.pi/agent/npm && (printf '%s\n' \
  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"probe","version":"0"}}}' \
@@ -202,3 +201,35 @@ cd ~/.pi/agent/npm && (printf '%s\n' \
 It answered `**Provider:** brave` with two sources. Note the `node` requirement: that
 path uses the system/node pi was started with, and is a diagnostic, not the supported
 surface — inside pi the tools are already registered.
+
+## Where it is live, and what the fleet showed
+
+All five deployable boxes are on the commit that adds this (deployed 2026-11-16, each
+`/run/current-system` == `system-good` afterwards), and each was checked on the box:
+`/run/secrets/brave_api_key` is `0440 root:brave-search-readers` with `leigh-admin` in
+the group, `pi-agent-leigh-admin` runs clean, and both merged files carry the pin and
+`"provider": "brave"`. Brave answered `200` from `gw` and from `services3` — the router
+and the USB-dongle box, the two routes worth asking about — and `gw`'s post-switch
+`front-door-cert-check.service` still reports the cert CA-issued, which is the check
+AGENTS.md rule 22 requires after any switch there.
+
+Three things that only showed up across five boxes:
+
+* **`pi update --extensions` does not install a declared-but-never-installed package.**
+  On four boxes it said `Packages are already up to date` while
+  `~/.pi/agent/npm/node_modules/` was empty (pi had created the npm project and nothing
+  else). The normal path still works — pi installs configured packages at session start,
+  and retries if the registry was unreachable — but the verb that actually installs on
+  demand is `pi install npm:pi-web-access@0.48.0`, which is idempotent about the
+  settings entry. All five are installed now; a box that reinstalls pi gets it on first
+  start.
+* **pi keeps its own bookkeeping in `settings.json`** — installing a package adds a key
+  whose *name* is a JSON blob, e.g.
+  `"{\"source\":\"npm:pi-web-access@0.48.0\",\"scope\":\"user\"}": "0.48.0"`, next to
+  the plain `packages` entry. `merge_packages` copies it through untouched, which is the
+  merge rule earning its keep on real data rather than in a test: a `packages`-shaped
+  write that rebuilt the top level would have deleted it and pi would have forgotten
+  what version it had.
+* **Two writers, one file, no argument.** After `pi install` on a box, the next timer run
+  logs `settings.json: packages unchanged` / `web-search.json: keys unchanged` — because
+  "unchanged" is computed from the values rather than from who last touched the file.
