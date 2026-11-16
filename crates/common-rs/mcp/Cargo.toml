@@ -1,0 +1,19 @@
+[package]
+name = "common-mcp"
+version = "0.1.0"
+edition = "2021"
+
+# The Model Context Protocol, both halves, for the zero-external-crate programs
+# here (hackspace-mcp serves it, slack-agent reads it).  Path dependency: see
+# common/crane.nix for how the shared source reaches the Nix build, and
+# src/lib.rs for which parts of the spec are implemented and what to swap in if a
+# foreign MCP server ever needs more than that.
+
+[dependencies]
+common-json = { path = "../json" }
+common-http = { path = "../http" }
+
+[dev-dependencies]
+# Only for the socket round-trip test, so that fixture reads a request the way a
+# real server does instead of guessing at TCP's boundaries.
+common-web = { path = "../web" }

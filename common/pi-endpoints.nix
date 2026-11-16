@@ -29,13 +29,22 @@
 # **Here, and only here:** what no probe can tell you — which API dialect to speak,
 # which compat claims are *verified* rather than advertised, what the thinking levels
 # map onto, and how much of a context window to hand an output limit.
-{
+#
+# Which endpoints exist, what they are called and where they are is *not* stated
+# here: it comes from ./llm-endpoints.nix, so the fleet's two consumers of the
+# inference boxes (pi, and the Slack agent's harness) cannot disagree about an
+# address. What is stated here is only what no probe can tell you about a running
+# engine and only pi cares about.
+let
+  LlmEndpoints = import ./llm-endpoints.nix;
+  endpoint = id: LlmEndpoints.endpoints.${id};
+in {
   # The provider id is the key, and it is load-bearing in two places: pi's
   # `settings.json` `defaultProvider` names it, and `pi-agent-sync` replaces a provider
   # *by id*, so renaming one is a user-visible change and not a cosmetic one.
   "strata" = {
-    name = "Strata (aibox)";
-    baseUrl = "https://strata2.int.leighhack.org/v1";
+    name = (endpoint "strata").name;
+    baseUrl = (endpoint "strata").baseUrl;
     note = ''
       aibox's Radeon iGPU, the full 125B IQ2_XS: `machines/aibox/strata.nix`, and the
       door row `strata2.int.leighhack.org` in `common/front-door.nix` (`strataBearer =
@@ -63,8 +72,8 @@
   };
 
   "strata-services2" = {
-    name = "Strata (services2, RTX 3060)";
-    baseUrl = "https://strata.int.leighhack.org/v1";
+    name = (endpoint "strata-services2").name;
+    baseUrl = (endpoint "strata-services2").baseUrl;
     note = ''
       services2's CUDA engine, the Coder IQ1_M: `machines/services2/strata.nix` and its
       door row. This endpoint is offline more often than the others — the box's RAM is
@@ -91,8 +100,8 @@
   };
 
   "llama-services3" = {
-    name = "llama.cpp (services3, GTX 1080 Ti)";
-    baseUrl = "https://llama.int.leighhack.org/v1";
+    name = (endpoint "llama-services3").name;
+    baseUrl = (endpoint "llama-services3").baseUrl;
     note = ''
       services3's Vulkan llama-server (Ternary-Bonsai-2-9B-Q2_0 + vision,
       `machines/services3/llama.nix`). Its door row deliberately carries **no**
@@ -109,8 +118,8 @@
   };
 
   "strata-zen3" = {
-    name = "Strata (zen3, R9700 — off-network, faster, bigger context)";
-    baseUrl = "https://llm.ai.chrisdell.info/v1";
+    name = (endpoint "strata-zen3").name;
+    baseUrl = (endpoint "strata-zen3").baseUrl;
     note = ''
       Not this flake's box: a Strata engine on `zen3-nixos`, reachable over the WAN.
       It is in this table because the point is that one declaration covers every

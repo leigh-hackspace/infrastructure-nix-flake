@@ -1,0 +1,26 @@
+# The eval fixture: the questions this bot is supposed to be able to answer, one per
+# line, `#` starts a comment. `just slack-agent-eval` runs them in order, prints each
+# answer with its timing, and leaves the judgement to whoever is holding the terminal.
+#
+# What each line is guarding, in order: the tool that answers most things; the same
+# tool asked a different way (an answer that changes between these two is a grounding
+# bug, not a model quirk); derived facts (coldest room) rather than raw transcription;
+# the calendar; two sources at once, which is where the harness earns its keep; the
+# cameras' own health, which is a real fault class on this network
+# (docs/camera-wifi-cells-2026-10-31.md); Home Assistant history; the read-only
+# boundary; and a question with no data behind it, where the only correct answer is
+# that it cannot see the thing.
+is it cold in the hackspace
+what's the temperature in the workshop
+which room is the coldest and how cold is it
+is the hackspace open
+what's on at the hackspace this week
+is anyone in the space right now
+are the cameras working
+has the workshop been cooling overnight
+how many devices are on the network
+how hot is aibox
+what's the weather like outside
+turn the heaters on in the workshop
+who unlocked the front door last night
+how much does a membership cost and what is our electricity bill

@@ -46,6 +46,11 @@
     ./printer-monitoring.nix
     ./redis.nix
     # ./samba.nix
+    # The hackspace Slack bot, in two units: the read-only MCP tool server and the
+    # agent that talks to Slack. First deploy posts nothing (see
+    # `infra.slackAgent.dryRun`); design and measurements in
+    # ../../docs/slack-agent-2026-11-16.md.
+    ./slack-agent.nix
     ./status.nix
     # The vhost for services2's Strata engine moved to the front door's table
     # (`common/front-door.nix`'s `strata.int`/`strata.leighhack.org` rows) — the door

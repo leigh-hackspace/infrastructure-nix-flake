@@ -1,0 +1,18 @@
+[package]
+name = "hackspace-mcp"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "hackspace-mcp"
+path = "src/main.rs"
+
+[dependencies]
+# Zero external crates, house style (status-dashboard, network-status,
+# moonraker-exporter): every source these tools read answers plain HTTP on the LAN,
+# so the HTTP client is common-rs/http and the HTTP server is common-rs/web.
+common-json = { path = "../common-rs/json" }
+common-http = { path = "../common-rs/http" }
+common-mcp = { path = "../common-rs/mcp" }
+common-web = { path = "../common-rs/web" }
+common-service = { path = "../common-rs/service" }

@@ -82,6 +82,16 @@ impl Json {
             _ => None,
         }
     }
+
+    /// The object's entries, for a caller that has to walk a map it did not
+    /// choose the keys of (a label set, a per-camera stats object, a DNS table).
+    /// `BTreeMap`, so the walk is in key order and the output is stable.
+    pub fn as_object(&self) -> Option<&BTreeMap<String, Json>> {
+        match self {
+            Json::Obj(m) => Some(m),
+            _ => None,
+        }
+    }
 }
 
 /// Parse a complete JSON document.
@@ -431,6 +441,32 @@ pub fn string(s: impl Into<String>) -> Json {
 /// A JSON number from an integer, so callers do not each write `Json::Num(x as f64)`.
 pub fn number_from_int(n: u64) -> Json {
     Json::Num(n as f64)
+}
+
+/// A JSON number from a float (a temperature, a ratio, a duration in seconds).
+///
+/// Named for its argument type rather than called `number`, because that name is
+/// already this file's private float->text renderer, and two things called
+/// `number` in one file is how a reader starts trusting the wrong one.
+pub fn number_from_f64(n: f64) -> Json {
+    Json::Num(n)
+}
+
+/// A JSON boolean, for the flags in a protocol message (`isError`, `open`…).  A
+/// `bool` is also a native Rust type, so this only exists so that building a
+/// document reads the same way for every field.
+pub fn boolean(b: bool) -> Json {
+    Json::Bool(b)
+}
+
+/// A JSON `null`, for the field that must be *present* and empty.
+pub fn null() -> Json {
+    Json::Null
+}
+
+/// A JSON array of any values.
+pub fn array(items: impl IntoIterator<Item = Json>) -> Json {
+    Json::Arr(items.into_iter().collect())
 }
 
 /// A JSON object from pairs, in any order (they are sorted on the way out).

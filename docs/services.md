@@ -36,6 +36,7 @@ Every address is in `common/hosts.nix`.
 | status-dashboard | `crates/status-dashboard/` | both boxes | `common/status-dashboard.nix` |
 | whisper-ws | `crates/whisper-ws/` | aibox:8083 | `crates/whisper-ws/README.md` |
 | moonraker-exporter | `crates/moonraker-exporter/` | metrics | `docs/printer-servers.md` |
+| hackspace-mcp + slack-agent (the Slack bot) | `crates/hackspace-mcp/`, `crates/slack-agent/`, `machines/services1/services/slack-agent.nix` | 127.0.0.1:8191 (MCP), 127.0.0.1:8192 (health); Slack over an **outbound** socket, no inbound port | `docs/slack-agent-2026-11-16.md` (design + the 2026-11-16 build receipt) |
 | MQTT broker (mosquitto) | `machines/services1/services/mqtt.nix` | services1:1883 (no HTTP, no 8883) | `docs/mqtt-int-legacy-answer-2026-11-02.md` |
 | Frigate (NVR) | `machines/services1/services/frigate.nix` (podman; the **camera config is off-flake**, `/srv/frigate/config/config.yaml`) | services1:5000 insecure, :8971 secure, :1984 go2rtc, :8554-5 | `docs/frigate-false-positives-2026-11-12.md` (detection quality, detectors, and why there is no GPU offload) |
 | strata | `machines/*/strata.nix` | services2:8080 → `strata.int.leighhack.org` (LAN, key injected) and `strata.leighhack.org` (public, API key); aibox:8080 → `strata2.int.leighhack.org` (LAN, key injected) | `machines/aibox/STRATA.md`, `machines/services2/STRATA.md` |
@@ -669,6 +670,63 @@ without unplugging anything (`just ups-status`, `just ups-notice-test`,
 including whether this firmware implements `shutdown.return`, which is the thing
 that decides whether the network comes back by itself.
 
+## `crates/hackspace-mcp/` + `crates/slack-agent/` — the hackspace Slack bot
+
+**Replaces the `vulcan-bot` container on `apps1` (10.3.1.30) — stopped, disabled, file-removed
+and masked there on 2026-11-16** (parked at `/var/lib/systemd/disabled-units/vulcan-bot.service`
+with its restore note; container and `/srv/vulcanbot` kept for a week). It took over the old
+bot's command words as well as its chat. Of its two scheduled jobs the **Monday digest is ported
+and better** (`slack-agent-digest.timer`, `Mon 09:00`, `Persistent=true`, deterministic — sorted
+by start, grouped by day, times as the calendar published them), and the **`#doors` MQTT access
+feed is dropped by decision** ("doors not needed", 2026-11-16) — see
+`docs/slack-agent-2026-11-16.md` §14 for both.
+`docs/slack-agent-2026-11-16.md` is the whole story: what Vulcan's 265 Python lines actually
+do, which two of its behaviours must **never** go near an LLM (the `#doors` MQTT access feed
+and the Monday event digest — phase 3, still Vulcan's), every rejected library option, and the
+2026-11-16 build receipt with the five things it cost. Read that before changing either unit.
+
+Two units, both `DynamicUser`, both on loopback, both `EnvironmentFile=
+/run/secrets/slack_agent_env` (`SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `HACKSPACE_MCP_HA_TOKEN`
+— no `--token` flag exists on either binary, and neither prints its environment):
+
+- **`hackspace-mcp.service`** — `127.0.0.1:8191`, `POST /mcp` (stateless Streamable HTTP,
+  JSON-RPC 2.0, via `crates/common-rs/mcp`). Seven read-only tools: `space_status`,
+  `space_events`, `home_assistant_states`, `home_assistant_history`, `camera_activity`,
+  `fleet_metric`, `network_clients`. It only ever issues HTTP **GET**s, there is no Home
+  Assistant *service-call* path in the code at all, and a non-loopback bind is refused without
+  `--allow-non-loopback`. Tool failures come back as MCP `isError` content rather than
+  JSON-RPC errors, because the model has to be able to *read* the failure sentence.
+  `--list-tools`, `--self-test` and `--call <tool> '<json>'` work with no model and no Slack.
+- **`slack-agent.service`** — the harness. Slack Socket Mode over an outbound websocket (no
+  vhost, no DNS row, no inbound port), an agent loop over OpenAI-compatible tool calling, and
+  `127.0.0.1:8192` for `/health` + `/metrics`. Model ids are **discovered** from each
+  endpoint's `/v1/models` (rule 31 — nothing in the tree names a model), endpoints come from
+  `common/llm-endpoints.nix`, and no LLM credential is held: the front door injects it.
+  `infra.slackAgent.dryRun` is the kill switch (option default `true`, services1 sets `false`
+  since 2026-11-16). **Policy: it answers in the channel a request came from, unmentioned** —
+  `--channels "*"` — which is only safe because unmentioned messages must also pass
+  `triage::answers` (`src/triage.rs`): question-or-hackspace-topic yes, human-to-human chatter
+  no. While `vulcan-bot` is still connected to the same Slack app, a message that is *only* one
+  of Vulcan's bare commands is deferred to it (`triage::vulcan_command`), because Slack
+  duplicates events to both consumers and two replies is the one visible failure.
+
+Three behaviours that are load-bearing and easy to undo by accident: it ignores
+`bot_id`/`subtype` events (**this Slack app receives its own and other bots' messages** — that
+is the self-reply loop, proven from Vulcan's journal), it dedups redelivered `event_id`s
+(Socket Mode redelivers anything not acked in ~3 s, so ack-then-work is mandatory), and it
+drops `reasoning_content` rather than replaying it. `--max-silence-secs` exits the process
+when the socket goes quiet so systemd reconnects it — rule 29 applied to a bot: a channel that
+still answers `/health` is not a channel that is still working.
+
+A **deterministic calendar path** sits in front of the model: `triage::events_window` recognises
+"what's on"-shaped messages and calls `space_events` directly, so the most-asked question answers
+in the time of one HTTP GET instead of ~17 s and ~3 000 tokens, and cannot have a row dropped. It
+falls through to the model if the tool errors, and `just slack-agent-digest` previews the weekly
+post without sending it.
+
+Verbs (all local, none of them posting): `just slack-agent-tools`, `-probe`,
+`-call tool arguments`, `-ask "question"`, `-eval`, `-status`, `-dry-run`.
+
 ## `crates/common-rs/` — where new shared code goes
 
 Plain path dependencies (`common-json = { path = "../common-rs/json" }`), no
@@ -683,6 +741,18 @@ symlinks:
 | `service` | startup plumbing that is not the service: flag reader, `EnvironmentFile` parser, the loopback test that gates every `--no-auth` | every service |
 | `preview` | the filestore preview table, read by **both** the API and the SPA | filestore |
 | `build-spa` | the `build.rs` that embeds a Dioxus bundle | all four SPA apps |
+| `http` | a **plain-HTTP/1.1 client** for LAN origins only: `Content-Length`, chunked and EOF bodies, and an explicit refusal of `https://` rather than a silent downgrade (the origins it dials are all loopback/VLAN and the ones that are HTTPS belong to the front door) | hackspace-mcp, and `mcp`'s client |
+| `mcp` | one Model Context Protocol, **server and client in the same crate** so `hackspace-mcp` and `slack-agent` cannot drift: stateless Streamable HTTP over JSON-RPC 2.0 (`initialize`, `notifications/initialized`, `ping`, `tools/list`, `tools/call`), and tool failures returned as `isError` content, not protocol errors, so the model can read the failure | hackspace-mcp, slack-agent |
+
+**A crate added here must be named in every consumer's `sharedCrates` list, transitively.**
+`CRANE.crate` builds a member from a tree where every `common-rs/` crate it does not list is
+crane's **manifest-only stub**, so the failure is invisible to `cargo build` and `just test`
+and appears only in the Nix build (`just check-build`), as
+`cannot find function post_json in crate common_http` — which is exactly what `slack-agent`
+hit on 2026-11-16 because it uses `mcp`, and `mcp` uses `http`. The receipt is
+`docs/slack-agent-2026-11-16.md` §13; deriving that list from the members' path dependencies
+instead of hand-maintaining it is open in `docs/follow-ups.md`.
+
 
 **New shared code goes here, not into a second copy in the second crate.**
 `service` and `json`'s emitters exist because both had already drifted between

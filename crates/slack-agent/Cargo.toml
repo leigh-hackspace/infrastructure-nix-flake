@@ -1,0 +1,23 @@
+[package]
+name = "slack-agent"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "slack-agent"
+path = "src/main.rs"
+
+[dependencies]
+common-json = { path = "../common-rs/json" }
+common-mcp = { path = "../common-rs/mcp" }
+common-service = { path = "../common-rs/service" }
+# The two places the zero-crate style stops, both because of TLS:
+#  * the inference engines are reached through the front door's HTTPS name, which is
+#    where strata_api_key is injected, so the agent holds no credential;
+#  * Slack Socket Mode is wss://.
+# reqwest is already vendored for filestore/gocardless-dashboard/switch-gui with the
+# same default-features=false + rustls-tls shape, so the first is not a new crate at
+# all.  tungstenite (the synchronous client, so this binary needs no async runtime)
+# is the one genuinely new dependency; see docs/slack-agent-2026-11-16.md §4.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "blocking"] }
+tungstenite = { version = "0.27", default-features = false, features = ["rustls-tls-webpki-roots", "handshake"] }

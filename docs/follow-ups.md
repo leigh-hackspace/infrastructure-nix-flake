@@ -2866,3 +2866,123 @@ packages, which is the cheapest fix and probably the honest one for a kiosk netb
 be near zero), `nix eval --raw .#nixosConfigurations.aibox.config.system.build.toplevel | xargs nix
 path-info -S | numfmt --to=iec`, and `nix path-info -S` on
 `${build.squashfsStore}`'s output closure from `machines/aibox/netboot.nix`.
+
+## The hackspace Slack bot (services1) — opened 2026-11-16, `docs/slack-agent-2026-11-16.md` owns it
+
+- **Nobody has seen the Monday digest fire in public yet.** `slack-agent-digest.timer`
+  (`Mon 09:00`, `Persistent=true`) is armed and `just slack-agent-digest` prints exactly what it
+  will post to `#general`, but a preview is not a receipt: the first real firing is Monday, and
+  the failure modes are the boring ones — the token revoked, `#general` renamed, the space API
+  down at 09:00. **Blocks:** nothing. **To do:** after the first Monday, confirm the message
+  exists and `systemctl status slack-agent-digest.service` is clean. **Re-verify with:**
+  `systemctl list-timers slack-agent-digest.timer`, `systemd-analyze calendar "Mon 09:00"`, and
+  `journalctl -u slack-agent-digest.service -n 20`. A missed Monday still posts (`Persistent`),
+  which is deliberate but untested here — a power-cut Monday is the day to notice.
+
+- **The `#doors` access feed was dropped, deliberately, on 2026-11-16** ("doors not needed") when
+  `vulcan-bot` was stopped. Recorded here so a future reader does not find `access_poster` in the
+  old plugin and file it as a regression: MQTT `access/log` is still published by services1's
+  broker and still read by whatever else dials it, and `#doors` simply stops receiving Slack
+  posts. **Blocks:** nothing. **To do:** nothing, unless someone misses it — the port is then
+  small and belongs in `slack-agent` next to the digest (subscribe, fixed format, no LLM), with
+  the old container on `apps1` as the format reference until it is deleted. **Re-verify with:**
+  `mqtt.int` answering and `journalctl -u slack-agent` showing no door traffic, which is the
+  expected state, not a fault.
+- **It is live now** (`dryRun = false`, `--channels "*"`, since 2026-11-16): it answers
+  unmentioned in whatever channel the request came from, gated by `triage::answers`. What is
+  unproven is the *judgement* at scale — whether the gate is too eager in a busy `#general`,
+  and whether answers people want are phrased in a way the gate recognises. **Blocks:** nothing.
+  **To do:** read `journalctl -u slack-agent` after a day of real use — every refusal is logged
+  with the reason, so both "too chatty" and "should have answered" are answerable from the
+  journal — then tune `triage.rs`'s topic/veto lists, and if it is noisy set
+  `infra.slackAgent.dryRun = true` (one line) rather than reasoning about it cold.
+  `slack_agent_turns_total` counts answers; there is no skip counter yet — **and stop `vulcan-bot.service` on `apps1` in the same change**: measured
+  2026-11-16 12:44, Slack delivers every event to *both* Socket Mode consumers of the shared app
+  token, so two live bots means two replies to one `@Vulcan` (`docs/slack-agent-2026-11-16.md`
+  §13 has the receipts from both journals).
+  Until then the bare words `temps`/`status`/`events`/`printers`/`humidity`/`members` are
+  deferred to Vulcan by `triage::vulcan_command`, so the two bots never both answer them.
+  Then phase 3 (port the `#doors` MQTT feed and the Monday digest,
+  both deterministic, no LLM) and phase 5 (park `vulcan-bot.service` on `apps1` in §10's
+  order, keeping `/srv/vulcanbot` and the container for a week). **Re-verify with:**
+  `systemctl is-active slack-agent hackspace-mcp`, `curl -s 127.0.0.1:819{1,2}/health`,
+  `just slack-agent-status`, and `grep -o '\-\-dry-run' /etc/systemd/system/slack-agent.service`.
+
+- **Nobody has scored the eval yet, so "the answers are good" is an impression.** The gate in
+  §11 phase 2 is ≥ 11/12 canonical questions correct with no invented number, per engine; the
+  fixture is `crates/slack-agent/questions.txt` and the runner is `just slack-agent-eval`, but
+  scoring a grounded answer against reality ("is it cold?") needs a human who has been to the
+  space. **Blocks:** going live honestly. **To do:** run the eval, score it in that file's
+  comments, and record which engine won — the ordering in `common/llm-endpoints.nix` is
+  currently a guess about *quality* (it is a measured guess about *availability*).
+
+- **The Home Assistant token `hackspace-mcp` dials with is neither scoped nor its own**: it is
+  `DE_HOME_ASSISTANT_ACCESS_TOKEN`, the door-entry system's long-lived token, copied under a new
+  name so a rotation is a decision rather than an accident (no minting was needed to ship the
+  prototype). A HA long-lived token carries its user's whole authority, so "read-only" here is
+  enforced by *this code containing no service-call path*, not by the credential. That is the
+  boundary §7 relies on, and it is weaker than it should be. **Blocks:** nothing today. **To
+  do:** mint a token for a HA user with no admin and no entities to write, put *that* in
+  `slack_agent_env`, and leave door-entry's alone. **Re-verify with:**
+  `just slack-agent-call home_assistant_states '{"limit":1}'` (works) and, in the HA UI, that
+  the token's owner is not an admin.
+
+- **The Slack app is Vulcan's, scopes and all**: reusing its tokens was the zero-config path,
+  and its manifest asks for ~25 scopes including `files:write`, `pins:write`, `usergroups:read`
+  for a bot that reads text and posts text. Its display name is also still Vulcan's, which is
+  confusing during the overlap. **Blocks:** nothing. **To do:** either trim the manifest in the
+  Slack app admin (cheap, keeps history and `#doors`' webhook) or mint a minimal app with
+  `app_mentions:read`, `channels:history`, `groups:history`, `im:history`, `chat:write`,
+  `reactions:write` and re-sop two tokens. Decide before phase 5, because after the cutover the
+  old app is the only thing that proves which one the workspace was talking to.
+
+- **Adding one key to `secrets/secrets.yaml` re-keys every `config.sopsSecretText` derivation
+  in the fleet**, so the first `nix flake check --no-build` after any secret edit stops being
+  eval-only and fails with `path '…-sops-secret-<name>.drv' is not valid` until that
+  machine's closure has been built once (`builtins.readFile` on a derivation output is the
+  eval-builds flaw this repo already documents, and `services.outline.databaseUrl` and the two
+  strata modules are where it bites). Measured 2026-11-16: clean HEAD passed, `pg_pass` cleared
+  after the services1 switch, `strata_api_key` needed services2's and aibox's toplevels, and the
+  same edit restarted every service embedding a build-time secret on every box switched
+  afterwards. `nix build '<that .drv>'` and `nix-store -r '<that .drv>'` both *refuse* it ("no
+  substituter that can build it" / "failed to obtain derivation") because the `.drv` is not in
+  the store — the only route is building the config that references it. **Blocks:** a green
+  `just check` on a box whose sibling machine has not been switched since the secret edit. **To
+  do:** either split `secrets.yaml` so build-time names live in a file nothing else touches, or
+  give `just check` a repair step that builds the named closure, or (least honest, most
+  convenient) stop embedding secrets in derivations at all. **Re-verify with:**
+  `nix flake check --no-build 2>&1 | grep -o 'sops-secret-[a-z_0-9]*' | sort -u` after
+  `echo x | sops --set '["a","b"]' /dev/stdin secrets/secrets.yaml`-shaped no-op edit.
+
+## `nixos-rebuild switch` did not re-arm `auto-rollback.timer` on services1 (measured 2026-11-16)
+
+AGENTS' GOLDEN RULE says activating a configuration restarts the auto-rollback timer and
+"it re-arms itself at the next activation either way". Measured twice on services1 at the
+`2074cc6` lock, against the running units rather than the docs: a switch that built and
+activated new units, and a second switch minutes later that changed nothing, both left
+`auto-rollback.timer` `inactive` with **no** `NextElapseUSecRealtime`, and the only thing that
+armed it was `sudo systemctl restart auto-rollback.timer`. (`Active: active (waiting) since
+11:00:22` stayed at my manual start time across a switch at ~11:01.) Where the timer comes
+from is also not obvious: `system.autoRollback.enable = true` is set in `common/base.nix`, the
+generated timer is `OnActiveSec=5min` + `RemainAfterElapse=false` with no `[Unit]`/`WantedBy`
+beyond `timers.target`, `grep` over `/run/current-system/bin/switch-to-configuration` and
+`/run/current-system/activate` finds no reference to it, and the module that defines the option
+was not found under any `/nix/store/*-source/nixos` tree — so the arming path, whatever it is,
+is not in the switch script.
+
+**Why this matters and what does not:** the net is a *safety net*, and the confirm is the
+control — the rule to keep is `switch && nixos-confirm` in one invocation, and the health check
+is `readlink -f /run/current-system /nix/var/nix/profiles/system-good` (equal = the box has
+decided to stay), not `is-active auto-rollback.timer`. What changes if the docs are wrong is
+the *failed*-activation case: the section "the five-minute window is a countdown to a reboot"
+describes the window in which to decide, and if nothing armed the timer, a half-activated box
+is not counting down to anything and nobody is told. **Blocks:** nothing (services1 is
+confirmed good, both new units healthy). **To do:** find the module that owns
+`system.autoRollback` (not under `common/`, not in nixpkgs' visible module tree — probably a
+flake input), read what starts the timer, and either fix the arming or fix AGENTS and
+`docs/nix-dev-workflow.md` to say that on these boxes the net must be armed by hand
+(`systemctl restart auto-rollback.timer`) after a switch whose confirm did not run. **Re-verify
+with:** `sudo nixos-rebuild switch --flake .` then immediately `systemctl show
+auto-rollback.timer --value -p ActiveState -p ActiveEnterTimestamp -p
+NextElapseUSecRealtime` — `ActiveEnterTimestamp` moving to the switch time is the documented
+behaviour; staying at an older time is this finding.

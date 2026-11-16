@@ -53,7 +53,9 @@ resolver = "2"
 members = [
   # shared libraries
   "common-rs/build-spa",
+  "common-rs/http",
   "common-rs/json",
+  "common-rs/mcp",
   "common-rs/oidc",
   "common-rs/pg",
   "common-rs/preview",
@@ -64,9 +66,11 @@ members = [
   "frigate-monitor",
   "gocardless-dashboard",
   "gocardless-dashboard/dto",
+  "hackspace-mcp",
   "moonraker-exporter",
   "network-status",
   "pi-agent-sync",
+  "slack-agent",
   "status-dashboard",
   "switch-gui",
   "switch-gui/dto",

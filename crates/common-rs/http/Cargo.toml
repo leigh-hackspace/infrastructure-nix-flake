@@ -1,0 +1,11 @@
+[package]
+name = "common-http"
+version = "0.1.0"
+edition = "2021"
+
+# The plain-HTTP/1.1 client shared by the zero-external-crate programs that read
+# the LAN (hackspace-mcp).  Path dependency: see common/crane.nix for how the
+# shared source reaches the Nix build, and src/lib.rs for why TLS is out of
+# scope.
+
+[dependencies]

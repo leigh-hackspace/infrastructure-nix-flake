@@ -73,6 +73,20 @@
       mode = "0440";
     };
 
+    # The Slack agent pair (services/slack-agent.nix): SLACK_BOT_TOKEN, SLACK_APP_TOKEN
+    # and HACKSPACE_MCP_HA_TOKEN, as KEY=value lines.  Read by PID 1 only — both units
+    # take it as `EnvironmentFile`, so the `DynamicUser` processes get the values in
+    # their environment and never the right to re-open this file.  The two Slack values
+    # are the *existing* app's tokens, moved off `apps1` (whose
+    # `/etc/docker/environment_files/vulcanbot` held them) so the flake owns the bot the
+    # way it owns everything else on this box; the HA token is the long-lived one
+    # `door-entry-management-system` already had, which is a credential with two
+    # audiences and is listed in docs/follow-ups.md as needing its own.
+    slack_agent_env = {
+      group = "secrets";
+      mode = "0440";
+    };
+
     # Borg/ssh backup key (services/backup.nix); keep private.
     backup_key = {
       mode = "0400";

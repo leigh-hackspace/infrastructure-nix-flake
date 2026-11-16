@@ -66,11 +66,28 @@ a serial device and `qm config 109` has none, so adding one would mean a reboot.
 
 Inside, `apps1` keeps its own hand-written docker+systemd services under `/srv`
 (`grafana`, `homeassistant`, `jenkins`, `mosquitto`, `prometheus`, `uptimekuma`,
-`usertweaker`, `vulcanbot`, `zigbee2mqtt`, `hackspaceapi`, `home`). None of it is
+`usertweaker`, `vulcanbot`, `zigbee2mqtt`, `hackspaceapi`, `home`) — `/srv` and its own units,
+whether or not they are running (three are not, below). None of it is
 declarative; the flake only points at this box.
 
-**Two of those are parked, and the thing that makes that look confusing is Home
-Assistant's MQTT dial (measured 2026-11-02).** `mosquitto.service` and `zigbee2mqtt.service`
+**Three of those are parked now, and `vulcanbot` is the newest.** `vulcan-bot.service` was
+stopped, disabled, **file-removed from `/etc/systemd/system` and masked** on 2026-11-16 —
+replaced in the workspace by services1's `slack-agent` (`docs/slack-agent-2026-11-16.md` §14 owns
+the receipts and the reasoning, including why `disable` alone was not enough: the ask was "stay
+disabled on reboot", and a mask is a `/dev/null` symlink that fails loudly where a symlink can be
+re-created). Its unit text is parked here in the off-flake form of rule 23,
+`/var/lib/systemd/disabled-units/vulcan-bot.service`, with a `# DISABLED — <date> — <reason> —
+restore with:` header, sitting next to the one this section already knew about
+(`uptime-kuma.service.2026-11-01`) — so `ls /var/lib/systemd/disabled-units/` on that box *is*
+the list of what is parked there. Checked before stopping rather than after: the container's `HostConfig.RestartPolicy`
+is `no`, no timer or cron names it, and nothing else in the tree does either. The container
+(`Exited (0)`) and `/srv/vulcanbot` are **kept** — that is the rollback, for a week. What it
+used to do that is **not** running anywhere: the MQTT `access/log` → `#doors` feed, dropped by
+decision the same day ("doors not needed"). Its Monday event digest was ported to services1's
+`slack-agent-digest.timer` first — §14 of that doc owns both.
+
+The older parked pair, and the thing that makes that look confusing is Home
+Assistant's MQTT dial (measured 2026-11-02). `mosquitto.service` and `zigbee2mqtt.service`
 both read `is-enabled=disabled`, `is-active=inactive` on apps1, and nothing on apps1 listens
 on 1883 (`ss -lntp | grep 1883` is empty there): the live broker is services1's podman
 `eclipse-mosquitto` (`machines/services1/services/mqtt.nix`) and the live zigbee2mqtt is

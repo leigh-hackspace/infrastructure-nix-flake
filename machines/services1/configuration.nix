@@ -9,6 +9,14 @@
 }: {
   imports = [../../common/base.nix];
 
+  # The hackspace Slack bot is live in the workspace as of 2026-11-16: it answers
+  # unmentioned in the channel a request came from, like `vulcan-bot` did.  Set this
+  # back to `true` (one line, one switch) to make it read and log without posting
+  # anything — that is the kill switch, and it is why the option defaults to `true`
+  # for any future first deploy.  Design, receipts and the overlap rules:
+  # docs/slack-agent-2026-11-16.md.
+  infra.slackAgent.dryRun = false;
+
   # `relaxed` rather than the default `true` for exactly **one** derivation in this box's
   # build closure: `door-entry-management-system`, whose `installPhase` runs `deno i` and
   # `deno cache` and therefore needs the network, so the package sets `__noChroot` — and nix
