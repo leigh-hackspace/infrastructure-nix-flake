@@ -65,6 +65,62 @@ out of `workspaceSrc` and nothing else, and `lib.cleanSourceFilter` does not rea
 `crates/target/` (3.1 GB) into the store. See the path-literal rule in
 `docs/nix-dev-workflow.md` and the item in `docs/follow-ups.md`.
 
+### Never splice a subpath of a source root: `${workspaceRoot}/x` drags the whole tree in
+
+`cp -a \${workspaceRoot}/common-rs/json` reads like a copy of one directory, and it is one —
+but the *splice* makes the **whole `crates/` tree an input** of the derivation, because that is
+how Nix resolves `<source path>/subdir`. So every crate's `-src` derivation depended on every
+other crate's code, and the per-member stub tree that `memberSrc` exists to build was
+inert. Measured on services1, 2026-11-16, one **comment line** added to
+`crates/slack-agent/src/agent.rs`:
+
+| | before | after |
+| --- | --- | --- |
+| derivations built by `nix build` of services1's toplevel | **40** | **8** |
+| native crates recompiled | all 9 | 1 (`slack-agent`) |
+| wasm bundles rebuilt | 2 | 0 |
+| wall clock | 102 s | 41 s |
+
+The fix is `subSource` in `common/crane.nix`: filter to the subtree first, then splice *that*,
+so the input moves only when that crate moves. `lib.cleanSourceWith` keeps the tree rooted at
+`crates/`, so callers reach through it (`\${subSource "common-rs/json"}/common-rs/json`), and
+`withSharedCrates`/`wasmSpa` grew a `srcRoot` for the same reason.
+
+The same day, `mkDummySrc` was found to be fed `workspaceSrc` (everything) rather than a
+manifest-only tree — so the stub tree moved on any `.rs` edit too, which is precisely what this
+file's own comment claimed was impossible. `workspaceManifests` is the fix, and it is the
+second instance of a pattern worth naming: **a comment describing an invalidation boundary is
+not an invalidation boundary.** `nix flake check` cannot see any of this; the only test is
+`grep -c "^building " <build log>` on a change that touches one file. Do that once after
+touching `common/crane.nix` — the numbers above are reproducible in two minutes, and a fix that
+silently regrows the rebuild cost is invisible until someone adds the tenth crate.
+
+(Re-verify with: add a comment line to any one crate, `nix build --no-link
+.#nixosConfigurations.services1.config.system.build.toplevel`, and count `^building ` lines and
+`Compiling` lines per crate. Expect ~8 derivations and exactly one crate compiling.)
+
+### `sharedCrates` is transitive, and only the Nix build checks it
+
+`CRANE.crate` builds one member from a tree where every `common-rs/` crate the member does not
+name in `sharedCrates` is present as crane's **manifest-only stub** — that is what keeps a `.rs`
+edit from rebuilding every program (§above). So the list is not documentation, it is a
+correctness input, and it has to include the crates your crate reaches *through* another shared
+crate:
+
+- 2026-11-16, `slack-agent`: it depends on `common-mcp`, and `common-mcp`'s client calls
+  `common_http::post_json`. `sharedCrates = [ json mcp service ]` — no `http`.
+- `cargo build` and `just test`: **green**, because in the real workspace every path dependency
+  resolves to real code.
+- `nix build .#nixosConfigurations.services1.config.system.build.toplevel`:
+  `error[E0425]: cannot find function post_json in crate common_http`, with the error attributed
+  to `common-rs/mcp/src/lib.rs` — a file in a crate that was *correctly* listed.
+
+So **`just check-build` is the gate for adding a shared crate**, not `just test`, and the comment
+in `machines/services1/services/slack-agent.nix` now says so where the list is. Deriving the list
+from the members' `[dependencies]` `path = "../common-rs/X"` tables (transitively, with
+`builtins.fromTOML`) is open in `docs/follow-ups.md`; until it is done, read the list as "what my
+crate's transitive Rust closure touches".
+
 ## Local Rust workflow
 
 ```bash

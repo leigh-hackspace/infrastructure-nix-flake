@@ -138,13 +138,67 @@
 
   relativeToWorkspace = path: lib.removePrefix (toString workspaceRoot + "/") (toString path);
 
+  # ONE CRATE, AS A SOURCE OF ITS OWN. Read this before splicing `${workspaceRoot}/x`.
+  #
+  # Splicing a subpath — `cp -a \${workspaceRoot}/common-rs/json` — looks like it copies one directory, and it
+  # does — but a *splice* of a subpath makes the whole `crates/` tree an **input** of the
+  # derivation, because that is how Nix resolves `<store path>/subdir` for a source path.
+  # Measured 2026-11-16: every `-src` derivation carried `-crates` in its inputs, so a
+  # one-line comment change to `slack-agent` invalidated every crate's source and a switch
+  # rebuilt nine native crates and two wasm bundles (40 derivations, 102 s) to change one
+  # binary. That is the opposite of what `memberSrc`'s stub tree exists to prevent, and it
+  # is invisible in a warm store: the first person to notice is whoever adds the tenth crate.
+  #
+  # Filtering to the subtree first costs one extra store path per crate and buys an input
+  # that moves only when *that* crate moves. The predicate keeps every ancestor of `rel`
+  # (excluding a directory prunes its contents) and nothing else.
+  subSource = rel:
+    lib.cleanSourceWith {
+      name = builtins.replaceStrings ["/"] ["-"] rel;
+      src = workspaceRoot;
+      filter = path: _type: let
+        r = relativeToWorkspace path;
+        prefix = builtins.dirOf rel;
+      in
+        r
+        == ""
+        || r == rel
+        || lib.hasPrefix (rel + "/") r
+        || (prefix != "." && (r == prefix || lib.hasPrefix (prefix + "/") r));
+    };
+
+  # The workspace as cargo sees it: every native member, no SPAs, no non-members.
+  workspaceFilter = path: _type: let
+    rel = relativeToWorkspace path;
+  in
+    !lib.any (d: rel == d || lib.hasPrefix (d + "/") rel) (spaMembers ++ nonMemberPrograms);
+
   workspaceSrc = lib.cleanSourceWith {
     src = workspaceRoot;
-    filter = path: _type: let
-      rel = relativeToWorkspace path;
-    in
-      !lib.any (d: rel == d || lib.hasPrefix (d + "/") rel) (spaMembers ++ nonMemberPrograms);
+    filter = workspaceFilter;
   };
+
+  # The same tree, reduced to what cargo needs in order to *resolve* a workspace: the
+  # manifests and the lock. This is what `memberSrc`'s stub tree is built from, and it is
+  # the second half of the `subSource` story: `mkDummySrc` reads its source at evaluation
+  # time (see the note on `withSharedCrates`), so handed `workspaceSrc` its output moves on
+  # any `.rs` edit anywhere — which is exactly the claim this file's own comment makes about
+  # `workspaceArtifacts` and which, measured 2026-11-16, the code was not actually doing.
+  workspaceManifests = lib.cleanSourceWith {
+    name = "crates-manifests";
+    src = workspaceRoot;
+    filter = path: type:
+      workspaceFilter path type
+      && (type
+        == "directory"
+        || builtins.elem (baseNameOf path) [
+          "Cargo.toml"
+          "Cargo.lock"
+          "config"
+          "config.toml"
+        ]);
+  };
+
   workspaceVendorDir = vendorDirFor {
     src = workspaceSrc;
     lockPath = workspaceLockPath;
@@ -199,18 +253,18 @@
       lib.concatMapStringsSep "\n" (c: ''
         rm -rf $out/common-rs/${c}
         mkdir -p $out/common-rs
-        cp -a ${workspaceRoot}/common-rs/${c} $out/common-rs/${c}
+        cp -a ${subSource ("common-rs/" + c)}/common-rs/${c} $out/common-rs/${c}
       '')
       sharedCrates;
   in
     pkgs.runCommand "${pname}-src" {} ''
       mkdir -p $out
-      cp -a ${craneLib.mkDummySrc {src = workspaceSrc;}}/. $out/
+      cp -a ${craneLib.mkDummySrc {src = workspaceManifests;}}/. $out/
       # Store paths are read-only and cp -a preserves the mode, so make the copy
       # writable before replacing anything in it.
       chmod -R u+w $out
       rm -rf $out/${member}
-      cp -a ${workspaceRoot}/${member} $out/${member}
+      cp -a ${subSource member}/${member} $out/${member}
       ${copies}
     '';
 
@@ -294,13 +348,16 @@
   withSharedCrates = {
     pname,
     src,
+    # When `src` is a `subSource` its contents sit under the workspace root rather than at
+    # the top, so say which subdirectory to copy. Empty means "src is already the tree".
+    srcRoot ? "",
     names ? [],
     extra ? {},
   }: let
     copies =
       lib.concatMapStringsSep "\n" (n: ''
         mkdir -p $out/common-rs
-        cp -a ${workspaceRoot}/common-rs/${n} $out/common-rs/${n}
+        cp -a ${subSource ("common-rs/" + n)}/common-rs/${n} $out/common-rs/${n}
       '')
       names;
     locals =
@@ -313,7 +370,7 @@
   in
     pkgs.runCommand "${pname}-src" {} ''
       mkdir -p $out
-      cp -a ${src}/. $out/
+      cp -a ${src}${lib.optionalString (srcRoot != "") "/${srcRoot}"}/. $out/
       # Store paths are read-only and cp -a preserves the mode, so make the copy writable
       # before replacing anything in it.
       chmod -R u+w $out
@@ -366,13 +423,14 @@
     wasmName,
     sharedCrates ? [],
     extraSources ? {},
+    srcRoot ? "",
   }: let
     resolved =
-      if sharedCrates == [] && extraSources == {}
+      if srcRoot == "" && sharedCrates == [] && extraSources == {}
       then src
       else
         withSharedCrates {
-          inherit pname src;
+          inherit pname src srcRoot;
           extra = extraSources;
           names = sharedCrates;
         };
@@ -430,7 +488,8 @@
     dist = wasmSpa {
       pname = "${name}-web";
       inherit version;
-      src = workspaceRoot + "/${name}/frontend";
+      src = subSource "${name}/frontend";
+      srcRoot = "${name}/frontend";
       cargoLockPath = workspaceRoot + "/${name}/frontend/Cargo.lock";
       wasmName = "${underscored}_web";
       sharedCrates = spaSharedCrates;
@@ -461,6 +520,7 @@ in {
     wasmSpa
     workspaceArtifacts
     workspaceRoot
+    workspaceManifests
     workspaceSrc
     ;
 }
