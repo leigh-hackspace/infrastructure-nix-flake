@@ -1,8 +1,11 @@
 # aibox runs the shared status dashboard (common/status-dashboard.nix).
 #
-# aibox has no nginx of its own: it binds on 0.0.0.0 and services1 is the
-# SSL-terminating reverse proxy for it (aibox.status.leighhack.org /
-# aibox-status.int.leighhack.org, see machines/services1/services/status.nix).
+# aibox has no nginx of its own: it binds on 0.0.0.0 and the front door on `gw`
+# proxies to it (`aibox-status.int.leighhack.org`, a direct row in
+# common/front-door.nix). It used to have a public twin,
+# `aibox.status.leighhack.org`; that row was deleted on 2026-11-16 because the name
+# was never added to the DigitalOcean zone, so the wildcard certificate could not
+# have matched it even if it resolved (`docs/router-front-door-migration.md`).
 {config, ...}: {
   imports = [../../common/status-dashboard.nix];
 

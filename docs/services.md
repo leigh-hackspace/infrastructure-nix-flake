@@ -595,8 +595,12 @@ state of the machine — is `machines/services3/README.md`. The front-door mecha
 `status-dashboard` is the house style for a small Rust service: shared module
 `common/status-dashboard.nix`, wired per machine
 (`machines/services1/services/status.nix`,
-`machines/aibox/status-dashboard.nix`), run on both boxes and reverse-proxied by
-services1 as `status.*` / `aibox.status.*`. `moonraker-exporter` polls the two
+`machines/aibox/status-dashboard.nix`), run on both boxes with services2's own copy, and
+served by the front door on `gw` as `services1-status.int` / `services2-status.int` /
+`aibox-status.int` — LAN names only, since the two public twins were deleted on
+2026-11-16 with no DNS record behind them (`docs/follow-ups.md`). The `*.int` rows carry
+`lanToken = true`, which is what lets `POST /api/restart` work on the LAN without an SSO
+sign-in. `moonraker-exporter` polls the two
 print servers' APIs; see `machines/services1/services/printer-monitoring.nix` and
 `docs/printer-servers.md`.
 

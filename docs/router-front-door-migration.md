@@ -153,9 +153,12 @@ The HTTP servers bind loopback (8085 headscale, 8086 headplane); every client of
   appliance's admin UI was deliberately not reopened). It is a 502, carried forward so the
   migration changed no answer. Delete the row and the `firewall` label together, or say
   what 60443 is for.
-* `aibox.status.leighhack.org` is a row (and a gatus endpoint) with no DigitalOcean record,
-  and the certificate's `*.leighhack.org` cannot match a two-label name. It has never
-  worked from outside; it needs a record and a `*.status.leighhack.org` SAN, or deletion.
+* `aibox.status.leighhack.org` **is gone (2026-11-16)**: it was a row and a gatus
+  endpoint with no DigitalOcean record, and the certificate's `*.leighhack.org` cannot
+  match a two-label name, so it could never have worked from outside. Its row, the
+  `status.leighhack.org` row, and the aibox/services1 vhosts behind them were deleted
+  together, and the gatus check now points at `services1-status.int`
+  (`docs/follow-ups.md`, "Two public status vhosts have no DNS record").
 * `authentik.int.leighhack.org` is in `common/int-dns.nix`'s `exempt`: the appliance at
   `10.3.1.36` answers it for RADIUS/LDAP while the door also serves it as an alias of
   `id.int`. Which answer should win is still open (`docs/follow-ups.md`).

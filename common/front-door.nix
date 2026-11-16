@@ -206,10 +206,6 @@ in {
       upstream = "http://${hosts.aibox}:8088";
       lanToken = true;
     };
-    "aibox.status.leighhack.org" = {
-      upstream = "http://${hosts.aibox}:8088";
-      sso = true;
-    };
     "immich.leighhack.org" = {
       upstream = "http://${hosts.aibox}:2283";
       websockets = true;
@@ -480,10 +476,6 @@ in {
       upstream = "origin";
       serverAliases = ["api-doors.leighhack.org"];
       acl = "none";
-    };
-    "status.leighhack.org" = {
-      upstream = "origin";
-      sso = true;
     };
     "retro.int.leighhack.org" = {
       upstream = "origin";

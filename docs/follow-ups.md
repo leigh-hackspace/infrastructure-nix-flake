@@ -1199,6 +1199,17 @@ thing to do with either is to date it (`journalctl -u … | grep "Failed with re
   records (public apps CNAME → `nginx.leighhack.org`) or drop the vhosts and the
   endpoint.
 
+  **Closed 2026-11-16 by dropping them.** Nothing was reachable at either name, and
+  the dashboards have always been used through their `*.int` twins, so the deletion
+  was chosen over minting records — and `aibox.status` would have needed a
+  `*.status.leighhack.org` SAN as well, which the wildcard does not cover. Gone: both
+  rows in `common/front-door.nix`, the `status.leighhack.org` origin vhost, and the
+  gatus endpoint, which is now the LAN twin `https://services1-status.int.leighhack.org`.
+  What stays
+  is the lesson, in `docs/network-upgrade-runbook.md`: a public vhost with no record
+  passes every gate this repo has, so the runbook's baseline probe of
+  `common/monitoring-endpoints.nix` is what finds them, not `just check`.
+
 - **Three gatus checks point at names that have never existed** (found 2026-10-15
   while taking the upgrade's endpoint baseline). `common/monitoring-endpoints.nix`
   monitors `http://3d-1.int.leighhack.org`, `3d-2` and `3d-3`; `getent` says

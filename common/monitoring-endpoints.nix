@@ -280,8 +280,14 @@
       status = "[STATUS] == 200";
     })
     (mkHttp {
+      # services1's own dashboard, on its LAN name. It used to be
+      # `https://status.leighhack.org`, a check that had never once been green: the
+      # vhost existed on the origin and the door, the DigitalOcean record never did,
+      # so gatus dialled a name that is NXDOMAIN for every resolver on the internet
+      # (`docs/follow-ups.md` had it as "red since the day it was written", and the
+      # two vhosts and this URL were deleted together on 2026-11-16).
       name = "Status Dashboard";
-      url = "https://status.leighhack.org";
+      url = "https://services1-status.int.leighhack.org";
     })
     (mkHttp {
       name = "Gatus";
