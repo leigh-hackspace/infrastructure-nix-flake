@@ -1942,16 +1942,42 @@ thing to do with either is to date it (`journalctl -u … | grep "Failed with re
   `docs/auth-posix-logins.md` §F5.
 
 - **Every origin behind the front door still rewrites `X-Forwarded-Proto` and `X-Real-IP`;**
-  `id.int` is the only one that has opted out. nixpkgs' `recommendedProxySettings` sets
-  `$scheme`/`$remote_addr` in each origin's `location /`, so an origin believes its clients
-  are `10.3.1.1` and that nothing uses TLS — the door's honest values arrive and are then
-  overwritten. It broke authentik the day `id.int` became an origin (mixed content; fixed
-  2026-10-28 with `preserveForwardedHeaders = true`). Auditing the other seven means reading
-  each app's own IP allowlists first: today a LAN-only rule in one of them admits the
-  internet, so fixing the header is a behaviour change and each flip wants its own commit.
-  The invariant that makes the flip safe is already true — `originReachabilityRules` in
-  `machines/gw/firewall.nix` plus `CONFIG.ROUTER_ONLY` mean no client reaches an origin
-  except the door, so the forwarded headers cannot be forged. `common/nginx/origin-vhost.nix`.
+  `id.int` and `outline` have opted out, the rest have not. nixpkgs' `recommendedProxySettings`
+  sets `$scheme`/`$remote_addr` in each origin's `location /`, so an origin believes its
+  clients are `10.3.1.1` and that nothing uses TLS — the door's honest values arrive and are
+  then overwritten. It broke authentik the day `id.int` became an origin (mixed content; fixed
+  2026-10-28 with `preserveForwardedHeaders = true`), and it broke `outline.leighhack.org`
+  **completely** for three weeks from the same cutover: an app that enforces HTTPS itself
+  redirects to the https URL, the door answers and re-proxies it as `http`, and every request
+  on the site 301s to itself forever. Symptom measured 2026-11-16 — `ERR_TOO_MANY_REDIRECTS`,
+  and the fix was `preserveForwardedHeaders = true` on that vhost after reading Outline's own
+  middleware and confirming it has **no inbound IP allowlist** (auth is OIDC only), so nothing
+  could start refusing traffic; receipts and why `forceHttps = false` is the wrong fix are in
+  `common/nginx/origin-vhost.nix`, which is also the file to read before flipping another
+  origin. Auditing the rest means reading each app's own IP allowlists first: today a LAN-only
+  rule in one of them admits the internet, so fixing the header is a behaviour change and each
+  flip wants its own commit. The invariant that makes the flip safe is already true —
+  `originReachabilityRules` in `machines/gw/firewall.nix` plus `CONFIG.ROUTER_ONLY` mean no
+  client reaches an origin except the door, so the forwarded headers cannot be forged.
+  A sweep of all 54 door names on 2026-11-16 found exactly two still showing the lie:
+  `outline` (fixed) and `user-tweaker.int`, which is **not** an origin — the door proxies it
+  straight to `10.3.1.30:8084` (`apps1`, off-flake), where the container re-derives the scheme
+  itself, so nothing in this flake can fix it. It emits `redirect_uri=http://user-tweaker…`,
+  which means the OIDC authorization code crosses one cleartext hop before the door's
+  `forceSSL` catches it — worth fixing on `apps1`, and the only other victim found.
+
+- **`outline.leighhack.org` has no gatus endpoint, and that is why a public site answering
+  nothing but `301`s was nobody's alarm for three weeks** (found 2026-11-16, while fixing it
+  above). `common/monitoring-endpoints.nix` carries rows for `user-tweaker` and the APIs but
+  none for Outline, so `gatus` reported every one of its 37 endpoints UP while the site was
+  completely unusable — the same failure shape as a stale dashboard: a monitor that does not
+  watch a thing cannot distinguish "quiet" from "dead". The row is one `mkHttp` and a
+  `[STATUS] == 200` condition, which is precisely what a self-redirect loop fails (a loop
+  answers `301`, never `200`); it is deliberately not bundled into the fix commit. Audit the
+  rest of `common/front-door.nix` against the endpoint list while adding it — the sweep found
+  four other names answering `502` (`jenkins.int` and `ai.int` have dead upstreams, `voron`
+  is offline, `firewall.int` is the deliberately-dead row) and none of them are monitored
+  either.
 
 - **`https://authentik.int.leighhack.org/` serves nothing, by design, and never did.** The
   name resolves to `10.3.1.36` (services1) rather than to the door and services1 serves no

@@ -42,6 +42,29 @@
 # origin). Verified by fetching the same page twice — through the door (`http`) and
 # straight to the container with `X-Forwarded-Proto: https` (`https`).
 #
+# The second class of victim is harder than mixed content, because it is not partial: an
+# app that enforces HTTPS *itself* redirects every request to the https URL, the door
+# answers that over TLS and re-proxies it here as `http`, and the site is a
+# `ERR_TOO_MANY_REDIRECTS` loop with no page at all. `outline.leighhack.org` was that for
+# the three weeks between the 2026-10-24 origin cutover and 2026-11-16 — Outline 1.12.0
+# enables the middleware unless told otherwise (`FORCE_HTTPS … ?? "true"` in
+# `$out/share/outline/build/server/env.js`, applied in `services/web.js`), and its redirect
+# preserves the path, so every URL on the site 301s to itself. The app was never at fault
+# and `services.outline.forceHttps = false` is the wrong fix: it stops the loop but leaves
+# Outline believing nothing terminates TLS upstream, which its own code warns weakens CSRF
+# protection (a cookie a sibling subdomain can write), and it builds its OIDC
+# `redirect_uri` from that same request. Opting the vhost in fixes both.
+#
+# **Two traps hid it.** First, `common/monitoring-endpoints.nix` has no row for
+# `outline.leighhack.org`, so a public name answering nothing but 301s was a failure
+# nowhere on this network — an unmonitored name is invisible in the same way a stale
+# dashboard is, and `gatus` reported every endpoint UP throughout. Second, the obvious A/B
+# test is invalid: `curl -H 'X-Forwarded-Proto: https'` sent **through the door or through
+# this origin's own vhost** proves nothing, because `recommendedProxySettings` replaces
+# that very header with `$scheme` on the way in — which is the bug being tested for. Dial
+# the app's own port to learn what it receives: the same request to `127.0.0.1:8400`
+# answered `301` bare and `200` with the header, which is the whole diagnosis in two lines.
+#
 # `preserveForwardedHeaders = true` passes the door's values through instead, and it is
 # safe to do at all because of an invariant this box already enforces twice over:
 # **there is no path to an origin that does not go through the front door**
