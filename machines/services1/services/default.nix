@@ -31,6 +31,10 @@
     # Moved off `apps1` here on 2026-11-16; `10.3.1.30:8123` now forwards to it and
     # logs whoever still dials the old address. Read its header before touching the
     # flags — the absence of `--privileged`/`--device` is the Zigbee-safety decision.
+    # The hackspace Space API (public `api.leighhack.org`), off `apps1` on 2026-11-16. Its
+    # credential is runtime state at /var/lib/hackspace-api/env — read the header before
+    # thinking about making that a sops `sopsSecretText`.
+    ./hackspace-api.nix
     ./home-assistant.nix
     ./librespeed.nix
     ./matrix.nix

@@ -95,29 +95,22 @@
     ];
   };
 
-  # `apps1` is **not** in `common/hosts.nix`, deliberately: that table is the
-  # network's flake machines, and this is an off-flake Proxmox VM this flake only
-  # points at.  Its address is pinned by MAC in `common/dns-records.nix`, so the two
-  # places cannot disagree about where the Space API lives — and if `apps1` ever
-  # moves, that row is the one to change and this is the one to notice
-  # (`docs/monster-proxmox.md` owns the box).
+  # Which addresses the tools may read.  Plain HTTP, one flag each, so the unit states its
+  # whole reach in eleven lines: five sources, **four on this box** and one on the router.
   #
-  # Home Assistant used to be the other thing on that address, and is not any more:
-  # it moved to this box on 2026-11-16, so `--hass-url` below is loopback and only
-  # the Space API still dials `APPS1`.  `10.3.1.30:8123` still answers, because a
-  # forwarding proxy on that box is deliberately left running to catch whoever still
-  # dials the old address (`docs/home-assistant-on-services1-2026-11-16.md`) — which
-  # is why nothing here had to change on the same day the app did.
-  APPS1 = "10.3.1.30";
-
-  # Which addresses the tools may read.  Plain HTTP on the LAN, one flag each, so
-  # the unit states its whole reach in eleven lines: five sources, one on `apps1`,
-  # three on this box, one on the router.
+  # Nothing here dials `apps1` any more, which is worth stating because it did until 2026-11-16:
+  # Home Assistant and the Space API were both on that VM and both moved here (`machines/
+  # services1/services/home-assistant.nix`, `./hackspace-api.nix`).  `common/hosts.nix` still
+  # deliberately omits `apps1` — it is an off-flake Proxmox VM whose address this flake only
+  # points at, pinned by MAC in `common/dns-records.nix` (`docs/monster-proxmox.md` owns the
+  # box) — but with the last in-tree caller gone, an `apps1` outage now costs the Slack bot
+  # nothing.  The only thing left dialling it is its own Prometheus, and the front door's
+  # `jenkins`/`access-api`/`user-tweaker` rows.
   mcpFlags = [
     "--listen"
     "127.0.0.1:8191"
     "--space-url"
-    "http://${APPS1}:8081"
+    "http://127.0.0.1:8081"
     "--hass-url"
     "http://127.0.0.1:8123"
     "--frigate-url"

@@ -275,7 +275,13 @@ in {
       note = "public today via its DO record; the door keeps the ACL off it rather than widening a rule";
     };
     "api.int.leighhack.org" = {
-      upstream = "http://10.3.1.30:8081";
+      # services1 since 2026-11-16 (was the `apps1` VM). The Space API is this space's public
+      # machine-readable presence: the door logged 7,939 external /space.json requests in 40 h
+      # from spacer-fetch, Maps of Making, mapall.space, SpacePush, HackerspacesGlobe and the
+      # hackerspace news feed, plus 448 /events.ics subscriptions. Of everything the door serves,
+      # this is the row with an audience off the network, so it is the row least allowed to be
+      # off-flake.  `docs/home-assistant-on-services1-2026-11-16.md`.
+      upstream = "http://10.3.1.20:8081";
       serverAliases = ["api.leighhack.org"];
       acl = "none";
     };
