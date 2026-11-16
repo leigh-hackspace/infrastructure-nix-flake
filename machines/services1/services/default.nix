@@ -28,6 +28,10 @@
     ./gatus.nix
     # ./gitlab.nix
     ./gocardless-dashboard.nix
+    # Moved off `apps1` here on 2026-11-16; `10.3.1.30:8123` now forwards to it and
+    # logs whoever still dials the old address. Read its header before touching the
+    # flags — the absence of `--privileged`/`--device` is the Zigbee-safety decision.
+    ./home-assistant.nix
     ./librespeed.nix
     ./matrix.nix
     ./mattermost.nix

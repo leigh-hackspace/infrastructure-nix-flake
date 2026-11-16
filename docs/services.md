@@ -41,7 +41,36 @@ Every address is in `common/hosts.nix`.
 | Frigate (NVR) | `machines/services1/services/frigate.nix` (podman; the **camera config is off-flake**, `/srv/frigate/config/config.yaml`) | services1:5000 insecure, :8971 secure, :1984 go2rtc, :8554-5 | `docs/frigate-false-positives-2026-11-12.md` (detection quality, detectors, and why there is no GPU offload) |
 | strata | `machines/*/strata.nix` | services2:8080 → `strata.int.leighhack.org` (LAN, key injected) and `strata.leighhack.org` (public, API key); aibox:8080 → `strata2.int.leighhack.org` (LAN, key injected) | `machines/aibox/STRATA.md`, `machines/services2/STRATA.md` |
 | llama.cpp (Ternary-Bonsai-2-9B-Q2_0 + vision) | `machines/services3/llama.nix` + `nvidia.nix` | services3:8080 → `llama.int.leighhack.org` (LAN only, **no** key injected) | `machines/services3/README.md` |
+| Home Assistant | `machines/services1/services/home-assistant.nix` (podman, **host network**, image **pinned**; state is `/srv/homeassistant`, which the flake only mounts) | `127.0.0.1:8123` here → `ha.int.leighhack.org` via the door; `10.3.1.30:8123` is a logging forwarder, not the app | `docs/home-assistant-on-services1-2026-11-16.md` (the move, the client map, the Zigbee-radio trap, `just ha-legacy-watch`) |
 | ups-watchdog | `crates/ups-watchdog/` | no port: it is a oneshot, and it calls out (ssh `wall`, ssh `poweroff`) | `docs/ups-and-fleet-shutdown.md`, `machines/gw/ups.nix` |
+
+---
+
+## Adding a service module to a machine — the import list is explicit, and silence is not success
+
+**A new file under a machine's `services/` directory does nothing until that directory's
+`default.nix` names it.** `machines/services1/services/default.nix`'s `imports` is a hand-written
+list (that is also how rule 23's `# PARKED` lines work), so a module dropped beside thirty-odd
+imported files is **never evaluated**: no error, no warning, no changed derivation for the thing
+you added, and `just check` stays green because nothing was ever asked to read the file.
+
+Measured 2026-11-16 with Home Assistant: `machines/services1/services/home-assistant.nix` was
+written, formatted, `git add`ed and passed `just check`; `nix build` of services1's toplevel then
+**did not contain `etc/systemd/system/podman-home-assistant.service`**. The list is the fix.
+
+So the test of "did my new service get added" is never `ls`, and never `just check` — it is the
+rendered artefact out of a real build:
+
+```bash
+out=$(nix build ".#nixosConfigurations.services1.config.system.build.toplevel" --no-link --print-out-paths)
+ls "$out/etc/systemd/system/" | grep -F <unit-name>          # absent = the module is not imported
+```
+
+…which is rule 10's discipline (read the rendered unit) doing double duty as rule 5's (an
+untracked/unwired file is invisible to the flake). The general form: **`grep` the build output,
+not the source tree, for what a machine actually runs** — the same reason `just check` cannot
+approve a parked module, and the reason `machines/gw/lib/check-network-tables.nix` is written
+against the tables rather than against a comment saying what they contain.
 
 ---
 

@@ -67,8 +67,20 @@ a serial device and `qm config 109` has none, so adding one would mean a reboot.
 Inside, `apps1` keeps its own hand-written docker+systemd services under `/srv`
 (`grafana`, `homeassistant`, `jenkins`, `mosquitto`, `prometheus`, `uptimekuma`,
 `usertweaker`, `vulcanbot`, `zigbee2mqtt`, `hackspaceapi`, `home`) — `/srv` and its own units,
-whether or not they are running (three are not, below). None of it is
+whether or not they are running (three are not, below, and `homeassistant` is a fourth as of
+2026-11-16, moved off this box). None of it is
 declarative; the flake only points at this box.
+
+**Home Assistant is not on this box any more (2026-11-16).** It moved to services1 as a podman
+container (`machines/services1/services/home-assistant.nix`), and what answers `10.3.1.30:8123`
+here now is a `socat` forwarder to `10.3.1.20:8123` whose journal is how we find any device that
+hardcoded this address (`just ha-legacy-watch`). The address itself could not move — four
+front-doored origins (`:8081`–`:8084`), `cupsd` on `:631`, and this box's own Prometheus all still
+live here — which is the whole difference from the authentik `.36` move in
+`docs/authentik-container-migration.md`. `home-assistant.service` is stopped and disabled, not
+removed, and `/srv/homeassistant` is untouched: that is the rollback.
+`docs/home-assistant-on-services1-2026-11-16.md` owns the move, the client map, and the ZHA radio
+collision a flag-for-flag copy would have caused.
 
 **Three of those are parked now, and `vulcanbot` is the newest.** `vulcan-bot.service` was
 stopped, disabled, **file-removed from `/etc/systemd/system` and masked** on 2026-11-16 —

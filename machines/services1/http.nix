@@ -56,18 +56,25 @@ in {
       # origin row rather than a one-line proxy at the door (the door only needs the
       # name). The client's Host and the `X-WEBAUTH-USER` the gate set both arrive
       # through the door untouched.
+      #
+      # Local since 2026-11-16: HA moved here from `apps1` (its own module in
+      # machines/services1/services/ now), so the app is a process on this box and `127.0.0.1` is
+      # the honest peer — it also means HA's `trusted_proxies` list, which already carries
+      # `127.0.0.1`, needed no edit for `use_x_forwarded_for` to keep working. The old
+      # `http://10.3.1.30:8123` is served by a forwarding proxy for whoever still dials
+      # it (`docs/home-assistant-on-services1-2026-11-16.md`).
       "ha.int.leighhack.org" = {
         extraConfig = CONFIG.ROUTER_ONLY;
 
         locations."/" = {
-          proxyPass = "http://10.3.1.30:8123";
+          proxyPass = "http://127.0.0.1:8123";
           recommendedProxySettings = true;
           proxyWebsockets = true;
         };
 
         # Authentik support
         locations."/auth/authorize" = {
-          proxyPass = "http://10.3.1.30:8123";
+          proxyPass = "http://127.0.0.1:8123";
           recommendedProxySettings = true;
           proxyWebsockets = true;
           extraConfig = ''

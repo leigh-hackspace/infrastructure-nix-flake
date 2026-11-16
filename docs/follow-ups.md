@@ -1103,17 +1103,54 @@ thing to do with either is to date it (`journalctl -u … | grep "Failed with re
   through the name, and what actually dials it) if headscale ever moves again.
 
 
-- **Home Assistant on `apps1` runs whatever `:stable` meant today, and it moved on 2026-10-31
-  (2026-11-02)**. Its hand-written `home-assistant.service` pulls
-  `ghcr.io/home-assistant/home-assistant:stable` in `ExecStartPre` and runs the same tag in
+- **The `10.3.1.30:8123` forwarder is a crutch with a due date, and one known client is still
+  leaning on it (2026-11-16)**. Home Assistant moved to services1, but a `socat` unit on `apps1`
+  keeps the old address answering so that whatever still dials it keeps working *and* logs itself
+  (`just ha-legacy-watch`). Everything found so far is `apps1`'s own containers, and one of them
+  was left deliberately: **`hackspace-api`** dials `HOMEASSISTANT_INSTANCE=http://apps1.int.leighhack.org:8123`, set
+  in `/etc/docker/environment_files/hackspaceapi` on `apps1` — 194 connections in the 29 minutes
+  before the move, the single biggest user of the legacy path, and the one whose restart (it is
+  the Space API the Slack bot and the public status page read) did not belong inside a move. It
+  also resolves `apps1.int.leighhack.org` to the old box by DNS, so it is one of the reasons that
+  name must keep answering while `apps1` lives. **Blocks:** retiring the forwarder. **To do:**
+  repoint that one env line at `10.3.1.20:8123` (or `ha.int.leighhack.org` over TLS) at a quiet
+  moment, confirm `just ha-legacy-watch` stops showing `172.17.0.x`, then remove the unit when it
+  has read clean for 30 days. **Re-verify with:** `just ha-legacy-watch 7` — the retirement
+  criterion is *no source other than* `10.3.1.20` *and* `127.0.0.1`; and `systemctl
+  is-enabled ha-legacy-proxy.service` on `10.3.1.30` should eventually answer `disabled`, then
+  `Unit … could not be found`.
+
+- ~~**Home Assistant on `apps1` runs whatever `:stable` meant today, and it moved on 2026-10-31**~~
+  — **closed 2026-11-16 by the move to services1, where the image is a version, not a tag.** Its
+  hand-written `home-assistant.service` pulled
+  `ghcr.io/home-assistant/home-assistant:stable` in `ExecStartPre` and ran the same tag in
   `ExecStart`, so HA core went `2026.10.0` → `2026.10.4` on the box without anyone changing
   anything, and 2026.10.4 turned the Frigate integration's deprecated `via_device` into a fatal
   `RuntimeError` (12 failed camera-entity registrations on 2026-10-31; the HACS-installed 5.15.6
-  fixes it but only on the next restart). The unit is off-flake (apps1, Proxmox VM 109), so pinning
-  the tag is a deliberate choice on the box rather than a flake edit — pin to a *specific* version
-  and keep `systemctl status` in the same invocation as the restart, since a unit whose pinned tag
-  cannot start takes HA down. Measured state, receipts and the diagnostic order:
-  `docs/homeassistant-frigate-via-device-2026-11-02.md`.
+  fixes it but only on the next restart). The unit was off-flake (apps1, Proxmox VM 109), so
+  pinning was a choice on the box rather than a flake edit — and it had drifted again in the
+  fortnight since: `.HA_VERSION` read `2026.11.0` on 2026-11-16. HA is now
+  `machines/services1/services/home-assistant.nix`, pinned to `2026.11.0` — the core it was
+  already running, so the move itself carried no version change — which also makes the nightly
+  `update-containers.timer` leave it alone, since that script only restarts a unit whose image
+  digest moved. Upgrading HA is now an edit to `HA_IMAGE` plus a switch. Measured state, receipts
+  and the diagnostic order: `docs/homeassistant-frigate-via-device-2026-11-02.md`; the move and
+  the `10.3.1.30:8123` forwarder that is watching for whoever still dials the old address:
+  `docs/home-assistant-on-services1-2026-11-16.md`.
+
+- **The nightly container updater puts a Slack webhook in a world-readable store path
+  (2026-11-16)**. `machines/services1/containers.nix` passes
+  `webhookUrl = trim (readFile (config.sopsSecretText "slack_url"))`, and nixos-utils renders it
+  as a literal `let WEBHOOK_URL = "https://hooks.slack.com/…"` inside
+  `/nix/store/…-update-containers/bin/update-containers` — a nushell script any local user can
+  read, on every box that substitutes it. This is exactly the cost "What build-time decryption
+  costs, in one place" (AGENTS.md, Secrets) says `sopsSecretText` buys, and here it buys a Slack
+  notification. **Blocks:** nothing. **To do:** have the script read the webhook from a
+  `/run/secrets` path or from `EnvironmentFile` instead of embedding it, or move the notification
+  behind a local unit that reads the secret itself. **Re-verify with:** `grep -c hooks.slack.com
+  $(systemctl cat update-containers.service | sed -n 's|^ExecStart=\([^ ]*\).*|\1|p')` — a
+  non-zero count while `webhookUrl` is set (no sudo needed to read the script, which *is* the
+  finding), and no match once it reads the webhook from a runtime path instead of a literal.
 
 - **`nginx.int`'s AAAA record is a ULA, and now points at `gw`**
   (`fd99:dead:beef:225d::1`; `nginx.leighhack.org`'s AAAA is the public
