@@ -35,6 +35,17 @@
     nmap
     # Development Tools
     git
+    # GitHub's CLI, for the API rather than for transport: git over ssh already works
+    # here (origin is git@github.com:, keyed by each box's own account key), and `gh`
+    # is the way to ask GitHub about PRs, workflow runs and releases without a token in
+    # a URL or a `curl` with an `Authorization:` header in the transcript (rule 13).
+    # Only the *binary* is declarative: `gh auth login` writes
+    # ~/.config/gh/hosts.yml holding an OAuth token, which is per-account runtime state
+    # and must never be generated into the store — a store path is world-readable to
+    # every box that builds or substitutes it (the reason `config.sopsSecretText` is
+    # gated by name in common/sops.nix).  So `gh` lands on a box with `just switch`
+    # and signs in once per account afterwards, off NAS-backed home directories.
+    gh
     direnv
     deno
     # jq and python3 are on every box so ad-hoc inspection (flake.lock, the JSON
