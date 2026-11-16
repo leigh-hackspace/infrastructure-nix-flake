@@ -95,6 +95,16 @@ in {
           Address = [
             "10.3.1.20/24"
             "10.3.1.36/24" # the IdP: RADIUS 1812/udp, LDAP 389/636, see above
+            # The intercom (services/pbx.nix), since the 2026-11-16 move off the
+            # `mercury` VM. Same reason `.36` is here: the address is the fact the
+            # clients hold, and here the clients are two Snom handsets with this IP in
+            # their SIP account, re-typed by hand at a desk. Unlike `.36` this address
+            # is *inside* VLAN 225's dynamic range, which is why
+            # `machines/gw/dns.nix` carries a `dhcp-host=10.3.1.166,ignore` line —
+            # without it dnsmasq can hand the phone system's address to a laptop, and
+            # the phones fail by going silent rather than by erroring. Moving it out of
+            # the pool (and giving it a name) is the open item in docs/follow-ups.md.
+            "10.3.1.166/24"
             "2001:8b0:1d14:225::20/64" # Public
             "2001:8b0:1d14:225:d::1020/64" # LEGACY TO BE DELETED
             "fd99:dead:beef:225d::20/64" # NATv6

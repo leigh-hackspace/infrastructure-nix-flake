@@ -26,6 +26,7 @@ X first", X has already cost someone a day.
 | touch NAS mounts, the NAS itself, or backups/borg | `docs/nas-and-borg.md` |
 | touch the UniFi controller, its backups, or UniFi OS Server | `docs/unifi-os-server.md` — the appliance is a *downgrade* of the running controller, and `.unf` backups are encrypted with a key that is not on disk |
 | touch a Proxmox VM on monster1 | `docs/monster-proxmox.md` (+ `docs/monster-powercut-runbook.md` if anything is stopped) |
+| touch **the intercom / the phones** (`10.3.1.166`, `just pbx-status`, the two Snoms, the soundboard codes), or ask what was on Proxmox VM 128 | **`docs/pbx-on-services1-2026-11-16.md`** + `machines/services1/services/pbx.nix` (deployed 2026-11-16: it is bare `services.asterisk` on services1 now, not a FreePBX VM). Four things not to re-derive: **there is no trunk and never was** (0 trunks, 0 outbound routes — it can only ring the space), the whole system is 5 extensions / 2 registered handsets / 8 WAVs / a 60-line dial plan so the 116-module PHP layer was pure ceremony, the handsets have `10.3.1.166` typed into them and that address is inside VLAN 225's DHCP pool (which is why `machines/gw/dns.nix` carries `dhcp-host=10.3.1.166,ignore`), and its SIP passwords migrated **verbatim** — that, not a re-provision, is why the move was invisible at the desks. `just pbx-test phone=2 sound=w95` rings a real handset: the only proof that counts here. |
 | touch **Home Assistant** itself — its container, its image pin, its ports, or anything that still dials `10.3.1.30:8123` | **`docs/home-assistant-on-services1-2026-11-16.md`** (deployed 2026-11-16 15:41–15:46, under a minute down; read its receipts section first — the plan half contains two things that turned out to be wrong about the tooling) — HA is off `apps1` and is now `machines/services1/services/home-assistant.nix`, so the old address answers with a logging `socat` forwarder instead of the app: **`just ha-legacy-watch`** is how a device that hardcoded `10.3.1.30:8123` announces itself, bucketed into apps1 / this box / apps1's own containers / real clients, and the retirement criterion is in that doc. Four things not to re-derive: copying the old unit flag-for-flag would have handed `--privileged`'s host `/dev` to HA's inert `zha` entry and taken the **SLZB-06M** that `zigbee2mqtt.nix` already owns — `/dev/ttyUSB0` does not exist on `apps1` and *is* the coordinator here — so no device is passed and only `NET_ADMIN`/`NET_RAW` are added, deliberately; the image is pinned to `2026.11.0`, the core it was already running, which closes the `:stable` drift item and makes the nightly `update-containers.timer` leave HA alone; `10.3.1.30` **cannot** move the way authentik's `.36` did, because four front-doored origins, `cupsd` and `apps1`'s own Prometheus all still live there; and the forwarder immediately found a **client no in-tree grep could see** — `hackspace-api` in a container on `apps1`, 194 connections in 29 minutes, still happily dialling the old address. |
 | touch the **Space API** (`api.leighhack.org` — the public status feed), or anything that reads it (`hackspace-mcp`'s `space_status`/`space_events`, the Monday digest, gatus) | **`machines/services1/services/hackspace-api.nix`** and `docs/home-assistant-on-services1-2026-11-16.md` §"…and that one client is the hackspace's public machine-readable presence" — it moved off `apps1` to services1 on 2026-11-16 and is the one endpoint on this network with an audience off it: the door logged **7,939 external `/space.json` requests in 40 h** from `spacer-fetch`, Maps of Making, `mapall.space`, `SpacePush`, `HackerspacesGlobe` and the hackerspace news feed, plus 448 `/events.ics` subscriptions. Three rules: `HOMEASSISTANT_TOKEN` is **runtime state at `/var/lib/hackspace-api/env`, not `sopsSecretText`** (a store path is world-readable to every box that builds; read the module header before "fixing" that), so a fresh box needs the file copied host-to-host or the unit refuses to start by design; `state.open` is HA's `input_boolean.hackspace_open`, so **an HA restart writes `state.lastchange` into the public API**; and it is a thin reader of HA + Prometheus, so verify it with a **byte-for-byte `space.json` diff against the instance you are replacing**, which is what proves the Prometheus half crossed too. |
 | ask why Home Assistant's Frigate cameras read **Unavailable**, or touch HA's MQTT dial, its broker, or `mqtt.int` | `docs/mqtt-int-legacy-answer-2026-11-02.md` (the socket behind a `*.int` name: the broker's journal, the three dials in off-flake runtime files, the repair, and the `answeredBy` group that answers the name now) + `docs/homeassistant-frigate-via-device-2026-11-02.md` (HA core `2026.10.4` makes the deprecated `via_device` fatal) + `docs/monster-proxmox.md` (apps1 is off-flake) + `docs/router-and-dns.md` |
@@ -528,7 +529,12 @@ X first", X has already cost someone a day.
   `docs/router-and-dns.md`.
 - **Long jobs are polled, never slept through** — see below.
 - Formatting: the whole tree is alejandra-clean and `just fmt` keeps it that way
-  (`just fmt-check`, run by `just check`, fails otherwise). Alejandra is in the
+  (`just fmt-check`, run by `just check`, fails otherwise). **`just fmt` is
+  `nix fmt -- $(git ls-files '*.nix')`, so it silently skips a file you have not `git add`ed
+  yet** — which is the same trap as rule 5 (an untracked file is invisible to the flake), so
+  the order is always: write, `git add`, `just fmt`, `just check`. Measured 2026-11-16 on a new
+  service module: `just fmt` printed its compliance banner while the untracked module was
+  unformatted, and `nix run nixpkgs#alejandra -- <file>` is what caught it. Alejandra is in the
   devshell and configured in both `.zed/settings.json` and `.vscode/settings.json`, so
   editor and CI agree.
 
@@ -968,6 +974,18 @@ there is declarative. **Root SSH is keyed here** (unlike the flake machines):
   declarative ways to put a value in a login environment (`environment.variables`,
   `sessionVariables`) are **never** the answer for a secret: both write the value into
   the closure and into `/etc/profile.d/`. `common/pi-search.nix`, `docs/pi-web-search.md`.
+- **A runtime-only secret does not belong in `secrets/secrets.yaml`, because that file's cost
+  is not per-key.** Every name in it is decrypted by its own `runCommand` keyed on **the
+  whole file** (`common/sops.nix`), so adding one key re-hashes every build-time secret and
+  therefore dirties and restarts every unit that embeds one — measured 2026-11-16, when adding
+  a *phone password* there made `just check` die on `sops-secret-pg_pass.drv` and
+  `sops-secret-strata_api_key.drv`, i.e. the invoice was Grafana, Outline, Affine, nginx-sso,
+  both Strata engines and the dashboards on every box. A secret nothing reads at *build* time
+  takes its own file and `sops.secrets.<name>.sopsFile` (the intercom's live in
+  `secrets/pbx.yaml` for exactly that reason); a name that genuinely must be inside a built
+  file goes through `sopsSecretText` and `infra.buildTimeSecrets`, where it pays the store
+  price on purpose. Note `.gitignore`'s `**/secrets/*` covers new `secrets/*.yaml` — a second
+  sops file needs a negation line, not `git add -f`.
 - Prefer `EnvironmentFile` on the unit so a `DynamicUser` service never opens the secret
   file (the pattern `switch-gui.nix` uses) over a service reading `CONFIG.ENV_FILE` itself.
 - OIDC client secrets are write-only in the authentik UI and readable through the ORM:

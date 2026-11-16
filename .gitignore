@@ -51,3 +51,8 @@ config.xml
 # import drops these next to the source, and they are never what you meant to add).
 __pycache__/
 *.py[cod]
+# The encrypted sops files are part of the repo — they are the secret storage, not secrets.
+# Everything else under a `secrets/` directory (a decrypted copy, a scratch export, a
+# pre-edit backup) stays ignored, which is what this rule is really for.
+!secrets/secrets.yaml
+!secrets/pbx.yaml

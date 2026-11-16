@@ -151,6 +151,19 @@ in {
       # Fixed reservations: which device keeps which address
       ${TABLES.hostLines RECORDS}
 
+      # Addresses the pool must never hand out, because a box answers one statically.
+      # This is the one place in this generated file that is not a table projection, and
+      # it is here rather than in common/dns-records.nix because a reservation needs a MAC
+      # to match on and this address has none: it is a *second* address on services1's
+      # vlan225 (machines/services1/networking.nix), held by the same NIC that is already
+      # reserved as `.20`, and the guard in lib/check-network-tables.nix rightly refuses a
+      # record with no identifier. `10.3.1.166` is the intercom (services/pbx.nix) and sits
+      # inside VLAN 225's `.150`-`.253` pool below, so without this line dnsmasq can give
+      # the phone system's address to a laptop and the failure is two dead handsets that
+      # report nothing. Delete this line when the address moves out of the pool —
+      # docs/follow-ups.md has the item.
+      dhcp-host=10.3.1.166,ignore
+
       # Netboot variants (the PI-ROOM devices' boot menus)
       ${TABLES.netbootLines HOSTS.aibox}
     '';

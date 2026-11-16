@@ -3048,3 +3048,79 @@ with:** `sudo nixos-rebuild switch --flake .` then immediately `systemctl show
 auto-rollback.timer --value -p ActiveState -p ActiveEnterTimestamp -p
 NextElapseUSecRealtime` — `ActiveEnterTimestamp` moving to the switch time is the documented
 behaviour; staying at an older time is this finding.
+
+## The intercom (services1, off Proxmox on 2026-11-16) — opened 2026-11-16, `docs/pbx-on-services1-2026-11-16.md` owns it
+
+- **`do this first`: the pool exclusion for `.166` is written but not deployed.**
+  `machines/gw/dns.nix` has the `dhcp-host=10.3.1.166,ignore` line, and `just deploy gw` on
+  2026-11-16 built from **gw's own checkout at the last commit**, so the running
+  `/etc/dnsmasq.d/network.conf` does not contain it (verified: `sudo grep -n 10.3.1.166` on
+  `gw` is empty, and `dhcp-range=tag:vlan225,10.3.1.150,10.3.1.253` still covers the
+  address). Until it lands, dnsmasq may lease the intercom's address to any new DHCP client on
+  VLAN 225, and the failure is two dead handsets that report nothing. `just deploy` carries a
+  **commit**, never a working tree, so this needs the change committed and pushed (or
+  `--flake "git+file://$PWD?dirty=1#gw"` from a tree copied to the router, which is the shape
+  `machines/gw/README.md` exists to forbid). Re-verify with: `sudo grep -n "10.3.1.166"
+  /etc/dnsmasq.d/network.conf` on `gw` → one line.
+- **The endpoints have no ACL, because every form of `acl=` tried failed closed.** Inline
+  CIDRs (`/16` and dotted-netmask alike) are resolved **as names** on Asterisk 22, and the
+  named form the shipped `acl.conf` sample prescribes parsed cleanly yet never loaded —
+  `asterisk -rx "acl show lan"` answers `Could not find ACL named 'lan'` with `acl show`
+  listing nothing. What it cost and why the log was misread: the whole story in
+  `docs/pbx-on-services1-2026-11-16.md` §"The four things the deploy actually taught". The
+  current boundary is: no DNAT for 5060 on the router, no TCP listener on the host at all, and
+  digest auth on every endpoint. **Precondition for putting it back:** `acl show lan` answers
+  with the ACL. Re-verify with: `sudo journalctl -u asterisk | grep -c "invalid ACL"` → 0.
+- **Three extensions share one SIP password, and it was on a screen.** Extensions 1, 2 and 3
+  all carry the same secret (verified by hashing `asterisk.devices`-equivalent rows against
+  the installed auth file: 1/2/3 identical, 123 and 1337 distinct), and `asterisk -rx "pjsip
+  show auth <n>"` prints the password in **cleartext**, so it entered a session transcript on
+  2026-11-16 while diagnosing the ACL. Rotation is cheap server-side — edit
+  `secrets/pbx.yaml`, `just switch`, and `preStart` re-installs it (no restart of anyone's
+  call: the secret is runtime-only and deliberately outside the `restartTriggers` hash) — but
+  the two handsets must be retyped, which needs the phone admin logins (Phyu), and VLAN 227's
+  phones are hand-configured: there is no TFTP or provisioning server to push it from.
+  Re-verify with: `sudo grep -c '^\[[0-9]*-auth\]' /var/lib/asterisk/pjsip_auth_secrets.conf`
+  → 5, and `just pbx-status`.
+
+- **`10.3.1.166` is a static address sitting inside VLAN 225's dynamic pool, and only a
+  dnsmasq line keeps it from being leased to something else.** `machines/gw/dns.nix` emits
+  `dhcp-host=10.3.1.166,ignore` — the one non-table-projection line in the generated
+  `network.conf`, and it is a workaround, not the shape. The fix is to move the intercom to an
+  address outside `.150`–`.253` and give it a name (`pbx.int.leighhack.org`, a socket name, so
+  per AGENTS rule 24 it is an `answeredBy` row in `common/int-dns.nix` and **not** a
+  `common/front-door.nix` row — `machines/gw/lib/check-network-tables.nix` is its guard, not
+  `machines/gw/int-dns.nix`), then delete the `ignore` line in the same change. **What blocks
+  it:** the two Snom handsets hold the address in their SIP accounts and their web UIs answer
+  `401` — so it needs the phone credentials (Phyu has them), or a decision to re-provision by
+  hand at the two desks. Nothing else dials `.166`, so the blast radius is two phones.
+  Re-verify with: `just pbx-status`, `sudo grep -n "10.3.1.166" /etc/dnsmasq.d/network.conf`.
+- **Remove the injected root SSH key from `mercury` and settle who owns the PBX's
+  credentials.** `authorized_keys` on VM 128 carries a line
+  `pi-migration-20261116 (remove when done)` alongside the pre-existing `Phyu@moogle.com`, and
+  the private half is `~/.ssh/freepbx-migration-20261116` on services1. Nobody has the box's
+  root password (that is why the key was injected — procedure and receipts in the doc). It
+  matters least if the VM is deleted (next item) and matters a lot if it is not. Re-verify
+  with: `grep -c 'pi-migration-20261116' ` on the guest, as root through the key itself.
+- **Delete Proxmox VM 128, its 9 GB disk, and the two images on monster1** once a fortnight
+  passes with no phone complaint. Everything worth keeping is already off the box:
+  `services1:/srv/freepbx-mercury/` holds a sha256-verified 9.36 GB image plus
+  `mysqldump`/`/etc/asterisk`, and it is inside the nightly `/srv` borg job;
+  `/var/lib/vz/offline-images/` on monster1 holds two more images, which are **not** a backup
+  (same machine as the thing they back up) and should be deleted with the VM, not instead of
+  it. **Blocks on:** nothing but the fortnight. Also set the record straight in
+  `docs/monster-proxmox.md` when it happens — its inventory table still lists `mercury` as
+  live HA-managed infra.
+- **The Proxmox boot race that took the phones down for ten days is still live for every other
+  VM on that host.** Every HA start attempt of VM 128 failed with `storage 'nas2-nfs' is not
+  online` after the 2026-11-06 host boot — third occurrence of the
+  `docs/monster-powercut-runbook.md` failure (2026-09-30, 2026-10-07, 2026-11-06), and VM 128
+  has `max_restart 3` where 108/109/127 have 5, so it gives up first. Moving the intercom off
+  removes this victim, not the race: `pve-ha-lrm` still starts guests before the NAS export is
+  mounted. Off-flake host, so the fix is a drop-in ordering `pve-ha-lrm` after
+  `mnt-pve-nas2\x2dnfs.mount` — or moving the surviving VMs' disks off the NAS. **Blocks on:**
+  a decision about what monster1 is for, since `apps1`/`web1` are also on it
+  (`docs/monster-proxmox.md`). Re-verify with: `journalctl -u pve-ha-lrm | grep -c "not online"`.
+- **`modules.conf` is `autoload=yes`** (the nixpkgs module's default, kept deliberately so the
+  first deploy could not fail on a missing module). A PBX this small wants an explicit load
+  list; do it as its own change so a regression is one commit, not one feature removal.

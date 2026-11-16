@@ -47,6 +47,53 @@ full reasoning are in the runbook).
 | 128 | mercury | **yes** | 1 |
 | 132 | Terraria | no | 1 |
 
+**That table is the configuration, not the state, and on 2026-11-16 the two had drifted
+completely.** Measured (`qm list`, `ha-manager status`, and the last write to each VM's own
+qcow2): only **109 `apps1`** and **127 `web1`** were running. 108 `authentik` is correctly
+stopped since the 2026-10-28 cutover (HA `stopped`, `onboot: 0`, and it must stay stopped —
+see `common/dns-records.nix`'s note). 128 `mercury` was in HA `error` (below). 107 `mx1` and
+132 `Terraria` had not written to disk since 2026-10-07; 125 `unifi` since 2026-06-01, superseded
+by `machines/services1/services/unifi-os-server.nix`; and **every lab VM on the host had last
+written between 2023-10 and 2025-04**. There are **no backup jobs and no snapshots** on this
+host — `/etc/pve/jobs.cfg` is empty, `/mnt/pve/nas2-nfs/dump/` is empty — so a qcow2 on
+`nas2-nfs` is the only copy of anything. Read
+["Decommissioning"](#decommissioning-what-is-actually-used-measured-2026-11-16) before
+assuming a VM in that table is a VM somebody is using.
+
+## `mercury` is not on this box any more (2026-11-16)
+
+VM 128 was the hackspace intercom (Sangoma FreePBX 15 / Asterisk 18 on CentOS 7, hostname
+`freepbx`, DHCP `10.3.1.166`). It is now `machines/services1/services/pbx.nix` — bare
+`services.asterisk` on services1, answering that same `10.3.1.166` as a second address, with
+the handsets' SIP passwords carried across verbatim so nothing was re-typed. **Read
+`docs/pbx-on-services1-2026-11-16.md` before touching the dial plan or the VM**; it owns the
+measurements (5 extensions, 2 registered handsets, **0 trunks**, 305 calls in 2.4 years, no
+voicemail, no recordings, no provisioning), the two bugs found in its config, the deploy order,
+and the rollback (`ha-manager set vm:128 --state started`).
+
+Why it needed this write-up: **it had been down for ten days and nobody knew.** Every HA start
+attempt after the 2026-11-06 host boot failed with `storage 'nas2-nfs' is not online` — the
+`docs/monster-powercut-runbook.md` race, third occurrence, and `max_restart 3` parked the
+service in `error`, where it sits silently. That race is still live for every other VM here.
+
+## Decommissioning: what is actually used (measured 2026-11-16)
+
+Asked and answered once, so it is not re-derived per VM. Short version: **`web1` (VM 127,
+10.3.1.39) is the only thing on this host with real traffic** — it answers the three public
+front-door rows `webhooks.leighhack.org` (a webhook receiver: 1.79 GB in / 31 MB out over
+10.3 days, ~420 inbound connections/day), `web-test.leighhack.org` (per-branch previews of the
+hackspace website) and `retro.leighhack.org` (a Hugo copy of the site; the canonical
+`www.leighhack.org` is on GitHub Pages). `apps1` (VM 109) has three front-doored origins and
+its own Prometheus, and almost nothing dials it — a 120-second SYN capture found only gatus
+health checks and Home Assistant's IPP poll; its Grafana had zero requests in 24 h and its
+Prometheus had 10 of 34 targets up and no alert rules. `mx1` being off has already broken mail
+from `apps1` (its `relayhost` is a name that no longer resolves). `unifi` is superseded. The
+rest is three years of dormant disk.
+
+Two things that file `AGENTS.md` says and that matter here: monster1 is excluded from the
+fleet-shutdown list (`machines/gw/ups.nix`), and `docs/monster-powercut-runbook.md` is the
+procedure for bringing this host's VMs back — not for deciding which ones deserve to come back.
+
 Everything else is `onboot: 0` and started by hand: the GOAD lab
 (192.168.10.0/24), rtsp, the windows/AD labs. **Starting the six infra VMs at once
 needs ~24 GB of the host's 32 GB RAM** — leave the lab VMs alone unless there is

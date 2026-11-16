@@ -50,6 +50,11 @@
     # for why: services2's 30 GB is strata's).
     ./observability.nix
     ./outline.nix
+    # The hackspace intercom: bare Asterisk, off the `mercury` Proxmox VM on 2026-11-16.
+    # It answers 10.3.1.166 (a second address on vlan225, machines/services1/networking.nix,
+    # which the router is told not to lease) because that IP is written into two Snom
+    # handsets. Read its header before touching the dial plan.
+    ./pbx.nix
     ./postgres.nix
     ./printer-monitoring.nix
     ./redis.nix
