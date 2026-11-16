@@ -1,7 +1,11 @@
-//! The endpoint table, as `/etc/pi-agent/endpoints.json` renders it.
+//! The generated config, as `common/pi-agent.nix` renders it.
 //!
-//! The file is **generated** (by `common/pi-agent.nix` from `common/pi-endpoints.nix`)
-//! and this module is its reader. Two rules shape it:
+//! The file is **generated** (by `common/pi-agent.nix`, from `common/pi-endpoints.nix`
+//! and `common/pi-search.nix`) and this module is its reader. It carries three things,
+//! because they are the three things the flake declares about pi and one writer of
+//! `~/.pi/agent` is cheaper to audit than three: the endpoint table, the pi packages to
+//! have installed, and the keys of `web-search.json` the flake owns
+//! (`docs/pi-web-search.md`). Two rules shape it:
 //!
 //! * **Absent means default, wrong means refuse.** Every field except the three that
 //!   identify an endpoint may be omitted, because a Nix submodule with defaults will
@@ -182,8 +186,24 @@ pub fn zero_cost() -> Json {
     )
 }
 
+/// The whole generated document.
+///
+/// `pi_packages` and `web_search` arrived with the Brave search row and are `Option` /
+/// empty-by-default so an **old config on a new binary** still loads: during a fleet
+/// upgrade a box can run a new `pi-agent-sync` against the store path its previous
+/// generation rendered, and refusing that would fail the unit — and so the switch — on
+/// a box that has done nothing wrong.
+#[derive(Debug)]
+pub struct Doc {
+    pub endpoints: Vec<Endpoint>,
+    /// Sources for `settings.json`'s `packages` list, e.g. `npm:pi-web-access@0.48.0`.
+    pub pi_packages: Vec<String>,
+    /// The object whose keys this run owns in `web-search.json`.
+    pub web_search: Option<Json>,
+}
+
 /// Read the generated config. `Err` carries **every** finding, not the first.
-pub fn load(path: &Path) -> Result<Vec<Endpoint>, Vec<String>> {
+pub fn load(path: &Path) -> Result<Doc, Vec<String>> {
     let text = std::fs::read_to_string(path).map_err(|e| vec![format!("read {}: {e}", path.display())])?;
     let doc = parse(&text).map_err(|e| vec![format!("parse {}: {e}", path.display())])?;
     let items = match doc.get("endpoints") {
@@ -203,8 +223,46 @@ pub fn load(path: &Path) -> Result<Vec<Endpoint>, Vec<String>> {
             endpoints.push(ep);
         }
     }
+    // Two optional sections, both validated as strictly as the endpoints: these name
+    // files in a person's home directory, so a typo here is a package that silently
+    // never installs or a config key pi will not read. `common/pi-search.nix` checks
+    // the same shapes at evaluation time, which is the moment anyone can still act on
+    // them without a failed activation; this is the backstop for a hand-made config.
+    let mut pi_packages = Vec::new();
+    match doc.get("piPackages") {
+        None | Some(Json::Null) => {}
+        Some(Json::Arr(items)) => {
+            for (i, item) in items.iter().enumerate() {
+                match item.as_str() {
+                    Some(s) if s.chars().all(|c| !c.is_whitespace()) && !s.is_empty() => {
+                        if pi_packages.contains(&s.to_string()) {
+                            findings.push(format!("piPackages[{i}]: duplicate `{s}"));
+                        }
+                        pi_packages.push(s.to_string());
+                    }
+                    _ => findings.push(format!(
+                        "piPackages[{i}]: must be a non-empty package source with no spaces (e.g. npm:pi-web-access@1.2.3)"
+                    )),
+                }
+            }
+        }
+        Some(_) => findings.push(format!("{}: `piPackages` must be an array of strings", path.display())),
+    }
+    let web_search = match doc.get("webSearch") {
+        None | Some(Json::Null) => None,
+        Some(j @ Json::Obj(_)) => Some(j.clone()),
+        Some(_) => {
+            findings.push(format!("{}: `webSearch` must be an object", path.display()));
+            None
+        }
+    };
+
     if findings.is_empty() {
-        Ok(endpoints)
+        Ok(Doc {
+            endpoints,
+            pi_packages,
+            web_search,
+        })
     } else {
         Err(findings)
     }
@@ -237,7 +295,7 @@ mod tests {
 
     #[test]
     fn absent_fields_take_defaults_and_declared_ones_win() {
-        let eps = load(&write_tmp(TWO)).unwrap();
+        let eps = load(&write_tmp(TWO)).unwrap().endpoints;
         assert_eq!(eps.len(), 2);
         assert_eq!(eps[0].name, "Strata (aibox)");
         assert_eq!(eps[0].api, "openai-completions");
@@ -268,6 +326,35 @@ mod tests {
         assert!(joined.contains("`reasoning` must be"), "{joined}");
         assert!(joined.contains("maxTokensDivisor"), "{joined}");
         assert!(joined.contains("duplicate id `x`"), "{joined}");
+    }
+
+    #[test]
+    fn the_new_sections_are_optional_and_strict_when_present() {
+        // An old generated config (no `piPackages`, no `webSearch`) must load on a new
+        // binary: a box mid-upgrade is not a box that has done anything wrong.
+        let plain = load(&write_tmp(TWO)).unwrap();
+        assert!(plain.pi_packages.is_empty());
+        assert!(plain.web_search.is_none());
+
+        let with = r#"{"endpoints":[{"id":"x","baseUrl":"http://ok/v1"}],
+            "piPackages":["npm:pi-web-access@0.48.0"],
+            "webSearch":{"provider":"brave","braveApiKey":"!cat /run/secrets/brave_api_key"}}"#;
+        let d = load(&write_tmp(with)).unwrap();
+        assert_eq!(d.pi_packages, vec!["npm:pi-web-access@0.48.0".to_string()]);
+        assert_eq!(
+            d.web_search
+                .as_ref()
+                .and_then(|j| j.get("provider"))
+                .and_then(|j| j.as_str()),
+            Some("brave")
+        );
+
+        let bad = r#"{"endpoints":[{"id":"x","baseUrl":"http://ok/v1"}],
+            "piPackages":["npm:a b",""],"webSearch":"brave"}"#;
+        let joined = load(&write_tmp(bad)).unwrap_err().join("\n");
+        assert!(joined.contains("piPackages[0]"), "{joined}");
+        assert!(joined.contains("piPackages[1]"), "{joined}");
+        assert!(joined.contains("`webSearch` must be an object"), "{joined}");
     }
 
     #[test]

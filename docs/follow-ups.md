@@ -2675,6 +2675,38 @@ one UPS cleanly and reports it as an APC HID unit.
   flake may write into a person's settings file at all, given it already writes into their
   agent directory. **Blocks:** that decision, not any code.
 
+## pi's web search (every box) — opened 2026-11-16, `docs/pi-web-search.md` owns it
+
+- **Rotate `brave_api_key`: it was pasted into an agent transcript, and the transcript is
+  the one place a secret can be that the flake cannot reach** (2026-11-16). The key is
+  now held only in `secrets/secrets.yaml` and read from `/run/secrets/brave_api_key` at
+  request time, so nothing in this repo has to change to rotate it — `sops --set`, a
+  switch, and the timer picks it up. What cannot be undone is the copy in the session
+  log. **Blocks:** nothing (search works). **To do:** issue a new key in the Brave
+  dashboard, `sops` it in, switch, and confirm with `just pi-search-status` (it prints
+  the HTTP code and never the key). Re-verify with: `sudo stat -c '%a %U:%G' /run/secrets/brave_api_key`
+  → `640 root:brave-search-readers`, and that recipe's credential block reading
+  `readable`.
+
+- **`npm:pi-web-access@0.48.0` is third-party code running inside every pi session on
+  five machines and its source has not been reviewed** (opened 2026-11-16, the day it
+  was deployed). What is *measured* is that the Brave path does what its README says —
+  the credential command source, `provider: brave`, a live search returning two sources
+  — and that its dangerous defaults are off (browser-cookie extraction, hosted
+  page-fetch fallbacks, SSRF guard armed); the last of those is why `fetch_content` is
+  not a route from an agent session to the LAN. What is not measured is the other ~150
+  modules: an MCP server, a `bin`, HTML/PDF parsing, and 211 npm dependencies.
+  **Blocks:** nothing. **To do:** read the pinned tag for anything that phones home or
+  writes outside `~/.pi/agent`, and record the version reviewed here. Bumping the pin is
+  upstream's CHANGELOG, then `packageSource` in `common/pi-search.nix`, then
+  `just pi-agent-sync && just pi-search-status`.
+
+- **Nothing watches the timer's two file merges** — same gap as the model list
+  (§Open of `docs/pi-agent-models.md`): if `settings.json` becomes unparseable, the run
+  records a note and pi quietly loses web search on the next start. A
+  `lease-reader-watch`-shaped check (a red unit, not a heartbeat) would need the same
+  decision about who is paged. **Blocks:** a decision, not a technical problem.
+
 ## `just clippy` has been failing, unobserved, on services1 (found 2026-11-14)
 
 `just clippy` exits 1 with:

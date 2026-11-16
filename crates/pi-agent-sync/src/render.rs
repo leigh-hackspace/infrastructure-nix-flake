@@ -356,6 +356,208 @@ pub fn merge(existing: &str, endpoints: &[Endpoint], reports: &[Report]) -> (Str
     (emit(&object(top), 2) + "\n", outcome)
 }
 
+/// What one pass did to a file it only **partly** owns.
+///
+/// `models.json` is flake-owned in one place (a provider per declared endpoint) and
+/// person-owned everywhere else, and the two files merged below are the same shape:
+/// `settings.json` holds a person's theme, defaults and hand-added packages, and
+/// `web-search.json` is written *by the extension itself* when someone runs
+/// `/websearch`. So the merge rule has to be as narrow as the providers rule, and it
+/// is: **this run may only change what it can prove it added.**
+#[derive(Debug, Default)]
+pub struct ManagedFile {
+    /// Entries this run added.
+    pub added: Vec<String>,
+    /// Entries this run removed because it had added them and they are no longer
+    /// declared. Nothing else is ever removed.
+    pub removed: Vec<String>,
+    /// Everything worth reading later, including every reason for touching nothing.
+    pub warnings: Vec<String>,
+    /// The text to write, or `None` for *leave this file exactly as it is* — which is
+    /// also what keeps a 15-minute timer from rewriting two files in a home directory
+    /// (and refreshing their mtimes) for no reason.
+    pub text: Option<String>,
+    /// What this run considers its own afterwards. This is the provenance the *next*
+    /// run reads, and it lives in the status file rather than in the managed file:
+    /// neither of those files is ours to mark up.
+    pub managed: Vec<String>,
+}
+
+/// Parse a file we do not fully own. `None` means *do not touch it*, and the reason is
+/// already in `out.warnings`: the only thing worse than a package that did not install
+/// is a person's config file replaced by a guess.
+fn parse_partly_owned(existing: &str, label: &str, out: &mut ManagedFile) -> Option<Json> {
+    if existing.trim().is_empty() {
+        return Some(object(Vec::new()));
+    }
+    match common_json::parse(existing) {
+        Ok(d) => Some(d),
+        Err(e) => {
+            out.warnings.push(format!("{label} is not readable JSON ({e}); leaving it untouched"));
+            None
+        }
+    }
+}
+
+/// Write it, unless writing it would change nothing.
+fn finish(existing: &str, doc: &Json, out: &mut ManagedFile) {
+    let text = emit(doc, 2) + "\n";
+    out.text = if text.trim() == existing.trim() { None } else { Some(text) };
+}
+
+/// The top-level keys of `doc` except those in `skip`.
+///
+/// Order is alphabetical, because `common_json::parse` keys objects through a
+/// `BTreeMap`. That means the *first* write of a hand-written `settings.json`
+/// reorders its keys — the values and their meanings are untouched, and JSON objects
+/// are unordered, but it is a visible change to a file someone else maintains, so it
+/// is written down here and in `docs/pi-web-search.md` rather than discovered there.
+fn kept_keys(doc: &Json, skip: &[&str]) -> Vec<(String, Json)> {
+    match doc {
+        Json::Obj(map) => map
+            .iter()
+            .filter(|(k, _)| !skip.contains(&k.as_str()))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// `settings.json`'s `packages` list: union in what the flake declares, drop only what
+/// a previous run of this tool added and the flake no longer declares.
+///
+/// Why a merge and not a write: `packages` is the one line of `settings.json` the
+/// flake has any business with. The file also holds `defaultProvider`, `defaultModel`
+/// and `defaultThinkingLevel`, which are a person's, and pi's package declarations are
+/// a plain list — replacing the list would silently uninstall somebody's extension on
+/// the next start.
+pub fn merge_packages(existing: &str, declared: &[String], previously_managed: &[String], label: &str) -> ManagedFile {
+    let mut out = ManagedFile::default();
+    let Some(doc) = parse_partly_owned(existing, label, &mut out) else {
+        return out;
+    };
+    if existing.trim().is_empty() && declared.is_empty() {
+        // Nothing to declare and nothing to preserve: do not invent a settings file.
+        return out;
+    }
+
+    let mut list: Vec<String> = Vec::new();
+    match doc.get("packages") {
+        None | Some(Json::Null) => {}
+        Some(Json::Arr(items)) => {
+            for item in items {
+                match item.as_str() {
+                    Some(s) => list.push(s.to_string()),
+                    None => {
+                        // A package entry that is not a string is something this reader
+                        // does not understand, and re-emitting the array would drop it.
+                        out.warnings.push(format!("{label} has a `packages` entry that is not a string; leaving it untouched"));
+                        return out;
+                    }
+                }
+            }
+        }
+        Some(_) => {
+            out.warnings.push(format!("{label} has a `packages` key that is not an array; leaving it untouched"));
+            return out;
+        }
+    }
+
+    for d in declared {
+        if !list.contains(d) {
+            list.push(d.clone());
+            out.added.push(d.clone());
+        }
+    }
+    // The half that makes removal safe: an entry goes only if a previous run wrote it.
+    // A hand-added copy of the same source is therefore *kept* — the two are
+    // indistinguishable, and keeping the person's is the side that is not a surprise.
+    let stale: Vec<String> = previously_managed
+        .iter()
+        .filter(|p| !declared.contains(p))
+        .cloned()
+        .collect();
+    if !stale.is_empty() {
+        list.retain(|p| !stale.contains(p));
+        out.removed = stale;
+    }
+    out.managed = declared.to_vec();
+    // Only write when the *set* actually changed. A hand-formatted `settings.json`
+    // whose packages are already right must not be re-emitted (re-indented, keys
+    // reordered) by a timer pass that changed nothing: the emitter sorts object keys,
+    // so rewriting a person's file to say the same thing is a diff with no reason in
+    // it. `managed` is still recorded, because that is what makes a later removal
+    // possible at all.
+    if out.added.is_empty() && out.removed.is_empty() {
+        return out;
+    }
+
+    let mut top = kept_keys(&doc, &["packages"]);
+    top.push(("packages".into(), string_array(list)));
+    finish(existing, &object(top), &mut out);
+    out
+}
+
+/// `web-search.json`: the declared keys are set, everything else in the file is copied
+/// through, and a key the flake stops declaring is removed only if this tool put it
+/// there.
+///
+/// The file is mutable by design — the extension persists a person's `/websearch` and
+/// `/curator` choices into it — which is why the same provenance rule applies, and why
+/// this is a copy into the home directory rather than a symlink onto the store: a write
+/// through a symlink onto a read-only store path fails with `EROFS`, and a refusal that
+/// only appears when someone presses a key is the failure shape
+/// `crates/switch-gui/README.md` says a UI must not have.
+pub fn merge_keys(existing: &str, declared: &Json, previously_managed: &[String], label: &str) -> ManagedFile {
+    let mut out = ManagedFile::default();
+    let Some(doc) = parse_partly_owned(existing, label, &mut out) else {
+        return out;
+    };
+    let keys: Vec<(String, Json)> = match declared {
+        Json::Obj(map) => map.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+        _ => Vec::new(),
+    };
+    if existing.trim().is_empty() && keys.is_empty() {
+        return out;
+    }
+
+    let declared_names: Vec<String> = keys.iter().map(|(k, _)| k.clone()).collect();
+    let skip: Vec<&str> = declared_names.iter().map(String::as_str).collect();
+    // Keys the file has that the flake does not name: keep, unless a previous run of
+    // ours wrote them, in which case the flake has withdrawn them.
+    let stale: Vec<String> = previously_managed
+        .iter()
+        .filter(|p| !declared_names.contains(p))
+        .cloned()
+        .collect();
+    let mut top: Vec<(String, Json)> = Vec::new();
+    for (k, v) in kept_keys(&doc, &skip) {
+        if stale.contains(&k) {
+            out.removed.push(k);
+        } else {
+            top.push((k, v));
+        }
+    }
+    // Same rule as `merge_packages`: write only if a declared key is absent or holds a
+    // different value, or a key of ours has to go. Everything else is formatting, and
+    // reformatting a file the extension also writes is a diff nobody can explain.
+    // Computed before `keys` moves into the document.
+    let value_differs = keys.iter().any(|(k, v)| doc.get(k) != Some(v));
+    out.added = declared_names
+        .iter()
+        .filter(|k| doc.get(k).is_none())
+        .cloned()
+        .collect();
+    out.managed = declared_names;
+    if !value_differs && out.removed.is_empty() {
+        return out;
+    }
+
+    top.extend(keys);
+    finish(existing, &object(top), &mut out);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -409,7 +611,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join(format!("{id}-{}.json", N.fetch_add(1, std::sync::atomic::Ordering::SeqCst)));
         std::fs::write(&p, json).unwrap();
-        load(&p).unwrap().remove(0)
+        load(&p).unwrap().endpoints.remove(0)
     }
 
     fn report(id: &str, models: Vec<Model>) -> Report {
@@ -563,5 +765,151 @@ mod tests {
         let (once, _) = merge("", &eps, &reps);
         let (twice, _) = merge(&once, &eps, &reps);
         assert_eq!(once, twice, "a file rewritten on a timer must not churn");
+    }
+
+    fn declared_ws() -> Json {
+        object(vec![
+            ("provider".into(), string("brave")),
+            ("braveApiKey".into(), string("!cat /run/secrets/brave_api_key")),
+        ])
+    }
+
+    const WEB: &str = "npm:pi-web-access@0.48.0";
+
+    #[test]
+    fn packages_are_added_without_touching_anything_else() {
+        let existing = r#"{"defaultModel":"m","defaultProvider":"strata","packages":["npm:someone-elses@1.0.0"],"theme":"dark"}"#;
+        let got = merge_packages(existing, &[WEB.into()], &[], "settings.json");
+        assert_eq!(got.added, vec![WEB.to_string()]);
+        assert!(got.removed.is_empty());
+        let text = got.text.clone().expect("something to write");
+        let doc = common_json::parse(&text).unwrap();
+        let list: Vec<&str> = doc
+            .get("packages")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|j| j.as_str().unwrap())
+            .collect();
+        assert!(list.contains(&WEB), "{list:?}");
+        assert!(list.contains(&"npm:someone-elses@1.0.0"), "{list:?}");
+        assert_eq!(doc.get("theme").unwrap().as_str(), Some("dark"));
+        assert_eq!(doc.get("defaultModel").unwrap().as_str(), Some("m"));
+        assert_eq!(doc.get("defaultProvider").unwrap().as_str(), Some("strata"));
+
+        // Idempotent: the next timer run writes nothing at all.
+        let again = merge_packages(&text, &[WEB.into()], &[WEB.into()], "settings.json");
+        assert!(again.text.is_none(), "an unchanged file must not be rewritten");
+        assert!(again.added.is_empty() && again.removed.is_empty(), "{again:?}");
+    }
+
+    #[test]
+    fn only_what_a_previous_run_added_is_removed() {
+        let existing = r#"{"packages":["npm:pi-web-access@0.48.0","npm:hand-written@2.0.0"]}"#;
+        // The flake no longer declares pi-web-access and the status file says we added
+        // it: it goes, and the hand-written one stays.
+        let got = merge_packages(existing, &[], &[WEB.into()], "settings.json");
+        assert_eq!(got.removed, vec![WEB.to_string()]);
+        let text = got.text.unwrap();
+        assert!(text.contains("npm:hand-written@2.0.0"), "{text}");
+        assert!(!text.contains("pi-web-access"), "{text}");
+
+        // No provenance (first run, or the status file is gone) means nothing may go.
+        let adopt = merge_packages(existing, &["npm:hand-written@2.0.0".into()], &[], "settings.json");
+        assert!(adopt.removed.is_empty() && adopt.added.is_empty(), "{adopt:?}");
+        assert!(adopt.text.is_none(), "adopting an identical entry changes nothing");
+    }
+
+    #[test]
+    fn a_file_this_tool_cannot_read_is_left_alone() {
+        for (existing, needle) in [
+            ("{ not json", "not readable JSON"),
+            (r#"{"packages": "npm:one"}"#, "not an array"),
+            (r#"{"packages": [{"source":"npm:one"}]}"#, "not a string"),
+        ] {
+            let got = merge_packages(existing, &[WEB.into()], &[], "settings.json");
+            assert!(got.text.is_none(), "{existing} must not be rewritten");
+            assert!(got.warnings.iter().any(|w| w.contains(needle)), "{existing} -> {got:?}");
+        }
+    }
+
+    #[test]
+    fn a_missing_settings_file_is_created_only_when_there_is_something_in_it() {
+        let got = merge_packages("", &[WEB.into()], &[], "settings.json");
+        let text = got.text.clone().expect("created");
+        assert_eq!(
+            common_json::parse(&text)
+                .unwrap()
+                .get("packages")
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(merge_packages("", &[], &[], "settings.json").text.is_none());
+    }
+
+    #[test]
+    fn web_search_keys_are_set_and_everything_else_survives() {
+        // A file the extension has written: the person turned the curator on and set a
+        // proxy; the flake owns the provider and the credential source.
+        let existing = r#"{"proxy":"http://127.0.0.1:8080","workflow":"auto-summary","provider":"duckduckgo","numResults":8}"#;
+        let got = merge_keys(existing, &declared_ws(), &["provider".into(), "braveApiKey".into()], "web-search.json");
+        let text = got.text.clone().expect("the provider must move");
+        let doc = common_json::parse(&text).unwrap();
+        assert_eq!(doc.get("provider").unwrap().as_str(), Some("brave"), "the flake's key wins");
+        assert_eq!(doc.get("braveApiKey").unwrap().as_str(), Some("!cat /run/secrets/brave_api_key"));
+        assert_eq!(doc.get("proxy").unwrap().as_str(), Some("http://127.0.0.1:8080"));
+        assert_eq!(doc.get("workflow").unwrap().as_str(), Some("auto-summary"));
+        assert_eq!(doc.get("numResults").unwrap().as_u64(), Some(8));
+        assert_eq!(got.added, vec!["braveApiKey".to_string()], "provider existed and moved; the credential source is new");
+        assert!(got.removed.is_empty());
+
+        let again = merge_keys(&text, &declared_ws(), &["provider".into(), "braveApiKey".into()], "web-search.json");
+        assert!(again.text.is_none(), "{again:?}");
+    }
+
+    #[test]
+    fn a_key_the_flake_stops_declaring_goes_only_if_we_wrote_it() {
+        let declared = object(vec![("provider".into(), string("brave"))]);
+        let with_key = r#"{"provider":"brave","braveApiKey":"!cat /run/secrets/brave_api_key"}"#;
+        // `braveApiKey` used to be ours and is not declared any more: it is a credential
+        // *source*, and leaving an undeclared one behind is how a stale one lives on
+        // forever (`docs/pi-agent-models.md`, §Credentials).
+        let got = merge_keys(with_key, &declared, &["provider".into(), "braveApiKey".into()], "web-search.json");
+        assert_eq!(got.removed, vec!["braveApiKey".to_string()]);
+        assert!(!got.text.unwrap().contains("braveApiKey"));
+
+        // Same key, never ours: it is a person's and none of our business.
+        let person = merge_keys(with_key, &declared, &["provider".into()], "web-search.json");
+        assert!(person.removed.is_empty(), "{person:?}");
+        assert!(person.text.is_none(), "{person:?}");
+
+        // Nothing to do at all.
+        let same = merge_keys(r#"{"provider":"brave"}"#, &declared, &["provider".into()], "web-search.json");
+        assert!(same.text.is_none(), "{same:?}");
+    }
+
+    #[test]
+    fn a_file_that_already_says_the_right_thing_is_not_rewritten_however_it_is_printed() {
+        // The point of the two early returns: a timer pass with nothing to say must
+        // leave a hand-maintained file's bytes alone, not re-indent and re-sort it.
+        let hand = "{\n    \"theme\": \"dark\",\n    \"packages\": [\"npm:pi-web-access@0.48.0\"]\n}\n";
+        let got = merge_packages(hand, &[WEB.into()], &[WEB.into()], "settings.json");
+        assert!(got.text.is_none(), "{got:?}");
+        assert_eq!(got.managed, vec![WEB.to_string()], "provenance is still recorded");
+
+        let hand_ws = "{\n  \"provider\":\"brave\",\n  \"braveApiKey\":\"!cat /run/secrets/brave_api_key\"\n}\n";
+        let got = merge_keys(hand_ws, &declared_ws(), &["provider".into(), "braveApiKey".into()], "web-search.json");
+        assert!(got.text.is_none(), "{got:?}");
+    }
+
+    #[test]
+    fn an_unreadable_web_search_file_is_left_alone_too() {
+        let got = merge_keys("not json at all", &declared_ws(), &[], "web-search.json");
+        assert!(got.text.is_none());
+        assert!(got.warnings[0].contains("not readable JSON"), "{got:?}");
     }
 }

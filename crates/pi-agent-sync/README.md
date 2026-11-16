@@ -1,26 +1,38 @@
 # pi-agent-sync
 
 Writes `~/.pi/agent/models.json` from the endpoints this flake declares, **asking each
-endpoint what it is running** instead of being told. The subsystem — why the endpoint list
-is Nix and the model list is a probe — is `docs/pi-agent-models.md`; this file is the
-code-level trap list.
+endpoint what it is running** instead of being told, and merges the flake's pi-package
+declaration and web-search keys into the two other files in that directory. The
+subsystem — why the endpoint list is Nix and the model list is a probe — is
+`docs/pi-agent-models.md`; why `web-search.json` is in here at all is
+`docs/pi-web-search.md`; this file is the code-level trap list.
 
 ```
-pi-agent-sync --config /nix/store/…-pi-agent-endpoints.json --out ~/.pi/agent/models.json \
-              --status ~/.pi/agent/pi-agent-status.json [--settings ~/.pi/agent/settings.json]
+pi-agent-sync --config /nix/store/…-pi-agent-config.json --out ~/.pi/agent/models.json \
+              --status ~/.pi/agent/pi-agent-status.json \
+              [--settings ~/.pi/agent/settings.json] [--web-search ~/.pi/agent/web-search.json]
 pi-agent-sync --report ~/.pi/agent/pi-agent-status.json
 ```
 
 The NixOS module (`common/pi-agent.nix`) runs the first form on a timer; `just
-pi-agent-status` runs the second. `--dry-run` prints the document with credentials redacted.
+pi-agent-status` runs the second. `--dry-run` prints the document with credentials redacted
+and writes nothing at all.
+
+## The three files, and what may be changed in each
+
+| file | this program's rule | provenance |
+| --- | --- | --- |
+| `models.json` | a provider id named by the generated config is replaced; everything else is copied through | the config names it |
+| `settings.json` | only `packages`: declared entries are added, nothing is removed unless a previous run wrote it | `managedPackages` in the status file |
+| `web-search.json` | only the keys the config names; same removal rule | `managedWebSearchKeys` in the status file |
 
 ## Layout
 
 | file | job |
 | --- | --- |
-| `src/config.rs` | read the generated endpoint document (a `pkgs.writeText` store path the unit is handed directly — there is no `/etc/pi-agent`). Absent field → default; malformed field → **refuse the whole file, listing every finding** |
+| `src/config.rs` | read the generated document (a `pkgs.writeText` store path the unit is handed directly — there is no `/etc/pi-agent`): endpoints, `piPackages`, `webSearch`. Absent field → default; malformed field → **refuse the whole file, listing every finding**. The two new sections are optional so an old config still loads on a new binary mid-upgrade |
 | `src/probe.rs` | the two GETs, the two dialects, and what each engine said. Never fails: a dead endpoint is a `Report` with an `error` |
-| `src/render.rs` | the merge with the file that is already there, the fallback ladders, and the redaction |
+| `src/render.rs` | the merge with the file that is already there (three files, three merge rules, one shared rule: *touch only what you can prove you wrote*), the fallback ladders, and the redaction |
 | `src/main.rs` | arguments, one line per endpoint, the status document, `--report` |
 | `tests/fixtures/` | the four live response bodies, captured 2026-11-14, plus the front door's 502 page |
 
@@ -78,7 +90,28 @@ pi-agent-status` runs the second. `--dry-run` prints the document with credentia
   keyed temp files on `std::process::id()` and two tests raced on one path, which surfaced as
   "unexpected end of input" on a perfectly valid fixture. Unique per call.
 
+* **A file this program cannot parse is a file it does not touch.** `models.json` is the
+  exception by necessity (its own providers are the point) and even there it says so;
+  `settings.json` and `web-search.json` are refused outright on a parse error, a
+  non-array `packages`, or a package entry that is not a string. `a_file_this_tool_cannot_read_is_left_alone`.
+* **Removal needs provenance, and the provenance is in the status file.** "The flake no
+  longer declares this package" and "a person added this package by hand" are the same
+  bytes in `settings.json`, and getting them the wrong way round is silently
+  uninstalling someone's extension on their next start. So an entry is removable only
+  if `managedPackages`/`managedWebSearchKeys` from the last run names it — and with no
+  status file (a reinstall) nothing is removable at all, which is the safe direction.
+* **"No logical change" beats "byte-different".** A hand-formatted `settings.json` whose
+  packages are already right is **not** rewritten: the emitter sorts keys and re-indents,
+  so writing it to say the same thing produces a diff with no reason in it — and
+  `web-search.json` is a file the *extension* also writes, so those diffs land in someone
+  else's edit. Hence the two early returns in `merge_packages`/`merge_keys`, and
+  `a_file_that_already_says_the_right_thing_is_not_rewritten_however_it_is_printed`.
+* **`web-search.json` is copied, never symlinked**, even though nothing in it is secret.
+  The extension persists a person's `/websearch` choices into it, and a write through a
+  symlink onto a read-only store path is `EROFS` — a refusal that only appears when
+  someone presses a key.
+
 ## Tests
 
-`cargo test -p pi-agent-sync` (21, no network: the live bodies are fixtures). `just test` and
+`cargo test -p pi-agent-sync` (30, no network: the live bodies are fixtures). `just test` and
 `just clippy` cover this crate with the rest of the workspace.

@@ -8,14 +8,20 @@
 # The program that does it is `crates/pi-agent-sync`; `docs/pi-agent-models.md` owns the
 # mechanism, the measurements and the failure modes. What this file owns is the shape:
 #
-#   common/pi-endpoints.nix ──(pkgs.writeText)──▶  <store>/pi-agent-endpoints.json  (0444, no secrets)
+#   common/pi-endpoints.nix ──(pkgs.writeText)──▶  <store>/pi-agent-config.json  (0444, no secrets)
 #          │                       │ a path that IS the file - writeTextFile's path is a DIRECTORY,
 #          │                       │ and handing that to --config is the activation failure recorded
 #          │                       │ in docs/pi-agent-models.md
-#          │                       ▼
+#          │                       ▲
+#          │                       └── + `extraConfigSections`, contributed by ./pi-search.nix
+#          │                               (the pi packages and the web-search.json keys it owns:
+#          │                               docs/pi-web-search.md)
+#          ▼
 #          └── options.programs.pi-agent.endpoints   --config (the store path; nothing is copied to /etc)
 #                                            pi-agent-<user>.service  ──▶  $HOME/.pi/agent/models.json
 #                                            + pi-agent-<user>.timer        $HOME/.pi/agent/pi-agent-status.json
+#                                                                             $HOME/.pi/agent/settings.json  (packages)
+#                                                                             $HOME/.pi/agent/web-search.json
 #
 # ## Why a timer and not a build-time file
 #
@@ -236,13 +242,19 @@
   # tool exits 1, and because a freshly started unit failing *is* an activation failure,
   # `nixos-rebuild switch` exited 4 on a box whose configuration had otherwise applied
   # completely (measured 2026-11-14, services1). `writeText` yields a path that *is* the file.
-  endpointsJson = pkgs.writeText "pi-agent-endpoints.json" (builtins.toJSON {
-    # `endpoints` is a **list**, not an attrset: the order is the order the tool probes
-    # and prints in, and a list keeps the journal stable across boxes instead of
-    # alphabetical-by-luck. `builtins.attrValues` on an attrset is already sorted by
-    # name, which is what the tool re-sorts models by for the same reason.
-    endpoints = map (id: endpointRow id cfg.endpoints.${id}) (lib.attrNames cfg.endpoints);
-  });
+  #
+  # The artifact is named `pi-agent-config.json` rather than `-endpoints.json` because it
+  # has held two more sections since 2026-11-16 (packages, web search); the name is a
+  # store-path label and nothing reads it, but a file called endpoints.json that also
+  # decides which pi packages install is the kind of name that gets a fact missed.
+  endpointsJson = pkgs.writeText "pi-agent-config.json" (builtins.toJSON ({
+      # `endpoints` is a **list**, not an attrset: the order is the order the tool probes
+      # and prints in, and a list keeps the journal stable across boxes instead of
+      # alphabetical-by-luck. `builtins.attrValues` on an attrset is already sorted by
+      # name, which is what the tool re-sorts models by for the same reason.
+      endpoints = map (id: endpointRow id cfg.endpoints.${id}) (lib.attrNames cfg.endpoints);
+    }
+    // cfg.extraConfigSections));
 
   unitsFor = user: let
     u = config.users.users.${user};
@@ -257,6 +269,8 @@
         "${agentDir}/${cfg.statusFile}"
         "--settings"
         "${agentDir}/settings.json"
+        "--web-search"
+        "${agentDir}/web-search.json"
         "--timeout"
         (toString cfg.probeTimeout)
       ]
@@ -321,6 +335,13 @@
     };
   };
 in {
+  # `programs.pi-agent.search.brave` (web search, docs/pi-web-search.md) is declared in
+  # ./pi-search.nix and imported here rather than by each machine: it needs this
+  # module's `users` and `agentDir` to say *whose* search config to write, five copies
+  # of that answer in five machine directories is the drift this module exists to
+  # remove, and one import per machine is one fewer thing a new box can forget.
+  imports = [./pi-search.nix];
+
   options.programs.pi-agent = {
     enable = lib.mkEnableOption ''
       keeping `~/.pi/agent/models.json` in sync with the endpoints declared in Nix,
@@ -349,6 +370,19 @@ in {
         (`programs.pi-agent.endpoints."strata-zen3".baseUrl` is not how you drop it —
         that leaves a half-row; the way is to not name it, e.g. an explicit
         `endpoints = lib.attrByPath … `, or `enable = false` on an endpoint-less box).
+      '';
+    };
+
+    extraConfigSections = lib.mkOption {
+      type = with lib.types; attrsOf raw;
+      default = {};
+      internal = true;
+      description = ''
+        Extra top-level sections of the generated config, contributed by the other
+        modules in this family — `./pi-search.nix` puts `piPackages` and `webSearch`
+        here. Internal because every section is a key of a world-readable store file
+        and a merge rule in `crates/pi-agent-sync`: a new one is a decision about both,
+        not an attr to set.
       '';
     };
 

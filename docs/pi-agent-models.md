@@ -8,24 +8,33 @@ change is three files and a rule about where each fact is allowed to live.
 | add, move or retire an endpoint | §"What is declared" below, then `common/pi-endpoints.nix` |
 | wonder why a model/number is wrong or missing | `just pi-agent-status` first, then §"What can go wrong, and what it looks like" |
 | change how a context window or an output limit is computed | `common/pi-agent.nix`'s `maxTokens*` options and `crates/pi-agent-sync/src/render.rs` |
+| touch what else the module writes into `~/.pi/agent` (pi packages, `web-search.json`, Brave search) | `docs/pi-web-search.md` — same timer, same merge rule, three files |
 | wonder whether to write a pi extension instead | §"Why not an extension / a build-time file / a static file" |
 
 ## The three pieces
 
 ```
-common/pi-endpoints.nix  ──(pkgs.writeText)──▶  <store>/pi-agent-endpoints.json
+common/pi-endpoints.nix  ──(pkgs.writeText)──▶  <store>/pi-agent-config.json
    the endpoint table                              world-readable, because it holds no secret;
-   (name, URL, dialect, verified compat,           and a path that *is* the file — `writeTextFile`
-    output-limit policy)                           hands back a directory, which is the first
-                                         │         deploy's activation failure, below
+   (+ ./pi-search.nix's two sections:              and a path that *is* the file — `writeTextFile`
+    piPackages, webSearch)                          hands back a directory, which is the first
+                                         │          deploy's activation failure, below
                                          ▼
                         pi-agent-<user>.service   (oneshot, User=<user>, --config <store path>)
                         pi-agent-<user>.timer     (OnBootSec=2min, OnUnitActiveSec=15min, Persistent)
                                          │
-                                         ▼
-                        $HOME/.pi/agent/models.json          ← pi reads this
-                        $HOME/.pi/agent/pi-agent-status.json ← what was probed, and where each
-                                                               number came from
+                          ┌──────────────┼───────────────────────────┐
+                          ▼              ▼                           ▼
+        $HOME/.pi/agent/models.json   $HOME/.pi/agent/       $HOME/.pi/agent/
+        (providers by id)              settings.json          web-search.json
+                                        (only `packages`)      (only the flake's keys)
+                                         └── both merged, both provenance-checked:
+                                             docs/pi-web-search.md
+                          │
+                          ▼
+                        $HOME/.pi/agent/pi-agent-status.json  ← what was probed, and where each
+                                                                number came from (and what the
+                                                                last run wrote into the two above)
 ```
 
 * `common/pi-endpoints.nix` (DATA) — every endpoint, one row each.
@@ -217,6 +226,12 @@ rather than believing the module.
 ## Open
 
 * `strata_api_key` rotation (`docs/follow-ups.md`).
+* `settings.json` was per-person, hand-edited state and is now **partly** the flake's:
+  `packages` (added by the flake, removable only by the run that added it) and the four
+  keys of `web-search.json`. Everything else in it — `defaultProvider`, `defaultModel`,
+  `defaultThinkingLevel` — still is not this module's business, and `check_default` only
+  *warns* that a saved default has stopped existing. `docs/pi-web-search.md` owns the
+  three-file merge rule and what each one may change.
 * Nothing watches the timer. `lease-reader-watch.timer` is the precedent for a unit that fails
   when its channel dies; a `pi-agent` equivalent (last success older than an hour *and* at
   least one endpoint configured) wants a decision about who is paged by a stale model list,
