@@ -418,7 +418,17 @@ header plus optional PCM, with `describe`→`info` (advertising `wake.models[]`,
 `active_wake_words`, `max_active_wake_words`), then `detect {names}` +
 `audio-start`/`audio-chunk{rate,width,channels}`/`audio-stop` → `detection {name, timestamp}`
 or `not-detected`. Reusing it means an ESP32 satellite or Home Assistant can point at our ear
-with a URI, and a device that detects for itself simply never appears at the wake server. It
+with a URI, and a device that detects for itself simply never appears at the wake server.
+
+**Correction, read before quoting the paragraph above:** as deployed, **there is no Wyoming
+TCP listener anywhere in this fleet.** `voice-wake serve` implements that *event model* over
+loopback HTTP because a browser cannot open a TCP socket, and its header says so. So "an ESP32
+satellite or Home Assistant can point at our ear with a URI" is the design note, not the
+contract: what an ESP32 speaks today is `POST /v1/wake/session` + `POST /v1/wake/chunk` behind
+the front door, and the Wyoming front end that would let a third-party satellite dial us is
+unbuilt. The contract, the format, the VLAN question and the list of what does not exist are
+in `docs/esp32-voice-satellites.md` — which is the file to read before writing device code, and
+which restates none of this section's reasoning. It
 has **no authentication or encryption by design** ("trusted network, must not be exposed to
 the internet"), so it binds loopback/VLAN like everything else unauthenticated in this
 stack — never the front door.

@@ -37,6 +37,7 @@ Every address is in `common/hosts.nix`.
 | whisper-ws | `crates/whisper-ws/` | aibox:8083 | `crates/whisper-ws/README.md` |
 | moonraker-exporter | `crates/moonraker-exporter/` | metrics | `docs/printer-servers.md` |
 | hackspace-mcp + slack-agent (the Slack bot) | `crates/hackspace-mcp/`, `crates/slack-agent/`, `machines/services1/services/slack-agent.nix` | 127.0.0.1:8191 (MCP), 127.0.0.1:8192 (health); Slack over an **outbound** socket, no inbound port | `docs/slack-agent-2026-11-16.md` (design + the 2026-11-16 build receipt) |
+| voice tier: gateway + camera satellite + wake engine | `crates/voice-assistant/`, `crates/voice-wake/`, `machines/services1/services/voice-assistant.nix` | 127.0.0.1:8193 (gateway) and 127.0.0.1:8195 (wake, reachable **only** through the gateway's `/v1/wake/*` proxy) → `voice.int.leighhack.org`; `voice-satellite` listens on nothing and writes a status file the gateway serves; the answer path is `slack-agent listen` on 127.0.0.1:8194 | `docs/voice-assistant-2026-11-16.md` (the design and the receipts), `crates/voice-assistant/README.md` (the pipeline's traps), `docs/esp32-voice-satellites.md` (the wire contract for any new microphone) |
 | MQTT broker (mosquitto) | `machines/services1/services/mqtt.nix` | services1:1883 (no HTTP, no 8883) | `docs/mqtt-int-legacy-answer-2026-11-02.md` |
 | Frigate (NVR) | `machines/services1/services/frigate.nix` (podman; the **camera config is off-flake**, `/srv/frigate/config/config.yaml`) | services1:5000 insecure, :8971 secure, :1984 go2rtc, :8554-5 | `docs/frigate-false-positives-2026-11-12.md` (detection quality, detectors, and why there is no GPU offload) |
 | strata | `machines/*/strata.nix` | services2:8080 → `strata.int.leighhack.org` (LAN, key injected) and `strata.leighhack.org` (public, API key); aibox:8080 → `strata2.int.leighhack.org` (LAN, key injected) | `machines/aibox/STRATA.md`, `machines/services2/STRATA.md` |
@@ -603,6 +604,43 @@ served by the front door on `gw` as `services1-status.int` / `services2-status.i
 sign-in. `moonraker-exporter` polls the two
 print servers' APIs; see `machines/services1/services/printer-monitoring.nix` and
 `docs/printer-servers.md`.
+
+## The voice tier — four units, one answer path, no secrets at all
+
+```
+  cam8 mic ──go2rtc restream──▶ voice-satellite ─┐
+  browser mic (whisper.int) ─────────────────────┤
+  any device that can POST ──────────────────────┤
+                                                 ▼
+                             voice-gateway :8193 (loopback, no auth)
+                               ├ whisper.cpp on aibox :8082      speech → text
+                               ├ slack-agent listen :8194        text → answer
+                               └ piper en_GB-alba-medium         answer → speech
+                             voice-wake :8195 (loopback, no auth) — detection only,
+                               and reachable off-box only as the gateway's /v1/wake/*
+```
+
+Four things an agent changing any part of this needs before it changes anything:
+
+1. **The answers are not this tier's.** They come from `hackspace-mcp`'s ten tools through
+   `slack-agent listen` — the same loop the Slack bot runs, minus Slack. A voice feature that
+   computes its own answer (about temperature, opening hours, the calendar) is a second brain
+   in public, which is the fault `docs/slack-agent-2026-11-16.md` §16 is about.
+2. **`listen` answers one turn at a time** and refuses a second caller with 429
+   (`crates/slack-agent/src/listen.rs`); the gateway gives up at 150 s
+   (`crates/voice-assistant/src/agent.rs`). That serial lock, not CPU, is what a fleet of
+   microphones hits first.
+3. **No secret is anywhere near it** — no `EnvironmentFile`, no sops entry. Which is why the
+   two unauthenticated sockets **refuse to bind off loopback**, and why the only way in from
+   another machine is the front door's `voice.int.leighhack.org` row. The reach is the whole
+   security model; read that row and `CONFIG.ROUTER_ONLY` before widening anything.
+4. **The measured budget** (`docs/voice-assistant-2026-11-16.md`): whisper **2.7 s** for 3 s of
+   audio, on **CPU** (strata owns the iGPU); piper **2.5 s** for 31 words, because a fresh
+   process reloads the voice every request; a one-tool spoken answer is **~13 s** end to end;
+   and the deterministic fast path answers time / open-closed / a room's temperature /
+   "what's on" in **2.5–3.4 s** with **zero** model rounds. `speaker = "off"` is the deployed
+   default for the camera, and `wake.threshold = 0.5` is upstream's default, **not** a figure
+   earned on this room.
 
 ## `crates/whisper-ws/` — OpenAI Realtime in front of whisper.cpp
 
