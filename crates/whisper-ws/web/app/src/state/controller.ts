@@ -5,6 +5,7 @@
 
 import { createSignal } from 'solid-js';
 import { MicCapture } from '../audio/mic';
+import { CUE_MUTE_MS, playCue } from './cue';
 import { makeResampler, resetResampler, resampleChunkTo, type ResampleState } from '../audio/resample';
 import { b64 } from '../lib/format';
 import { realtime } from './realtime';
@@ -35,7 +36,7 @@ const END_SILENCE_MS = 1600; // pause after speech that ends the command
 const MIN_CLIP_S = 0.6; // ignore sub-second noise after the wake word
 const MIN_SPEECH_S = 0.5; // speech (not wake-word tail) required to commit
 const MAX_CLIP_S = 20; // safety cap on command length
-const PING_MUTE_MS = 350; // mic mute after the confirmation ping
+// the cue and its mute window come from ./cue, which the server-wake path uses too
 
 // --- Shared signals (read by both cards) ---
 export const [mode, setMode] = createSignal<Mode>('idle');
@@ -324,8 +325,8 @@ function onWakeDetected(): void {
   setBufferedSecs(0);
   wakeBuf = [];
   setWakeResult({ text: '', kind: '' });
-  playPing();
-  pingMuteUntil = performance.now() + PING_MUTE_MS;
+  playCue(mic.context);
+  pingMuteUntil = performance.now() + CUE_MUTE_MS;
   setWakeStatus({ text: `👌 “${WAKE_WORD_LABEL}” detected — speak, then pause …`, kind: 'txt-wait' });
 }
 
@@ -352,38 +353,6 @@ function wakeResume(): void {
   setWakeStatus({ text: `listening for “${WAKE_WORD_LABEL}” …`, kind: 'txt-ok' });
 }
 
-// Wake-word confirmation ping (Web Audio, no asset needed). The mic is muted
-// for PING_MUTE_MS after a detection so the ping doesn't land in the recorded
-// command.
-function playPing(): void {
-  const ctx = mic.context;
-  if (!ctx || ctx.state !== 'running') return;
-  const t = ctx.currentTime;
-  const osc = ctx.createOscillator();
-  const gain = ctx.createGain();
-  osc.type = 'sine';
-  osc.frequency.setValueAtTime(880, t);
-  osc.frequency.exponentialRampToValueAtTime(1320, t + 0.12);
-  gain.gain.setValueAtTime(0.0001, t);
-  gain.gain.exponentialRampToValueAtTime(0.4, t + 0.02);
-  gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.3);
-  osc.connect(gain);
-  gain.connect(ctx.destination);
-  osc.start(t);
-  osc.stop(t + 0.32);
-  osc.onended = () => {
-    try {
-      osc.disconnect();
-    } catch {
-      /* already gone */
-    }
-    try {
-      gain.disconnect();
-    } catch {
-      /* already gone */
-    }
-  };
-}
 
 // One mic chunk (~4096 samples at the AudioContext rate). Computes the level
 // meter, resamples to 24 kHz for the gateway, and — in wake mode — taps 16

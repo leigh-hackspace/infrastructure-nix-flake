@@ -393,6 +393,39 @@ in {
       '';
     };
 
+    wake.record = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Write what each wake session was fed to `wake.recordDir`, so a detection score has bytes
+        behind it and a threshold becomes arguable instead of inherited.
+
+        **Off by default because it records the room.** Not a hedge: audio is only written while a
+        page has deliberately armed server-side wake, so it is someone choosing to hand the server
+        their microphone — but it is still a recording of a room with people in it. Files are 0600
+        and root-owned, one session is capped at 600 s by the engine, and `wake.recordAge` is the
+        backstop for the measurement window nobody closed. Turn it on to measure, turn it off
+        after; `just voice-wake-recs` lists what it caught.
+      '';
+    };
+
+    wake.recordDir = lib.mkOption {
+      type = lib.types.str;
+      default = "/var/lib/${STATE}/wake-record";
+      description = "Where the recordings go: the unit's own state directory, never the store.";
+    };
+
+    wake.recordAge = lib.mkOption {
+      type = lib.types.str;
+      default = "14d";
+      description = ''
+        tmpfiles age for the recordings.  The engine writes a WAV when a session closes or is
+        reaped and never looks at it again, so retention is the system's job — the same reason
+        `wav::prune_wavs` exists for the answer side, and the same fault it prevents: a state
+        directory that grows on a box holding the space's databases.
+      '';
+    };
+
     wake.maxSessions = lib.mkOption {
       type = lib.types.ints.positive;
       default = 16;
@@ -462,6 +495,11 @@ in {
   };
 
   config = lib.mkIf cfg.enable {
+    # The recorder's backstop: type `e` creates the directory and purges entries older than the
+    # age.  Needed because the engine writes and forgets — see `wake.recordAge`.
+    systemd.tmpfiles.rules = lib.optionals cfg.wake.record [
+      "e ${cfg.wake.recordDir} 0700 root root ${cfg.wake.recordAge}"
+    ];
     # The two verbs that are tools rather than services — `probe` and `gate-check`, both
     # of which exist to answer a question about a room a person is standing in — have to
     # be *on the box*, and `just voice-probe` says so out loud.  The unit already drags
@@ -480,8 +518,10 @@ in {
     # The ear.  Detection only: it scores PCM and says yes or no, and nothing downstream
     # is wired to it yet — the page asks for it, the satellite does not.
     #
-    # No StateDirectory and no secrets: it holds one model in memory and a session table,
-    # so a restart costs a client one re-POST (/v1/wake/session) and nothing on disk.
+    # No secrets, and no StateDirectory unless `wake.record` is on: it holds one model in memory
+    # and a session table, so a restart costs a client one re-POST (/v1/wake/session) and, with
+    # recording off, nothing on disk.  When recording is on the files land in the gateway's own
+    # state directory, root-owned, 0600 per file, aged out by tmpfiles below.
     systemd.services.voice-wake = lib.mkIf cfg.wake.enable (INFRA.mkNeverGiveUp {
       description = "Hackspace wake-word engine (streaming detection, loopback)";
       wantedBy = ["multi-user.target"];
@@ -492,16 +532,19 @@ in {
         // {
           ExecStart =
             "${pkgs.voice-wake}/bin/voice-wake serve "
-            + lib.concatStringsSep " " [
-              "--model"
-              "${wakeModel}/hey_jarvis.onnx"
-              "--listen"
-              "127.0.0.1:${toString cfg.wake.listen}"
-              "--threshold"
-              (toString cfg.wake.threshold)
-              "--max-sessions"
-              (toString cfg.wake.maxSessions)
-            ];
+            + lib.concatStringsSep " " ([
+                "--model"
+                "${wakeModel}/hey_jarvis.onnx"
+                "--listen"
+                "127.0.0.1:${toString cfg.wake.listen}"
+                "--threshold"
+                (toString cfg.wake.threshold)
+                "--max-sessions"
+                (toString cfg.wake.maxSessions)
+              ]
+              # Opt-in, and absent when off: a unit that never writes room audio and one that does
+              # must not be one line apart by accident.
+              ++ lib.optionals cfg.wake.record ["--record-dir" cfg.wake.recordDir]);
         };
     });
 

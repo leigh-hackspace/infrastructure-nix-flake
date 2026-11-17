@@ -1,6 +1,7 @@
 import { createEffect, createSignal } from 'solid-js';
 import type { Accessor } from 'solid-js';
 import { MicCapture } from '../audio/mic';
+import { CUE_MUTE_MS, playCue } from './cue';
 import { makeResampler, resetResampler, resampleChunkTo } from '../audio/resample';
 import { WAKE_WORD_LABEL, mode, startWake, stopWake, wakeResult } from './controller';
 
@@ -37,6 +38,16 @@ const TARGET_RATE = 16000;
  * countdown once a voice has actually been heard. */
 /** After speech has been heard, this much quiet ends the turn. */
 const STOP_AFTER_QUIET_MS = 1200;
+/**
+ * The same timeout, longer, for a take that a wake word opened (measured in the room,
+ * 2026-11-17: the server path cut people off). It is not the same act of speech. Push-to-talk is
+ * "I have pressed a button and I am ready", so 1.2 s of silence means finished; after
+ * "hey jarvis" there is a breath — the phrase ends, the person gathers the question — and a gate
+ * that closes during the breath has answered the wake word and then refused the request. Only the
+ * first pause is widened: once the request starts, `lastLoudAt` moves with the speech, so this
+ * cannot stretch a long answer into a long wait.
+ */
+const STOP_AFTER_QUIET_WAKE_MS = 2200;
 /** Longest single push-to-talk recording. */
 // 12 s, and the number is arithmetic rather than taste: the take is posted as 16 kHz
 // mono PCM16, so 12 s is 384 KB, and the front door's `client_max_body_size` for this
@@ -214,6 +225,10 @@ let resampler = makeResampler();
 let startedAt = 0;
 let lastLoudAt = 0;
 let spoke = false;
+/** True when the current take was opened by a wake word rather than by a button. */
+let wakeOpened = false;
+/** Wall clock, same origin as `startedAt`: the cue's own sound is not the room speaking. */
+let ignoreCaptureUntil = 0;
 let seeded = false;
 let floorDb = 0;
 let peakDb = -120;
@@ -263,6 +278,7 @@ export async function startTalk(): Promise<void> {
   samples = [];
   resetResampler(resampler);
   spoke = false;
+  wakeOpened = false;
   seeded = false;
   peakDb = -120;
   startedAt = performance.now();
@@ -301,6 +317,13 @@ let micOn = false;
 
 /** The one per-chunk decision tree. Keep it small; it runs every ~85 ms. */
 function onChunk(chunk: Float32Array): void {
+  // The confirmation cue's own output, dropped rather than metered: the speaker feeds the mic,
+  // and this is the browser's copy of the half-duplex rule `satellite.rs` states for devices
+  // (capture during playback is information about the wrong thing). Short by design — see
+  // CUE_MUTE_MS — because a mute long enough to hide the cue is also long enough to eat the first
+  // syllable of an answer that came fast.
+  if (performance.now() < ignoreCaptureUntil) return;
+
   const db = frameDb(chunk);
   setLevelDb(db);
   const out = resampleChunkTo(chunk, resampler, mic.sampleRate, TARGET_RATE);
@@ -326,7 +349,10 @@ function onChunk(chunk: Float32Array): void {
     if (!spoke) {
       if (now - startedAt > NO_SPEECH_MS) void abortTake();
       else setStatus(`listening — talk now · ${levels()}`);
-    } else if (now - lastLoudAt > STOP_AFTER_QUIET_MS || secs * 1000 > MAX_RECORD_MS) {
+    } else if (
+      now - lastLoudAt > (wakeOpened ? STOP_AFTER_QUIET_WAKE_MS : STOP_AFTER_QUIET_MS) ||
+      secs * 1000 > MAX_RECORD_MS
+    ) {
       void stopTalk();
     } else {
       setStatus(`listening — ${secs.toFixed(1)}s · ${levels()}`);
@@ -403,6 +429,12 @@ async function sendWakeChunk(): Promise<void> {
       samples = ringTail(PRE_ROLL_MS);
       taking = true;
       spoke = true;
+      wakeOpened = true;
+      // Say it out loud that it heard you. The local engine has always done this; the server
+      // path answered with a status line the size of a thumbnail, which from two metres away is
+      // not feedback at all — a silent listener is indistinguishable from a dead one.
+      playCue(mic.context);
+      ignoreCaptureUntil = performance.now() + CUE_MUTE_MS;
       seeded = false;
       peakDb = -120;
       startedAt = performance.now();

@@ -28,6 +28,20 @@
   # crates/voice-assistant/README.md.
   infra.voiceAssistant.enable = true;
 
+  # ── Wake-word measurement window, opened 2026-11-17 ────────────────────────────────
+  # Server wake fires far less often than the browser's own detector (2 detections in
+  # 881 s of streamed audio), and every explanation so far has been a guess, because a
+  # score with no bytes behind it cannot be re-run or compared.  So: record what the
+  # engine is fed, and lower the threshold from upstream's inherited 0.5 to 0.30 — the
+  # measured room-noise peak against this model is 0.031, so 0.30 keeps a ~10x margin
+  # over noise while halving what an actual utterance has to reach.  Both are meant to
+  # come back out once `voice-wake bench` has been run over the recordings
+  # (`just voice-wake-recs`); the false-accept side of the trade is exactly what that
+  # measurement is for, and `wake.record` records the room, so it is a window, not a
+  # setting.
+  infra.voiceAssistant.wake.record = true;
+  infra.voiceAssistant.wake.threshold = 0.30;
+
   # `relaxed` rather than the default `true` for exactly **one** derivation in this box's
   # build closure: `door-entry-management-system`, whose `installPhase` runs `deno i` and
   # `deno cache` and therefore needs the network, so the package sets `__noChroot` — and nix

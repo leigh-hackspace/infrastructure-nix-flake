@@ -1171,6 +1171,13 @@ slack-agent-events question: _build-host-guard
 # crates/voice-assistant/README.md.
 
 # What the gateway, the mic and the last answers look like right now.
+voice-wake-recs:
+    # List what the wake recorder caught, newest first, with what each one is.  The recordings
+    # only exist while `infra.voiceAssistant.wake.record` is on and a page has armed server wake,
+    # so "nothing here" usually means the flag is off rather than that nobody spoke.
+    sudo ls -lht /var/lib/voice-assistant/wake-record 2>/dev/null | head -20 \
+      || echo "no recording directory — is infra.voiceAssistant.wake.record on?"
+
 voice-status:
     #!/usr/bin/env bash
     set -euo pipefail

@@ -3053,6 +3053,19 @@ path-info -S | numfmt --to=iec`, and `nix path-info -S` on
   `nix flake check --no-build 2>&1 | grep -o 'sops-secret-[a-z_0-9]*' | sort -u` after
   `echo x | sops --set '["a","b"]' /dev/stdin secrets/secrets.yaml`-shaped no-op edit.
 
+- [ ] **Wake recordings: the engine owns its directory, so the tmpfiles rule in
+      `voice-assistant.nix` must go.** Deployed 2026-11-17 and verified end to end (a session's
+      audio landed as `wake-<epoch>-<id>-<label>.wav`, 0600), but the directory is created by
+      `dump()` running as the unit's **DynamicUser**, and `systemd.tmpfiles.rules` carries
+      `0700 root root` — so the first boot on which tmpfiles wins the race chowns the recordings
+      directory to root and the engine starts failing to write, quietly, with only a journal line.
+      Fails safe (no recordings rather than a broken detector), which is the only reason it is a
+      follow-up and not an emergency. **Do:** delete the rule and prune inside `dump()` — keep the
+      newest N files, mirroring `wav::prune_wavs` on the answer side, so the writer owns retention
+      and there is no second mechanism to disagree with it. **Re-verify with:** `sudo ls -l
+      /var/lib/voice-assistant/wake-record` after a reboot, and one synthetic session against
+      `127.0.0.1:8195` (POST `/v1/session` → chunks → DELETE) producing a file.
+
 - [ ] **Fix the embedding → keyword handoff in `voice-wake`'s openWakeWord port, before anyone
       trusts `--engine oww`.** Built 2026-11-17 and measured immediately: the mel graph loads under
       tract, runs, and emits the browser's own log-mel (`shape=[1,1,5,32]`, values in the −20…−60
