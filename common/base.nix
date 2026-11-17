@@ -9,7 +9,16 @@
 # audit counted ~15 identical settings — so a change made on one machine silently
 # did not happen on the other.
 {
-  imports = [./nixbld.nix];
+  imports = [
+    ./nixbld.nix
+    # A store path is read-only only against non-root, and a root Python process
+    # imports straight into it: measured on aibox, 5 strata paths had 14-56
+    # `__pycache__` files written after registration, so their contents no longer
+    # matched the hash in the nix database — invisible on the box that had it, and a
+    # `hash mismatch importing path` on every box that tried to take a build from it.
+    # Read its header before turning this off.
+    ./store-hygiene.nix
+  ];
 
   # Both machines run nixos-rebuild from this flake's git tree.
   nix.settings.experimental-features = [
