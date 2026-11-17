@@ -99,6 +99,7 @@ fn serve_options(a: &[String]) -> api::Options {
             s => Some(s),
         },
         agent_url: setting(a, "--agent-url", "VOICE_AGENT_URL", agent::DEFAULT_URL),
+        wake_url: setting(a, "--wake-url", "VOICE_WAKE_URL", api::DEFAULT_WAKE_URL),
         piper_bin: setting(a, "--piper-bin", "VOICE_PIPER_BIN", "piper"),
         piper_model: setting(a, "--piper-model", "VOICE_PIPER_MODEL", ""),
         length_scale: number(a, "--length-scale", "VOICE_LENGTH_SCALE", 1.05) as f32,

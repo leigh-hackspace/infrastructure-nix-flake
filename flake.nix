@@ -154,6 +154,13 @@
     # what puts it in `pkgs.whisper-ws` for whisper-ws.service's ExecStart.
     whisperWsPkg = pkgs.callPackage ./crates/whisper-ws/package.nix {};
 
+    # Same shape as `whisperWsPkg` above and for the reason written at the top of
+    # `crates/Cargo.toml`: `voice-wake` is a workspace of one so that its ONNX-runtime
+    # dependency tree never enters the shared `Cargo.lock` that crane reads at evaluation
+    # time.  services1's overlay below is what puts it in `pkgs.voice-wake` for
+    # voice-wake.service's ExecStart; it is the only machine that gets it.
+    voiceWakePkg = pkgs.callPackage ./crates/voice-wake/package.nix {};
+
     /*
     The machines, as one function and one short call each (§2.1 of
     docs/flake-simplification-audit-2026-10-22.md).
@@ -277,7 +284,23 @@
 
     nixosConfigurations = {
       services1 = mkSystem {
-        modules = [nixos-utils.nixosModules.containers] ++ commonModules ++ [./machines/services1];
+        modules =
+          [nixos-utils.nixosModules.containers]
+          ++ commonModules
+          ++ [
+            # The wake engine enters this box's package set here — the same one-line
+            # pattern aibox uses for whisper-ws, and for the same reason: the service's
+            # ExecStart wants `pkgs.voice-wake`, and a non-member crate is not in the
+            # workspace's build graph to be found any other way.
+            {
+              nixpkgs.overlays = [
+                (final: prev: {
+                  voice-wake = voiceWakePkg;
+                })
+              ];
+            }
+            ./machines/services1
+          ];
       };
 
       # The second services box: a clone of services1 on AMD/Radeon hardware.  It
@@ -401,7 +424,7 @@
       whisper-ws = whisperWsPkg;
       # The wake tier: its own cargo workspace, because an ONNX-runtime dependency tree
       # in the shared lock would dirty every service's build (crates/voice-wake/package.nix).
-      voice-wake = pkgs.callPackage ./crates/voice-wake/package.nix {};
+      voice-wake = voiceWakePkg;
       strata = pkgs.callPackage ./machines/aibox/strata-package.nix {
         src = flakeInputs.strata.outPath;
       };

@@ -137,6 +137,26 @@
     }
   ];
 
+  # The wake model, pinned the same way the piper voices are: data, upstreamed
+  # elsewhere, fetched by URL and hashed (AGENTS rule 30's shape — this repo keeps the
+  # pin, not the artifact).
+  #
+  # Release `v2.1.3` of livekit/livekit-wakeword publishes exactly two phrases, and
+  # `hey jarvis` is the one this fleet already uses as a wake word, so the keyword list in
+  # `cfg.wakeWords` and the engine agree without anyone configuring a model name.  Only
+  # the **streaming** export loads (the crate refuses v1/openWakeWord classifier files with
+  # `NotStreamingModel`); `crates/voice-wake/README.md` keeps the sha256 of every asset in
+  # that release.
+  # `name` rather than `pname`/`version`, deliberately: the crate keys a model by its
+  # **file stem**, so the store file's name is the model's name as it appears in
+  # `/v1/wake/session`'s reply and in a `detection` event.  Left as `pname`+`version` it
+  # arrived as `hey_jarvis.onnx-v2.1.3`, which is a filename wearing a name field.
+  wakeModel = pkgs.fetchurl {
+    name = "hey_jarvis.onnx";
+    url = "https://github.com/livekit/livekit-wakeword/releases/download/v2.1.3/hey_jarvis.onnx";
+    sha256 = "sha256:i1VMUICYiKwU9n+iGsw72F5Y9WeO5PK+XQBB+aLmKEM=";
+  };
+
   voiceAssistant = CRANE.crate {
     pname = "voice-assistant";
     version = "0.1.0";
@@ -191,7 +211,13 @@
       "--allow-origin"
       (lib.concatStringsSep "," cfg.allowOrigins)
     ]
-    ++ lib.optional (!cfg.recordQuestions) "--no-record-questions";
+    ++ lib.optional (!cfg.recordQuestions) "--no-record-questions"
+    # The engine is a proxy target, not a second origin: the page keeps exactly one address
+    # to talk to, and the engine keeps its loopback-only rule.
+    ++ lib.optionals cfg.wake.enable [
+      "--wake-url"
+      "http://127.0.0.1:${toString cfg.wake.listen}"
+    ];
 
   satelliteFlags =
     commonFlags
@@ -320,6 +346,56 @@ in {
       '';
     };
 
+    wake.enable = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = ''
+        Run `voice-wake` and expose `/v1/wake/*` through the gateway: the server-side half
+        of the wake tier, for a device that cannot run a detector itself (a browser tab, any
+        dumb PCM stream) and so has to hand its audio somewhere.
+
+        Detection only.  Nothing here answers, plays, or transcribes — a detection is a
+        number the client decides what to do with — and the page must be switched to
+        `server` wake by hand, so enabling this changes nothing that is already running.
+      '';
+    };
+
+    wake.threshold = lib.mkOption {
+      # `types.floats` does not exist at this pin (the error is literally
+      # "attribute 'floats' missing … did you mean float?"); the clamped numeric type is
+      # under `numbers`, and clamping matters here because a threshold of 0.0 would fire a
+      # "detection" on every chunk and 2.0 would be silently dead.
+      type = lib.types.numbers.between 0.0 1.0;
+      default = 0.5;
+      description = ''
+        Score at or above which the engine reports a detection.  0.5 is upstream's default
+        and **not** a tuned number for this room: their own figure is 0.5–2.5 false accepts
+        per hour of conversational speech, and `docs/follow-ups.md` has the busy-hour
+        measurement that should replace it.  Raising it trades recall for quiet.
+      '';
+    };
+
+    wake.listen = lib.mkOption {
+      type = lib.types.port;
+      default = 8195;
+      description = ''
+        Loopback port the engine binds.  It is reachable from off-box only through the
+        gateway's `/v1/wake/*` proxy and the front door's `voice.int` row, because the
+        binary refuses any non-loopback bind (`voice-wake` has no authentication).
+      '';
+    };
+
+    wake.maxSessions = lib.mkOption {
+      type = lib.types.ints.positive;
+      default = 16;
+      description = ''
+        Concurrent streams.  One 7 MB model instance and its own inference each, so this is
+        a memory and fairness cap rather than a capacity claim — measured cost is ~31
+        streams per core single-threaded on the nix build (`crates/voice-wake/README.md`),
+        and scoring is serialised across sessions in one mutex on purpose.
+      '';
+    };
+
     satellite.enable = lib.mkOption {
       type = lib.types.bool;
       default = true;
@@ -387,24 +463,60 @@ in {
     environment.systemPackages = [
       voiceAssistant
       pkgs.ffmpeg_7
+      # On PATH so the measurement harness is usable from the box it runs on:
+      # `voice-wake bench hey_jarvis.onnx room.wav` over a recording is how the busy-hour
+      # false-accept rate in `docs/follow-ups.md` gets earned.
+      pkgs.voice-wake
     ];
+
+    # The ear.  Detection only: it scores PCM and says yes or no, and nothing downstream
+    # is wired to it yet — the page asks for it, the satellite does not.
+    #
+    # No StateDirectory and no secrets: it holds one model in memory and a session table,
+    # so a restart costs a client one re-POST (/v1/wake/session) and nothing on disk.
+    systemd.services.voice-wake = lib.mkIf cfg.wake.enable (INFRA.mkNeverGiveUp {
+      description = "Hackspace wake-word engine (streaming detection, loopback)";
+      wantedBy = ["multi-user.target"];
+      after = ["network-online.target"];
+      wants = ["network-online.target"];
+      serviceConfig =
+        hardening
+        // {
+          ExecStart =
+            "${pkgs.voice-wake}/bin/voice-wake serve "
+            + lib.concatStringsSep " " [
+              "--model"
+              wakeModel
+              "--listen"
+              "127.0.0.1:${toString cfg.wake.listen}"
+              "--threshold"
+              (toString cfg.wake.threshold)
+              "--max-sessions"
+              (toString cfg.wake.maxSessions)
+            ];
+        };
+    });
 
     # The gateway: every caller's whisper, bot and voice in one loopback socket.
     systemd.services.voice-gateway = INFRA.mkNeverGiveUp {
       description = "Hackspace voice gateway (whisper + agent + piper, loopback)";
       wantedBy = ["multi-user.target"];
-      after = [
-        "network-online.target"
-        "slack-agent-listen.service"
-      ];
+      after =
+        [
+          "network-online.target"
+          "slack-agent-listen.service"
+        ]
+        ++ lib.optionals cfg.wake.enable ["voice-wake.service"];
       # `wants`, not `requires`: with the bot's socket down the gateway still answers
       # /v1/transcribe and /v1/tts, which is enough for the page to show a transcript
       # and for `just voice-say` to work.  A voice assistant that answers with nothing
       # at all is worse than one that answers in text.
-      wants = [
-        "network-online.target"
-        "slack-agent-listen.service"
-      ];
+      wants =
+        [
+          "network-online.target"
+          "slack-agent-listen.service"
+        ]
+        ++ lib.optionals cfg.wake.enable ["voice-wake.service"];
       serviceConfig =
         hardening
         // {

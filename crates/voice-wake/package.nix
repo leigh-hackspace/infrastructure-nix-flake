@@ -38,7 +38,12 @@ rustPlatform.buildRustPackage {
 
   src = lib.cleanSourceWith {
     src = ./.;
-    filter = path: _type: !lib.hasPrefix "${toString ./target}/" (toString path);
+    # Compared by name rather than against `${toString ./target}`, because a path literal
+    # has to *exist* to be spliced, and whether it does depends on whether the source is
+    # this working tree or a git-filtered flake copy — a fragility with no upside.  The
+    # crate has no other directory called `target`, and refusing to recurse into it is
+    # enough: measured on the flake source, this yields a 112 K input instead of 660 MB.
+    filter = path: _type: baseNameOf path != "target";
   };
 
   cargoLock = {

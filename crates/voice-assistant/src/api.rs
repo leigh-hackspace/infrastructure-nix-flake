@@ -46,6 +46,10 @@ use crate::{agent, b64, spoken, stt, tts, wake, wav};
 
 pub const DEFAULT_LISTEN: &str = "127.0.0.1:8193";
 
+/// Where `voice-wake serve` listens by default.  This gateway is the only thing a browser
+/// talks to, so the engine's address is loopback-only and never published to a client.
+pub const DEFAULT_WAKE_URL: &str = "http://127.0.0.1:8195";
+
 /// One line of the recent-activity ring.
 #[derive(Clone)]
 pub struct Entry {
@@ -73,6 +77,11 @@ pub struct Options {
     pub whisper_url: String,
     pub whisper_language: Option<String>,
     pub agent_url: String,
+    /// The wake engine, or empty when this box has none.  `/v1/wake/*` is a **proxy**, so the
+    /// browser keeps talking to exactly one origin (no second CORS pair, no second vhost, no
+    /// second DNS row) and the engine's own refusal to bind anywhere but loopback stays
+    /// intact.  See `wake_proxy`.
+    pub wake_url: String,
     pub piper_bin: String,
     pub piper_model: String,
     pub length_scale: f32,
@@ -291,6 +300,13 @@ fn route(req: &Request, ctx: &Arc<Ctx>) -> Reply {
                 ),
             )
         }
+        ("POST", "/v1/wake/session") => wake_proxy(req, ctx, "POST", "/v1/session"),
+        ("POST", "/v1/wake/chunk") => wake_proxy(req, ctx, "POST", "/v1/chunk"),
+        ("POST", "/v1/wake/reset") => wake_proxy(req, ctx, "POST", "/v1/reset"),
+        ("DELETE", "/v1/wake/session") => wake_proxy(req, ctx, "DELETE", "/v1/session"),
+        // The engine's own counters, through the same door: it is the page's way of asking
+        // "is there an engine at all, and what is it costing", and a 503 here says no.
+        ("GET", "/v1/wake/status.json") => wake_proxy(req, ctx, "GET", "/status.json"),
         ("POST", path) if path.starts_with("/v1/") => web::Reply::text(404, "no such v1 route"),
         _ => Reply::text(
             404,
@@ -650,6 +666,76 @@ tick();
 </script></body></html>
 "#;
 
+/// Forward `/v1/wake/*` to `voice-wake serve`.
+///
+/// Three reasons this is a proxy rather than a second service the page talks to directly:
+/// the browser keeps exactly **one** origin (so no second CORS allowlist, no second vhost row,
+/// no second DNS record — all three of which are guard-enforced here), the engine's own
+/// refusal to bind anywhere but loopback stays true, and the front door's `voice.int` row and
+/// its timeouts/body cap continue to be the only policy between a tab and a model.
+///
+/// Only JSON moves this way. `common_http::Response` carries its body as a `String`, which is
+/// correct for score and status replies and *wrong* for audio — so do not extend this route to
+/// stream a WAV back; spoken answers already have their own path (`/v1/tts`, `/v1/ask`).
+fn wake_proxy(req: &Request, ctx: &Arc<Ctx>, method: &str, upstream: &str) -> Reply {
+    if ctx.opts.wake_url.is_empty() {
+        return Reply::json(
+            503,
+            r#"{"error":"no wake engine on this box: --wake-url is unset"}"#,
+        );
+    }
+    let url = format!(
+        "{}{}",
+        ctx.opts.wake_url.trim_end_matches('/'),
+        upstream
+    );
+    // The session token is opaque: minted by the engine on POST /v1/session and echoed
+    // straight through, so the gateway holds no wake state of its own and a restart of the
+    // engine simply gives the page a 410 on the next chunk, which the page reports.
+    let sid = req.header("x-voice-wake-session").to_string();
+    let mut headers: Vec<(&str, &str)> = Vec::new();
+    if !sid.is_empty() {
+        headers.push(("x-voice-wake-session", sid.as_str()));
+    }
+    let ctype = {
+        let c = req.header("content-type");
+        if c.is_empty() {
+            if req.body.is_empty() {
+                "application/json"
+            } else {
+                "application/octet-stream"
+            }
+        } else {
+            c
+        }
+    };
+    let body = if req.body.is_empty() {
+        None
+    } else {
+        Some(req.body.as_slice())
+    };
+    // 25 s is a wide margin over the measured cost (a 0.5 s chunk infers in ~15 ms, and the
+    // engine serialises scoring across sessions), and short enough that a wedged model shows
+    // up as a 502 the page can name rather than a spinner.
+    match common_http::request_bytes(
+        method,
+        &url,
+        body,
+        ctype,
+        &headers,
+        Duration::from_secs(25),
+    ) {
+        Ok(r) => Reply::new(r.status, "application/json", r.body.into_bytes()),
+        Err(e) => Reply::json(
+            502,
+            &format!(
+                "{{\"error\":\"wake engine unreachable: {}\"}}",
+                e.replace('"', "'")
+            ),
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -681,6 +767,7 @@ mod tests {
             whisper_url: String::new(),
             whisper_language: None,
             agent_url: String::new(),
+            wake_url: String::new(),
             piper_bin: String::new(),
             piper_model: String::new(),
             length_scale: 1.0,

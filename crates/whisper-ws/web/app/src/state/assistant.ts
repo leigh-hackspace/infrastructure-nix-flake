@@ -57,6 +57,11 @@ const ASK_TIMEOUT_MS = 180_000;
 
 let gatewayUrl = '';
 
+/** The gateway's origin, for the few callers that need to build a URL by hand. */
+export function gatewayBase(): string {
+  return gatewayUrl;
+}
+
 /** Called from the card with `status.json`'s `assistant_url` on every poll. */
 export function configureGateway(url: string): void {
   const next = (url || '').replace(/\/+$/, '');
@@ -213,6 +218,35 @@ let seeded = false;
 let floorDb = 0;
 let peakDb = -120;
 
+/**
+ * Which engine is listening for the wake phrase, and therefore who owns the microphone.
+ *
+ * Exactly one of these, and the type is the reason: two detectors on one stream means two
+ * answers to one sentence and a score meter that means nothing. `local` is the wake-word
+ * card above (OpenWakeWord, in this tab); `server` hands the stream to `voice-wake` on
+ * services1 and is the path a dumb device takes — which is the whole point of offering it
+ * here, so the server detector can be tested from any microphone before it is wired to a
+ * camera.
+ */
+export type WakeEngine = 'off' | 'local' | 'server';
+export const [wakeEngine, setWakeEngine] = createSignal<WakeEngine>('off');
+export const [serverScore, setServerScore] = createSignal(0);
+export const [serverDetections, setServerDetections] = createSignal(0);
+
+/** Milliseconds of audio per POST to the engine. */
+const WAKE_CHUNK_MS = 500;
+/** Audio kept before a detection, so the request that follows is not cut off mid-word. */
+const PRE_ROLL_MS = 700;
+/** Rolling window held while armed: 8 s of 16 kHz mono is 256 KB, which is nothing. */
+const RING_SECS = 8;
+
+let armed = false;
+let wakeSession = '';
+let wakeInFlight = false;
+let wakeSpare: number[] = [];
+let ring: number[][] = [];
+let ringLen = 0;
+
 function frameDb(f32: Float32Array): number {
   let sum = 0;
   for (let i = 0; i < f32.length; i++) sum += f32[i] * f32[i];
@@ -235,41 +269,229 @@ export async function startTalk(): Promise<void> {
   lastLoudAt = startedAt;
   setBusy('');
   try {
-    await mic.start((chunk) => {
-      const db = frameDb(chunk);
-      setLevelDb(db);
-      const out = resampleChunkTo(chunk, resampler, mic.sampleRate, TARGET_RATE);
-      for (let i = 0; i < out.length; i++) samples.push(out[i]);
-
-      // The floor is seeded from the first frame rather than from a default, so the
-      // threshold is a fact about this room and this input from frame two on.
-      if (!seeded) {
-        floorDb = db;
-        seeded = true;
-      } else if (db < floorDb) floorDb = db;
-      if (db > peakDb) peakDb = db;
-
-      const now = performance.now();
-      const secs = samples.length / TARGET_RATE;
-      if (db >= Math.max(SPEECH_FLOOR_DB, floorDb + SPEECH_MARGIN_DB)) {
-        spoke = true;
-        lastLoudAt = now;
-      }
-
-      if (!spoke) {
-        if (now - startedAt > NO_SPEECH_MS) void abortTake();
-        else setStatus(`listening — talk now · ${levels()}`);
-      } else if (now - lastLoudAt > STOP_AFTER_QUIET_MS || secs * 1000 > MAX_RECORD_MS) {
-        void stopTalk();
-      } else {
-        setStatus(`listening — ${secs.toFixed(1)}s · ${levels()}`);
-      }
-    });
+    await ensureMic();
+    taking = true;
     setRecording(true);
     setStatus('listening — talk now, or press again to stop');
   } catch (e) {
     setStatus(`microphone failed: ${humanError(e)}`);
     setRecording(false);
+  }
+}
+
+/** True while a take is being collected — the gate below runs only for this. */
+let taking = false;
+
+/**
+ * Start the microphone once, and let one callback serve both features.
+ *
+ * This exists because the browser gives us one stream and one resampler worth of state:
+ * push to talk and an armed wake listener are the same capture with different decisions
+ * about what to keep, so they share it. The alternative — a second `mic.start()` per mode —
+ * restarts the stream, and a restarted stream delivers a gap exactly where a wake phrase
+ * would be.
+ */
+async function ensureMic(): Promise<void> {
+  if (micOn) return;
+  await mic.start(onChunk);
+  micOn = true;
+}
+
+let micOn = false;
+
+/** The one per-chunk decision tree. Keep it small; it runs every ~85 ms. */
+function onChunk(chunk: Float32Array): void {
+  const db = frameDb(chunk);
+  setLevelDb(db);
+  const out = resampleChunkTo(chunk, resampler, mic.sampleRate, TARGET_RATE);
+
+  if (taking) {
+    for (let i = 0; i < out.length; i++) samples.push(out[i]);
+
+    // The floor is seeded from the first frame rather than from a default, so the
+    // threshold is a fact about this room and this input from frame two on.
+    if (!seeded) {
+      floorDb = db;
+      seeded = true;
+    } else if (db < floorDb) floorDb = db;
+    if (db > peakDb) peakDb = db;
+
+    const now = performance.now();
+    const secs = samples.length / TARGET_RATE;
+    if (db >= Math.max(SPEECH_FLOOR_DB, floorDb + SPEECH_MARGIN_DB)) {
+      spoke = true;
+      lastLoudAt = now;
+    }
+
+    if (!spoke) {
+      if (now - startedAt > NO_SPEECH_MS) void abortTake();
+      else setStatus(`listening — talk now · ${levels()}`);
+    } else if (now - lastLoudAt > STOP_AFTER_QUIET_MS || secs * 1000 > MAX_RECORD_MS) {
+      void stopTalk();
+    } else {
+      setStatus(`listening — ${secs.toFixed(1)}s · ${levels()}`);
+    }
+    return;
+  }
+
+  if (armed) {
+    for (const s of out) {
+      wakeSpare.push(s);
+      ring.push([s]);
+      ringLen += 1;
+    }
+    trimRing();
+    if (wakeSpare.length >= (WAKE_CHUNK_MS * TARGET_RATE) / 1000) void sendWakeChunk();
+  }
+}
+
+function trimRing(): void {
+  const max = RING_SECS * TARGET_RATE;
+  while (ringLen > max && ring.length > 1) {
+    ringLen -= (ring.shift()?.length ?? 0);
+  }
+}
+
+/** The last `ms` of what was heard, oldest first. */
+function ringTail(ms: number): number[] {
+  const want = (ms / 1000) * TARGET_RATE;
+  const out: number[] = [];
+  let got = 0;
+  for (let i = ring.length - 1; i >= 0 && got < want; i--) {
+    out.unshift(...ring[i]);
+    got += ring[i].length;
+  }
+  return out;
+}
+
+/**
+ * POST the audio heard since the last POST, and read back the model's score.
+ *
+ * One request in flight, and anything that arrives while one is outstanding simply stays in
+ * `wakeSpare` until the next tick. A mic callback cannot be awaited — the browser does not
+ * await it — so "at most one in flight" is the only back-pressure available, and it is the
+ * right kind: falling behind shows up as a meter that stops moving, which is honest, rather
+ * than as detections of words the room said ten seconds ago.
+ */
+async function sendWakeChunk(): Promise<void> {
+  if (wakeInFlight || !wakeSession) return;
+  const batch = wakeSpare;
+  wakeSpare = [];
+  wakeInFlight = true;
+  const pcm = new Int16Array(batch.length);
+  for (let i = 0; i < batch.length; i++) {
+    pcm[i] = Math.max(-32768, Math.min(32767, Math.round(batch[i] * 32767)));
+  }
+  try {
+    const r = await fetch(`${gatewayUrl}/v1/wake/chunk`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/octet-stream', 'x-voice-wake-session': wakeSession },
+      body: new Uint8Array(pcm.buffer, pcm.byteOffset, pcm.byteLength) as unknown as BodyInit,
+    });
+    const j = await r.json();
+    if (j.error) {
+      setStatus(`server wake: ${j.error}`);
+      if (r.status === 410) await disarmServerWake('the engine dropped this session');
+      return;
+    }
+    setServerScore(Number(j.score ?? 0));
+    if (j.detected) {
+      setServerDetections((n) => n + 1);
+      // The phrase itself is already in the ring, and the gateway strips it (`wake::strip`),
+      // so starting the take from the pre-roll is both safe and what makes the request
+      // sound like one sentence rather than a word followed by a sentence.
+      samples = ringTail(PRE_ROLL_MS);
+      taking = true;
+      spoke = true;
+      seeded = false;
+      peakDb = -120;
+      startedAt = performance.now();
+      lastLoudAt = startedAt;
+      setRecording(true);
+      setStatus('heard the wake word — go on');
+    }
+  } catch (e) {
+    setStatus(`server wake: ${humanError(e)}`);
+  } finally {
+    wakeInFlight = false;
+  }
+}
+
+export async function armServerWake(): Promise<void> {
+  if (armed) return;
+  if (!gatewayKnown()) {
+    setStatus('the gateway URL is not configured — set whisper-ws --assistant-url');
+    return;
+  }
+  setServerScore(0);
+  setServerDetections(0);
+  try {
+    const r = await fetch(`${gatewayUrl}/v1/wake/session`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      // 16 kHz from here, not the mic's native rate: the engine would resample anyway, and
+      // doing it once in the page keeps the bytes we stream identical to the bytes we send
+      // to whisper, so the detector and the ASR cannot disagree about what was said.
+      body: JSON.stringify({ rate: TARGET_RATE }),
+    });
+    const j = await r.json();
+    if (!r.ok || !j.session) {
+      setStatus(`server wake unavailable: ${j.error ?? `HTTP ${r.status}`}`);
+      return;
+    }
+    wakeSession = j.session;
+    await ensureMic();
+    armed = true;
+    ring = [];
+    ringLen = 0;
+    wakeSpare = [];
+    setStatus(`armed on the server — model ${j.model}, threshold ${j.threshold}`);
+  } catch (e) {
+    setStatus(`server wake unavailable — ${humanError(e)}`);
+  }
+}
+
+export async function disarmServerWake(why = 'disarmed'): Promise<void> {
+  if (!armed) return;
+  armed = false;
+  const s = wakeSession;
+  wakeSession = '';
+  setServerScore(0);
+  if (!taking) {
+    await mic.stop();
+    micOn = false;
+  }
+  if (s) {
+    await fetch(`${gatewayUrl}/v1/wake/session`, {
+      method: 'DELETE',
+      headers: { 'x-voice-wake-session': s },
+    }).catch(() => undefined);
+  }
+  setStatus(why);
+}
+
+/**
+ * Choose the listening engine. One call, three states, because the exclusivity is the
+ * interesting part of this feature rather than an implementation detail.
+ */
+export async function chooseWake(next: WakeEngine): Promise<void> {
+  if (next === wakeEngine()) return;
+  if (next === 'off' && wakeEngine() === 'local') stopWake();
+  if (wakeEngine() === 'local' && next !== 'local') {
+    setHandsFree(false);
+    stopWake();
+  }
+  if (wakeEngine() === 'server' && next !== 'server') await disarmServerWake();
+  setWakeEngine(next);
+  if (next === 'local') {
+    setHandsFree(true);
+    lastSeen = wakeResult().text;
+    if (mode() !== 'wake') await startWake();
+    setStatus(`armed in this tab — say “${WAKE_WORD_LABEL}”`);
+  } else if (next === 'server') {
+    await armServerWake();
+  } else {
+    setStatus('not listening');
   }
 }
 
@@ -281,8 +503,12 @@ function levels(): string {
 /** A take that heard nothing: say so with the levels, and do not send silence to whisper. */
 async function abortTake(): Promise<void> {
   if (!recording()) return;
+  taking = false;
   setRecording(false);
-  await mic.stop();
+  if (!armed) {
+    await mic.stop();
+    micOn = false;
+  }
   samples = [];
   setBusy('');
   setStatus(
@@ -294,8 +520,14 @@ async function abortTake(): Promise<void> {
 
 export async function stopTalk(): Promise<void> {
   if (!recording()) return;
+  taking = false;
   setRecording(false);
-  await mic.stop();
+  // Stay capturing if the server is armed — the stream is the wake listener's, and stopping
+  // it here would silently disarm the thing the user just switched on.
+  if (!armed) {
+    await mic.stop();
+    micOn = false;
+  }
   const n = samples.length;
   const secs = n / TARGET_RATE;
   setStatus('transcribing…');
@@ -314,12 +546,21 @@ export async function stopTalk(): Promise<void> {
     setTiming(`transcribed in ${stt}s`);
     // runAsk, not askText: this call holds the busy flag on purpose, and the guard would
     // drop the question (see runAsk).
-    await runAsk(d.text, 'push to talk');
+    await runAsk(d.text, armed ? 'server wake word' : 'push to talk');
   } catch (e) {
     setBusy('');
     setStatus(`transcribe failed: ${humanError(e)}`);
   } finally {
     samples = [];
+    // One turn, one clean slate. The engine's model keeps its own history, so a session that
+    // never resets inherits the last sentence into the next one and the scores creep upward
+    // — which reads as a detector getting more confident, and is really a buffer filling.
+    if (armed && wakeSession) {
+      void fetch(`${gatewayUrl}/v1/wake/reset`, {
+        method: 'POST',
+        headers: { 'x-voice-wake-session': wakeSession },
+      }).catch(() => undefined);
+    }
   }
 }
 

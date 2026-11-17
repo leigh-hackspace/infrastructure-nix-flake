@@ -8,16 +8,18 @@ import {
   answer,
   askText,
   busy,
+  chooseWake,
   configureGateway,
   gatewayKnown,
-  handsFree,
   level,
   onTalkClick,
   question,
   recording,
+  serverDetections,
+  serverScore,
   status,
   timing,
-  toggleHandsFree,
+  wakeEngine,
   watchWakeResult,
 } from '../state/assistant';
 
@@ -52,16 +54,37 @@ export function AssistantCard(props: { snapshot: Accessor<StatusSnapshot | null>
       >
         <p class="sub">
           Click <b>Talk</b>, speak, then click <b>Stop and ask</b> — or just pause for a second and it
-          sends itself. Or arm the wake word and say “{WAKE_WORD_LABEL}” followed by the question.
+          sends itself. Or pick a wake source: <b>this tab</b> runs OpenWakeWord here, <b>server</b>{' '}
+          streams your microphone to the network's own detector, which is the same engine a
+          camera with no CPU gets.
         </p>
         <div class="row">
           <button class={`mic ${recording() ? 'on' : ''}`} disabled={!!busy()} onClick={onTalkClick}>
             {recording() ? '🔴 Stop and ask' : '🎙 Talk'}
           </button>
-          <button class={`mic ${handsFree() ? 'on' : ''}`} onClick={() => void toggleHandsFree()}>
-            {handsFree() ? '💤 Disarm wake word' : '💤 Arm wake word'}
-          </button>
+          {/* One control, three states, because two listeners on one microphone is two
+              answers to one sentence. `this tab` is OpenWakeWord running here; `server` hands
+              the stream to voice-wake on services1 — the path a camera or any dumb device
+              takes, which is why it is reachable from any browser before it is wired to one. */}
+          <select
+            style={{ 'font-size': '.95rem', 'font-family': 'inherit' }}
+            disabled={!!busy()}
+            value={wakeEngine()}
+            onChange={(e) => void chooseWake(e.currentTarget.value as 'off' | 'local' | 'server')}
+          >
+            <option value="off">👂 wake: off</option>
+            <option value="local">👂 wake: this tab</option>
+            <option value="server">👂 wake: server</option>
+          </select>
         </div>
+        <Show when={wakeEngine() === 'server'}>
+          <div class="sub">
+            server score{' '}
+            <Pill kind={serverScore() >= 0.5 ? 'good' : 'wait'}>{serverScore().toFixed(2)}</Pill>{' '}
+            · detections {serverDetections()} — this tab is streaming its microphone to{' '}
+            <code>voice.int.leighhack.org</code>
+          </div>
+        </Show>
         <LevelMeter visible={() => recording()} />
         <div class="sub">{status()}</div>
         <Show when={question()}>

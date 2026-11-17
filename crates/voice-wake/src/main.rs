@@ -36,17 +36,19 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use hound::{SampleFormat, WavReader};
 use livekit_wakeword::WakeWordModel;
+
+mod serve;
 
 /// Samples in one 80 ms model step at 16 kHz.
 ///
 /// Feeding exactly one step per `predict` call is what makes a detection timestamp mean
 /// something: the crate returns the *maximum* score among the steps a call completed, so a
 /// bigger chunk blurs that moment away.
-const STEP_SAMPLES: usize = 1280;
+pub(crate) const STEP_SAMPLES: usize = 1280;
 const STEP_SECS: f64 = 0.080;
 
 /// One input clip, already checked to be mono 16-bit PCM.
@@ -72,6 +74,7 @@ struct Args {
 const USAGE: &str = "\
 voice-wake — streaming wake-word detection over WAV files, with the numbers that matter
 
+  voice-wake serve  --model <model.onnx>        loopback HTTP scoring service (see README)
   voice-wake score <model.onnx> <clip.wav>      one clip, a line per step above 0.05
   voice-wake bench <model.onnx> <clip|dir>…     many clips, one model, no reset between
   --threshold T     score at or above which a step counts as a detection (default 0.5)
@@ -89,7 +92,27 @@ hey_jarvis.onnx.  A file exported by `livekit-wakeword train` for another phrase
 same way; v1/openWakeWord classifier files do not, and say so.";
 
 fn main() {
-    let args = match parse(std::env::args().skip(1).collect()) {
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    if argv.first().is_some_and(|a| a == "serve") {
+        let opts = match serve_options(&argv[1..]) {
+            Ok(o) => o,
+            Err(e) => {
+                eprintln!("voice-wake serve: {e}\n");
+                eprintln!("usage: voice-wake serve --model <hey_jarvis.onnx> [--listen 127.0.0.1:8195]");
+                eprintln!("                         [--threshold T] [--cooldown S] [--idle S] [--max-sessions N]");
+                std::process::exit(2);
+            }
+        };
+        match serve::serve(opts) {
+            Ok(()) => return,
+            Err(e) => {
+                eprintln!("voice-wake serve: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    let args = match parse(argv) {
         Ok(a) => a,
         Err(e) => {
             eprintln!("voice-wake: {e}\n");
@@ -347,6 +370,32 @@ fn cpu_ms() -> f64 {
     let f: Vec<&str> = rest.split_whitespace().collect();
     let ticks = |i: usize| f.get(i).and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
     (ticks(11) + ticks(12)) / 100.0 * 1000.0 // USER_HZ is 100 on every Linux that runs this
+}
+
+fn serve_options(argv: &[String]) -> Result<serve::Options, String> {
+    let mut o = serve::Options::default();
+    let mut i = 0;
+    while i < argv.len() {
+        let need = |i: usize| -> Result<&String, String> {
+            argv.get(i + 1).ok_or_else(|| format!("{} wants a value", argv[i]))
+        };
+        match argv[i].as_str() {
+            "--model" => o.model = PathBuf::from(need(i)?),
+            "--listen" => o.listen = need(i)?.clone(),
+            "--threshold" => o.threshold = need(i)?.parse().map_err(|_| "--threshold wants a number")?,
+            "--cooldown" => o.cooldown = need(i)?.parse().map_err(|_| "--cooldown wants seconds")?,
+            "--idle" => o.idle = Duration::from_secs(need(i)?.parse().map_err(|_| "--idle wants seconds")?),
+            "--max-sessions" => {
+                o.max_sessions = need(i)?.parse().map_err(|_| "--max-sessions wants a count")?
+            }
+            other => return Err(format!("unknown flag {other}")),
+        }
+        i += 2;
+    }
+    if o.model.as_os_str().is_empty() {
+        return Err("--model is required".into());
+    }
+    Ok(o)
 }
 
 fn parse(argv: Vec<String>) -> Result<Args, String> {
