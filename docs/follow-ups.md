@@ -3053,6 +3053,21 @@ path-info -S | numfmt --to=iec`, and `nix path-info -S` on
   `nix flake check --no-build 2>&1 | grep -o 'sops-secret-[a-z_0-9]*' | sort -u` after
   `echo x | sops --set '["a","b"]' /dev/stdin secrets/secrets.yaml`-shaped no-op edit.
 
+- **The deterministic fast path is where voice latency lives, not the thinking.**
+  `docs/slack-agent-2026-11-16.md` §15 measured the obvious speedup (suppress the model's
+  thinking) and it **lost**: 33 % slower over the fixture, more rounds, more tokens. What the
+  same run shows is that the most-asked questions have one obvious tool and no judgement in
+  them — "what time is it" (`what_time`), "is it open"/"how warm is the workshop"
+  (`space_status`), "how many devices" (`network_clients`) — and they cost 5–16 s of model
+  time today. §13 already answers "what's on" deterministically (`triage::events_window` →
+  `space_events`, ~1 s instead of ~17 s) and posts the same renderer the Monday digest uses.
+  **Do:** extend that shape to those three, one table of question-shape → tool → sentence, in
+  `slack-agent` so the voice socket, Slack and the OpenAI-compat path all get it; keep the
+  model for anything needing judgement, and keep it answering the moment the shape does not
+  match. **Blocks:** nothing; it is pure latency. **Re-verify with:**
+  `just slack-agent-eval` before and after (it prints rounds, ms and tokens per question —
+  the fast path should show 0 rounds) and `just voice-ask "is the space open"`.
+
 - **The event list and the Monday digest still print ISO dates, and the voice says "dash".**
   Measured 2026-11-17 through the same espeak-ng front end piper uses (`espeak-ng -v en-gb -x -q`):
   `2026-11-17` renders `t'u: T'aUz@nd @n tw'Enti s'Iks d'aS Il'Ev@n d'aS s'Ev@nt,i:n` — the word

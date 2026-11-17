@@ -664,3 +664,61 @@ actually gates is two unglamorous scheduled things. **To do, now, in this order:
 then close §11's phase 3 box. Until then, the door feed is an open finding in
 `docs/follow-ups.md`, and `docs/monster-proxmox.md` ("What runs inside `apps1`") records the
 parking so nobody reads `masked` as a fault.
+
+## 15. Does the model think, and should we let it? (measured 2026-11-17)
+
+**It thinks on every call, on its own, and we were never asking.** `qwen3.8-flash-next-coder-iq1m`
+is a Qwen3 and its chat template has a thinking mode that is on unless something turns it
+off; `engine.rs` sent nothing about it. The monologue arrives as `reasoning_content`, a sibling
+of `content`, which §13 already noted we drop from the transcript — dropping it hides it from
+the next round's prefill, which is worth doing, but it does not un-pay for the tokens.
+
+Asked the sheep riddle ("all but 9 die — answer with just the number") against the live engine:
+
+| request | prompt tok | completion tok | wall | reasoning |
+| --- | --- | --- | --- | --- |
+| default | 77 | 64 — **hit the `max_tokens` cap** | 2.86 s | 217 chars |
+| `chat_template_kwargs.enable_thinking=false` | 37 | **2** | **0.90 s** | none |
+| `enable_thinking=false`, top level | 77 | 64 | 2.63 s | 211 chars |
+| `chat_template_kwargs.thinking=false` | 77 | 64 | 1.85 s | 217 chars |
+| `reasoning_effort=low` | 65 | 22 | 2.07 s | 53 chars |
+
+Every row answered "9". Two mechanics matter more than the numbers:
+
+* **only the nested spelling does anything.** Top-level `enable_thinking` and
+  `chat_template_kwargs.thinking` are both accepted with a 200 and ignored. A setting that is
+  accepted-and-ignored is worse than one that errors, because it survives review.
+* **reasoning is billed against `max_tokens`.** A thinking model can spend the whole budget on
+  monologue and answer with `content: null`, which is the exact case `agent.rs` retries —
+  and `journalctl -u slack-agent-listen` since 2026-11-16 shows that path has run **twice**.
+  One retry is a doubled turn, in front of someone standing in a room.
+
+**So the obvious fix was tried and lost.** Turning thinking off, measured over the whole
+14-question fixture (`crates/slack-agent/questions.txt`, one run per question per mode,
+sequential so the GPU never served two of my own requests):
+
+| | total | mean | median | worst | rounds | completion tok |
+| --- | --- | --- | --- | --- | --- | --- |
+| thinking **on** | 270.8 s | 19.3 s | 15.9 s | 59.4 s | 41 | 6694 |
+| thinking **off** | **359.6 s** | 25.7 s | 18.3 s | 71.8 s | 44 | **8972** |
+
+Off was **33 % slower**, with more rounds and more tokens, because without a scratchpad the
+model calls more tools: "how hot is aibox" went 43.1 s → 71.8 s (1061 → 1856 tokens) and
+"turn the heaters on in the workshop" went 20.6 s → 39.7 s. A few single-tool questions did
+win — "how many devices are on the network" 9.6 s → 5.8 s, "are the cameras working" 19.2 s →
+13.4 s — and the tool *set* changed on 7 of 14 questions, none of them wrong enough to call a
+regression. n=1 per cell at temperature 0.2, so read the trend and not any single row.
+
+The conclusion is the boring one and it is now the default in `engine::Thinking::On`: **the
+thinking is not the cost centre, the extra tool chatter is**, and taking away the model's
+notes to save 40 tokens a round spends far more than that on wandering. The switch stays
+(`--thinking on|low|off`, `SLACK_AGENT_THINKING`, reported in
+`slack-agent-listen`'s `/status.json` as `"thinking":"on"`) so this is a dial and not a
+rumour — `low` is the option worth revisiting first if a voice answer ever needs a third of a
+minute again.
+
+What the run actually taught us to fix instead is in `docs/follow-ups.md`: the questions
+everyone asks have **one obvious tool and no judgement in them** ("what time is it", "is it
+open", "how warm is the workshop", "how many devices"), and §13 already answers "what's on"
+that way — a deterministic path that formats a tool result and posts it, ~1 s instead of
+17. The same shape covers the rest, and it is where voice latency goes, not in the thinking.

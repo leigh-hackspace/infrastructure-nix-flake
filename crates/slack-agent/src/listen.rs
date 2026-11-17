@@ -76,6 +76,10 @@ pub struct Options {
     /// Keep the question text in `/status.json` — the same decision, and the same
     /// default, as `voice-assistant`'s gateway.
     pub record_questions: bool,
+    /// Whether the engine may think out loud before answering. The voice channel is the one
+    /// where this is *audible*: every round of private monologue is a second of silence in
+    /// front of a person who asked a question out loud.
+    pub thinking: crate::engine::Thinking,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -146,7 +150,8 @@ pub fn run(opts: Options) -> Result<(), String> {
             opts.listen
         ));
     }
-    let engines = engine::Engines::new(engine::parse_candidates(&opts.endpoints), opts.timeout);
+    let mut engines = engine::Engines::new(engine::parse_candidates(&opts.endpoints), opts.timeout);
+    engines.set_thinking(opts.thinking);
     let (agent, warnings) = Agent::new(engines, &opts.mcp);
     for w in &warnings {
         eprintln!("warning: {w}");
@@ -383,7 +388,7 @@ fn status(ctx: &Arc<Ctx>) -> Reply {
             "{{\"uptime_secs\":{:.0},\"listen\":{},\"turns\":{},\"errors\":{},\
              \"tool_calls\":{},\"last_turn_ms\":{},\"last_error\":{},\"tools\":[{}],\
              \"tool_count\":{},\"sessions\":[{}],\"mcp\":[{}],\"startup_warnings\":[{}],\
-             \"record_questions\":{},\"recent\":[{}]}}",
+             \"record_questions\":{},\"thinking\":{},\"recent\":[{}]}}",
             ctx.started.elapsed().as_secs_f64(),
             json::quoted(&ctx.opts.listen),
             ctx.stats.turns.load(Ordering::Relaxed),
@@ -402,6 +407,7 @@ fn status(ctx: &Arc<Ctx>) -> Reply {
                 .join(","),
             warns.join(","),
             ctx.opts.record_questions,
+            json::quoted(ctx.opts.thinking.label()),
             recent.join(","),
         ),
     )
@@ -458,6 +464,7 @@ mod tests {
             timeout: Duration::from_secs(5),
             reset_after: Duration::from_millis(30),
             record_questions: true,
+            thinking: crate::engine::Thinking::On,
         }
     }
 
@@ -543,6 +550,14 @@ mod tests {
         let reply = status(&ctx);
         let body = String::from_utf8(reply.body.clone()).unwrap();
         let parsed = json::parse(&body).unwrap_or_else(|e| panic!("status.json is not JSON ({e}): {body}"));
+        // Which thinking mode this socket runs is a fact the caller is entitled to: it is
+        // the difference between a 7 s answer and a 12 s one, and it is not visible in the
+        // answer itself.
+        assert_eq!(
+            parsed.get("thinking").and_then(|v| v.as_str()),
+            Some("on"),
+            "status.json does not say how the engine is thinking: {body}"
+        );
         assert_eq!(parsed.get("tool_count").and_then(Json::as_f64), Some(2.0));
         let warnings = parsed.get("startup_warnings").and_then(Json::as_array).expect("array");
         assert_eq!(warnings[0].as_str(), Some("one server was down"));
@@ -556,6 +571,7 @@ mod tests {
     /// test that must not open a socket.
     fn make_stub_agent() -> Agent {
         let engines = engine::Engines::new(vec![], Duration::from_millis(1));
+        // `Thinking::On` is the default and this stub never reaches an engine.
         let (agent, _warnings) = Agent::new(engines, &[]);
         assert_eq!(agent.tool_count(), 0, "the stub must not reach out");
         agent

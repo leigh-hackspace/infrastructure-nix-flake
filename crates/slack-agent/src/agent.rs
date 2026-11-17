@@ -43,7 +43,16 @@ pub const HISTORY_TURNS: usize = 8;
 /// (`docs/slack-agent-2026-11-16.md`), so a 700-token answer is 20–50 s of the room
 /// standing still before a single word arrives, and `spoken::speakable` would throw
 /// the tail away anyway.  A caller that wants the long form asks for the text one.
-pub const MAX_SPEECH_TOKENS: u32 = 200;
+/// The spoken answer's cap — raised from 200 on 2026-11-17 for a reason, not a feeling.
+///
+/// Reasoning tokens are billed against this same number (`docs/slack-agent-2026-11-16.md`
+/// §15), so a thinking model can spend the entire cap on private monologue, answer with
+/// `content: null`, and make the loop retry the whole turn: measured **twice** in
+/// `journalctl -u slack-agent-listen` since the voice path went live. This cap is not what
+/// controls answer length — the prompt's one-sentence rule is, and real answers used 96–161
+/// tokens — so widening it cannot make replies longer; it only removes the cliff. If
+/// `--thinking low` ever ships for voice, this can come back down.
+pub const MAX_SPEECH_TOKENS: u32 = 320;
 
 /// Compile-time, because the failure mode is silent and one-directional: someone
 /// trimming `MAX_ANSWER_TOKENS` for a Slack reason quietly makes the *spoken* answer

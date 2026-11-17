@@ -188,9 +188,33 @@
     # six words would otherwise be answered twice in the same channel.
     "--channels"
     "*"
+    # Whether the engine thinks out loud first.  Measured default; see the option.
+    "--thinking"
+    cfg.thinking
   ];
 in {
   options.infra.slackAgent = {
+    thinking = lib.mkOption {
+      type = lib.types.enum [
+        "on"
+        "low"
+        "off"
+      ];
+      default = "on";
+      description = ''
+        Whether the inference engine may emit its private reasoning before answering.
+
+        Default "on" because that is what the measurement said, not what intuition did:
+        suppressing it made the whole 14-question fixture 33 % slower — 359.6 s against
+        270.8 s, 44 rounds against 41, 8972 completion tokens against 6694 — because a
+        model with no scratchpad answers by calling more tools instead.  The table, the
+        single spelling of the kwarg the engine actually honours, and the two production
+        turns that died because reasoning ate the entire token budget, are in
+        `docs/slack-agent-2026-11-16.md` §15.  Set "low" (reasoning_effort) if a voice
+        answer ever starts needing a third of a minute again; "off" is the option that
+        already lost once.
+      '';
+    };
     dryRun = lib.mkOption {
       type = lib.types.bool;
       # True by default, and that is the whole point of the option: the first deploy
@@ -409,6 +433,7 @@ in {
           ''${slackAgent}/bin/slack-agent listen --ask-listen ${cfg.ask.listen}''
           + " --mcp http://127.0.0.1:8191/mcp --endpoints-file ${endpointsFile}"
           + " --ask-reset-after-secs ${toString cfg.ask.resetAfterSecs}"
+          + " --thinking ${cfg.thinking}"
           + lib.optionalString (!cfg.ask.recordQuestions) " --no-record-questions";
         DynamicUser = true;
         # No `EnvironmentFile`: this face holds no token.  The tools it calls hold the

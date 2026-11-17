@@ -141,6 +141,9 @@ fn usage() {
 struct Config {
     mcp: Vec<String>,
     endpoints: String,
+    /// Whether the engine may think out loud. See `engine::Thinking` for the measurements;
+    /// the default there is today's behaviour and this line is what changes it deliberately.
+    thinking: engine::Thinking,
     listen: String,
     channels: Vec<String>,
     allow_dms: bool,
@@ -202,6 +205,9 @@ impl Config {
         }
         Ok(Config {
             mcp,
+            thinking: engine::Thinking::parse(
+                &get("--thinking", "SLACK_AGENT_THINKING").unwrap_or_else(|| "on".into()),
+            ),
             endpoints,
             listen: get("--listen", "SLACK_AGENT_LISTEN").unwrap_or_else(|| DEFAULT_HEALTH.to_string()),
             channels: get("--channels", "SLACK_AGENT_CHANNELS")
@@ -248,7 +254,9 @@ impl Config {
 }
 
 fn engines(config: &Config) -> Engines {
-    Engines::new(engine::parse_candidates(&config.endpoints), config.timeout)
+    let mut engines = Engines::new(engine::parse_candidates(&config.endpoints), config.timeout);
+    engines.set_thinking(config.thinking);
+    engines
 }
 
 // --- tools --------------------------------------------------------------------
@@ -390,6 +398,7 @@ fn run_listen(config: &Config) -> Result<(), String> {
         timeout: config.timeout,
         reset_after: config.ask_reset,
         record_questions: !std::env::args().any(|a| a == "--no-record-questions"),
+        thinking: config.thinking,
     })
 }
 

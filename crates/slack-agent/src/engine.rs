@@ -85,6 +85,66 @@ pub struct Engines {
     candidates: Vec<Candidate>,
     current: Option<Engine>,
     client: reqwest::blocking::Client,
+    thinking: Thinking,
+}
+
+/// Whether the model is allowed to think out loud before it answers.
+///
+/// **The model behind this bot thinks by default, on every call, and we were never asking
+/// for it.** Measured on services2 2026-11-17 with the sheep riddle ("all but 9 die"):
+///
+/// | request | prompt tok | completion tok | wall | reasoning |
+/// | --- | --- | --- | --- | --- |
+/// | default | 77 | 64 (hit the cap!) | **2.86 s** | 217 chars |
+/// | `chat_template_kwargs.enable_thinking=false` | 37 | **2** | **0.90 s** | none |
+/// | `reasoning_effort=low` | 65 | 22 | 2.07 s | 53 chars |
+///
+/// Same correct answer ("9") every time. Three things follow, and the third is why this is
+/// a setting rather than a one-line deletion:
+///
+/// 1. The kwarg has to be **nested in `chat_template_kwargs`**. A top-level
+///    `enable_thinking=false` is accepted silently and ignored — the model thinks anyway.
+///    `{"thinking": false}` likewise. Only the nested spelling does anything, and a flag
+///    that is accepted-and-ignored is worse than one that errors.
+/// 2. Reasoning tokens are billed against `max_tokens`, so a thinking model can spend the
+///    whole voice budget (200) on private monologue and return `content: null`. `agent.rs`
+///    already retries that, which doubles the latency of one bad turn — a slow answer and
+///    an answer that needed a retry have the same shape in the trace.
+/// 3. It turns out to be **earning its keep.** The A/B ran over the whole 14-question
+///    fixture and thinking-off was **33 % slower** (359.6 s against 270.8 s) with *more*
+///    rounds and *more* completion tokens, because a model without its scratchpad calls
+///    more tools. So the default is `On`, and the table, the mechanism and the two
+///    production retries are `docs/slack-agent-2026-11-16.md` §15. Reaching for `Off`
+///    again because one riddle came back 3× faster is the mistake that was already made.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Thinking {
+    /// Ask for the private monologue to be suppressed (nested kwarg — the only spelling
+    /// the engine honours).
+    Off,
+    /// Keep thinking but ask for less of it (`reasoning_effort`).
+    Low,
+    /// Say nothing and take whatever the template does. Today, and the default.
+    On,
+}
+
+impl Thinking {
+    /// Anything unrecognised is `On`, i.e. the behaviour the fleet already has: a typo in a
+    /// setting must not silently change how a live bot reasons.
+    pub fn parse(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "off" | "no" | "none" | "false" => Thinking::Off,
+            "low" => Thinking::Low,
+            _ => Thinking::On,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Thinking::Off => "off",
+            Thinking::Low => "low",
+            Thinking::On => "on",
+        }
+    }
 }
 
 /// The default fleet, in the order to try them.  Declared here so a bare
@@ -117,6 +177,7 @@ impl Engines {
         Engines {
             candidates,
             current: None,
+            thinking: Thinking::On,
             // The timeout is the client's, once, rather than a field to forget: a
             // per-request timeout that has to be remembered is a per-request timeout
             // that is eventually not passed.
@@ -185,6 +246,12 @@ impl Engines {
 
     /// The engine to use now, discovering it if needed and walking the candidate
     /// list until one answers.
+    /// Set it once, at startup, from `Config`; a per-request toggle would make two answers
+    /// to one question possible and unexplainable.
+    pub fn set_thinking(&mut self, t: Thinking) {
+        self.thinking = t;
+    }
+
     pub fn engine(&mut self) -> Result<Engine, String> {
         if let Some(e) = &self.current {
             return Ok(e.clone());
@@ -234,6 +301,17 @@ impl Engines {
             ("temperature".to_string(), json::number_from_f64(0.2)),
             ("stream".to_string(), json::boolean(false)),
         ];
+        // The one spelling this engine honours, measured: nested in `chat_template_kwargs`.
+        // Top-level `enable_thinking` is accepted and ignored, which is the kind of silence
+        // that turns a config option into a rumour.
+        match self.thinking {
+            Thinking::Off => body.push((
+                "chat_template_kwargs".to_string(),
+                json::object(vec![("enable_thinking".to_string(), json::boolean(false))]),
+            )),
+            Thinking::Low => body.push(("reasoning_effort".to_string(), json::string("low"))),
+            Thinking::On => {}
+        }
         if !tools.is_empty() {
             body.push(("tools".to_string(), Json::Arr(tools.to_vec())));
             // Measured on services2: the engine calls tools correctly when asked
