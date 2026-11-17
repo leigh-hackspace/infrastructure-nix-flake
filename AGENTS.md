@@ -1028,6 +1028,18 @@ there is declarative. **Root SSH is keyed here** (unlike the flake machines):
 
 ## Known traps worth a sentence (detail in the linked doc)
 
+- **A root process can write into a store path, and Python does.** Store paths are read-only
+  only against non-root (0444/0555, and root ignores that on ext4), so a Python service with
+  no `User=` writes `__pycache__` **into its own package** — and because a NAR records the
+  file list but **not mtimes**, that added file breaks the path's recorded hash while the
+  box that has it keeps calling it valid: the symptom is `hash mismatch importing path` on
+  *another* box, e.g. `just check-build` dying 898 derivations in. Measured on aibox
+  2026-11-16 (5/5 strata paths, 14-56 files each); repaired without restarting anything, and
+  `common/store-hygiene.nix` now walks the store weekly on every box and fails its unit
+  naming the paths. Prevention is `PYTHONDONTWRITEBYTECODE=1` or a non-root `User=` — both
+  of which restart the service to apply. Mechanism, the two-symptom pair, the repair and the
+  "mtime is a tell, not the finding" correction: `docs/nix-dev-workflow.md`, Gotchas.
+
 - **`CREATE DATABASE` can fail with a `template1` collation version mismatch** after a
   glibc upgrade; `ALTER DATABASE template1 REFRESH COLLATION VERSION` on the maintenance
   DBs is the fix, and the application DBs still record the old version.

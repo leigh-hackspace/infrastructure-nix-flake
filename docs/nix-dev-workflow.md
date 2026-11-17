@@ -723,6 +723,50 @@ a machine's behaviour.
 
 ## Gotchas
 
+- **A root process can write into a store path, and Python will.** A NixOS store path is
+  read-only only in the DAC sense — files 0444, directories 0555 — and **root ignores
+  those bits on ext4**. So a unit with no `User=`/`DynamicUser=` that runs a Python program
+  from a store path has CPython writing `__pycache__/*.pyc` **into that path** the first
+  time it imports. Measured on aibox 2026-11-16: `strata.service` dirtied its own package,
+  and then *every* strata path on the box (5 of 5, 14-56 files each) was like that.
+
+  Why that is a hash failure rather than a mess: **a NAR records the file list, the
+  contents and the executable bit, but not mtimes.** An added file therefore changes the
+  NAR hash, while a touched timestamp does not — so the box that has the fault keeps
+  calling the path valid (`nix path-info` answers, `--sigs` even says `ultimate`, and the
+  service runs perfectly), and every *other* box refuses to import it:
+
+  ```
+  aibox      nix store verify …-strata-unstable
+             path '…' was modified!  expected 'sha256:0dw78b70…' got 'sha256:01s7is0h…'
+  services1  error: hash mismatch importing path '…-strata-unstable';
+                     specified: sha256-x1+VVH0…   got: sha256-sdnwqRnu…
+  ```
+
+  Two boxes, one path, and the symptom is on the far side: a `just check-build` that dies
+  after 898 derivations, with nothing on the builder to explain it. It is not disk rot (the
+  journal was clean; `ext4` does not checksum) and it is not tampering.
+
+  **Fix:** for the file-set class, delete exactly the newer-than-epoch entries under
+  `__pycache__` and re-run `nix store verify --no-trust <path>` — bytecode caches are
+  regenerable, so this is the whole repair, and it needs **no service restart** (all five
+  went clean with the engine at `active`, `NRestarts=0`). Anything that survives that is a
+  different fault, answered by `nix-store --realise <drv> --repair`, which replaces files
+  under a running process and so wants a window. **Prevention:** `PYTHONDONTWRITEBYTECODE=1`
+  in the unit's `Environment=`, or a non-root `User=`, at which point the 0555 directories
+  do their job. Note that either one *restarts the service to apply*, so it belongs with a
+  restart you already owe. **Detection:** `common/store-hygiene.nix` (from `common/base.nix`)
+  walks the store weekly at idle priority and fails its unit naming the paths, because the
+  fault is silent on the machine that has it.  Re-verify with
+  `sudo nix store verify --no-trust <path>` and
+  `find /nix/store -xdev -type d -name __pycache__ -newermt 2000-01-01`.
+
+- **A mtime inside `/nix/store` is a tell, not the finding.** Nix does not normalise mtimes
+  and the NAR does not contain them, so a path can be full of files with 2026 timestamps and
+  still verify clean (two did on the scan above: a crane source copy and the netboot
+  squashfs). Use the timestamp to *find candidates*, then let `nix store verify` decide —
+  treating "newer than 1970" as corruption produces confident false positives.
+
 - **`pkill -f` on a remote box kills the shell doing the killing.** The pattern is matched
   against full command lines, and the `ssh 'pkill -f "some-unit"'` wrapper's own command
   line contains that string — so the session dies, its exit status is 255, everything after

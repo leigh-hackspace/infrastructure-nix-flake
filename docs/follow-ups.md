@@ -3200,38 +3200,34 @@ directory.
    rotation must land in the same change as frigate's config and the camera's own
    `/etc/raptor.conf`.
 
-## aibox's `strata-unstable` store path is corrupt on the box (found 2026-11-16, unrelated to any change)
+## aibox's strata paths: diagnosed and repaired 2026-11-17; two things still open
 
-Found while building aibox's toplevel to deploy one flag on `whisper-ws`: the build died
-importing `/nix/store/frskrh23ijvxfgk5g1hwqkdzdcpdw76z-strata-unstable` from aibox.  Both
-boxes' own words, measured in the same minute:
+Diagnosed — it was never rot or tampering. `strata.service` has no `User=`, so it runs as
+root; root ignores a store path's 0444/0555 on ext4; CPython therefore wrote
+`__pycache__/*.pyc` **into the package's own store path**, and since a NAR records the file
+list but **not mtimes**, the added files made the directory stop matching the hash nix
+recorded. aibox kept calling the path valid (`nix path-info` fine, `--sigs` says
+`ultimate`, the engine runs perfectly) while every other box refused to import it — which is
+why this surfaced as `just check-build` dying 898 derivations in rather than as anything
+visible on the builder. Mechanism, both symptom texts, the repair and the general rule:
+`docs/nix-dev-workflow.md`, Gotchas.
 
-```
-services1:  error: hash mismatch importing path '…-strata-unstable'
-                    specified: sha256-x1+VVH0db9tye7gv9slcHM0IrabMZHa8oQj6BM5Chzc=
-                    got:       sha256-sdnwqRnuTb8mJh+7xAtzx6nxPmHj6QVaepbhBYGORwc=
-aibox:      nix store verify /nix/store/frskrh…-strata-unstable
-            path '…-strata-unstable' was modified!
-              expected hash 'sha256:0dw78b709yh8l6y7cr6clsnhik8wbk4zcbxqgdrdnvqxgma9apy7'
-              got           'sha256:01s7is0hbqcng9d0bsg3c4zg3af7fc5w9fqz4qkbykgf36lz1ndi'
-```
+Repaired by deleting exactly the post-registration caches (bytecode caches are regenerable,
+so that *is* the repair for this class, and it needed no restart): all five strata paths on
+aibox now `nix store verify --no-trust` clean, engine still `active` with `NRestarts=0`, and
+`nix copy` of the path to services1 — the operation that had been failing — succeeded. The
+other four boxes scan clean. `common/store-hygiene.nix` (via `common/base.nix`) now walks
+every store weekly at idle priority and **fails its unit** naming the paths, so the next
+occurrence is a `systemctl --failed` line rather than a lost build.
 
-So aibox's copy of its own strata package does not match the hash aibox's database holds
-for it, which is why every *other* box refuses to import it (`nix store verify` is the only
-thing that can see this: `nix path-info` answers happily, `--sigs` even says `ultimate`).
-Consequences measured: **`just check-build` cannot go green for aibox** (a toplevel whose
-closure contains this path cannot be copied anywhere), and `strata.service` has been running
-from this path since 2026-11-15 03:08 — so the inference engine both boxes' agents dial is
-executing out of a store path nix itself calls modified.
-
-Not repaired, on purpose: repairing means re-executing the build of a 42 MB ROCm package and
-then restarting the engine (`nix-store --realise <drv> --repair` is the candidate, and the
-drv is `/nix/store/mpmf9ffw4wp3h3jiajsn4vgl8pqjivyy-strata-unstable.drv`), which is a window
-decision on the network's build machine and GPU box with a kernel reboot already pending
-(`just pending-reboot`). Re-verify with
-`ssh aibox 'nix store verify /nix/store/frskrh23ijvxfgk5g1hwqkdzdcpdw76z-strata-unstable'` —
-silent means fixed — and re-read whether the running engine is still on the old path
-afterwards, because a repair that does not restart `strata.service` leaves the process on the
-mutated copy. Whatever mutated it is unknown and worth one look (`nix-diff`? a hand edit
-inside the store — the reason store paths are read-only at the *directory* level and 0444 at
-file level, so it took `chmod` deliberately).
+1. **`PYTHONDONTWRITEBYTECODE=1` on `strata.service` — the real prevention, deliberately not
+   written yet.** Either that or a non-root `User=`; both *restart the engine to apply*, and
+   aibox's engine is a multi-minute, tens-of-GB load, so it belongs with the kernel reboot
+   aibox already owes (`just pending-reboot`), not on top of an unrelated switch. Until it
+   lands, the pollution returns at the next strata restart and the weekly check will say so.
+   Re-verify with `sudo nix store verify --no-trust /nix/store/*-strata-unstable`.
+2. **gw's eval warns about `ups-watchdog-0.1.0`** — `getExe: package does not have
+   `meta.mainProgram``, implicit behaviour deprecated by nixpkgs. One line
+   (`meta.mainProgram = "ups-watchdog";`, or `getExe'` at the call site) makes the router's
+   eval quiet, which rule 9 asks for. Pre-existing; spotted while deploying the hygiene
+   timer, not caused by it.
