@@ -61,11 +61,17 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use livekit_wakeword::WakeWordModel;
+use crate::ear::Ear;
+use hound::{SampleFormat, WavSpec, WavWriter};
 
 use crate::STEP_SAMPLES;
 
 pub const DEFAULT_LISTEN: &str = "127.0.0.1:8195";
+
+/// Longest recording kept per session, in seconds.  The point of recording is a corpus to bench
+/// on, not an archive of the room: 600 s is 19 MB, and a session that streams all day must not
+/// fill a state directory merely by being open.
+const MAX_RECORD_SECONDS: f64 = 600.0;
 
 /// Bodies are PCM, and a 60 s window at 16 kHz mono s16 is 1.9 MB. The cap is below that on
 /// purpose: the client is asked to send ~0.5 s chunks, and a browser that decides to buffer
@@ -75,6 +81,19 @@ const MAX_BODY_BYTES: usize = 1_048_576;
 pub struct Options {
     pub listen: String,
     pub model: PathBuf,
+    /// Which detector scores the session: `livekit` (the default, and what has always been
+    /// deployed) or `oww` — the browser's own openWakeWord graphs.  `crate::ear` keeps the reason
+    /// these are two detectors rather than two machines.
+    pub engine: String,
+    /// The directory holding `melspectrogram.onnx`, `embedding_model.onnx` and `<keyword>.onnx`:
+    /// the same files the page fetches, pinned by the same sha256, not a re-export of them.
+    pub oww_models: PathBuf,
+    pub oww_keyword: String,
+    /// Where to write the audio a session was fed, so a score has bytes behind it.  **Empty by
+    /// default, and that is a privacy decision rather than a default:** these are recordings of a
+    /// room with people in it, so the flag is for a measurement window, the files are 0600, and
+    /// nothing turns it on declaratively without a reason written down beside it.
+    pub record_dir: PathBuf,
     pub threshold: f32,
     pub cooldown: f64,
     pub idle: Duration,
@@ -86,6 +105,10 @@ impl Default for Options {
         Self {
             listen: DEFAULT_LISTEN.to_string(),
             model: PathBuf::new(),
+            engine: "livekit".to_string(),
+            oww_models: PathBuf::new(),
+            oww_keyword: "hey_jarvis_v0.1".to_string(),
+            record_dir: PathBuf::new(),
             threshold: 0.5,
             cooldown: 2.0,
             idle: Duration::from_secs(120),
@@ -95,15 +118,23 @@ impl Default for Options {
 }
 
 struct Session {
-    model: WakeWordModel,
+    ear: Ear,
     rate: u32,
     /// Seconds of audio this session has fed the model — the clock detections are stamped on,
     /// so the client can line a detection up with what it just heard.
     audio_secs: f64,
     peak: f32,
     detections: u32,
-    last_detect: f64,
     last_seen: Instant,
+    /// What the caller called itself (`{"label":"laptop"}`), used only in the recording's name.
+    label: String,
+    /// Everything fed to this session while `--record-dir` is set.  This is the point of the flag:
+    /// a score with no bytes behind it cannot be re-run, compared, or argued with tomorrow.
+    recorded: Vec<i16>,
+}
+
+fn recording(state: &State) -> bool {
+    !state.opts.record_dir.as_os_str().is_empty()
 }
 
 struct Stats {
@@ -140,15 +171,20 @@ pub fn serve(opts: Options) -> Result<(), String> {
         ));
     }
 
-    // One model load proves the file is a streaming export before a single socket opens; the
-    // error is the crate's own (`NotStreamingModel`) and it says more than anything here.
-    let probe = WakeWordModel::new(&[opts.model.clone()], 16_000)
-        .map_err(|e| format!("cannot load {}: {e}", opts.model.display()))?;
-    let model_name = probe
-        .model_names()
-        .next()
-        .unwrap_or("wake")
-        .to_string();
+    // One engine opened before a single socket opens: it proves the files load, and for `oww` it
+    // fails here rather than on the first session if the model directory is wrong.  The livekit
+    // error is the crate's own (`NotStreamingModel`) and says more than anything written here.
+    let probe = Ear::open(
+        &opts.engine,
+        &opts.model,
+        &opts.oww_models,
+        &opts.oww_keyword,
+        opts.threshold,
+        opts.cooldown,
+        16_000,
+    )
+    .map_err(|e| format!("cannot open the engine: {e}"))?;
+    let model_name = probe.name().to_string();
     drop(probe);
 
     let listener = TcpListener::bind(&opts.listen).map_err(|e| format!("bind: {e}"))?;
@@ -160,13 +196,18 @@ pub fn serve(opts: Options) -> Result<(), String> {
         model_name,
     });
     eprintln!(
-        "voice-wake serving on {} · model {} · threshold {:.2} · cooldown {:.1}s · idle {:?} · max {} sessions",
+        "voice-wake serving on {} · engine {} · threshold {:.2} · cooldown {:.1}s · idle {:?} · max {} sessions · recording {}",
         state.opts.listen,
         state.model_name,
         state.opts.threshold,
         state.opts.cooldown,
         state.opts.idle,
-        state.opts.max_sessions
+        state.opts.max_sessions,
+        if recording(&state) {
+            state.opts.record_dir.display().to_string()
+        } else {
+            "off".to_string()
+        }
     );
 
     for conn in listener.incoming() {
@@ -226,10 +267,30 @@ fn open_session(state: &State, req: &Request) -> String {
             ),
         );
     }
-    let model = match WakeWordModel::new(&[state.opts.model.clone()], rate) {
-        Ok(m) => m,
-        Err(e) => return text(500, &format!(r#"{{"error":"model: {e}"}}"#)),
+    // Checked here as well as inside `Ear::open`: "your sample rate is wrong" is a 400 the client can
+    // act on, and a model that will not load is a 500 it cannot.
+    if state.opts.engine == "oww" && rate != 16_000 {
+        return text(
+            400,
+            &format!(r#"{{"error":"the openwakeword engine takes 16000 Hz only, not {rate}"}}"#),
+        );
+    }
+    let ear = match Ear::open(
+        &state.opts.engine,
+        &state.opts.model,
+        &state.opts.oww_models,
+        &state.opts.oww_keyword,
+        state.opts.threshold,
+        state.opts.cooldown,
+        rate,
+    ) {
+        Ok(e) => e,
+        Err(e) => {
+            return text(500, &format!(r#"{{"error":"{}"}}"#, e.replace('"', "'")));
+        }
     };
+    let label = json_str(&req.body, "label").unwrap_or_default();
+    
     let id = format!("w{}", state.next_id.fetch_add(1, Ordering::Relaxed));
     let mut sessions = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
     if sessions.len() >= state.opts.max_sessions {
@@ -244,13 +305,14 @@ fn open_session(state: &State, req: &Request) -> String {
     sessions.insert(
         id.clone(),
         Session {
-            model,
+            ear,
             rate,
             audio_secs: 0.0,
             peak: 0.0,
             detections: 0,
-            last_detect: f64::NEG_INFINITY,
             last_seen: Instant::now(),
+            label,
+            recorded: Vec::new(),
         },
     );
     let n = sessions.len();
@@ -292,29 +354,30 @@ fn chunk(state: &State, req: &Request) -> String {
     let secs = samples.len() as f64 / session.rate as f64;
 
     let t0 = Instant::now();
-    let scores = session.model.predict(&samples);
-    let infer_ms = t0.elapsed().as_secs_f64() * 1000.0;
-
-    let score = match scores {
-        Ok(map) => map.values().copied().fold(0.0_f32, f32::max),
+    // One call, one rule.  The engine owns its streaming state; `Ear` owns the threshold and the
+    // audio-time cooldown, so switching engine cannot also switch what "detected" means.  Cooldown
+    // stays in audio time on purpose: a session paused while the assistant is talking must not
+    // fire again on the tail of the same utterance.
+    let hit = match session.ear.feed(&samples) {
+        Ok(h) => h,
         Err(e) => {
             drop(sessions);
-            return text(500, &format!(r#"{{"error":"predict: {e}"}}"#));
+            return text(500, &format!(r#"{{"error":"{}"}}"#, e.replace('"', "'")));
         }
     };
+    let infer_ms = t0.elapsed().as_secs_f64() * 1000.0;
+    let score = hit.score;
+    let detected = hit.detected;
 
-    session.audio_secs += secs;
+    session.audio_secs = session.ear.audio_secs();
     if score > session.peak {
         session.peak = score;
     }
-    // The cooldown is measured in *audio*, not wall clock: a session that stops streaming
-    // while the assistant is talking resumes with a gap in audio time, and a wall-clock
-    // cooldown would then let the tail of the same utterance fire a second time.
-    let detected = score >= state.opts.threshold
-        && session.audio_secs - session.last_detect >= state.opts.cooldown;
     if detected {
-        session.last_detect = session.audio_secs;
         session.detections += 1;
+    }
+    if recording(state) && (session.recorded.len() as f64) < MAX_RECORD_SECONDS * session.rate as f64 {
+        session.recorded.extend_from_slice(&samples);
     }
     let audio_secs = session.audio_secs;
     let peak = session.peak;
@@ -353,12 +416,12 @@ fn reset(state: &State, req: &Request) -> String {
     };
     // Both halves have to go: the model's own history *and* our clock, or the next chunk
     // inherits a stale "already fired" timestamp.
-    if let Err(e) = session.model.reset() {
+    if let Err(e) = session.ear.reset() {
         return text(500, &format!(r#"{{"error":"reset: {e}"}}"#));
     }
     session.audio_secs = 0.0;
     session.peak = 0.0;
-    session.last_detect = f64::NEG_INFINITY;
+    
     text(200, r#"{"ok":true}"#)
 }
 
@@ -366,16 +429,16 @@ fn close(state: &State, req: &Request) -> String {
     let Some(id) = session_id(req) else {
         return text(400, r#"{"error":"missing X-Voice-Wake-Session header"}"#);
     };
-    let existed = state
+    let gone = state
         .sessions
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .remove(&id)
-        .is_some();
-    text(
-        if existed { 200 } else { 410 },
-        &format!(r#"{{"ok":{existed}}}"#),
-    )
+        .remove(&id);
+    let Some(session) = gone else {
+        return text(410, r#"{"ok":false}"#);
+    };
+    dump(state, &id, &session);
+    text(200, r#"{"ok":true}"#)
 }
 
 fn status_json(state: &State) -> String {
@@ -401,7 +464,7 @@ fn status_json(state: &State) -> String {
         0.0
     };
     format!(
-        r#"{{"model":"{}","threshold":{},"cooldown":{},"max_sessions":{},"active_sessions":{},"sessions_total":{},"chunks":{},"detections":{},"audio_secs":{:.1},"cpu_ms_per_audio_s":{per:.1},"streams_per_core_estimate":{},"uptime_s":{:.0},"step_samples":{STEP_SAMPLES}}}"#,
+        r#"{{"model":"{}","threshold":{},"cooldown":{},"max_sessions":{},"active_sessions":{},"sessions_total":{},"chunks":{},"detections":{},"audio_secs":{:.1},"cpu_ms_per_audio_s":{per:.1},"streams_per_core_estimate":{},"uptime_s":{:.0},"step_samples":{STEP_SAMPLES},"recording":{}}}"#,
         state.model_name,
         state.opts.threshold,
         state.opts.cooldown,
@@ -416,15 +479,114 @@ fn status_json(state: &State) -> String {
         } else {
             0
         },
-        stats.started.elapsed().as_secs_f64()
+        stats.started.elapsed().as_secs_f64(),
+        quoted(if recording(state) {
+            state.opts.record_dir.display().to_string()
+        } else {
+            String::new()
+        })
     )
+}
+
+/// A JSON string literal.  Local because this crate deliberately depends on almost nothing (see
+/// its README), and this is the only place a *runtime* string reaches status.json.
+fn quoted(s: impl AsRef<str>) -> String {
+    let s = s.as_ref();
+    let esc: String = s
+        .chars()
+        .filter(|c| *c as u32 >= 0x20)
+        .flat_map(|c| match c {
+            '"' | '\\' => vec!['\\', c],
+            c => vec![c],
+        })
+        .collect();
+    format!("\"{esc}\"")
+}
+
+/// Write what a session was fed, so that a score has bytes behind it.
+///
+/// Silent-with-a-journal-line on failure: a recording that cannot be written must not break a
+/// working detection engine.  Mode 0600, because it is room audio.
+fn dump(state: &State, id: &str, session: &Session) {
+    use std::os::unix::fs::PermissionsExt;
+    if !recording(state) || session.recorded.is_empty() {
+        return;
+    }
+    let dir = &state.opts.record_dir;
+    if let Err(e) = std::fs::create_dir_all(dir) {
+        eprintln!("recording: cannot create {}: {e}", dir.display());
+        return;
+    }
+    let label: String = session
+        .label
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .take(24)
+        .collect();
+    let name = format!(
+        "wake-{}-{}{}.wav",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
+        id,
+        if label.is_empty() {
+            String::new()
+        } else {
+            format!("-{label}")
+        }
+    );
+    let path = dir.join(&name);
+    let spec = WavSpec {
+        channels: 1,
+        sample_rate: session.rate,
+        bits_per_sample: 16,
+        sample_format: SampleFormat::Int,
+    };
+    let mut w = match WavWriter::create(&path, spec) {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!("recording: cannot create {}: {e}", path.display());
+            return;
+        }
+    };
+        for s in session.recorded.iter().copied() {
+        if let Err(e) = w.write_sample(s) {
+            eprintln!("recording: cannot write {}: {e}", path.display());
+            return;
+        }
+    }
+    if let Err(e) = w.finalize() {
+        eprintln!("recording: cannot finish {}: {e}", path.display());
+        return;
+    }
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).ok();
+    eprintln!(
+        "recording: {:.0} s from {} → {} ({} samples)",
+        session.recorded.len() as f64 / session.rate as f64,
+        session.ear.name(),
+        path.display(),
+        session.recorded.len()
+    );
 }
 
 fn reap(state: &State) {
     let idle = state.opts.idle;
     let mut sessions = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
     let before = sessions.len();
-    sessions.retain(|_, s| s.last_seen.elapsed() < idle);
+    // `remove` rather than `retain`, because a reaped session may still have a recording to write
+    // and writing it needs to own the samples.  Dropping that audio here is how a measurement
+    // window ends up with no data and no explanation.
+    let dead: Vec<String> = sessions
+        .iter()
+        .filter(|(_, s)| s.last_seen.elapsed() >= idle)
+        .map(|(id, _)| id.clone())
+        .collect();
+    for id in &dead {
+        if let Some(session) = sessions.remove(id) {
+            dump(state, id, &session);
+        }
+    }
     if sessions.len() != before {
         eprintln!(
             "reaped {} idle session(s); {} live",
@@ -579,5 +741,22 @@ mod tests {
         // A rate the crate cannot resample would otherwise surface as a 500 from model
         // construction, which reads like a server fault rather than a client bug.
         assert!(!matches!(8_000_u32, 16_000 | 22_050 | 32_000 | 44_100 | 48_000 | 88_200 | 96_000));
+    }
+}
+
+/// The string field of a small JSON body — the same hand-rolled scan as `json_u32`, because this
+/// crate deliberately depends on almost nothing.
+fn json_str(body: &[u8], key: &str) -> Option<String> {
+    let text = std::str::from_utf8(body).ok()?;
+    let at = text.find(&format!("\"{key}\""))?;
+    let rest = &text[at + key.len() + 2..];
+    let open = rest.find('"')?;
+    let after = &rest[open + 1..];
+    let close = after.find('"')?;
+    let v: String = after[..close].chars().filter(|c| !c.is_control()).collect();
+    if v.is_empty() {
+        None
+    } else {
+        Some(v)
     }
 }

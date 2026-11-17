@@ -41,6 +41,7 @@ use std::time::{Duration, Instant};
 use hound::{SampleFormat, WavReader};
 use livekit_wakeword::WakeWordModel;
 
+mod ear;
 mod oww;
 mod owwbench;
 mod serve;
@@ -106,8 +107,10 @@ fn main() {
             Ok(o) => o,
             Err(e) => {
                 eprintln!("voice-wake serve: {e}\n");
-                eprintln!("usage: voice-wake serve --model <hey_jarvis.onnx> [--listen 127.0.0.1:8195]");
+                                eprintln!("usage: voice-wake serve --model <hey_jarvis.onnx> [--listen 127.0.0.1:8195]");
                 eprintln!("                         [--threshold T] [--cooldown S] [--idle S] [--max-sessions N]");
+                eprintln!("                         [--engine livekit|oww] [--oww-models <dir>] [--oww-keyword NAME]");
+                eprintln!("                         [--record-dir <dir>]   (writes what a session was fed; room audio)");
                 std::process::exit(2);
             }
         };
@@ -396,12 +399,29 @@ fn serve_options(argv: &[String]) -> Result<serve::Options, String> {
             "--max-sessions" => {
                 o.max_sessions = need(i)?.parse().map_err(|_| "--max-sessions wants a count")?
             }
+            "--engine" => o.engine = need(i)?.clone(),
+            "--oww-models" => o.oww_models = PathBuf::from(need(i)?),
+            "--oww-keyword" => o.oww_keyword = need(i)?.clone(),
+            "--record-dir" => o.record_dir = PathBuf::from(need(i)?),
             other => return Err(format!("unknown flag {other}")),
         }
         i += 2;
     }
     if o.model.as_os_str().is_empty() {
         return Err("--model is required".into());
+    }
+    // Checked at startup rather than on the first session: the openwakeword engine is three graphs
+    // in a directory, and a wrong directory is a config error that belongs in the journal at boot.
+    match o.engine.as_str() {
+        "livekit" => {}
+        "oww" => {
+            if o.oww_models.as_os_str().is_empty() {
+                return Err("--engine oww needs --oww-models <dir with melspectrogram.onnx, \
+                            embedding_model.onnx and <keyword>.onnx>"
+                    .into());
+            }
+        }
+        other => return Err(format!("unknown --engine {other:?} (livekit | oww)")),
     }
     Ok(o)
 }

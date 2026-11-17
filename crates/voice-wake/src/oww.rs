@@ -36,7 +36,7 @@
 //! stream fire twice on the tail of the same utterance, and the point of this module is
 //! measurement, where that error would be read as recall.
 
-use ndarray::{Array1, Array2, Array3, Array4};
+use ndarray::{Array1, Array3, Array4};
 use ort::session::{Session, SessionInputValue};
 use ort::value::{DynValue, Tensor};
 use std::path::Path;
@@ -53,6 +53,13 @@ const MEL_WIDTH: usize = 32;
 const MEL_WINDOW: usize = 76;
 const MEL_STEP: usize = 8;
 const EMBED: usize = 96;
+/// A debugging affordance, off unless the environment says otherwise: the three graphs hand
+/// results to each other in shapes that are easy to get subtly wrong, and every wrong shape here
+/// produces a *quiet* zero rather than an error.
+fn oww_debug() -> bool {
+    std::env::var("OWW_DEBUG").is_ok()
+}
+
 const VAD_HANGOVER: usize = 12;
 const VAD_THRESHOLD: f32 = 0.5;
 
@@ -152,9 +159,20 @@ impl Oww {
     }
 
     /// Audio seconds processed so far, for reporting.
-    pub fn audio_secs(&self) -> f64 {
-        self.frames as f64 * FRAME as f64 / 16_000.0
+    /// Forget everything heard so far: the mel backlog, the embedding history, the frame clock
+    /// and the cooldown counter. Without this a session would score the *previous* sentence's
+    /// context into the next one, which is exactly what `POST /v1/reset` exists to prevent.
+    pub fn reset(&mut self) {
+        self.mel_buf.clear();
+        self.history.clear();
+        self.frames = 0;
+        self.since_detection = 0;
+        self.last = 0.0;
+        self.hangover = 0;
+        self.speech = false;
     }
+
+
 
     /// Feed one 1280-sample frame of float audio in −1.0..=1.0.
     pub fn push_frame(&mut self, frame: &[f32]) -> Result<Step, String> {
@@ -221,7 +239,7 @@ impl Oww {
 
     fn score_frame(&mut self, frame: &[f32]) -> Result<f32, String> {
         let input = tensor2(frame)?;
-        let mut out = self
+        let out = self
             .mel
             .run([input.into()].as_slice())
             .map_err(|e| format!("melspectrogram: {e}"))?;
@@ -230,6 +248,13 @@ impl Oww {
             .map_err(|e| format!("mel extract: {e}"))?;
         let mut flat: Vec<f32> = mel.iter().copied().collect();
         let mel_shape: Vec<usize> = mel.shape().to_vec();
+        if oww_debug() && self.frames <= 2 {
+            eprintln!(
+                "oww: mel shape={:?} first={:?}",
+                mel_shape,
+                flat.iter().copied().take(6).collect::<Vec<_>>()
+            );
+        }
         drop(mel);
         // A silent zero here would look like "the model never fires", which is a conclusion
         // about a detector rather than about our plumbing — so the shape is checked and the
@@ -255,6 +280,15 @@ impl Oww {
         }
 
         let mut score = 0.0;
+        if oww_debug() && self.frames % 25 == 1 {
+            eprintln!(
+                "oww: frames={} mel_buf={} history={} last={:.5}",
+                self.frames,
+                self.mel_buf.len(),
+                self.history.len(),
+                self.last
+            );
+        }
         while self.mel_buf.len() >= MEL_WINDOW * MEL_WIDTH {
             let window: Vec<f32> = self.mel_buf[..MEL_WINDOW * MEL_WIDTH].to_vec();
             let emb_in = Tensor::from_array(
@@ -263,10 +297,17 @@ impl Oww {
             )
             .map_err(|e| format!("embedding tensor: {e}"))?
             .into_dyn();
-            let mut eout = self
+            let eout = self
                 .emb
                 .run([emb_in.into()].as_slice())
                 .map_err(|e| format!("embedding: {e}"))?;
+            if oww_debug() && (self.frames % 25 == 0) {
+                let v: Vec<f32> = eout[0]
+                    .try_extract_array::<f32>()
+                    .map(|a| a.iter().copied().take(6).collect())
+                    .unwrap_or_default();
+                eprintln!("oww: embedding shape={:?} first={:?}", eout[0].shape(), v);
+            }
             let embedding: Vec<f32> = eout[0]
                 .try_extract_array::<f32>()
                 .map_err(|e| format!("embedding extract: {e}"))?
@@ -292,10 +333,17 @@ impl Oww {
             )
             .map_err(|e| format!("keyword tensor: {e}"))?
             .into_dyn();
-            let mut kout = self
+            let kout = self
                 .kw
                 .run([kw_in.into()].as_slice())
                 .map_err(|e| format!("keyword: {e}"))?;
+            if oww_debug() {
+                let n: Vec<f32> = kout[0]
+                    .try_extract_array::<f32>()
+                    .map(|a| a.iter().copied().take(4).collect())
+                    .unwrap_or_default();
+                eprintln!("oww: keyword outputs → {n:?} (embeds {})", self.history.len());
+            }
             score = kout[0]
                 .try_extract_array::<f32>()
                 .map_err(|e| format!("keyword extract: {e}"))?
@@ -310,7 +358,7 @@ impl Oww {
     }
 }
 
-fn tensor2(frame: &[f32]) -> Result<SessionInputValue, String> {
+fn tensor2(frame: &[f32]) -> Result<SessionInputValue<'_>, String> {
     Tensor::from_array(
         ndarray::Array2::from_shape_vec((1, FRAME), frame.to_vec())
             .map_err(|e| format!("shape: {e}"))?,

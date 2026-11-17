@@ -3053,6 +3053,22 @@ path-info -S | numfmt --to=iec`, and `nix path-info -S` on
   `nix flake check --no-build 2>&1 | grep -o 'sops-secret-[a-z_0-9]*' | sort -u` after
   `echo x | sops --set '["a","b"]' /dev/stdin secrets/secrets.yaml`-shaped no-op edit.
 
+- [ ] **Fix the embedding → keyword handoff in `voice-wake`'s openWakeWord port, before anyone
+      trusts `--engine oww`.** Built 2026-11-17 and measured immediately: the mel graph loads under
+      tract, runs, and emits the browser's own log-mel (`shape=[1,1,5,32]`, values in the −20…−60
+      range, `/10+2` applied, 5 frames of 32 pushed per 80 ms frame, 76-frame window stepped by 8,
+      `[1,76,32,1]` into the embedding graph — every one of those read off
+      `crates/whisper-ws/web/openwakeword/engine/`, which is the working oracle). But the keyword
+      head's output runs 8.8e-5 → 1.7e-6 and *falls monotonically* across a clip containing the
+      phrase, and the embedding probe never fires. A score that decays toward zero while fresh
+      audio arrives is not a model saying no — it is the keyword head being fed the same stale
+      window every time, i.e. `history` never receiving the embeddings the loop computes. Start
+      with `OWW_DEBUG=1`, which now prints mel shape/values, embedding shape/values and each
+      keyword output: the fix is verified when embeddings print and the score stops decaying.
+      **Until then `--engine livekit` stays deployed**, because a wake engine that is silently
+      always-no is worse than one that is merely mediocre — it is indistinguishable from nobody
+      speaking. **Re-verify with:** `OWW_DEBUG=1 voice-wake oww-bench <assets>/models /tmp/pos16.wav
+      --gate off` and read whether the score rises anywhere.
 - [ ] **Record real room speech to a WAV so the two wake detectors can be compared on bytes.**
       `voice-wake oww-bench` (`docs/voice-assistant-2026-11-16.md`, "Which detector, where") runs
       openWakeWord and LiveKit on the same runtime and the same model hashes, so the A/B is built
