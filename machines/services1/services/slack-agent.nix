@@ -77,6 +77,31 @@
     ];
   };
 
+  # Wait for the tool server's socket before an agent starts asking it for tools.
+  #
+  # `after = [ "hackspace-mcp.service" ]` cannot promise this: that unit is
+  # `Type=simple`, so systemd calls it started the instant it forks, and it is still
+  # dialling its five sources when an agent asks `tools/list` — and the agent's own rule
+  # is that **no tools means no answer**, so it exits 1.  Measured on the first deploy of
+  # `listen` (2026-11-17): exactly that, then up with 7 tools five seconds later, which is
+  # the right behaviour for a long-lived service and the wrong one for an activation —
+  # a unit that fails during activation fails the *switch* (status 4), which disarms
+  # auto-rollback until a human confirms a deploy that had in fact worked, and a false
+  # alarm is what trains people to stop reading the reason.
+  #
+  # So: wait up to 20 s, then start anyway and let the never-give-up policy have it.
+  # `exit 0` at the end is deliberate — a tool server that is genuinely down must not be
+  # turned into a unit that can never start.
+  #
+  # `/bin/sh`, **not** `/bin/bash`: this system has no `/bin/bash` at all (NixOS ships
+  # `/bin/sh` -> bash, and that is the whole of `/bin`), which is the kind of thing you
+  # only find out from `systemd-analyze verify`, where the answer is `Command /bin/bash is
+  # not executable`.  Bash in POSIX mode still does `/dev/tcp` — the redirection is
+  # compiled in, not a mode-dependent builtin — so the check works and needs no netcat in
+  # the closure.  Verified against the live socket before deploying: rc 0 with
+  # `hackspace-mcp` up, and it gives up after 20 s rather than blocking a start.
+  mcpWait = "/bin/sh -c 'for i in $(seq 20); do timeout 1 /bin/sh -c \"echo > /dev/tcp/127.0.0.1/8191\" 2>/dev/null && exit 0; sleep 1; done; exit 0'";
+
   slackAgent = CRANE.crate {
     pname = "slack-agent";
     version = "0.1.0";
@@ -345,6 +370,7 @@ in {
         "hackspace-mcp.service"
       ];
       serviceConfig = {
+        ExecStartPre = mcpWait;
         ExecStart =
           "${slackAgent}/bin/slack-agent "
           + lib.concatStringsSep " " agentFlags
@@ -378,6 +404,7 @@ in {
         "hackspace-mcp.service"
       ];
       serviceConfig = {
+        ExecStartPre = mcpWait;
         ExecStart =
           ''${slackAgent}/bin/slack-agent listen --ask-listen ${cfg.ask.listen}''
           + " --mcp http://127.0.0.1:8191/mcp --endpoints-file ${endpointsFile}"

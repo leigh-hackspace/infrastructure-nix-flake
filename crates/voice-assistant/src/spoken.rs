@@ -192,11 +192,22 @@ fn tidy_units(text: &str) -> String {
         ("->", " to "),
         ("=>", " to "),
         ("–", "-"),
+        // A spaced em dash first, with its spaces: the bare rule below left the space
+        // that had preceded the dash in place and produced "closed , it's" — which is a
+        // comma spoken as a half-second pause where the sentence had none.  Measured on
+        // the deployed answer for "is the hackspace open", so this is what a room heard.
+        (" — ", ", "),
+        (" - ", ", "),
         ("—", ", "),
         (" / ", " or "),
         ("  ", " "),
     ] {
         t = t.replace(from, to);
+    }
+    // Whatever produced it, a space before a comma is a pause the text did not ask for,
+    // and piper honours it.
+    while t.contains(" ,") {
+        t = t.replace(" ,", ",");
     }
     // "12.2 C" (how the tools print it when the degree sign is lost) still means
     // Celsius, and a bare "12.2 C" read as "point c" is the difference between an
@@ -366,5 +377,21 @@ mod tests {
         let s = speakable("Open since 18:40 UTC :thumbsup:", 320).unwrap();
         assert!(s.contains("18:40"), "the time went away: {s}");
         assert!(!s.contains("thumbsup"), "{s}");
+    }
+
+    #[test]
+    fn a_spaced_dash_becomes_a_comma_and_not_a_comma_with_a_pause_before_it() {
+        // The exact answer the deployed gateway produced for "is the hackspace open
+        // right now" on 2026-11-17, verbatim.  Its em dash came out as "closed , it's":
+        // the dash became ", " and the space that had preceded it stayed, so the room
+        // heard a half-second hesitation the sentence never asked for.  Text this short
+        // is nearly all pause markers, so which one is where is the whole difference
+        // between an answer and a dictation.
+        let answer = "No, the space is closed — it's been closed for about two hours \
+            and seventeen minutes, since 22:23 UTC.";
+        let s = speakable(answer, 320).unwrap();
+        assert!(!s.contains(" ,"), "a pause before a comma reached the room: {s}");
+        assert!(s.contains("closed, it's been"), "{s}");
+        assert!(!s.contains('—') && !s.contains("  "), "{s}");
     }
 }
