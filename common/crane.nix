@@ -134,7 +134,16 @@
   # that `cleanSourceFilter` would otherwise copy into every crate's source tree
   # (it does not read .gitignore — the same trap as crates/target/, and the reason
   # this list is a filter rather than a comment).
-  nonMemberPrograms = ["whisper-ws"];
+  # `voice-wake` joins this list for the same reason and a second one of its own: it
+  # is a workspace of one (see the header of crates/Cargo.toml — its ONNX-runtime
+  # dependency tree must not dirty the workspace lock that crane reads at eval time),
+  # so `cargo build` inside it writes a 660 MB `target/` that `workspaceFilter` would
+  # otherwise copy into every crate's source tree on every build, since
+  # `cleanSourceFilter` does not read .gitignore.
+  nonMemberPrograms = [
+    "whisper-ws"
+    "voice-wake"
+  ];
 
   relativeToWorkspace = path: lib.removePrefix (toString workspaceRoot + "/") (toString path);
 

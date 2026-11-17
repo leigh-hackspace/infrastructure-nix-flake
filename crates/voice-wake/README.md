@@ -29,7 +29,10 @@ The engine is [`livekit-wakeword`](https://github.com/livekit/livekit-wakeword) 
 crate, resampling and the melspectrogram/embedding frontend included. Nothing here is a
 model. `ldd` on the release binary is `libc`/`libm`/`libgcc` only — the crate resolves to the
 **pure-Rust `tract`** backend, so there is no `libonnxruntime` blob to fetch at build time,
-which is what makes this buildable inside the sandbox at all.
+which is what makes this buildable inside the sandbox at all (verified: `nix build
+.#voice-wake` succeeds, and the resulting binary scores the same 0.947 on the fixture).
+`crates/voice-wake/package.nix` records what pins its 147 dependencies — and that the
+`cargoHash` you would expect to do it does not.
 
 ## Measured, 2026-11-17, on services1, one thread (`RAYON_NUM_THREADS=1 OMP_NUM_THREADS=1`)
 
@@ -44,11 +47,18 @@ Then the numbers that matter:
 
 | what | result |
 | --- | --- |
-| CPU, 240 s of real room audio, one step per call | **38.3 ms per second of audio = 3.8 % of one core** |
+| CPU, 240 s of real room audio, one step per call, **`cargo build --release`** | **38.3 ms per second of audio = 3.8 % of one core ≈ 26 streams/core** |
+| same harness, **`nix build .#voice-wake`** | **32.1 ms/s = 3.2 % of one core ≈ 31 streams/core** |
 | same audio, 16000-sample calls | **38.1 ms/s** — identical, so the cost is inference, not per-call overhead |
 | ≈ concurrent streams per core, single-threaded | **~26** (≈300 on aibox's 12 cores, before headroom is spent on anything else) |
 | step latency | p50 2.95 ms, p95 4.52 ms, max 9.89 ms for an 80 ms step |
 | 240 s of midday room audio, threshold 0.5 | peak **0.031**, **0 detections** |
+
+The two builds differ by ~15 %, which is the compile profile and not the engine — so quote
+the **nix** figure for capacity, since that is the binary that ships, and say which build a
+number came from. (That is the same discipline as the CPU percentage below, which I got wrong
+by two orders of magnitude first: `ms of CPU per second of audio` *is* the core fraction, so
+41.3 ms/s is 4.1 % of a core, not 413 %.)
 
 LiveKit publishes 16.5 ms per audio-second for this model. We measure 38.3 — **2.3× the
 published figure**, and the honest explanation is the backend: they measure with ONNX

@@ -399,6 +399,9 @@
       };
     in {
       whisper-ws = whisperWsPkg;
+      # The wake tier: its own cargo workspace, because an ONNX-runtime dependency tree
+      # in the shared lock would dirty every service's build (crates/voice-wake/package.nix).
+      voice-wake = pkgs.callPackage ./crates/voice-wake/package.nix {};
       strata = pkgs.callPackage ./machines/aibox/strata-package.nix {
         src = flakeInputs.strata.outPath;
       };
