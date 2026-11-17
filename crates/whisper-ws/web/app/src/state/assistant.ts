@@ -1,8 +1,8 @@
-import { createEffect, createSignal, untrack } from 'solid-js';
+import { createEffect, createSignal } from 'solid-js';
 import type { Accessor } from 'solid-js';
 import { MicCapture } from '../audio/mic';
 import { makeResampler, resetResampler, resampleChunkTo } from '../audio/resample';
-import { wakeResult } from './controller';
+import { WAKE_WORD_LABEL, mode, startWake, stopWake, wakeResult } from './controller';
 
 /**
  * The voice assistant, in the browser: press and talk, or let the wake-word card
@@ -28,12 +28,23 @@ import { wakeResult } from './controller';
 /** What the gateway's `/v1/transcribe` wants and what the camera speaks. */
 const TARGET_RATE = 16000;
 
-/** Silence, in ms, after which push-to-talk stops by itself. */
-const STOP_AFTER_QUIET_MS = 900;
+/* When a push-to-talk take ends.  The first version got both halves of this wrong and
+ * the room found it inside a minute: it counted silence from the instant of the click,
+ * so a breath before speaking ended the take; and it called anything below a fixed
+ * −42 dBFS silence, which is a statement about *the microphone* rather than the room —
+ * a quiet input read −49 dBFS mid-sentence and the take was cut at half a second.
+ * So the cut now moves with the take's own noise floor, and quiet only starts a
+ * countdown once a voice has actually been heard. */
+/** After speech has been heard, this much quiet ends the turn. */
+const STOP_AFTER_QUIET_MS = 1200;
 /** Longest single push-to-talk recording. */
 const MAX_RECORD_MS = 15000;
-/** dBFS below which a frame counts as silence for the auto-stop. */
-const QUIET_DB = -42;
+/** A take that has heard nothing at all by now is a muted input, not a paused person. */
+const NO_SPEECH_MS = 5000;
+/** Speech is this many dB above the quietest frame seen so far… */
+const SPEECH_MARGIN_DB = 8;
+/** …but never below this, or a silent room makes every breath speech. */
+const SPEECH_FLOOR_DB = -48;
 
 let gatewayUrl = '';
 
@@ -77,7 +88,10 @@ async function post(path: string, body: BodyInit, contentType: string): Promise<
 }
 
 /** A PCM16 mono WAV from the collected samples, at 16 kHz. */
-function wav(samples: number[]): Uint8Array {
+// `Uint8Array<ArrayBuffer>`, not bare `Uint8Array`: TS 5.8 widens the latter to
+// `ArrayBufferLike`, which may be a SharedArrayBuffer, and a `SharedArrayBuffer` is not a
+// `BlobPart` — so the honest spelling of "bytes I own" is what makes `new Blob([…])` typecheck.
+function wav(samples: number[]): Uint8Array<ArrayBuffer> {
   const n = samples.length;
   const buf = new ArrayBuffer(44 + n * 2);
   const view = new DataView(buf);
@@ -146,8 +160,14 @@ export async function askText(text: string, source: string): Promise<void> {
 const mic = new MicCapture();
 let samples: number[] = [];
 let resampler = makeResampler();
-let quietMs = 0;
-let timer = 0;
+/* Wall clock, not a sum of chunk durations: these are timeouts a person feels, and the
+ * one number that must not lie about them is how long they have been waiting. */
+let startedAt = 0;
+let lastLoudAt = 0;
+let spoke = false;
+let seeded = false;
+let floorDb = 0;
+let peakDb = -120;
 
 function frameDb(f32: Float32Array): number {
   let sum = 0;
@@ -164,7 +184,11 @@ export async function startTalk(): Promise<void> {
   }
   samples = [];
   resetResampler(resampler);
-  quietMs = 0;
+  spoke = false;
+  seeded = false;
+  peakDb = -120;
+  startedAt = performance.now();
+  lastLoudAt = startedAt;
   setBusy('');
   try {
     await mic.start((chunk) => {
@@ -172,10 +196,30 @@ export async function startTalk(): Promise<void> {
       setLevelDb(db);
       const out = resampleChunkTo(chunk, resampler, mic.sampleRate, TARGET_RATE);
       for (let i = 0; i < out.length; i++) samples.push(out[i]);
-      quietMs = db < QUIET_DB ? quietMs + (chunk.length / mic.sampleRate) * 1000 : 0;
+
+      // The floor is seeded from the first frame rather than from a default, so the
+      // threshold is a fact about this room and this input from frame two on.
+      if (!seeded) {
+        floorDb = db;
+        seeded = true;
+      } else if (db < floorDb) floorDb = db;
+      if (db > peakDb) peakDb = db;
+
+      const now = performance.now();
       const secs = samples.length / TARGET_RATE;
-      if (quietMs > STOP_AFTER_QUIET_MS || secs * 1000 > MAX_RECORD_MS) void stopTalk();
-      else setStatus(`listening — ${secs.toFixed(1)}s`);
+      if (db >= Math.max(SPEECH_FLOOR_DB, floorDb + SPEECH_MARGIN_DB)) {
+        spoke = true;
+        lastLoudAt = now;
+      }
+
+      if (!spoke) {
+        if (now - startedAt > NO_SPEECH_MS) void abortTake();
+        else setStatus(`listening — talk now · ${levels()}`);
+      } else if (now - lastLoudAt > STOP_AFTER_QUIET_MS || secs * 1000 > MAX_RECORD_MS) {
+        void stopTalk();
+      } else {
+        setStatus(`listening — ${secs.toFixed(1)}s · ${levels()}`);
+      }
     });
     setRecording(true);
     setStatus('listening — talk now, or press again to stop');
@@ -185,11 +229,29 @@ export async function startTalk(): Promise<void> {
   }
 }
 
+/** The two numbers that explain any "it did not hear me": the room and the voice. */
+function levels(): string {
+  return `floor ${floorDb.toFixed(0)} / loudest ${peakDb.toFixed(0)} dBFS`;
+}
+
+/** A take that heard nothing: say so with the levels, and do not send silence to whisper. */
+async function abortTake(): Promise<void> {
+  if (!recording()) return;
+  setRecording(false);
+  await mic.stop();
+  samples = [];
+  setBusy('');
+  setStatus(
+    `heard nothing in ${NO_SPEECH_MS / 1000}s — ${levels()}. ` +
+      'If "loudest" is sitting on the floor, this browser\'s input is too quiet to work from; '
+      + 'if the floor is high, the room is too loud for push to talk — type it below.',
+  );
+}
+
 export async function stopTalk(): Promise<void> {
   if (!recording()) return;
   setRecording(false);
   await mic.stop();
-  window.clearTimeout(timer);
   const n = samples.length;
   const secs = n / TARGET_RATE;
   setStatus('transcribing…');
@@ -197,7 +259,7 @@ export async function stopTalk(): Promise<void> {
   const started = performance.now();
   try {
     if (secs < 0.3) throw new Error(`only ${secs.toFixed(1)}s of audio — say it a little longer`);
-    const r = await post('/v1/transcribe', wav(samples), 'audio/wav');
+    const r = await post('/v1/transcribe', new Blob([wav(samples)], { type: 'audio/wav' }), 'audio/wav');
     const d = await r.json();
     const stt = ((performance.now() - started) / 1000).toFixed(1);
     if (!d.speech) {
@@ -242,12 +304,36 @@ export function watchWakeResult(): void {
   });
 }
 
-export function toggleHandsFree(): void {
-  const next = !handsFree();
-  setHandsFree(next);
-  setStatus(next ? 'armed — say the wake word' : 'disarmed');
+/**
+ * Arm/disarm the hands-free path.
+ *
+ * Arming is **not** a second wake-word detector: this page's wake-word card already runs
+ * OpenWakeWord and already gets a transcript of the command back from whisper-ws.  So
+ * "armed" means *that card is running and I answer what it hears* — which is why this
+ * starts it.  v1 only set a signal, so the pill lit while no detector ran, and the very
+ * next line threw (`untrack(wakeResult)()` — `untrack` returns the value, so that was a
+ * call on a data object), which is the console error the button produced.  A click
+ * handler is not a tracking scope either, so plain `wakeResult()` is the right form here.
+ */
+export async function toggleHandsFree(): Promise<void> {
+  if (handsFree()) {
+    setHandsFree(false);
+    stopWake();
+    setStatus('disarmed — the wake-word card is stopped');
+    return;
+  }
+  if (mode() !== 'wake') {
+    setStatus('starting the wake-word detector…');
+    await startWake();
+  }
+  if (mode() !== 'wake') {
+    setStatus('could not arm: the wake-word card would not start — read its status line above');
+    return;
+  }
+  setHandsFree(true);
   // Arming must not answer what was said before arming.
-  lastSeen = untrack(wakeResult)().text;
+  lastSeen = wakeResult().text;
+  setStatus(`armed — say “${WAKE_WORD_LABEL}”, then the question`);
 }
 
 export const level: Accessor<number> = levelDb;

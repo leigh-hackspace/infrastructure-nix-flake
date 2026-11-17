@@ -51,13 +51,14 @@ export function AssistantCard(props: { snapshot: Accessor<StatusSnapshot | null>
         }
       >
         <p class="sub">
-          Press and talk, or arm the wake word and say “{WAKE_WORD_LABEL}” followed by the question.
+          Click <b>Talk</b>, speak, then click <b>Stop and ask</b> — or just pause for a second and it
+          sends itself. Or arm the wake word and say “{WAKE_WORD_LABEL}” followed by the question.
         </p>
         <div class="row">
           <button class={`mic ${recording() ? 'on' : ''}`} disabled={!!busy()} onClick={onTalkClick}>
-            {recording() ? '🔴 Stop and ask' : '🎙 Press to talk'}
+            {recording() ? '🔴 Stop and ask' : '🎙 Talk'}
           </button>
-          <button class={`mic ${handsFree() ? 'on' : ''}`} onClick={toggleHandsFree}>
+          <button class={`mic ${handsFree() ? 'on' : ''}`} onClick={() => void toggleHandsFree()}>
             {handsFree() ? '💤 Disarm wake word' : '💤 Arm wake word'}
           </button>
         </div>

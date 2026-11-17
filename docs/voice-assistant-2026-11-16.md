@@ -209,3 +209,91 @@ One deployment fact settled on the way: **frigate's go2rtc restream answers
 in `machines/services1/services/frigate.nix` guards the LAN-facing endpoint, and the
 container's port publish lands the loopback path outside it).  So the satellite's default
 `--source` works as written, and the camera's own two-session RTSP budget is untouched.
+
+## The next morning: the first person to use it was not the person who wrote it
+
+Every end-to-end test above was mine, from a shell, with a WAV I generated. The first human
+being to open the page found two bugs in under a minute, and neither was visible to anything
+I had run — which is the whole argument for putting things in front of people.
+
+> "is it press to talk or hold to talk? it doesn't seem to be either as i only get about half
+> a second to say anything. arm wake word doesn't do anything and it causes a script error"
+
+### Half a second, and why it was never going to be hold-to-talk
+
+It is click-to-start / click-to-stop, and the label said "Press to talk", which is the phrase
+everybody reads as *hold*. Fixed in the copy, because a control whose name implies a gesture
+it does not implement is a bug report waiting to happen.
+
+The half a second was real, and it was two separate faults stacked:
+
+```ts
+quietMs = db < QUIET_DB ? quietMs + (chunk.length / mic.sampleRate) * 1000 : 0;
+if (quietMs > STOP_AFTER_QUIET_MS || ...) void stopTalk();   // QUIET_DB = -42
+```
+
+1. **Silence was counted from the instant of the click.** A click, a breath, a sentence — the
+   take ended before the sentence started. Silence before you have spoken is not the end of
+   your turn.
+2. **`-42 dBFS` is a statement about the microphone, not the room.** A quiet input read
+   around −49 dBFS *while someone was mid-sentence*, so every frame was "silence", the
+   countdown ran in real time, and the take was cut at roughly a second whatever the person
+   did. Any absolute dBFS cut in a voice path is a hidden dependency on input gain.
+
+So the endpointing now works the way the server-side gate already does — **relative to the
+take's own noise floor** — and silence only starts a countdown once a voice has been heard:
+
+```ts
+floorDb = seeded ? Math.min(floorDb, db) : (seeded = true, db);   // seed from frame one
+if (db >= Math.max(SPEECH_FLOOR_DB, floorDb + SPEECH_MARGIN_DB)) { spoke = true; lastLoudAt = now; }
+if (!spoke) { if (now - startedAt > NO_SPEECH_MS) void abortTake(); }
+else if (now - lastLoudAt > STOP_AFTER_QUIET_MS || secs * 1000 > MAX_RECORD_MS) void stopTalk();
+```
+
+with `SPEECH_MARGIN_DB = 8`, `SPEECH_FLOOR_DB = -48`, `STOP_AFTER_QUIET_MS = 1200`,
+`NO_SPEECH_MS = 5000`. And the two timers a person can feel are now read from
+`performance.now()` rather than from a sum of chunk durations — a bug in the chunk accounting
+must not be able to make the *deadline* lie about how long someone has been waiting.
+
+A take that heard nothing no longer sends silence to whisper: it says so **with the numbers**
+(`floor −54 / loudest −52 dBFS`), because "the input is too quiet" and "the room is too loud"
+look identical from the user's side and are opposite diagnoses.
+
+### The script error was a call on a data object, and it is my fault twice over
+
+```
+src/state/assistant.ts(250,14): error TS2349: This expression is not callable.
+  Type 'ResultMsg' has no call signatures.
+```
+
+`untrack(wakeResult)()` — `untrack` **calls** its argument and returns the value, so this took
+the `ResultMsg` and tried to call it. It threw on every click of the arm button, *after*
+`setHandsFree(true)` had already run, which is why the pill lit and nothing happened. And a
+click handler is not a tracking scope anyway, so the `untrack` bought nothing; `wakeResult()`
+is the correct form.
+
+The other half of the fault is the design: **arming only set a signal.** The wake-word card
+above is what actually runs OpenWakeWord, so arming the assistant without starting *it*
+produced a lit pill and no detector — "doesn't do anything" was accurate. `toggleHandsFree`
+now goes through the card (`mode()`, `startWake()`, `stopWake()`), refuses to claim it is
+armed if the card would not start, and says which status line to read when it cannot.
+
+`tsc` also flagged `post('/v1/transcribe', wav(samples), …)`: since TS 5.8 a bare
+`Uint8Array` is `Uint8Array<ArrayBufferLike>`, a `SharedArrayBuffer` is not a `BlobPart`, so
+the honest signature is `Uint8Array<ArrayBuffer>`. It worked in the browser and was still a
+type error.
+
+### The gate that should have been there from the start
+
+The page has had a `typecheck` script (`tsc --noEmit`) since the port, **in nothing that ran
+it**: `buildNpmPackage` runs `npm run build`, which was `vite build`, and esbuild strips types
+without checking them. So both bugs above — one of them a plain "this is not callable" —
+compiled, shipped to aibox, and were live for half a day.
+
+`package.json` is now `"build": "tsc --noEmit && vite build"`, so the *only* way this bundle
+gets built is through the checker, in the derivation as well as in dev (verified: `nix build
+.#whisper-ws` rebuilds and succeeds, so `typescript` is in the sandbox's `node_modules`; and
+`npm run build` exits 2 with a deliberate error and never reaches vite).
+
+A build step nobody invokes is not a test. It was not a lint I skipped either — it was a lint
+that existed, in the repo, next to the code, and was simply never in the path.
