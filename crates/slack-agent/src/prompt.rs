@@ -87,6 +87,22 @@ pub fn system_prompt() -> String {
     )
 }
 
+/// The answer that is going to be said out loud, in a room, through a small speaker.
+///
+/// This is **appended** to [`system_prompt`] rather than written beside it, so the
+/// grounding rule — the one rule that keeps this model from stating a temperature it
+/// has not fetched — exists in exactly one place.  What it overrides is the
+/// `ANSWERING` section, which was written for a screen: it permits bullet lines, and
+/// bullets cannot be heard.  The contradiction is stated out loud in the text, because
+/// a model given "bullets are fine" and then "no bullets" follows whichever it read
+/// last, and the last thing it reads should be the thing that is true for this caller.
+pub fn spoken_system_prompt() -> String {
+    format!("{}\n\n{}", system_prompt(), SPOKEN_RULES)
+}
+
+const SPOKEN_RULES: &str =
+    "ANSWERING OUT LOUD — this caller is a voice assistant, not Slack. Everything in      the ANSWERING section above about length and formatting is for a screen, and NONE      of it applies here; this section is the one that does.\n     - The answer will be read aloud by a synthetic voice through a small speaker in a      room where people are working. One sentence is usually right; two is the maximum.      If the answer is a list of things, say the one that matters and offer the rest as      a separate question: \"The workshop's twelve point two degrees — the coldest room,      and it is dropping.\"\n     - No lists, no bullets, no dashes, no headings, no tables, no asterisks, no      backticks, no emoji, no code. Plain sentences only, because there is no      typography in a voice.\n     - Never read a URL, an IP address, a hostname with a port, or a file path: they      are unreadable aloud. Say what it is and where a person finds it instead (\"on      the space dashboard\"), and only if it helps.\n     - Write units as words — \"twelve point two degrees\", \"sixty per cent\" — so      nothing depends on how the voice happens to say a bare letter.\n     - Start with the fact. \"Sure\", \"Let me check\", \"Certainly\", \"Great      question\" and restating the question are all dead air in front of the answer,      and the room is listening to the whole of it.\n     - Do not describe what you looked up or which tools you called; the answer is the      answer.\n     - When you cannot see what was asked, say so in one sentence, say what you CAN      see, and stop. Do not guess to fill the silence.\n     - Never ask a question back. If the question is ambiguous, answer the most likely      reading in one sentence and name the other reading in a second; a voice call with      a clarifying question in it is a failed voice call.";
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -112,6 +128,37 @@ mod tests {
         // The exact complaint, kept as text the suite can fail on: `temps` answered with
         // "both 3D printers offline ~1 week" is what a member objected to.
         assert!(lower.contains("printers are"), "the counter-example is gone");
+    }
+
+    #[test]
+    fn the_voice_prompt_overrides_the_screen_rules_it_inherits() {
+        let voice = spoken_system_prompt();
+        // Inherited: the grounding rule is not allowed to exist twice.
+        assert!(voice.to_lowercase().contains("must come from a tool call"));
+        let lower = voice.to_lowercase();
+        assert!(
+            lower.matches("must come from a tool call").count() == 1,
+            "the grounding rule is duplicated, so the two copies will drift"
+        );
+        // Overridden: the Slack section's permission is contradicted, explicitly.
+        assert!(system_prompt().contains("bullet"), "the Slack prompt no longer permits bullet lines — check this test still means anything");
+        assert!(lower.contains("no bullets"), "no voice override");
+        assert!(lower.contains("none"), "the override does not say it replaces the section above");
+        assert!(lower.contains("one sentence"), "no length rule for speech");
+        assert!(lower.contains("never read a url") || lower.contains("no url"), "URLs not banned");
+        assert!(lower.contains("start with the fact"), "no anti-preamble rule");
+        assert!(lower.contains("never ask a question back"), "no anti-clarification rule");
+        assert!(lower.contains("units as words"), "units left to the voice");
+    }
+
+    #[test]
+    fn the_voice_prompt_is_longer_but_not_by_a_speech() {
+        // The spoken section must stay the minority of the prompt: a 3,000-word
+        // voice policy would be the most expensive paragraph in the request.
+        let base = system_prompt().len();
+        let extra = spoken_system_prompt().len() - base;
+        assert!(extra > 400, "the spoken rules are missing ({extra} chars)");
+        assert!(extra < base / 2, "the spoken rules are {extra} chars against a {base}-char prompt");
     }
 
     #[test]

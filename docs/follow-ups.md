@@ -3162,3 +3162,76 @@ behaviour; staying at an older time is this finding.
 - **`modules.conf` is `autoload=yes`** (the nixpkgs module's default, kept deliberately so the
   first deploy could not fail on a missing module). A PBX this small wants an explicit load
   list; do it as its own change so a regression is one commit, not one feature removal.
+
+## The voice assistant (2026-11-16): the four things left open
+
+Design and receipts: `docs/voice-assistant-2026-11-16.md`; the pipeline's own traps:
+`crates/voice-assistant/README.md`. Shipped live but **silent in the room**: the gateway
+answers the browser page, the satellite listens on cam8 and writes its answers to the state
+directory.
+
+1. **Has anyone heard `cam8`'s speaker?** The software path is measured (`rac play` accepted
+   a 350 ms tone and reported it played); audibility through a C110 piezo across a working
+   room is not, and no number from a desk can settle it. Until it does, `speaker = "off"`.
+2. **An identity for the speaker path.** Playing means `ssh root@cam8 'rac play - -r 16000'`,
+   and the fleet hop key is in operator accounts (`~/.ssh/agent-hop-key`), unreadable by a
+   `DynamicUser`, and must not be copied into the store. Two options, neither taken:
+   (a) a dedicated `voice-speaker` Unix account whose **public** key is installed on the
+   camera's dropbear `authorized_keys` (a device write, in a maintenance window, and thingino
+   keeps `/etc` on the overlay — see `cameras/README.md`), or (b) a small systemd-managed
+   speaker agent holding the hop key, which re-opens rule 32's root-known_hosts question.
+   `infra.voiceAssistant.sshKey` is wired for whichever is chosen.
+3. **The gate's real false-probe rate.** `just voice-probe` (satellite minus the assistant)
+   exists to answer this and nobody has run it for long enough to. The gate's criterion is a
+   number someone has watched, not a threshold invented now; `probe_false_positives` in
+   `/status.json` counts it and is deliberately not asserted. This is the gate before the
+   speaker.
+4. **Two cheap latency wins, both measured as real costs.** A *resident* piper (the
+   per-request process spends ~2.4 s of its 2.5 s starting) and a smaller whisper model on
+   aibox (2.7 s per 3 s clip on CPU `medium`; note `--device 1` no longer exists in
+   whisper.cpp 1.9.5 — the `machines/aibox/whisper.nix` header still says the unit cannot
+   restart, which is stale: the service is up and running on CPU, and that comment needs
+   re-reading against the current pin). And a **barge-in** design if the speaker ever turns
+   on: no AEC exists, so it is server-side against the playback clock, for which
+   `audio_ms`/`played_at` are already recorded.
+5. **`cam8`'s RTSP credentials are the firmware defaults** (`thingino:thingino`), plaintext
+   in `/srv/frigate/config/config.yaml` — off-flake runtime state with no flake owner.
+   Pre-existing for the video stream, but an always-on microphone raises the price; a
+   rotation must land in the same change as frigate's config and the camera's own
+   `/etc/raptor.conf`.
+
+## aibox's `strata-unstable` store path is corrupt on the box (found 2026-11-16, unrelated to any change)
+
+Found while building aibox's toplevel to deploy one flag on `whisper-ws`: the build died
+importing `/nix/store/frskrh23ijvxfgk5g1hwqkdzdcpdw76z-strata-unstable` from aibox.  Both
+boxes' own words, measured in the same minute:
+
+```
+services1:  error: hash mismatch importing path '…-strata-unstable'
+                    specified: sha256-x1+VVH0db9tye7gv9slcHM0IrabMZHa8oQj6BM5Chzc=
+                    got:       sha256-sdnwqRnuTb8mJh+7xAtzx6nxPmHj6QVaepbhBYGORwc=
+aibox:      nix store verify /nix/store/frskrh…-strata-unstable
+            path '…-strata-unstable' was modified!
+              expected hash 'sha256:0dw78b709yh8l6y7cr6clsnhik8wbk4zcbxqgdrdnvqxgma9apy7'
+              got           'sha256:01s7is0hbqcng9d0bsg3c4zg3af7fc5w9fqz4qkbykgf36lz1ndi'
+```
+
+So aibox's copy of its own strata package does not match the hash aibox's database holds
+for it, which is why every *other* box refuses to import it (`nix store verify` is the only
+thing that can see this: `nix path-info` answers happily, `--sigs` even says `ultimate`).
+Consequences measured: **`just check-build` cannot go green for aibox** (a toplevel whose
+closure contains this path cannot be copied anywhere), and `strata.service` has been running
+from this path since 2026-11-15 03:08 — so the inference engine both boxes' agents dial is
+executing out of a store path nix itself calls modified.
+
+Not repaired, on purpose: repairing means re-executing the build of a 42 MB ROCm package and
+then restarting the engine (`nix-store --realise <drv> --repair` is the candidate, and the
+drv is `/nix/store/mpmf9ffw4wp3h3jiajsn4vgl8pqjivyy-strata-unstable.drv`), which is a window
+decision on the network's build machine and GPU box with a kernel reboot already pending
+(`just pending-reboot`). Re-verify with
+`ssh aibox 'nix store verify /nix/store/frskrh23ijvxfgk5g1hwqkdzdcpdw76z-strata-unstable'` —
+silent means fixed — and re-read whether the running engine is still on the old path
+afterwards, because a repair that does not restart `strata.service` leaves the process on the
+mutated copy. Whatever mutated it is unknown and worth one look (`nix-diff`? a hand edit
+inside the store — the reason store paths are read-only at the *directory* level and 0444 at
+file level, so it took `chmod` deliberately).

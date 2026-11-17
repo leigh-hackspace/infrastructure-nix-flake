@@ -1,5 +1,6 @@
 import { createSignal, onCleanup } from 'solid-js';
 import type { Accessor } from 'solid-js';
+import { AssistantCard } from './components/AssistantCard';
 import { MicTestCard } from './components/MicTestCard';
 import { RecentCard } from './components/RecentCard';
 import { SessionsCard, TotalsCard, WhisperCard } from './components/StatusCards';
@@ -46,6 +47,7 @@ export default function App() {
         <WhisperCard snapshot={snap} />
         <MicTestCard />
         <WakeWordCard />
+        <AssistantCard snapshot={snap} />
         <TotalsCard snapshot={snap} />
         <SessionsCard snapshot={snap} />
         <RecentCard snapshot={snap} />

@@ -118,6 +118,7 @@
     "truenas"
     "unifi-admin"
     "user-tweaker"
+    "voice"
     "whisper"
     "zigbee2mqtt"
   ];

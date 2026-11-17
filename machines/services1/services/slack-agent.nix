@@ -87,9 +87,15 @@
     # it is the Nix build: `cargo build` in the workspace always sees the real code,
     # which is why `just test` was green for a day before `just check-build` said
     # "cannot find function post_json in crate common_http" (2026-11-16).
+    # `web` is here because `listen` serves HTTP through `common-web` (see
+    # src/listen.rs); `http` is not a crate `slack-agent` itself names — it is the one
+    # `common-mcp`'s client calls (`common_http::post_json`), and crane stubs every
+    # `common-rs/` crate a member does not list here.  So this list is *transitive*,
+    # and the only check on it is the Nix build.
     sharedCrates = [
       "json"
       "http"
+      "web"
       "mcp"
       "service"
     ];
@@ -169,6 +175,45 @@ in {
       # agreed these answers are fit to send in public.
       default = true;
       description = "Read Slack and run the model, but post nothing.";
+    };
+
+    ask = {
+      enable = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = ''
+          Run `slack-agent listen`: the bot's answer on a loopback socket, for anything
+          that is not Slack.  On by default because `voice-assistant` is the second
+          caller and a disabled socket there means a silent assistant, not an error.
+        '';
+      };
+      listen = lib.mkOption {
+        type = lib.types.str;
+        default = "127.0.0.1:8194";
+        description = ''
+          The bind, and the **only** place it is written: `machines/services1/services/
+          voice-assistant.nix` builds its `--agent-url` from this option rather than
+          repeating the port, which is how the two units cannot disagree about where the
+          bot answers.  Loopback only — the unit refuses any other bind, because the
+          socket has no authentication and its tools hold the building's read tokens.
+        '';
+      };
+      resetAfterSecs = lib.mkOption {
+        type = lib.types.int;
+        default = 900;
+        description = "Silence after which an ask conversation starts again (see src/listen.rs).";
+      };
+      recordQuestions = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = ''
+          Keep the question and answer text in this socket's `/status.json`, the same
+          choice `voice-assistant` makes and for the same reason: `whisper-ws` has
+          published its last 20 transcriptions since the day it was written, and a
+          loopback socket is no more exposed than that.  `false` keeps the counts and
+          the timings, so "it is slow" is still answerable.
+        '';
+      };
     };
 
     digest = {
@@ -317,6 +362,40 @@ in {
       };
     };
 
+    # The bot's second face: the same loop, the same tools, a socket instead of Slack.
+    # A separate unit rather than a flag on `slack-agent`, because the Slack session and
+    # a room waiting for an answer have different things to be bored by — Socket Mode
+    # exits when Slack goes quiet for five minutes, and the ask socket must not.
+    systemd.services.slack-agent-listen = INFRA.mkNeverGiveUp {
+      description = "Hackspace agent answer socket (loopback, for voice and anything else)";
+      wantedBy = ["multi-user.target"];
+      after = [
+        "network-online.target"
+        "hackspace-mcp.service"
+      ];
+      wants = [
+        "network-online.target"
+        "hackspace-mcp.service"
+      ];
+      serviceConfig = {
+        ExecStart =
+          ''${slackAgent}/bin/slack-agent listen --ask-listen ${cfg.ask.listen}''
+          + " --mcp http://127.0.0.1:8191/mcp --endpoints-file ${endpointsFile}"
+          + " --ask-reset-after-secs ${toString cfg.ask.resetAfterSecs}"
+          + lib.optionalString (!cfg.ask.recordQuestions) " --no-record-questions";
+        DynamicUser = true;
+        # No `EnvironmentFile`: this face holds no token.  The tools it calls hold the
+        # Home Assistant token, and they are a different process, which is the whole
+        # point of the split in this file's header — the side that talks to a room has
+        # nothing in it worth stealing from a room.
+        ProtectSystem = "strict";
+        ProtectHome = true;
+        NoNewPrivileges = true;
+        PrivateTmp = true;
+        LimitCORE = 0;
+      };
+    };
+
     # Both units answer `/health` and `/metrics` on loopback, which is what makes
     # "the bot is quiet" and "the bot is deaf" distinguishable — the liveness gauge is
     # `slack_agent_seconds_since_slack_frame`, and the unit exits on its own past
@@ -329,6 +408,7 @@ in {
             targets = [
               "127.0.0.1:8191" # hackspace-mcp: tool calls, by outcome
               "127.0.0.1:8192" # slack-agent: turns, latency, socket silence
+              "127.0.0.1:8194" # slack-agent listen: asked-through-the-voice, turns, errors
             ];
           }
         ];

@@ -11,6 +11,9 @@ path = "src/main.rs"
 common-json = { path = "../common-rs/json" }
 common-mcp = { path = "../common-rs/mcp" }
 common-service = { path = "../common-rs/service" }
+# The shared HTTP server, for `listen` (the ask endpoint).  `serve`'s own
+# health/metrics socket predates it and is deliberately left alone — see listen.rs.
+common-web = { path = "../common-rs/web" }
 # The two places the zero-crate style stops, both because of TLS:
 #  * the inference engines are reached through the front door's HTTPS name, which is
 #    where strata_api_key is injected, so the agent holds no credential;

@@ -224,7 +224,15 @@ clippy: _build-host-guard
       status=0
       cargo clippy --workspace --all-targets --offline >"$out" 2>&1 || status=$?
       # One Compiling/Checking line per crate is most of the output and none of the
-      # information; the diagnostics and clippy's own summary are what is wanted.
+      # information; the diagnostics and the linter summary are what is wanted.
+      # No apostrophes anywhere inside this single-quoted `bash -c` argument: one closes
+      # the string and the outer shell then evaluates the rest — which is exactly what
+      # happened here from 2026-10-25 until 2026-11-16, when a comment reading "clippy" +
+      # possessive made the whole tail of the script belong to the outer shell and
+      # `just clippy` failed on every run with `out: unbound variable` at the first line
+      # after it. A gate that exits 1 for a reason unrelated to linting trains people to
+      # ignore it, so: if this recipe needs prose with an apostrophe, put it OUTSIDE the
+      # quoted script (above), not inside.
       grep -vE "^(Compiling|Checking|Finished|    Finished)" "$out" || true
       exit $status
     '
@@ -1148,6 +1156,95 @@ slack-agent-events question: _build-host-guard
 
 # Preview the Monday digest — the exact text and the resolved channel id, posted nowhere.
 # The deployed timer runs the same command WITHOUT --dry-run, so this is the one check that
+# --- the voice assistant: browser page, cam8 mic, spoken answers --------------------
+#
+# The gateway is loopback-only on services1, so every one of these asks it *through the
+# front door* (`https://voice.int.leighhack.org`) — the same path a phone takes, which is
+# the point: if it works here it works in the room.  No recipe here plays anything out
+# loud: `voice-say` writes a WAV and stops.  Design and the measured latency budget:
+# crates/voice-assistant/README.md.
+
+# What the gateway, the mic and the last answers look like right now.
+voice-status:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    curl -fsS -m 10 https://voice.int.leighhack.org/status.json \
+      | python3 -c 'import json,sys; s=json.load(sys.stdin)
+    print("gateway: %d asks, %d errors, %d turns, last %.1fs" % (s["asks"], s["errors"], s.get("turns",0), s.get("last_secs",0)))
+    print("wake:    " + ", ".join(s["wake_words"]))
+    print("config:  " + ", ".join("%s=%s" % (k,v) for k,v in sorted(s["config"].items()) if k in ("tts_voice","agent","max_speech_chars","record_questions")))
+    for q in s.get("recent_questions", [])[:5]:
+        print("  %s  %s%s" % (q["at"], q["question"][:48], (" -> " + q.get("answer","")[:44]) if q.get("answer") else (" -> [" + q["error"] + "]") if q.get("error") else " -> …"))
+    m = s.get("mic", {})
+    print("mic:     %s  open=%s  %s  heard=%s" % (m.get("source","(satellite not reporting)"), m.get("gate_open"), m.get("last_heard",""), m.get("last_transcript","")))
+    '
+
+# One question, spoken-answer included, and no audio path at all: prints the text, the
+# timing, the tool calls, and writes the speech to a file instead of playing it.
+voice-ask question:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # stdin, for the reason every other recipe here gives: just has no quoting builtin at
+    # this pin and "what's on tonight?" loses its apostrophe through two shell levels.
+    # The question goes through stdin into a python one-liner that *encodes* it, because
+    # just has no quoting builtin at this pin and a question is prose: it has apostrophes,
+    # and the JSON string needs those and any quotes inside it escaped by something that
+    # understands JSON rather than by a shell.
+    cat <<'VO_ASK' | python3 -c 'import json,sys; sys.stdout.write(json.dumps({"text": sys.stdin.read().strip()}))' \
+        | curl -fsS -m 180 -X POST -H 'content-type: application/json' \
+            --data-binary @- https://voice.int.leighhack.org/v1/ask > /tmp/voice-ask.json
+    {{question}}
+    VO_ASK
+    # A question this cheap is worth the two lines of output it costs: the same turn is
+    # 8-150 s depending on whether the model called tools, and a number is the only way to
+    # know which one you just waited for.
+    python3 -c 'import json,base64; a=json.load(open("/tmp/voice-ask.json"))
+    print("answer: " + a["answer"])
+    print("speech: " + a.get("speech","(nothing to say)"))
+    if a.get("audio"):
+        open("/tmp/voice-answer.wav","wb").write(base64.b64decode(a["audio"]))
+        print("wrote:  /tmp/voice-answer.wav (%.1f s) — nothing has played" % a.get("audio_secs",0))
+    print("[%.1fs total · agent %.1fs · %s · %d round(s) · tools: %s]" % (a["secs"], a.get("agent_secs",0), a.get("engine","-"), a.get("rounds",0), ", ".join(a.get("tools") or []) or "none"))
+    for w in a.get("warnings") or []: print("WARN: " + w)
+    '
+
+# Text-only: synthesise speech to a WAV and say nothing.  This is the half that is safe to
+# run while nobody has confirmed what a C110 speaker sounds like across a working room.
+voice-say text:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cat <<'VO_SAY' | python3 -c 'import json,sys; sys.stdout.write(json.dumps({"text": sys.stdin.read().strip()}))' \
+        | curl -fsS -m 60 -X POST -H 'content-type: application/json' \
+            --data-binary @- -o /tmp/voice-say.wav https://voice.int.leighhack.org/v1/tts
+    {{text}}
+    VO_SAY
+    python3 -c 'import wave; w=wave.open("/tmp/voice-say.wav"); print("/tmp/voice-say.wav: %d ch, %d Hz, %.1f s — play it yourself if you want to hear it" % (w.getnchannels(), w.getframerate(), w.getnframes()/w.getframerate()))'
+
+# Does the camera's microphone path work, and what would the gate have done with it?
+# Runs the deployed binary on services1 (it is a system package) against go2rtc's cam8
+# restream, transcribes, and STOPS: no question reaches the assistant and no answer is
+# spoken.  The measurement tool for the one thing this cannot answer at a desk: how often
+# the space's music looks like speech.
+voice-probe seconds="8": _build-host-guard
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # The binary is a package of services1's system, so this is a services1 command:
+    # build-shaped recipes already refuse on gw, and the PATH check says which box it
+    # actually wants.
+    if ! command -v voice-assistant >/dev/null; then
+        echo "voice-assistant is not on PATH here." >&2
+        echo "  It is a package of services1's system: run this on services1," >&2
+        echo "  or build it: nix build .#packages.x86_64-linux.voice-assistant" >&2
+        exit 1
+    fi
+    # `--state-dir` is the tmpfs one, not /var/lib/voice-assistant: the unit owns that
+    # directory and a hand-run probe writing answers into it would leave root-owned files
+    # where the DynamicUser has to write.  The clip lands in the caller's /tmp instead.
+    sudo voice-assistant probe \
+        --state-dir /tmp/voice-probe-state \
+        --seconds "{{seconds}}" \
+        --out /tmp/voice-probe.wav
+
 # a renamed #general or a revoked token shows up before a member notices on a Monday.
 slack-agent-digest: _build-host-guard
     #!/usr/bin/env bash

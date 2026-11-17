@@ -28,6 +28,7 @@
 //! Usage:
 //!   whisper-ws [--bind 127.0.0.1] [--port 8083]
 //!              [--whisper-url http://127.0.0.1:8082] [--max-window-secs 120]
+//!              [--assistant-url https://voice.int.leighhack.org]
 
 mod assets; // GENERATED — see web/app/gen_assets.sh (web/app/dist tree)
 mod audio;
@@ -52,6 +53,9 @@ fn main() {
     let mut port: u16 = 8083;
     let mut whisper_url = "http://127.0.0.1:8082".to_string();
     let mut max_window_secs: u32 = 120;
+    // Where the assistant card sends a question. A flag, not a constant in the page:
+    // see `status::StatusStore::assistant_url`.
+    let mut assistant_url = String::new();
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -68,6 +72,7 @@ fn main() {
                 })
             }
             "--whisper-url" => whisper_url = next(),
+            "--assistant-url" => assistant_url = next().trim_end_matches('/').to_string(),
             "--max-window-secs" => {
                 max_window_secs = next().parse().unwrap_or_else(|_| {
                     eprintln!("bad --max-window-secs value");
@@ -76,7 +81,8 @@ fn main() {
             }
             "--help" | "-h" => {
                 println!(
-                    "usage: whisper-ws [--bind ADDR] [--port N] [--whisper-url URL] [--max-window-secs N]"
+                    "usage: whisper-ws [--bind ADDR] [--port N] [--whisper-url URL] \
+                     [--max-window-secs N] [--assistant-url URL]"
                 );
                 std::process::exit(0);
             }
@@ -91,6 +97,7 @@ fn main() {
     // the health probe write to it.
     let store = Arc::new(Mutex::new(status::StatusStore::new(
         whisper_url.clone(),
+        assistant_url.clone(),
         WhisperHealth {
             ok: false,
             latency_ms: 0,
@@ -117,7 +124,13 @@ fn main() {
         std::process::exit(1);
     });
     eprintln!(
-        "whisper-ws listening on ws://{bind}:{port}/v1/realtime → {whisper_url} (max window {max_window_secs}s)"
+        "whisper-ws listening on ws://{bind}:{port}/v1/realtime → {whisper_url} (max window \
+         {max_window_secs}s){}",
+        if assistant_url.is_empty() {
+            String::new()
+        } else {
+            format!(", assistant → {assistant_url}")
+        }
     );
 
     for conn in listener.incoming() {

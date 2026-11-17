@@ -456,6 +456,22 @@ in {
       upstream = "origin";
       websockets = true;
     };
+    # The voice assistant's gateway.  `origin` because the socket it fronts is
+    # loopback-only by design (`voice-assistant.nix` refuses any other bind), so the
+    # door cannot reach it directly — and the page that calls it is on
+    # `whisper.int.leighhack.org`, which is why the row exists at all: a phone must be
+    # able to dial it over HTTPS.  No `sso`: the answers it gives are the same ones the
+    # Slack bot gives in a public channel, and a login in front of a voice request is a
+    # microphone that never gets to speak.  The timeouts are the origin's own business
+    # (`machines/services1/services/voice-assistant.nix` sets 300 s there); the door's
+    # defaults would cut a slow model off mid-turn and the page would report a network
+    # error rather than a slow answer, which is a lie about which thing is slow.
+    "voice.int.leighhack.org" = {
+      upstream = "origin";
+      timeouts = "300s";
+      bodySize = "900k";
+      note = "one voice turn is up to 150 s (the ask budget); 900k so the door refuses a long recording with a 413 before the app drops the socket (common_web::MAX_BODY_BYTES)";
+    };
     "zigbee2mqtt.leighhack.org" = {
       upstream = "origin";
       sso = true;

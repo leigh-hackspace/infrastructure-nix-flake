@@ -1,0 +1,26 @@
+[package]
+name = "voice-assistant"
+version = "0.1.0"
+edition = "2021"
+
+# The network's voice front end: a browser page or the cam8 camera in, a spoken
+# answer out.  `crates/voice-assistant/README.md` is the design and the measured
+# budget; the wiring is `machines/services1/services/voice-assistant.nix`.
+#
+# Zero external crates, like `whisper-ws` and `hackspace-mcp`: the shared
+# `common-rs/` crates cover JSON, HTTP and the HTTP server, and everything else
+# here (base64, WAV, resampling, the speech gate) is stdlib Rust so the dependency
+# derivation for the whole fleet does not grow for one service.  `sharedCrates` in
+# the Nix build must therefore list all four: it is transitive and hand-maintained
+# (AGENTS.md, and docs/slack-agent-2026-11-16.md §13 for why that is a build-time
+# error rather than a test failure).
+
+[dependencies]
+common-json = { path = "../common-rs/json" }
+common-http = { path = "../common-rs/http" }
+common-web = { path = "../common-rs/web" }
+common-service = { path = "../common-rs/service" }
+
+[[bin]]
+name = "voice-assistant"
+path = "src/main.rs"

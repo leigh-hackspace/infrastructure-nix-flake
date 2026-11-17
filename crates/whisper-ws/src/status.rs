@@ -57,6 +57,14 @@ pub struct CompletedItem {
 pub struct StatusStore {
     pub started: Instant,
     pub whisper_url: String,
+    /// The voice gateway's origin, handed to the page through `/status.json`.
+    ///
+    /// It is a flag rather than a constant in the bundle for the reason every other
+    /// address in this repo is a flag: a hostname compiled into a SPA is a fact that
+    /// can only be changed by rebuilding it, and the front-door row this points at
+    /// (`common/front-door.nix`) moves.  Empty means "not configured", and the
+    /// assistant card says so out loud instead of failing a fetch.
+    pub assistant_url: String,
     pub whisper: WhisperHealth,
     pub sessions: HashMap<String, SessionInfo>,
     pub recent: VecDeque<CompletedItem>,
@@ -66,10 +74,11 @@ pub struct StatusStore {
 }
 
 impl StatusStore {
-    pub fn new(whisper_url: String, whisper: WhisperHealth) -> StatusStore {
+    pub fn new(whisper_url: String, assistant_url: String, whisper: WhisperHealth) -> StatusStore {
         StatusStore {
             started: Instant::now(),
             whisper_url,
+            assistant_url,
             whisper,
             sessions: HashMap::new(),
             recent: VecDeque::new(),
@@ -206,6 +215,7 @@ impl StatusStore {
         Value::object(vec![
             ("uptime_secs", Value::Num(now.duration_since(self.started).as_secs_f64())),
             ("whisper_url", Value::Str(self.whisper_url.clone())),
+            ("assistant_url", Value::Str(self.assistant_url.clone())),
             (
                 "whisper",
                 Value::object(vec![

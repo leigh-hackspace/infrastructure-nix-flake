@@ -17,6 +17,17 @@
   # docs/slack-agent-2026-11-16.md.
   infra.slackAgent.dryRun = false;
 
+  # The voice assistant, live but **silent in the room**: `voice-gateway` answers the
+  # browser page (whisper.int.leighhack.org → the Assistant card) and `voice-satellite`
+  # listens on cam8's mic and writes its answers to the state directory instead of
+  # playing them, because nobody has yet decided a ceiling speaker should talk over a
+  # room (and the unit still needs a key it may read before it could).  Flip
+  # `infra.voiceAssistant.satellite.enable = false;` to stop the camera listening
+  # altogether while the gate's false-probe rate is being measured with
+  # `just voice-probe`.  Design, the measured latency budget and the traps:
+  # crates/voice-assistant/README.md.
+  infra.voiceAssistant.enable = true;
+
   # `relaxed` rather than the default `true` for exactly **one** derivation in this box's
   # build closure: `door-entry-management-system`, whose `installPhase` runs `deno i` and
   # `deno cache` and therefore needs the network, so the package sets `__noChroot` — and nix

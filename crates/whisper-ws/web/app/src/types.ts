@@ -44,6 +44,8 @@ export interface StatusSnapshot {
   failed_total: number;
   sessions: SessionInfo[];
   recent: RecentItem[];
+  /** The voice gateway's origin; empty means the assistant card has nothing to talk to. */
+  assistant_url: string;
 }
 
 // Events the gateway sends over /v1/realtime (see src/realtime.rs).

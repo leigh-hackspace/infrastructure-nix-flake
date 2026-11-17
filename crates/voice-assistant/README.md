@@ -1,0 +1,218 @@
+# voice-assistant
+
+A voice assistant for the space: **audio in from a camera or a browser, text to the
+bot that already answers in Slack, speech back out.** One binary, five verbs, no
+secrets, and — deliberately — nothing playing out loud until someone has decided a
+ceiling speaker should talk over a room.
+
+```
+  cam8 mic ──ffmpeg──▶ voice-satellite ─┐  /v1/voice (WAV, multipart)
+  browser mic ─────────────────────────┘
+                    voice-assistant serve  :8193  (loopback only)
+                      ├ POST /v1/transcribe → whisper.cpp (aibox :8082)
+                      ├ POST /v1/ask        → slack-agent listen (:8194)
+                      ├ POST /v1/tts        → piper            → WAV
+                      └ GET /health /status.json
+  speaker off by default: the answer's WAV is written to the state directory.
+```
+
+## Verbs
+
+| | |
+| --- | --- |
+| `serve` | the gateway. **Refuses to bind anything but loopback** (see *Reach*). |
+| `satellite` | the camera end: ffmpeg in, gate, wake decision, ask, speak. |
+| `probe --seconds N --out F.wav` | the same path **minus the assistant**: capture, gate, transcribe, stop. `--seconds 0` listens until someone presses Ctrl-C. The measurement tool for the one question you cannot answer at a desk — how often the space's music looks like speech — and `--out` leaves a WAV so a human can listen to what the camera heard. When the gate never opened, that file is the **whole capture**, because "why did it ignore me" is answered by hearing the room. |
+| `gate-check clip.wav [--calibrate]` | the gate alone, frame by frame: level, floor, threshold, the three shape numbers, and *which one said no*. See below — this is the verb that found the bug below. |
+| `ask "…"` | text in, answer + spoken text + speech WAV out. No microphone involved. |
+| `tts "…" -o out.wav` | piper directly. `--say` is not implemented: this writes a file, it does not play one. |
+| `gate-check <file.wav>` | the speech gate alone, frame by frame, with a `--calibrate` pass that prints a `--gate-base` worth starting from. For when the gate is wrong and you need to know *which* side. |
+
+## The gate, and why energy alone could not be trusted here
+
+The camera's mic is open. It hears the space's stereo, tools, and about ten people's
+voices, and every chunk of that which we send to whisper costs two seconds of CPU on
+aibox — worse, whisper *invents* words for hums and stings (`(soft music)` at least
+admits itself; earlier takes transcribed "Okay so this is where you plug in the…" from
+an unrelated sound).
+
+Energy-only VAD failed in a direction nobody sees coming: it fired on **music** as well
+as speech, and its "floor" rose to meet the music and swallowed the speech under it.
+The floor must track the *quiet*, not the average, or a room with a stereo never has a
+speech side of the line at all. Three things, at frame granularity (40 ms):
+
+1. **`level > floor × gate_mult`, floor = an 85th-percentile-ish estimate of the quiet**
+   — an asymmetric EWMA (rises 8× faster than it falls), so a pause between sentences is
+   judged against the room, not against the sentence that just ended.
+2. **Syllable modulation.** Speech has 2–12 Hz energy in its own loudness envelope;
+   a sustained tone or a steady hiss does not. Measured at the gate's own timescale:
+   sustained 440 Hz → 0.05, a spoken sentence → 0.36, a 1 s tone with tremolo → 0.99.
+3. **Spectral shape**, two numbers that survive being heard through a stereo mix:
+   `hf` = energy above ~1 kHz (speech has fricatives; hums and engine drones mostly
+   do not), `voiced` = the low-frequency share (music and machinery have a lot of it, so
+   this is a *negative* indicator).
+
+That is a filter, not a classifier. It will still open for a hand clap, and the
+`gate_open`/`heard` counters in `status.json` exist so you can watch what it is doing in
+the real room and set `--gate-base`/`--gate-mult` from what you see rather than from a
+guess. `just voice-probe` is the verb that tells you.
+
+**The factor of two in the Goertzel** (`gate.rs`): the classic form returns `|X_k|²`
+after the recurrence, not `|X_k|`. Reading it as a magnitude made the modulation of
+*everything* read 0.15–0.3 — a perfectly good feature computed wrongly, invisible until
+a unit test asserted the obvious thing about it. That test is the reason the constant
+is written once, as `scale`.
+
+## Wake word, and why it is on the transcript
+
+Wake-word decisions want to happen *before* transcription because transcription is the
+expensive part. Here the expensive part is already paid: the page runs
+[OpenWakeWord](https://github.com/dscripka/openWakeWord) in the browser
+(`crates/whisper-ws/web/app`) against the same 16 kHz PCM, and the satellite would have
+to run its own model on services1. So v0 decides on the **transcript**
+(`wake.rs::decide`), which has three properties worth knowing:
+
+* it **cannot distinguish "hey Jarvis" from somebody saying the word in a sentence** —
+  hence `must_be_addressed` and the whole-word matching (a `jar` inside "camera" is not
+  a wake word, and neither is `space` inside "namespace": short names match only as
+  whole words, because the space's own vocabulary is full of longer words that contain
+  them);
+* the wake word has to be *said*, and the gate has to have heard it — if it clipped the
+  first syllable, the transcript says "arvis" and the request is dropped. Look at
+  `last_transcript` in `status.json` when "it ignores me";
+* **whisper does not transcribe "hey jarvis" as "hey jarvis"**: the measured rendering of a
+  piper-spoken "hey jarvis is the hackspace open right now" through this exact path is
+  `"K Jarvis is the Hackspace open right now."`. The bare `jarvis` in the default list is
+  what saves it — a list of only two-word phrases would be deaf to the phrase it is
+  listening for, which is the kind of thing no unit test can see because both sides of the
+  test are spelling.
+* **`--wake-required` defaults true for the camera** (a room must get to ignore it) and
+  the page passes the wake flag explicitly, so a push-to-talk press is an address.
+  Anyone with a microphone can already make it answer; `--wake-required=false` makes it
+  answer to anyone with a voice, and that is the line, not this flag.
+
+## The gate's own numbers, or "why is it not hearing me" has two answers
+
+`probe` and `satellite` print a five-second heartbeat — `floor`, `threshold`, `loudest`,
+speech-frame count, window count, ffmpeg restarts — because the two ways a room gets ignored
+need **opposite** fixes and a log of final decisions cannot tell them apart:
+
+* loudest frame *below* threshold → quiet room, or a threshold above the room: turn
+  `--min-open-dbfs`/`--margin-db` down;
+* loudest frame *above* threshold and still no window → the shape tests or the
+  run-of-`--open-frames`: run `gate-check` on the clip and read the column that says no.
+
+Measured on `cam8`'s mic at 00:28, an empty space: **floor −48 dBFS, threshold −40, loudest
+frame −43** — correctly a quiet room. The same gate on a piper-spoken question at the same
+defaults: **median −20, speech frames 62 of 135**, opens at 0.38 s. So the two ends of the
+range are measured on this hardware, not assumed.
+
+**The bug `gate-check` exists for, which it found on its own first use:** a window only ends
+after `hold_secs` of trailing silence, so **whatever the gate was holding when the input
+stopped was thrown away** — the end of a test clip, yes, but also go2rtc dropping its
+session, a `--seconds 8` probe running out, and any ffmpeg restart. It presented as "the
+gate never opened" on a clip whose trace showed it open at 0.38 s. `Gate::flush` now hands
+that window to the caller at end-of-input (`flushed: true`, logged as *"the stream ended
+mid-word, sending it anyway"*), and `--min-secs` still filters it: a clipped last syllable
+beats no transcript.
+
+The same first run also caught the diagnostic lying: `floor`/`threshold` were only refreshed
+on a completed window or a five-second timer, so a short stream reported their **initial**
+`0.0` — i.e. "0 dBFS", full scale, "something is clipping", about a silent room. Refreshed
+per chunk now, and the peak is read from the gate (`peak_frame_dbfs`) so the heartbeat and
+`gate-check`'s table are one measurement, not two that differ by 8 dB.
+
+## No echo cancellation, so the answer is a mute button
+
+`cam8`'s audio has `aec: false`, `ns: false`, `agc: false` (`rac status`). It has no
+echo canceller and neither do we, so if it listened while it spoke it would interrupt
+itself — and worse, its own voice would be transcribed into a new question. Hence
+half-duplex, as a rule with teeth in `satellite.rs`: audio captured while an answer is
+in flight is **dropped** (`dropped` in `status.json` counts it) and the gate is reset
+when playback ends. If a real speaker is fitted and someone wants barge-in, the way to
+have it is server-side AEC against the *playback clock* — which means knowing the
+end-to-end latency, which `audio_ms` and `played_at` in the status file record on
+purpose.
+
+## Reach: loopback, or anyone's browser
+
+The gateway binds loopback and `serve` **refuses any other address** — the flag is for
+testing. It is not authentication: it has none. On the LAN it is reachable through the
+front door (`voice.int.leighhack.org`, `machines/services1/services/voice-assistant.nix`),
+and CORS is the one place a browser can be turned away: `--allow-origin` echoes back
+only an exact match, and `*` would mean any page a member opens can ask the space's
+questions and read the answers. A phone reaches the page on
+`whisper.int.leighhack.org`, which is the only origin allowed by default.
+
+**The size ceiling, and who refuses first.** Every server in this fleet shares
+`common_web::MAX_BODY_BYTES = 1 MiB`, and over that limit `read_request` does not answer
+413 — it returns `None`, so the socket closes with **no response** and a browser reports
+"cannot reach the assistant" for a recording that was merely long. The front door therefore
+refuses at **900k** (`machines/services1/services/voice-assistant.nix`), which is ~28 s of
+16 kHz mono speech and always beats the app to the answer, so the failure a member sees is a
+status code. Raising the real ceiling means editing a constant four other servers share, so
+don't: raise it deliberately or make the page stop at 15 s, which it does.
+
+**The trap this creates:** the page and the API are different origins, so a request that
+works with `curl` can still fail in a browser with a CORS error, and the symptom is a
+red banner on the page, not anything in the gateway's log. `just voice-status` proves
+the gateway is fine; the browser's network tab names the missing origin.
+
+## Latency is a design decision, not a tuning problem
+
+Measured on 2026-11-16, these units' own binaries: 3 s of mic audio → transcript
+**2.7 s** (whisper `medium` **on CPU** — `whisper-server` holds no `/dev/dri` fd,
+strata owns the iGPU); one-tool question → answer **7.7 s**; two-tool **15.3 s**;
+31 words → 7.8 s of speech in **2.5 s** (piper, per-request process). A spoken turn
+end-to-end is **~13 s** for a one-tool question and minutes for a chatty model.
+
+Which means: the budget belongs to the **model**, not to whisper or piper. The two
+things that actually shorten a turn are already in the tree — the deterministic
+calendar path (`triage::events_window`: one HTTP GET, no model) and the spoken budget
+(`agent::MAX_SPEECH_TOKENS = 200` vs the Slack 700, and a spoken system prompt in
+`prompt.rs::spoken_system_prompt` that forbids bullets, URLs and emoji and says
+*start with the fact*). The `ask_budget` test that fails if `MAX_ANSWER_TOKENS` is
+lowered below the speech budget is the guard against the version where the voice path
+silently inherits Slack's verbosity. `spoken.rs::from_answer` is the backstop for when
+the model ignores its prompt anyway, because it has.
+
+## piper is a process, and that is the cost
+
+`/run/current-system/sw/bin/piper` does not exist: piper is a Python wheel, so the unit
+points `--piper-bin` at `${pkgs.piper-tts}/bin/piper`, a real binary in the store. It
+starts the interpreter and loads the ONNX model **per request** (~2.4 s of the 2.5 s
+above is startup). A resident piper behind a socket is the obvious improvement; the
+reason it is not here yet is that a voice assistant that answers in 11 s instead of 9
+is not the thing being tested.
+
+Voices are data: nixpkgs packages the engine and **no voices**, so the deployment pins
+the model + its `.onnx.json` in a `linkFarm` (`machines/services1/services/voice-assistant.nix`).
+piper refuses to load a voice without the JSON beside it (`FileNotFoundError`), so the
+two files are one store path or neither.
+
+## Output to the camera
+
+`satellite.rs` can push audio with `ssh root@cam8 rac play - -r 16000` — measured
+working (`rac: played 0.3s, 5600 samples`), **audibility unconfirmed**, and the default
+is `--speaker off`. The reason to keep it off is not the sound level, it is the
+identity: that ssh needs the fleet's hop key, which sits in operator accounts and which
+a `DynamicUser` must not read. The two honest ways to have it (a dedicated
+`voice-speaker` account whose *public* key is installed on the camera, or a
+systemd-managed agent holding the hop key) are in `docs/follow-ups.md`. Until one of
+them is chosen, a camera that listens and a page that speaks is the useful half.
+
+The RTSP alternative (a `SETUP … transport=udp` backchannel, or ONVIF Profile T
+`SetAudioPlayerConfiguration`) is unexplored; `/var/www/config-ha.html` on the camera
+suggests Home Assistant discovery would treat it as a **microphone** (`platform: hass,
+type: mic`, 16 kHz fltp) — the same answer as everything else so far: it is an input,
+and getting audio *out* of it is the unsolved direction.
+
+## Tests worth running before you change anything
+
+`cargo test -p voice-assistant` covers the four places where a wrong unit was
+found by a unit test rather than by the room: the Goertzel scale, the gate's
+behaviour on a tone vs a speech-shaped envelope, `b64`'s padding (a missing pad
+corrupts every 4th byte of a WAV, and the first symptom is a click in the answer), and
+`wav`'s `fmt` offset (`0:16` vs `0:12` is "the file is 44 bytes shorter than it is").
+Plus the two rules that are really policy: `serve` refuses non-loopback binds, and the
+spoken token budget never exceeds the Slack one.

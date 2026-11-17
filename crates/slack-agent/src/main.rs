@@ -37,6 +37,7 @@ mod agent;
 mod engine;
 mod prompt;
 mod slack;
+mod listen;
 mod triage;
 
 use agent::Agent;
@@ -55,6 +56,14 @@ use std::time::{Duration, Instant};
 
 const DEFAULT_MCP: &str = "http://127.0.0.1:8191/mcp";
 const DEFAULT_HEALTH: &str = "127.0.0.1:8192";
+/// `listen`'s socket: the bot's answer for anything that is not Slack.  Fourth
+/// loopback port on the box (8191 is the MCP server, 8192 this unit's health), and
+/// the one `voice-assistant` dials - see `crates/voice-assistant/src/agent.rs`.
+const DEFAULT_ASK_LISTEN: &str = "127.0.0.1:8194";
+/// Silence after which `listen` starts a new conversation.  Long enough for a room to
+/// ask three related questions, short enough that a transcript left overnight cannot
+/// answer today's question with yesterday's tool results.
+const DEFAULT_ASK_RESET_SECS: u64 = 900;
 const DEFAULT_STALL_SECS: u64 = 300;
 /// Conversations kept in memory; past this the least-recently-used goes.
 const MAX_SESSIONS: usize = 300;
@@ -78,6 +87,7 @@ fn main() {
         "events" => run_events(&config, &argv),
         "digest" => run_digest(&config, &argv),
         "serve" => run_serve(&config),
+        "listen" => run_listen(&config),
         "" => {
             usage();
             std::process::exit(2);
@@ -96,7 +106,7 @@ fn main() {
 
 fn usage() {
     eprintln!(
-        "usage: slack-agent <tools|probe|ask|serve> [flags]\n\
+        "usage: slack-agent <tools|probe|ask|call|events|digest|serve|listen> [flags]\n\
        \n\
        \x20 tools                 list the tools the MCP servers offer\n\
        \x20 probe                 which inference endpoint answers, and what it serves\n\
@@ -140,6 +150,9 @@ struct Config {
     timeout: Duration,
     stall: Duration,
     emoji: String,
+    /// `listen`'s bind and conversation window.
+    ask_listen: String,
+    ask_reset: Duration,
     env: BTreeMap<String, String>,
 }
 
@@ -205,6 +218,13 @@ impl Config {
                 get("--max-silence-secs", "SLACK_AGENT_MAX_SILENCE_SECS").and_then(|v| v.parse().ok()).unwrap_or(DEFAULT_STALL_SECS),
             ),
             emoji: get("--emoji", "SLACK_AGENT_EMOJI").unwrap_or_else(|| "eyes".to_string()),
+            ask_listen: get("--ask-listen", "SLACK_AGENT_ASK_LISTEN")
+                .unwrap_or_else(|| DEFAULT_ASK_LISTEN.to_string()),
+            ask_reset: Duration::from_secs(
+                get("--ask-reset-after-secs", "SLACK_AGENT_ASK_RESET_SECS")
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(DEFAULT_ASK_RESET_SECS),
+            ),
             env,
         })
     }
@@ -355,6 +375,22 @@ fn run_ask(config: &Config, argv: &[String]) -> Result<(), String> {
         println!("   {line}");
     }
     Ok(())
+}
+
+// --- listen -------------------------------------------------------------------
+
+/// The bot on a socket, for whoever is asking — see `listen.rs` for why this is a second face of the same loop rather than a
+/// second bot, and for the two things that make having it at all safe: loopback only,
+/// and one turn at a time.
+fn run_listen(config: &Config) -> Result<(), String> {
+    listen::run(listen::Options {
+        listen: config.ask_listen.clone(),
+        mcp: config.mcp.clone(),
+        endpoints: config.endpoints.clone(),
+        timeout: config.timeout,
+        reset_after: config.ask_reset,
+        record_questions: !std::env::args().any(|a| a == "--no-record-questions"),
+    })
 }
 
 // --- call ---------------------------------------------------------------------

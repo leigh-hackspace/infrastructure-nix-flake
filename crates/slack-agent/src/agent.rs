@@ -36,6 +36,20 @@ pub const MAX_RESULT_CHARS: usize = 3_000;
 pub const MAX_ANSWER_TOKENS: u32 = 700;
 /// Exchanges of history kept per conversation, oldest dropped first.
 pub const HISTORY_TURNS: usize = 8;
+/// The same budget for an answer that is going to be **spoken**.
+///
+/// 200 tokens is about two sentences, and the number is a latency figure rather than
+/// a style rule: decode on this fleet's engines runs at 14–39 tok/s
+/// (`docs/slack-agent-2026-11-16.md`), so a 700-token answer is 20–50 s of the room
+/// standing still before a single word arrives, and `spoken::speakable` would throw
+/// the tail away anyway.  A caller that wants the long form asks for the text one.
+pub const MAX_SPEECH_TOKENS: u32 = 200;
+
+/// Compile-time, because the failure mode is silent and one-directional: someone
+/// trimming `MAX_ANSWER_TOKENS` for a Slack reason quietly makes the *spoken* answer
+/// the longer of the two, and the room only learns by waiting.  A test would catch it
+/// too, but a test has to be run; this has to be compiled (`docs/voice-assistant-2026-11-16.md`).
+const _: () = assert!(MAX_SPEECH_TOKENS < MAX_ANSWER_TOKENS);
 
 pub struct Agent {
     engines: Engines,
@@ -54,6 +68,11 @@ pub struct Answer {
     /// the plumbing is what people quote when the answer is wrong.
     pub log: Vec<String>,
     pub rounds: usize,
+    /// The tools that were actually called, in order, with duplicates.  `log` has the
+    /// same information as prose, and a caller that has to *report* which tools answered
+    /// (the voice endpoint does, so a person can see what a spoken figure came from)
+    /// should not have to re-parse a sentence that was written for a human.
+    pub tools_used: Vec<String>,
     pub engine: String,
     pub millis: u128,
     pub prompt_tokens: u64,
@@ -62,9 +81,17 @@ pub struct Answer {
 
 /// A transcript is the system prompt at index 0 followed by the exchange.
 pub fn seed_transcript() -> Vec<Json> {
+    seed_with(&system_prompt())
+}
+
+/// ... and the system prompt is the only part that varies between callers: the
+/// spoken front end (`listen`) seeds with `prompt::spoken_system_prompt()` so the
+/// voice answers in two sentences while the Slack answers keep the 700-token room to
+/// breathe in.  One grounding rule, two presentation rules — see `prompt.rs`.
+pub fn seed_with(system: &str) -> Vec<Json> {
     vec![json::object(vec![
         ("role".to_string(), json::string("system")),
-        ("content".to_string(), json::string(system_prompt())),
+        ("content".to_string(), json::string(system.to_string())),
     ])]
 }
 
@@ -138,6 +165,18 @@ impl Agent {
         &mut self,
         transcript: &mut Vec<Json>,
         question: &str,
+        on_event: impl FnMut(&str),
+    ) -> Result<Answer, String> {
+        self.ask_budget(transcript, question, MAX_ANSWER_TOKENS, on_event)
+    }
+
+    /// [`ask`] with the answer's token budget named, which is the only difference
+    /// between answering a person in Slack and answering a room out loud.
+    pub fn ask_budget(
+        &mut self,
+        transcript: &mut Vec<Json>,
+        question: &str,
+        max_tokens: u32,
         mut on_event: impl FnMut(&str),
     ) -> Result<Answer, String> {
         let started = Instant::now();
@@ -149,11 +188,12 @@ impl Agent {
         let tools = self.openai_tools();
 
         let mut log = Vec::new();
+        let mut tools_used: Vec<String> = Vec::new();
         let mut prompt_tokens: u64;
         let mut completion_tokens = 0u64;
         let mut engine_used: String;
         let mut rounds = 0usize;
-        let mut budget = MAX_ANSWER_TOKENS;
+        let mut budget = max_tokens;
 
         loop {
             rounds += 1;
@@ -222,6 +262,7 @@ impl Agent {
                 return Ok(Answer {
                     text,
                     log,
+                    tools_used,
                     rounds,
                     engine: engine_used,
                     millis: started.elapsed().as_millis(),
@@ -255,7 +296,7 @@ impl Agent {
                 ]));
                 let final_turn = self
                     .engines
-                    .chat(transcript, &[], MAX_ANSWER_TOKENS)
+                    .chat(transcript, &[], budget)
                     .map_err(|e| format!("out of tool budget ({} calls) and the closing turn failed too: {e}", log.len()))?;
                 transcript.push(json::object(vec![
                     ("role".to_string(), json::string("assistant")),
@@ -263,6 +304,7 @@ impl Agent {
                 ]));
                 let text = final_turn.text.clone().unwrap_or_default();
                 return Ok(Answer {
+                    tools_used,
                     text: if text.trim().is_empty() {
                         format!(
                             "I made {} tool calls and could not reach an answer. Last: {}",
@@ -291,6 +333,7 @@ impl Agent {
                 };
                 on_event(&line);
                 log.push(line);
+                tools_used.push(call.name.clone());
                 let payload = match outcome {
                     Ok(text) => truncate(text),
                     Err(e) => format!("TOOL ERROR: {e}"),

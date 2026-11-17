@@ -76,6 +76,11 @@
     # than in its place.  Remove this line to take it back out.
     ./unifi-os-server.nix
     ./unifi.nix
+    # The voice assistant: a loopback gateway (whisper + the bot's ask socket + piper)
+    # with a browser page on whisper.int and a cam8 satellite whose speaker is off by
+    # default.  Read its header before enabling — the two decisions in it (the camera
+    # speaker, and which origins CORS answers) are not code questions.
+    ./voice-assistant.nix
     ./zigbee2mqtt.nix
   ];
 }

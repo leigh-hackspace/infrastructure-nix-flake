@@ -132,6 +132,35 @@ pub fn request(
     headers: &[(&str, &str)],
     timeout: Duration,
 ) -> Result<Response, String> {
+    request_bytes(
+        method,
+        url,
+        body.map(|b| b.as_bytes()),
+        "application/json",
+        headers,
+        timeout,
+    )
+}
+
+/// [`request`] for a body that is not text.
+///
+/// This exists because `request`'s `Option<&str>` cannot carry audio: the STT side
+/// of `voice-assistant` posts a WAV to whisper.cpp's `/inference` as
+/// `multipart/form-data`, and a `String` cannot hold the bytes it needs to send (a
+/// WAV is not UTF-8, and `from_utf8_lossy` would *silently rewrite* the samples).
+/// One client, two body types, rather than a second HTTP implementation somewhere
+/// that will drift from this one.
+///
+/// `content_type` names the body's type, so the JSON default is not baked in; the
+/// header is only sent when a body is present, as with `request`.
+pub fn request_bytes(
+    method: &str,
+    url: &str,
+    body: Option<&[u8]>,
+    content_type: &str,
+    headers: &[(&str, &str)],
+    timeout: Duration,
+) -> Result<Response, String> {
     let t = parse_url(url)?;
     let addrs: Vec<std::net::SocketAddr> = (t.host.as_str(), t.port)
         .to_socket_addrs()
@@ -154,7 +183,7 @@ pub fn request(
     head.push_str("Accept: */*\r\n");
     head.push_str("User-Agent: hackspace-mcp (infrastructure-nix-flake)\r\n");
     if let Some(b) = body {
-        head.push_str("Content-Type: application/json\r\n");
+        head.push_str(&format!("Content-Type: {content_type}\r\n"));
         head.push_str(&format!("Content-Length: {}\r\n", b.len()));
     }
     for (n, v) in headers {
@@ -164,7 +193,7 @@ pub fn request(
 
     stream
         .write_all(head.as_bytes())
-        .and_then(|()| body.map(|b| stream.write_all(b.as_bytes())).unwrap_or(Ok(())))
+        .and_then(|()| body.map(|b| stream.write_all(b)).unwrap_or(Ok(())))
         .map_err(|e| format!("send {method} {url}: {e}"))?;
 
     let mut reader = BufReader::new(
@@ -315,6 +344,88 @@ mod tests {
         let r = get(&url, &[]).unwrap();
         assert!(r.ok());
         assert_eq!(r.body, "{\"a\":1}");
+    }
+
+    /// A one-shot server that reports what it received, so a body's bytes can be
+    /// checked end to end without a second implementation of the client to compare
+    /// against.
+    fn echo_report() -> String {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        thread::spawn(move || {
+            if let Ok((mut s, _)) = l.accept() {
+                let mut buf = Vec::new();
+                let mut tmp = [0u8; 4096];
+                // Read until the head is done, then whatever the body still needs.
+                let head_end = loop {
+                    match s.read(&mut tmp) {
+                        Ok(0) => break None,
+                        Ok(n) => {
+                            buf.extend_from_slice(&tmp[..n]);
+                            if let Some(p) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                                break Some(p + 4);
+                            }
+                        }
+                        Err(_) => break None,
+                    }
+                };
+                let Some(start) = head_end else { return };
+                let declared: usize = String::from_utf8_lossy(&buf[..start])
+                    .lines()
+                    .find(|l| l.to_ascii_lowercase().starts_with("content-length:"))
+                    .and_then(|l| l.split(':').nth(1))
+                    .and_then(|v| v.trim().parse().ok())
+                    .unwrap_or(0);
+                let mut body: Vec<u8> = buf[start..].to_vec();
+                while body.len() < declared {
+                    match s.read(&mut tmp) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => body.extend_from_slice(&tmp[..n]),
+                        }
+                }
+                let len = body.len();
+                let sum: u64 = body.iter().map(|&b| b as u64).sum();
+                let body_bytes = format!("{{\"len\":{len},\"sum\":{sum}}}");
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n",
+                    body_bytes.len()
+                );
+                let _ = s.write_all(head.as_bytes());
+                let _ = s.write_all(body_bytes.as_bytes());
+                let _ = s.flush();
+            }
+        });
+        format!("http://127.0.0.1:{port}/inference")
+    }
+
+    #[test]
+    fn a_binary_body_arrives_byte_for_byte() {
+        // The reason `request_bytes` exists: a WAV full of 0xFF bytes is not UTF-8,
+        // and anything that ran it through a String would have rewritten it.
+        let url = echo_report();
+        let wav: Vec<u8> = (0..4096u64).map(|i| (i % 256) as u8).collect();
+        let mut want = 0u64;
+        for b in &wav {
+            want += *b as u64;
+        }
+        let r = request_bytes(
+            "POST",
+            &url,
+            Some(&wav),
+            "multipart/form-data; boundary=x",
+            &[],
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        assert!(r.ok(), "{}", r.describe());
+        assert_eq!(r.body, format!("{{\"len\":4096,\"sum\":{want}}}"), "{}", r.body);
+    }
+
+    #[test]
+    fn request_still_sends_json_unchanged() {
+        let url = echo_report();
+        let r = post_json(&url, "{\"a\":1}", &[]).unwrap();
+        assert_eq!(r.body, "{\"len\":7,\"sum\":520}");
     }
 
     #[test]

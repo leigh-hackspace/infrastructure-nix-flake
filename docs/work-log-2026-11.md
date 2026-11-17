@@ -339,3 +339,50 @@ booting from), and `gw` (`6.18.56` → `6.18.63` — the router, DNS and front d
 drops every tunnel and every vhost for a minute). `just pending-reboot` names exactly those
 three, which is the point of having it: the fleet now carries a list of what is not finished,
 instead of that fact living only in whoever read `uname -r`.
+
+## 2026-11-16 — a voice assistant, and the two things the camera cannot do
+
+Asked for a smart speaker out of `cam8`, with the parsed request going to the bot that
+already answers in Slack rather than a second brain, plus a web page so any phone or laptop
+can be the speaker instead. Shipped: `crates/voice-assistant` (a loopback gateway — whisper,
+the bot, piper — and a camera satellite), `slack-agent listen` (the bot's answer on a
+loopback socket, no Slack, no token in its environment), and an Assistant card on
+`whisper.int.leighhack.org` that does push-to-talk and hands-free on the wake word the page
+already runs in WASM. **The camera's speaker is off**, and the page answers out loud.
+Design in `crates/voice-assistant/README.md`, receipts in `docs/voice-assistant-2026-11-16.md`.
+
+Four things were only knowable by measuring, and two of them killed a plan:
+
+* **`cam8` has no ALSA.** No `/dev/snd`, no `/proc/asound` — SigmaStar MI driven by `rad`, and
+  `rac record`/`rac play` are the only way in and out. One core, 36 MB. So nixpkgs'
+  `services.wyoming-satellite` — the obvious "don't write it yourself" answer, sitting right
+  there in the same pinned tree as `wyoming-piper` and `wyoming-openwakeword` — **cannot run
+  on it at all**: its `arecord`/`aplay` have no device. The whole Wyoming/Home-Assistant route
+  died on that one row, and with it the option of not writing this code.
+* **No echo canceller, on either side** (`rac status`: `aec: false`, `ns: false`, `agc:
+  false`). Not a tuning problem: a device that listens while it speaks transcribes its own
+  answer into a new question. So the satellite is half-duplex by rule — audio captured during
+  playback is dropped and counted — and the numbers a future server-side AEC needs
+  (`audio_ms`, `played_at`) are recorded now so that work is not a guess.
+* **The mic works and hears the wrong thing.** `rac record -d 3` → whisper in **2.7 s** →
+  `' (soft music)
+'`. The pipeline is right; the space has a stereo. That single transcript
+  is why the gate is three features rather than an energy threshold, and why the release
+  includes a verb whose whole job is to sit in the room and count
+  (`just voice-probe` → `probe_false_positives`).
+* **The turn's budget is the model.** whisper 2.7 s (on **CPU** — see below), piper 2.5 s,
+  one-tool answer 7.7 s: ~13 s spoken end to end, and minutes if the model decides to be
+  chatty. Hence `MAX_SPEECH_TOKENS = 200` against Slack's 700, a spoken system prompt that
+  forbids bullets and URLs, `spoken.rs` as the backstop when it ignores them anyway, and the
+  observation that the biggest available win is the deterministic `events_window` path that
+  calls no engine at all.
+
+Two documentation corrections fell out, both of the AGENTS kind (a comment believed longer
+than the box): `machines/aibox/whisper.nix` asserted since 2026-09-02 that the unit "cannot
+(re)start" because `--device 1` no longer exists. The live unit is `active`, `NRestarts=0`,
+started 2026-11-15, and answering — it does not crash, it **silently falls back to CPU** (no
+`/dev/dri` fd, its own `system_info:` line names CPU and no Vulkan, `--help` reports exactly
+one Vulkan device and it is llama-server's). A stale "this is broken" comment had been
+pointing at a service that had been quietly running on the other backend for two months,
+which is the same failure shape as the `mqtt.int` row: the doc, not the config, was wrong.
+The follow-up is now honestly stated as *decide the backend*, not *make it start*.
