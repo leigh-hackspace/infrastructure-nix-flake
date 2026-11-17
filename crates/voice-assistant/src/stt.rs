@@ -11,7 +11,7 @@
 //! WebSocket framing, and puts one fewer long-lived session on the aibox box.
 //!
 //! The measured budget that makes this the last thing to optimise: **3.0 s of real
-//! cam8 mic audio transcribed in 2.7 s of wall clock** (2026-11-16, aibox,
+//! room audio transcribed in 2.7 s of wall clock** (2026-11-16, aibox,
 //! whisper.cpp 1.9.5, `ggml-medium.bin`, `-t 8`).  Whisper-server is running **on
 //! CPU** — it holds no `/dev/dri` fd, and strata owns the iGPU — so the ~0.9× real
 //! time figure is 8 threads of the same 12-core box the LLM tools share.
@@ -19,7 +19,7 @@
 //! ## Non-speech is a real answer, and it is not a transcript
 //!
 //! whisper.cpp's habit with music, silence and applause is to return a parenthetical
-//! description of the noise rather than text: the first three seconds of cam8's mic,
+//! description of the noise rather than text: the first three seconds from the space's microphone,
 //! sent to this endpoint during the test, came back as `(soft music)`.  A caller that
 //! treats that as speech will "hear" the space's playlist all day, so
 //! [`looks_like_description`] is part of this client's contract and the caller must
@@ -271,7 +271,7 @@ mod tests {
 
     #[test]
     fn the_noise_whisper_describes_instead_of_transcribing_is_not_speech() {
-        // The measured one first: this is exactly what cam8's mic returned, with the
+        // The measured one first: this is exactly what the space's microphone returned, with the
         // space's music playing, on 2026-11-16.
         assert!(looks_like_description("(soft music)"));
         assert!(looks_like_description("(silence)"));

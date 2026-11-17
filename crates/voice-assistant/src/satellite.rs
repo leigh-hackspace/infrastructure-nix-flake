@@ -1,81 +1,75 @@
-//! The camera end: cam8's mic in, a spoken answer out.
+//! The room end: a microphone in, a spoken answer out.
 //!
 //! ## What this process actually is
 //!
-//! A pipe.  `ffmpeg` pulls the restreamed camera audio off `services1`'s own go2rtc
-//! (16 kHz mono PCM16, already up there because frigate's feed carries the audio
-//! track), [`crate::gate`] cuts utterances out of it, the gateway transcribes and
-//! answers, and the answer goes back to the camera's speaker.  Nothing here holds
-//! state that matters: restart it and the only loss is the counters in
-//! `status.json`.
+//! A pipe with judgement in the middle.  Something produces a continuous stream of
+//! 16 kHz mono PCM16 ([`crate::source`]), [`crate::gate`] cuts utterances out of it,
+//! the gateway transcribes and answers, and the answer goes to something that can make
+//! noise ([`crate::sink`]).  Nothing here holds state that matters: restart it and the
+//! only loss is the counters in `status.json`.
 //!
-//! ## Why the mic comes from go2rtc rather than from the camera
+//! ## What sits behind the two arrows
 //!
-//! Measured on 2026-11-16: cam8's RTSP server has `max_clients = 2` and **one**
-//! session already live — go2rtc's `ffmpeg:` producer, which asks for
-//! `video+audio` on `/ch0` and publishes `L16/16000` on its restream.  So the space's
-//! microphone is already on this box, and a second direct RTSP client would fill the
-//! camera's last slot and starve frigate on the next reconnect.  Reading the
-//! restream instead costs nothing, asks nothing of the camera, and is the same
-//! "one consumer, many readers" discipline `cameras/README.md` states as a rule.
+//! The microphone and the loudspeaker are **traits** (`crate::source`, `crate::sink`), and every
+//! device noun — the address of the restream, the tool that decodes it, the shell command that
+//! makes noise — lives in `crate::drivers`. So this file is about *a satellite*: cut utterances
+//! out of a stream, decide whether one was addressed to us, ask, and then pay for what it cost to
+//! make a noise. Which camera, which browser tab or which microcontroller it came from is a new
+//! module in `drivers/` plus a row in the unit, never an edit here
+//! (`common/check-platform-boundary.nix` is the gate that keeps that true, and
+//! `docs/esp32-voice-satellites.md` is the contract for the next platform).
 //!
-//! The alternative that would remove ffmpeg is raptor's own HTTP audio endpoint
-//! (`[http] enabled = true`, which serves `/audio` as WAV), but that is a device
-//! write plus a streamer restart, i.e. a blip on frigate's `cam8` feed, so it is a
-//! decision for a window rather than a step to take here.
+//! ## Half-duplex, because nothing here cancels echo
 //!
-//! ## Half-duplex, because there is no echo cancellation
-//!
-//! `rac status` on cam8 reports `aec: false`.  The speaker feeds the mic, so a naive
-//! loop has the assistant answering itself forever.  The rule this implements is the
-//! one the browser demo already uses for its confirmation ping
-//! (`crates/whisper-ws/README.md`: the mic is muted for 350 ms after the ping), taken
-//! to its conclusion: **while an answer is playing, the captured audio is thrown
-//! away**, the gate is reset, and the silence after the answer is played is added on
-//! top.  There is no barge-in and no "shut up", and there will not be until someone
-//! does AEC against the reference signal we generated ourselves — which is the only
-//! place it can be done honestly here, since we know the far end exactly.  See
-//! `docs/follow-ups.md`.
+//! The deployed sink is a device whose own status says it has no echo canceller, so its speaker
+//! feeds its microphone, and a naive loop has the assistant answering itself forever. The rule
+//! this implements is the one the browser demo already uses for its confirmation ping
+//! (`crates/whisper-ws/README.md`: the mic is muted for 350 ms after the ping), taken to its
+//! conclusion: **while an answer is playing, the captured audio is thrown away**, the gate is
+//! reset, and the silence after the answer is played is added on top. It is one piece of
+//! arithmetic — [`capture_to_discard`] — driven by what the *sink reports about itself*, not by a
+//! hardcoded belief about a device, so a platform that cancels its own output can keep listening
+//! while it talks. That is what barge-in needs, and it is the thing `docs/follow-ups.md` has been
+//! blocked on. There is no barge-in today; the receipts, including the measurement that says why,
+//! are in `docs/voice-assistant-2026-11-16.md`.
 //!
 //! ## The speaker is off until you say otherwise
 //!
-//! `--speaker off` is the default: answers are logged, counted and written to the
-//! state directory, and *nothing reaches the camera*.  `--speaker ssh` puts the
-//! answer through `rac play -` over the hop key.  Both paths exist so the pipeline
-//! can be run in a live space with people in it before anyone decides a ceiling
-//! speaker should talk.
+//! `--speaker off` is the default and it is not shyness: answers are logged, counted and written
+//! to the state directory, and *nothing reaches the room* (`crate::drivers::play_nothing`). The
+//! two things that must be true before that flips — someone having heard it, and a key a
+//! `DynamicUser` may legitimately read — are argued in
+//! `machines/services1/services/voice-assistant.nix`, which owns that decision.
 
-use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use common_json::Json;
 
-use crate::{b64, gate, wav};
-
-/// Where the answer goes.
-#[derive(Debug, Clone, PartialEq)]
-pub enum Speaker {
-    /// Log it, count it, write the WAV, play nothing.  The default.
-    Off,
-    /// `ssh <user>@<host> 'rac play - -r 16000'` with the answer's PCM on stdin.
-    Ssh {
-        host: String,
-        user: String,
-        key: PathBuf,
-    },
-}
+use crate::b64;
+use crate::gate;
+use crate::sink::{Capabilities, Sink};
+use crate::source::SourceFactory;
+use crate::wav;
 
 pub struct Options {
-    pub ffmpeg: PathBuf,
-    pub source: String,
+    /// How to begin a stream; the loop below owns the *restarting* and a driver only says how to
+    /// begin (`crate::source`).
+    pub make_source: SourceFactory,
+    /// For the log line and `status.json`'s `source` key.  An opaque label: nothing here parses
+    /// it, which is what lets a driver put whatever a human needs in it.
+    pub source_label: String,
     pub gateway: String,
     pub wake_words: Vec<String>,
     /// How far into a transcript a wake phrase may start (see `crate::wake`).
     pub search_tokens: usize,
     pub gate: gate::Config,
-    pub speaker: Speaker,
+    /// Where the answer goes.  Held here rather than fetched per turn because the loop hands it
+    /// out mutably across stream restarts; the *choice* of sink is made by
+    /// `crate::drivers::open_sink` from the operator's `--speaker` word.
+    pub sink: Box<dyn Sink>,
+    /// `sink.label()`, kept as a string so the status writer does not need the sink itself.
+    pub sink_label: String,
     pub status_path: PathBuf,
     pub out_dir: PathBuf,
     /// Transcribe and decide, but never ask and never answer: the way to measure
@@ -98,7 +92,26 @@ pub struct Options {
     /// Refuse to say anything longer than this (the answer budget is enforced in
     /// `spoken.rs`; this is the belt, for a `--max-speech-chars` set far too high).
     pub max_play_secs: f64,
-    pub ssh_timeout: Duration,
+}
+
+/// The half-duplex rule, as one piece of arithmetic a room's behaviour depends on.
+///
+/// How many seconds of capture to throw away after an answer.  Three cases, and the third is why
+/// this is a function with tests rather than a line in a loop:
+///
+/// * nothing was played → nothing to ignore, so a dry run must not deafen the room;
+/// * the sink cancels its own output → keep listening, which is what barge-in is;
+/// * otherwise → the answer's own length, plus `guard` for the room noticing that it spoke.
+///
+/// It takes what the sink **reported** rather than the length of the buffer we handed it: an
+/// inferred playing time is a guess, and this number is the only thing standing between a speaker
+/// and an assistant that answers itself.
+pub fn capture_to_discard(played_secs: f64, cap: &Capabilities, guard_secs: f64) -> f64 {
+    if played_secs <= 0.0 || cap.echo_cancelled {
+        0.0
+    } else {
+        played_secs + guard_secs
+    }
 }
 
 /// What to do with one transcript.  Split out from all the I/O so the part with
@@ -175,7 +188,9 @@ pub struct Stats {
     pub spoken: usize,
     /// Answers that were produced and deliberately not played (`--speaker off`).
     pub unplayed: usize,
-    pub ffmpeg_restarts: usize,
+    /// How many times the ingest had to be reopened.  Named for the event, not for one tool: a
+    /// dropped WebSocket and a dead child process mean the same thing to whoever is reading it.
+    pub ingest_restarts: usize,
     pub last_error: String,
     pub last_transcript: String,
     pub last_action: String,
@@ -208,7 +223,7 @@ impl Default for Stats {
             answers: 0,
             spoken: 0,
             unplayed: 0,
-            ffmpeg_restarts: 0,
+            ingest_restarts: 0,
             last_error: String::new(),
             last_transcript: String::new(),
             last_action: String::new(),
@@ -229,7 +244,7 @@ impl Stats {
     }
 }
 
-pub fn run(opts: Options) -> Result<(), String> {
+pub fn run(mut opts: Options) -> Result<(), String> {
     let mut session = Session::new(
         opts.wake_words.clone(),
         opts.search_tokens,
@@ -241,15 +256,19 @@ pub fn run(opts: Options) -> Result<(), String> {
         .map_err(|e| format!("cannot create {}: {e}", opts.out_dir.display()))?;
     write_status(&opts, &stats, started);
     eprintln!(
-        "voice-assistant satellite: source={} wake={:?} speaker={:?}",
-        opts.source, opts.wake_words, opts.speaker
+        "voice-assistant satellite: source={} [{}] wake={:?} speaker={} ({})",
+        opts.source_label,
+        crate::source::FORMAT,
+        opts.wake_words,
+        opts.sink_label,
+        opts.sink.details()
     );
-    if opts.speaker == Speaker::Off {
+    if !opts.sink.capabilities().audible {
         eprintln!("speaker is off: answers are logged and written to {} only", opts.out_dir.display());
     }
 
     loop {
-        match one_stream(&opts, &mut session, &mut stats, started) {
+        match one_stream(&mut opts, &mut session, &mut stats, started) {
             // The bounded probe: the cap is reached, so report and stop.  Everything
             // else is a stream that died and a satellite that gets another one.
             Ok(true) => {
@@ -290,13 +309,13 @@ pub fn run(opts: Options) -> Result<(), String> {
                 }
                 return Ok(());
             }
-            Ok(false) => eprintln!("ffmpeg exited cleanly; restarting in 5 s"),
+            Ok(false) => eprintln!("stream ended; restarting in 5 s"),
             Err(e) => {
                 stats.last_error = e.clone();
                 eprintln!("stream failed: {e}");
             }
         }
-        stats.ffmpeg_restarts += 1;
+        stats.ingest_restarts += 1;
         write_status(&opts, &stats, started);
         std::thread::sleep(Duration::from_secs(5));
     }
@@ -306,49 +325,12 @@ pub fn run(opts: Options) -> Result<(), String> {
 /// Returns `Ok(true)` when `--seconds` ran out (the bounded probe), `Ok(false)` when the
 /// stream ended on its own, `Err` when it failed.
 fn one_stream(
-    opts: &Options,
+    opts: &mut Options,
     session: &mut Session,
     stats: &mut Stats,
     started: Instant,
 ) -> Result<bool, String> {
-    let mut cmd = Command::new(&opts.ffmpeg);
-    cmd.arg("-hide_banner").arg("-loglevel").arg("error").arg("-nostdin");
-    // `-rtsp_transport tcp` is an RTSP **input** option, and ffmpeg refuses it for
-    // anything else (measured: `Option rtsp_transport not found` on a WAV file, which
-    // is how a test source and a live source would otherwise need two flags).  TCP is
-    // what a camera wants — UDP fragments die on a 2.4 GHz link — and a file needs
-    // nothing, so the option travels with the protocol it belongs to.
-    if opts.source.starts_with("rtsp://") {
-        cmd.arg("-rtsp_transport").arg("tcp").arg("-fflags").arg("nobuffer");
-    }
-    let mut child = cmd
-        .arg("-i")
-        .arg(&opts.source)
-        .arg("-vn")
-        .arg("-map")
-        .arg("a?")
-        .arg("-ac")
-        .arg("1")
-        .arg("-ar")
-        .arg(wav::SAMPLE_RATE.to_string())
-        .arg("-f")
-        .arg("s16le")
-        .arg("-")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .map_err(|e| {
-            format!(
-                "cannot run {} (the unit names it via --ffmpeg; `-vn -f s16le` is what we need \
-                 from it): {e}",
-                opts.ffmpeg.display()
-            )
-        })?;
-    let mut stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "ffmpeg: no stdout pipe".to_string())?;
+    let mut stream = (opts.make_source)()?;
 
     let mut gate = gate::Gate::new(opts.gate.clone());
     let mut pending: Vec<u8> = Vec::with_capacity(64 * 1024);
@@ -364,14 +346,12 @@ fn one_stream(
     let mut raw: Vec<i16> = Vec::with_capacity(cap_samples.min(1 << 20));
 
     loop {
-        let n = stdout
-            .read(&mut chunk)
-            .map_err(|e| format!("read ffmpeg: {e}"))?;
+        let n = stream.read(&mut chunk)?;
         if n == 0 {
-            // EOF: the child closed, or go2rtc dropped the session.  Whatever the gate
-            // is still holding is the last thing anyone said, so it goes to the gate's
-            // `flush` rather than into the pipe it never came back from.
-            let _ = child.wait();
+            // End of stream: the device dropped its session, the file finished, the link went
+            // away — the driver has already reaped whatever it owned.  Whatever the gate is still
+            // holding is the last thing anyone said, so it goes to the gate's `flush` rather than
+            // into the stream it never came back from.
             if let Some(window) = gate.flush() {
                 let secs = window.samples.len() as f64 / wav::SAMPLE_RATE as f64;
                 eprintln!("window {secs:.1} s — the stream ended mid-word, sending it anyway");
@@ -383,8 +363,7 @@ fn one_stream(
         if opts.capture_secs > 0.0 && stats.captured_secs >= opts.capture_secs {
             // Keep whatever the gate was mid-way through; the cap is a human's patience,
             // not a claim that the utterance ended.
-            let _ = child.kill();
-            let _ = child.wait();
+            stream.stop();
             if let Some(window) = gate.flush() {
                 let secs = window.samples.len() as f64 / wav::SAMPLE_RATE as f64;
                 eprintln!("window {secs:.1} s — the probe ran out, sending it anyway");
@@ -460,14 +439,14 @@ fn one_stream(
             // without anyone having to run a probe.
             eprintln!(
                 "listening: {:.0} s captured, floor {:.0} dBFS, threshold {:.0} dBFS, \
-                 loudest {:.0} dBFS, {} speech frame(s), {} window(s), {} ffmpeg restart(s)",
+                 loudest {:.0} dBFS, {} speech frame(s), {} window(s), {} ingest restart(s)",
                 stats.captured_secs,
                 stats.floor_dbfs,
                 stats.threshold_dbfs,
                 stats.peak_dbfs,
                 stats.speech_frames,
                 stats.windows,
-                stats.ffmpeg_restarts
+                stats.ingest_restarts
             );
             write_status(opts, stats, started);
             last_status = Instant::now();
@@ -492,7 +471,7 @@ fn write_capture(path: &Path, raw: &[i16]) -> Result<(), String> {
 /// only way to say "the assistant has just spoken, do not believe anything it heard"
 /// without an echo canceller.
 fn handle_window(
-    opts: &Options,
+    opts: &mut Options,
     session: &mut Session,
     stats: &mut Stats,
     started: Instant,
@@ -591,40 +570,30 @@ fn handle_window(
                 );
                 return 0.0;
             }
-            match &opts.speaker {
-                Speaker::Off => {
-                    stats.unplayed += 1;
-                    let path = opts.out_dir.join(format!(
-                        "answer-{}.wav",
-                        SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .map(|d| d.as_secs())
-                            .unwrap_or(0)
-                    ));
-                    if let Err(e) = std::fs::write(&path, &audio) {
-                        eprintln!("cannot write {}: {e}", path.display());
-                    } else {
-                        eprintln!("dry run: {} ({} bytes) at {}", answer.text, audio.len(), path.display());
-                    }
-                    0.0
+            let decoded = match wav::parse(&audio) {
+                Ok(w) => w.mono(),
+                Err(e) => {
+                    stats.last_error = format!("answer audio: {e}");
+                    return 0.0;
                 }
-                Speaker::Ssh { host, user, key } => {
-                    let decoded = match wav::parse(&audio) {
-                        Ok(w) => w.mono(),
-                        Err(e) => {
-                            stats.last_error = format!("answer audio: {e}");
-                            return 0.0;
-                        }
-                    };
-                    if let Err(e) = play(opts, host, user, key, &decoded) {
-                        stats.last_error = e.clone();
-                        eprintln!("play failed: {e}");
-                        return 0.0;
+            };
+            let cap = opts.sink.capabilities();
+            match opts.sink.play(&decoded) {
+                Ok(played) => {
+                    if cap.audible {
+                        stats.spoken += 1;
+                    } else {
+                        stats.unplayed += 1;
                     }
-                    stats.spoken += 1;
-                    // The half-duplex rule: nothing heard while it played, and
-                    // nothing heard while the room notices it.
-                    answer.audio_secs + opts.guard.as_secs_f64()
+                    // The half-duplex rule, asked of the sink that just spoke rather than assumed
+                    // from a device: this says how many seconds of what we hear next are our own
+                    // voice.
+                    capture_to_discard(played.secs, &cap, opts.guard.as_secs_f64())
+                }
+                Err(e) => {
+                    stats.last_error = e.clone();
+                    eprintln!("play failed: {e}");
+                    0.0
                 }
             }
         }
@@ -687,88 +656,31 @@ fn ask(opts: &Options, question: &str) -> Result<Answered, String> {
     })
 }
 
-/// Push PCM to the camera's speaker ring through `rac play`.
+/// How many seconds of capture to throw away, and why the reader never stops reading.
 ///
-/// `rac` is thingino's own audio client and it reads PCM16 LE on stdin
-/// (`rac play - -r 16000`); measured 2026-11-16 with a 350 ms tone, which the
-/// device accepted and reported as played.  This is a root ssh into the camera on
-/// purpose: there is no other unauthenticated-free path to the speaker today, the
-/// hop key is already on every box in the fleet, and the alternative (raptor's ONVIF
-/// backchannel) is a PCMU/8000 session on a firmware whose build advertises only
-/// that codec — 16 kHz through `rac` is better audio *and* less code.
-fn play(
-    opts: &Options,
-    host: &str,
-    user: &str,
-    key: &Path,
-    pcm: &[i16],
-) -> Result<(), String> {
-    let started = Instant::now();
-    let mut child = Command::new("ssh")
-        .arg("-i")
-        .arg(key)
-        .arg("-o")
-        .arg("BatchMode=yes")
-        .arg("-o")
-        .arg(format!("ConnectTimeout={}", opts.ssh_timeout.as_secs().max(1)))
-        .arg("-o")
-        .arg("StrictHostKeyChecking=accept-new")
-        .arg(format!("{user}@{host}"))
-        .arg(format!("rac play - -r {}", wav::SAMPLE_RATE))
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("spawn ssh: {e}"))?;
-    {
-        let mut stdin = child.stdin.take().ok_or("ssh: no stdin")?;
-        let bytes: Vec<u8> = pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
-        stdin
-            .write_all(&bytes)
-            .map_err(|e| format!("send pcm to rac: {e}"))?;
-        stdin.flush().ok();
-    }
-    let status = child.wait().map_err(|e| format!("wait ssh: {e}"))?;
-    if !status.success() {
-        return Err(format!(
-            "rac play exited {status} (is the camera's audio daemon up? `rac status` says)"
-        ));
-    }
-    // The device played it; the room hears it `secs` after we started writing.
-    let secs = pcm.len() as f64 / wav::SAMPLE_RATE as f64;
-    let slack = (secs - started.elapsed().as_secs_f64()).max(0.0);
-    std::thread::sleep(Duration::from_secs_f64(slack));
-    Ok(())
-}
-
-/// Throw away `secs` of capture, keeping ffmpeg's pipe drained.
-///
-/// Draining matters: ffmpeg blocks on a full pipe, and a blocked ffmpeg means a
-/// stopped camera audio path that nobody notices until the next reconnect.  The
-/// dropping is therefore done *in the read loop*, which never stops reading, and this
-/// is the note that says so rather than a second mechanism.
+/// The dropping happens *in the read loop*, which keeps draining: a source whose output nobody
+/// reads blocks, and a blocked ingest is a stopped microphone that nobody notices until the next
+/// reconnect.  That is why this returns a number instead of pausing anything, and why the note is
+/// here rather than only in the loop — the tempting "optimisation" is to stop reading, and that
+/// breaks the stream in a way that looks like a dead device.
 fn write_status(opts: &Options, stats: &Stats, started: Instant) {
     let body = format!(
         "{{\"uptime_secs\":{:.0},\"source\":{},\"wake_words\":[{}],\"speaker\":{},\
          \"probe_only\":{},\"windows\":{},\"ignored\":{},\"asked\":{},\"answers\":{},\
-         \"spoken\":{},\"unplayed\":{},\"ffmpeg_restarts\":{},\"floor_dbfs\":{:.1},\
+         \"spoken\":{},\"unplayed\":{},\"ingest_restarts\":{},\"floor_dbfs\":{:.1},\
          \"threshold_dbfs\":{:.1},\"peak_dbfs\":{:.1},\"speech_frames\":{},\
          \"captured_secs\":{:.0},\"last_transcript\":{},\"last_action\":{},\"last_error\":{}}}",
         started.elapsed().as_secs_f64(),
-        common_json::quoted(&opts.source),
+        common_json::quoted(&opts.source_label),
         opts.wake_words
             .iter()
             .map(|w| common_json::quoted(w))
             .collect::<Vec<_>>()
             .join(","),
-        common_json::quoted(match &opts.speaker {
-            // "off", the deployment's own word, not "dry-run": the unit passes
-            // `--speaker off`, and a status file that answers a different question than
-            // the config asked — "is the speaker off?" — is how an operator ends up
-            // reasoning about a setting nobody set.
-            Speaker::Off => "off",
-            Speaker::Ssh { .. } => "ssh:rac-play",
-        }),
+        // The sink's own label, i.e. the deployment's word for it ("off", not "dry-run"): a
+        // status file that answers a different question than the config asked — "is the speaker
+        // off?" — is how an operator ends up reasoning about a setting nobody set.
+        common_json::quoted(&opts.sink_label),
         opts.probe_only,
         stats.windows,
         stats.ignored,
@@ -776,7 +688,7 @@ fn write_status(opts: &Options, stats: &Stats, started: Instant) {
         stats.answers,
         stats.spoken,
         stats.unplayed,
-        stats.ffmpeg_restarts,
+        stats.ingest_restarts,
         stats.floor_dbfs,
         // The three numbers that answer "is it deaf, and which kind of deaf" without
         // anyone ssh-ing to the box to read a journal: what a frame had to beat, the
@@ -849,7 +761,7 @@ mod tests {
     #[test]
     fn music_is_not_someone_talking() {
         let mut s = session();
-        // The real measured transcript from cam8's mic.
+        // The real measured transcript from the space's own microphone (`docs/voice-assistant-2026-11-16.md`).
         assert_eq!(
             s.on_transcript("(soft music)", true),
             Action::Ignore("whisper described the noise instead of words")
@@ -858,8 +770,28 @@ mod tests {
         assert_eq!(s.on_transcript("someone is talking about the printer", false), Action::Ignore("no wake word"));
     }
 
+    /// The three cases of the half-duplex rule, each a different way for a speaker in a room to
+    /// be wrong.
     #[test]
-    fn the_speaker_default_is_off() {
-        assert_eq!(Speaker::Off, Speaker::Off);
+    fn an_answer_that_made_noise_makes_the_next_seconds_untrustworthy() {
+        let noisy = Capabilities { audible: true, echo_cancelled: false };
+        let d = capture_to_discard(3.0, &noisy, 1.2);
+        assert!((d - 4.2).abs() < 1e-9, "{d}");
+    }
+
+    #[test]
+    fn an_answer_nobody_could_hear_deafens_nobody() {
+        // The dry run has the answer's seconds in hand and played none of them.  Dropping the
+        // room's audio here is how a silent unit starts ignoring people for no reason at all.
+        let silent = Capabilities { audible: false, echo_cancelled: false };
+        assert_eq!(capture_to_discard(0.0, &silent, 1.2), 0.0);
+    }
+
+    #[test]
+    fn a_sink_that_cancels_its_own_output_keeps_the_mic_open() {
+        // Dead code today — no deployed sink claims this — and pinned anyway, so that the day one
+        // does, the behaviour is tested before anyone believes it.
+        let aec = Capabilities { audible: true, echo_cancelled: true };
+        assert_eq!(capture_to_discard(3.0, &aec, 1.2), 0.0);
     }
 }

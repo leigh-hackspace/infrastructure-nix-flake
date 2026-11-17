@@ -39,6 +39,15 @@ with: `curl -fsS -m 10 https://voice.int.leighhack.org/status.json` and
 | whisper.cpp | aibox | `http://10.3.1.32:8082` | `ggml-medium` on **CPU** |
 | piper | services1 | subprocess per request | `en_GB-alba-medium` → resampled to 16 kHz |
 
+**And the seam a device plugs into.** `crates/voice-assistant/src/source.rs` (frames in),
+`crates/voice-assistant/src/sink.rs` (noise out: `play` reports the seconds it actually played,
+and `capabilities` says whether it can be heard and whether it cancels its own echo), and
+`crates/voice-assistant/src/drivers/` — the one directory allowed to contain a host name, a URL
+or a shell command (`common/check-platform-boundary.nix` enforces both halves). The half-duplex
+rule and the "was this addressed to us" decision are deliberately **not** in a driver: they are
+the two pieces of judgement a new platform must inherit rather than re-implement, and a per-device
+copy of either is how an assistant starts answering itself.
+
 Code, in the order you will want it: `crates/voice-assistant/src/api.rs` (every route),
 `crates/voice-assistant/src/agent.rs` (what an answer costs and when it is refused), `crates/voice-assistant/src/wav.rs` (the format),
 `crates/voice-assistant/src/satellite.rs` (the reference *client*), `crates/voice-assistant/src/gate.rs` (the no-model VAD),

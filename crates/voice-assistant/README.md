@@ -16,6 +16,33 @@ ceiling speaker should talk over a room.
   speaker off by default: the answer's WAV is written to the state directory.
 ```
 
+## The device boundary: `source`, `sink`, `drivers/`
+
+The turn logic — gate, wake-word rule, half-duplex arithmetic, the two HTTP calls — knows
+nothing about hardware. It drives two traits:
+
+| trait | question it answers | implemented by |
+| --- | --- | --- |
+| `crate::source::Source` | hand me 16 kHz mono s16le frames, and tell me when they stop | `drivers/ffmpeg_stream.rs` (the network's restream today; a file or a pipe work unchanged) |
+| `crate::sink::Sink` | did that reach a room, for how long, and is your output cancelled out of the mic | `drivers/play_nothing.rs` (the deployed default), `drivers/rac_ssh.rs` |
+
+Two rules that look like device details and are **not**, because they are the two pieces of
+judgement a platform must inherit instead of re-implementing: **when to stop believing what it
+hears** (`capture_to_discard`, driven by what the sink reports rather than by a hardcoded belief
+about a camera) and **whether a transcript was addressed to us** (`wake.rs`, `gate.rs`). Put
+either in a driver and every new device re-implements it — or forgets it, which is the same bug
+with a longer fuse.
+
+`common/check-platform-boundary.nix` (run by `just check-eval`, and as the flake check
+`platform-boundary`) asserts the core holds no host, URL, vendor name or `Command::new`, **and**
+that the drivers still hold them: a guard satisfiable by deleting the thing it forbids is a
+guard nobody trusts. Its header states the one way it can be lied to (flag names — `--ffmpeg`,
+`--ssh-key` are the deployed `ExecStart` contract, so they stay).
+
+What a new platform is supposed to cost: one module in `drivers/`, one line in `open_sink` or the
+source factory, and a row in the unit. If it needs anything from the core, that is a finding
+about the boundary. `docs/esp32-voice-satellites.md` is the contract for the next one.
+
 ## Verbs
 
 | | |

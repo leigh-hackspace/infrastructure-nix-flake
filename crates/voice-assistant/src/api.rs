@@ -2,7 +2,7 @@
 //!
 //! ## Why one socket for three jobs
 //!
-//! The browser page, the cam8 satellite and `just voice-ask` all need the same
+//! The browser page, the room satellite and `just voice-ask` all need the same
 //! three things, and the interesting decisions (what whisper is asked, how an answer
 //! is made speakable, which voice, how long is too long to say) must not be made
 //! three times.  So they are made once, here, and the satellite is as thin a client
@@ -582,41 +582,7 @@ fn save(ctx: &Arc<Ctx>, kind: &str, wav_body: &[u8]) {
     }
     // Best effort on purpose: an unwritable out_dir must not fail the answer, which
     // is what a caller is waiting for.  Keep the directory small either way.
-    prune(&ctx.opts.out_dir, 40);
-}
-
-/// Keep the newest `keep` WAVs in `dir`.  The answers are 16 kHz mono, so 40 is a
-/// couple of megabytes, and a state directory that grows without bound on a box
-/// holding a space's databases is a fault nobody notices until the disk is full.
-fn prune(dir: &std::path::Path, keep: usize) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    let mut files: Vec<_> = entries
-        .flatten()
-        .filter_map(|e| {
-            let name = e.file_name().to_string_lossy().to_string();
-            if !name.ends_with(".wav") {
-                return None;
-            }
-            let mtime = e
-                .path()
-                .metadata()
-                .and_then(|m| m.modified())
-                .ok()
-                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
-            Some((mtime, e.path()))
-        })
-        .collect();
-    if files.len() <= keep {
-        return;
-    }
-    files.sort_by_key(|(t, _)| *t);
-    for (_, path) in files.iter().take(files.len() - keep) {
-        let _ = std::fs::remove_file(path);
-    }
+    wav::prune_wavs(&ctx.opts.out_dir, 40);
 }
 
 /// The human-facing page: is it up, how fast, and what did it last answer.
@@ -739,26 +705,6 @@ fn wake_proxy(req: &Request, ctx: &Arc<Ctx>, method: &str, upstream: &str) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_prune_keeps_the_newest_and_nothing_else() {
-        let dir = std::env::temp_dir().join(format!("voice-prune-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        for i in 0..6 {
-            std::fs::write(dir.join(format!("answer-{i}.wav")), b"RIFF").unwrap();
-        }
-        std::fs::write(dir.join("keep.txt"), b"not audio").unwrap();
-        prune(&dir, 3);
-        let wavs: Vec<_> = std::fs::read_dir(&dir)
-            .unwrap()
-            .flatten()
-            .map(|e| e.file_name().to_string_lossy().to_string())
-            .collect();
-        assert_eq!(wavs.iter().filter(|n| n.ends_with(".wav")).count(), 3);
-        assert!(wavs.contains(&"keep.txt".to_string()), "pruned a non-WAV");
-        let _ = std::fs::remove_dir_all(dir);
-    }
 
     #[test]
     fn a_non_loopback_bind_is_refused_before_anything_listens() {

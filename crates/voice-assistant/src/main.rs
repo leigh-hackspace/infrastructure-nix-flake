@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! voice-assistant serve                 # the API every caller shares (127.0.0.1:8193)
-//! voice-assistant satellite             # cam8's mic in, an answer out (speaker off by default)
+//! voice-assistant satellite             # the space's mic in, an answer out (speaker off)
 //! voice-assistant probe                 # satellite with asking switched off: what would it say?
 //! voice-assistant ask "is it cold"      # one question, printed, no audio, no Slack
 //! voice-assistant tts "hello" -o a.wav  # the voice alone, to a file
@@ -19,7 +19,7 @@
 //!
 //! - A `--listen` that is not loopback is refused (`api::serve`), because the socket
 //!   has no authentication and rule 17's lesson is that the guard has to be code.
-//! - `satellite` will not touch the camera's speaker unless `--speaker ssh` is typed
+//! - `satellite` will not touch the speaker unless `--speaker ssh` is typed
 //!   in full.  The default writes the answer to disk and logs it, because this is a
 //!   loud feature on a ceiling mount in a room with people in it.
 
@@ -27,7 +27,10 @@ mod agent;
 mod api;
 mod b64;
 mod gate;
+mod drivers;
 mod satellite;
+mod sink;
+mod source;
 mod spoken;
 mod stt;
 mod tts;
@@ -286,42 +289,51 @@ fn run_gate_check(a: &[String]) -> Result<(), String> {
 
 fn satellite_options(a: &[String], probe_only: bool) -> satellite::Options {
     let state = setting(a, "--state-dir", "VOICE_STATE_DIR", "/var/lib/voice-assistant");
-    let speaker = match setting(a, "--speaker", "VOICE_SPEAKER", "off").as_str() {
-        "off" | "dry-run" | "none" => satellite::Speaker::Off,
-        "ssh" => satellite::Speaker::Ssh {
-            host: setting(a, "--speaker-host", "VOICE_SPEAKER_HOST", "cam8.int.leighhack.org"),
-            user: setting(a, "--speaker-user", "VOICE_SPEAKER_USER", "root"),
-            key: PathBuf::from(setting(
-                a,
-                "--ssh-key",
-                "VOICE_SSH_KEY",
-                &format!("{}/.ssh/agent-hop-key", std::env::var("HOME").unwrap_or_default()),
-            )),
-        },
-        other => {
-            eprintln!("voice-assistant: unknown --speaker {other:?}; using the safe default, off");
-            satellite::Speaker::Off
+    let out_dir = PathBuf::from(format!("{state}/answers"));
+    // `probe` is the verb you run while standing in a room with people in it, so it cannot make a
+    // noise even if somebody typed the flag.  The safety is applied to the *word* the driver is
+    // chosen by, so the sink, the log line and `status.json` cannot disagree about what will
+    // happen.
+    let kind = setting(a, "--speaker", "VOICE_SPEAKER", "off");
+    let kind = if probe_only { "off".to_string() } else { kind };
+    let spec = drivers::SinkSpec {
+        host: setting(a, "--speaker-host", "VOICE_SPEAKER_HOST", drivers::DEFAULT_SPEAKER_HOST),
+        user: setting(a, "--speaker-user", "VOICE_SPEAKER_USER", drivers::DEFAULT_SPEAKER_USER),
+        key: PathBuf::from(setting(
+            a,
+            "--ssh-key",
+            "VOICE_SSH_KEY",
+            &drivers::default_ssh_key().display().to_string(),
+        )),
+        out_dir: out_dir.clone(),
+        timeout: Duration::from_secs(20),
+    };
+    // An unknown word is refused **out loud** and the safe default takes over: silently acquiring
+    // a speaker nobody asked for is the failure mode this branch exists to prevent, and the
+    // original behaviour (a warning, then off) is a safety property, so it is kept rather than
+    // tidied into an error.
+    let sink = match drivers::open_sink(&kind, &spec) {
+        Ok(s) => s,
+        Err(unknown) => {
+            eprintln!("voice-assistant: {unknown}; using the safe default, off");
+            drivers::open_sink("off", &spec).expect("the safe default must always open")
         }
     };
+    let sink_label = sink.label();
+    let source = setting(a, "--source", "VOICE_SOURCE", drivers::DEFAULT_SOURCE);
+    let make_source =
+        drivers::open_source(&source, &PathBuf::from(setting(a, "--ffmpeg", "VOICE_FFMPEG", "ffmpeg")));
     satellite::Options {
-        ffmpeg: PathBuf::from(setting(a, "--ffmpeg", "VOICE_FFMPEG", "ffmpeg")),
-        source: setting(
-            a,
-            "--source",
-            "VOICE_SOURCE",
-            "rtsp://127.0.0.1:8554/cam8",
-        ),
+        make_source,
+        source_label: source,
         gateway: setting(a, "--gateway", "VOICE_GATEWAY", "http://127.0.0.1:8193"),
         wake_words: wake_list(a),
         search_tokens: number(a, "--wake-search-tokens", "VOICE_WAKE_SEARCH_TOKENS", 6.0) as usize,
         gate: gate_config(a),
-        speaker: if probe_only {
-            satellite::Speaker::Off
-        } else {
-            speaker
-        },
+        sink,
+        sink_label,
         status_path: PathBuf::from(format!("{state}/satellite-status.json")),
-        out_dir: PathBuf::from(format!("{state}/answers")),
+        out_dir,
         probe_only,
         capture_secs: number(a, "--seconds", "VOICE_CAPTURE_SECS", 0.0),
         out_file: {
@@ -335,7 +347,6 @@ fn satellite_options(a: &[String], probe_only: bool) -> satellite::Options {
         follow_up: Duration::from_secs_f64(number(a, "--follow-up-secs", "VOICE_FOLLOW_UP_SECS", 6.0)),
         guard: Duration::from_secs_f64(number(a, "--guard-secs", "VOICE_GUARD_SECS", 1.2)),
         max_play_secs: number(a, "--max-play-secs", "VOICE_MAX_PLAY_SECS", 45.0),
-        ssh_timeout: Duration::from_secs(20),
     }
 }
 
@@ -429,7 +440,7 @@ fn usage() -> String {
          serve                      the shared API on --listen (default 127.0.0.1:{});\n\
                                 POST /v1/transcribe (a WAV body), /v1/ask, /v1/tts\n\
          satellite                  --source's mic through the gate and the API; the\n\
-                                camera speaker is OFF unless --speaker ssh is typed\n\
+                                speaker is OFF unless --speaker ssh is typed\n\
          probe                      satellite with asking off: counts what it would say\n\
                                     --seconds N stops after N s of audio (0 = until\n\
                                     Ctrl-C); --out FILE leaves one WAV to listen to\n\
@@ -465,26 +476,28 @@ mod tests {
         // The one default that must never be wrong: a fresh unit in a room with
         // people in it must not be able to start talking.
         let o = satellite_options(&argv(""), false);
-        assert_eq!(o.speaker, satellite::Speaker::Off);
+        assert_eq!(o.sink_label, "off");
         assert!(!o.probe_only);
-        // And an unrecognised value falls back to off rather than to ssh.
+        // And an unrecognised value falls back to off rather than to a loudspeaker.
         let o = satellite_options(&argv("--speaker yes-please"), false);
-        assert_eq!(o.speaker, satellite::Speaker::Off);
-        let o = satellite_options(&argv("--speaker ssh --speaker-host cam8.int"), false);
-        match o.speaker {
-            satellite::Speaker::Ssh { host, user, key } => {
-                assert_eq!(host, "cam8.int");
-                assert_eq!(user, "root");
-                assert!(key.ends_with("agent-hop-key"), "{}", key.display());
-            }
-            other => panic!("--speaker ssh did not select ssh: {other:?}"),
-        }
+        assert_eq!(o.sink_label, "off");
+        // The flags still land where the driver expects them.  `details()` exists for this: a
+        // trait object hides a struct's fields from a test, and "did the operator's flags arrive"
+        // is worth pinning.  A path, never a credential (rule 13).
+        let o = satellite_options(&argv("--speaker ssh --speaker-host bench.local"), false);
+        assert_eq!(o.sink_label, "ssh:rac-play");
+        let d = o.sink.details();
+        assert!(
+            d.contains("bench.local") && d.contains("root@") && d.contains("agent-hop-key"),
+            "{d}"
+        );
     }
 
     #[test]
     fn probe_mode_cannot_speak_even_if_asked_to() {
         let o = satellite_options(&argv("--speaker ssh"), true);
-        assert_eq!(o.speaker, satellite::Speaker::Off);
+        assert_eq!(o.sink_label, "off", "probe must not be able to make a noise");
+        assert!(!o.sink.capabilities().audible);
         assert!(o.probe_only);
     }
 

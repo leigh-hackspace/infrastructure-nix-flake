@@ -1,8 +1,9 @@
 //! WAV reading, writing and sample-rate conversion.
 //!
 //! There are exactly two sample rates in this service, and the reason is measured
-//! rather than chosen: **16 kHz** is what the whole capture side speaks — cam8's
-//! audio ring publishes `l16` at 16000 Hz (`rac status` on the device), and it is
+//! rather than chosen: **16 kHz** is what the whole capture side speaks — the
+//! network's own microphone publishes `l16` at 16000 Hz (the receipt, read off the
+//! device, is `docs/voice-assistant-2026-11-16.md`), and it is
 //! what whisper.cpp wants — and **22 050 Hz** is what a medium-quality piper voice
 //! emits (`audio.sample_rate` in the voice's `.onnx.json`).  So one conversion
 //! exists, in one direction, on the way out to a browser or a camera speaker, and
@@ -33,7 +34,7 @@ impl Wav {
         self.frames() as f64 / self.sample_rate.max(1) as f64
     }
 
-    /// Downmix to mono by averaging pairs.  cam8 publishes mono already; the path
+    /// Downmix to mono by averaging pairs.  The deployed ingest publishes mono already; the path
     /// is here so a stereo upload cannot silently halve the pitch.
     pub fn mono(&self) -> Vec<i16> {
         if self.channels <= 1 {
@@ -52,7 +53,7 @@ impl Wav {
 
 /// Parse a RIFF/WAVE with a `fmt ` chunk of PCM (format 1, 16-bit) and a `data`
 /// chunk.  Chunks before `fmt ` or between `fmt ` and `data` (a `LIST` of metadata,
-/// ffmpeg's habit) are skipped by size, which is the only safe way to walk it.
+/// the demuxer's habit) are skipped by size, which is the only safe way to walk it.
 pub fn parse(bytes: &[u8]) -> Result<Wav, String> {
     let u16le = |b: &[u8], at: usize| -> u16 { u16::from_le_bytes([b[at], b[at + 1]]) };
     let u32le = |b: &[u8], at: usize| -> u32 {
@@ -189,6 +190,43 @@ pub fn clamp16(v: f64) -> i16 {
     }
 }
 
+/// Keep the newest `keep` WAVs in `dir`, and nothing else.
+///
+/// Shared by the gateway (which keeps a copy of everything it said out loud, so "what did it
+/// tell the room" has an answer that is not a guess) and by the silent sink (which keeps the
+/// answers it refused to play). Two copies of a retention rule is two rules, and the failure is
+/// a state directory on a box full of databases that grows without anyone noticing.
+pub fn prune_wavs(dir: &std::path::Path, keep: usize) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut files: Vec<_> = entries
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            if !name.ends_with(".wav") {
+                return None;
+            }
+            let mtime = e
+                .path()
+                .metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            Some((mtime, e.path()))
+        })
+        .collect();
+    if files.len() <= keep {
+        return;
+    }
+    files.sort_by_key(|(t, _)| *t);
+    for (_, path) in files.iter().take(files.len() - keep) {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -286,6 +324,26 @@ mod tests {
         assert_eq!(w.mono(), vec![0, 0]);
         w.channels = 1;
         assert_eq!(w.frames(), 4);
+    }
+
+    #[test]
+    fn the_prune_keeps_the_newest_and_nothing_else() {
+        let dir = std::env::temp_dir().join(format!("voice-prune-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for i in 0..6 {
+            std::fs::write(dir.join(format!("answer-{i}.wav")), b"RIFF").unwrap();
+        }
+        std::fs::write(dir.join("keep.txt"), b"not audio").unwrap();
+        prune_wavs(&dir, 3);
+        let wavs: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(wavs.iter().filter(|n| n.ends_with(".wav")).count(), 3);
+        assert!(wavs.contains(&"keep.txt".to_string()), "pruned a non-WAV");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

@@ -634,7 +634,14 @@ Four things an agent changing any part of this needs before it changes anything:
    two unauthenticated sockets **refuse to bind off loopback**, and why the only way in from
    another machine is the front door's `voice.int.leighhack.org` row. The reach is the whole
    security model; read that row and `CONFIG.ROUTER_ONLY` before widening anything.
-4. **The measured budget** (`docs/voice-assistant-2026-11-16.md`): whisper **2.7 s** for 3 s of
+4. **The device boundary is enforced, not intended.** The turn logic drives a
+   `crate::source::Source` (frames in) and a `crate::sink::Sink` (noise out), and every host
+   name, URL, vendor and child process lives in `crates/voice-assistant/src/drivers/`.
+   `common/check-platform-boundary.nix` substring-checks both halves — that the core has no
+   device facts, and that the adapters still do — because a boundary nobody checks is a
+   suggestion, and adding a microphone is supposed to cost a driver, not a refactor
+   (`docs/esp32-voice-satellites.md`).
+5. **The measured budget** (`docs/voice-assistant-2026-11-16.md`): whisper **2.7 s** for 3 s of
    audio, on **CPU** (strata owns the iGPU); piper **2.5 s** for 31 words, because a fresh
    process reloads the voice every request; a one-tool spoken answer is **~13 s** end to end;
    and the deterministic fast path answers time / open-closed / a room's temperature /

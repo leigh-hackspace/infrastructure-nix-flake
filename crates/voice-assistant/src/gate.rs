@@ -12,8 +12,8 @@
 //! the part that has to be cheap, and a DSP gate costs microseconds per frame on a
 //! box that is also carrying the space's inference.
 //!
-//! What the gate buys, and the number that makes it necessary: **cam8's mic hears
-//! the room's music** — measured 2026-11-16, three seconds of that mic sent straight
+//! What the gate buys, and the number that makes it necessary: **the space's own
+//! microphone hears the room's music** — measured 2026-11-16, three seconds of that mic sent straight
 //! to whisper.cpp came back `(soft music)`, and the space plays music most of the
 //! day.  An energy-only VAD would therefore hand whisper a window every few seconds
 //! forever, at ~0.9× real time per window (`crates/voice-assistant/README.md`),
@@ -368,8 +368,8 @@ impl Gate {
     /// End of input: hand back a window that was still open.
     ///
     /// Without this, **the last thing anyone said is thrown away** whenever the stream
-    /// ends — which is not only the end of a clip: go2rtc drops its session, `probe
-    /// --seconds 8` runs out, ffmpeg restarts, and in every one of those cases a person
+    /// ends — which is not only the end of a clip: the ingest drops its session, `probe
+    /// --seconds 8` runs out, the stream is reopened, and in every one of those cases a person
     /// has just spoken a sentence that the gate was still holding because it wants 0.7 s
     /// of trailing silence to be sure the sentence ended.  The clip we have is the only
     /// clip there is, so it goes to whisper; a clipped end is a worse transcript, and no
@@ -695,7 +695,7 @@ mod tests {
 
     #[test]
     fn a_window_still_held_when_the_input_ends_is_not_thrown_away() {
-        // The bug this pins: a stream that stops mid-sentence — go2rtc dropping its
+        // The bug this pins: a stream that stops mid-sentence — the ingest dropping its
         // session, `probe --seconds 8` running out, a 2.7 s test clip — used to discard
         // the utterance the gate was still holding, because a window only ends after
         // `hold_secs` of trailing silence.  It presented as "the gate never opened" on a

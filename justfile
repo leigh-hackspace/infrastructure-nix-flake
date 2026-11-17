@@ -733,6 +733,13 @@ check-eval:
     # must be a vhost services1 serves.  Worth naming here because the guard now
     # lives on a different machine from gatus itself, so it is easy to forget which
     # eval catches a drift.
+    # The voice assistant's device boundary: no host, URL, vendor name or child process in
+    # the turn logic, and the adapters still there to own those facts instead.  This is what
+    # keeps "a new microphone is a new driver, not a refactor" true after the next person
+    # finds it easier to test `source.starts_with("rtsp://")` in the loop than to write one
+    # (docs/esp32-voice-satellites.md is the contract the boundary is drawn for).
+    echo "=== voice platform boundary (core <-> drivers)"
+    nix eval --impure --raw -f common/check-platform-boundary.nix
     # AGENTS.md rule 26.  Eval-only — one `wc -l` over the tracked tree — so it is in
     # this half rather than left for `check`, which the router cannot finish: a file
     # is not allowed to grow past 1000 lines on the way past the router.
@@ -1194,7 +1201,11 @@ voice-status:
             print("         -> %d loud frames never made a window: run gate-check on the clip" % m["speech_frames"])
         else:
             print("         -> %d window(s), %d ignored, %d asked, %d answered, %d unplayed(speaker), %d ffmpeg restart(s)"
-                  % (m["windows"], m["ignored"], m["asked"], m["answers"], m["unplayed"], m["ffmpeg_restarts"]))
+                  % (m["windows"], m["ignored"], m["asked"], m["answers"], m["unplayed"],
+                     # Named for the event, not the tool, since the ingest is a trait now.  Read
+                     # both spellings: this verb runs against whichever generation is deployed,
+                     # and a KeyError here loses the whole status render for want of one line.
+                     m.get("ingest_restarts", m.get("ffmpeg_restarts", 0))))
         if m["last_transcript"]:
             print("         last: %r -> %s" % (m["last_transcript"][:60], m["last_action"]))
         if m["last_error"]:

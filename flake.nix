@@ -437,7 +437,7 @@
     };
 
     /*
-    The four hand-written assertion files, as flake checks (§2.6).
+    The five hand-written assertion files, as flake checks (§2.6).
 
     They are plain functions rather than modules — `nix eval --impure --raw -f
     <file>` runs them, which is what `just check` does because that form *prints*
@@ -486,6 +486,13 @@
       # no code touched at all — which is exactly how `just dns-sync-sync` survived in
       # rule 14 for months after the recipe was deleted.
       doc-pointers = asCheck "doc-pointers" (import ./common/check-doc-pointers.nix);
+
+      # The voice assistant's device boundary: the turn logic still knows nothing about what kind
+      # of hardware it is bolted to, and the adapters in `crates/voice-assistant/src/drivers/`
+      # still exist to know it on its behalf.  Guards an architecture, not a data table — the
+      # point is that the next microphone (a different camera, an ESP32, a phone) is a new
+      # `drivers/` module and a row in the unit, never an edit to the turn logic.
+      platform-boundary = asCheck "platform-boundary" (import ./common/check-platform-boundary.nix);
     };
 
     # `nix develop`

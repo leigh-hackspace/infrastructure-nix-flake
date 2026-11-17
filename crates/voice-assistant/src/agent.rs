@@ -3,7 +3,7 @@
 //! The answering is done by `slack-agent`, which since 2026-11-17 also serves
 //! `POST /v1/ask` on loopback (`machines/services1/services/slack-agent.nix`) for
 //! exactly this caller.  Nothing here knows the question came from a voice: the same
-//! endpoint answers the browser page, the cam8 satellite and `just voice-ask`.
+//! endpoint answers the browser page, the room satellite and `just voice-ask`.
 //!
 //! Two facts from `docs/slack-agent-2026-11-16.md` and from measuring, that are the
 //! reason this client is written the way it is:
