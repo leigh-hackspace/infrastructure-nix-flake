@@ -296,6 +296,23 @@ in {
 
       serviceConfig = {
         ExecStart = "${strataPkg}/bin/strata-server --engine strata --config ${configFile} --host 10.3.1.21 --port 8080";
+        # The CUDA sibling of the same guard in `machines/aibox/strata.nix` — read that
+        # comment first, it has the mechanism (root + CPython write `__pycache__` into the
+        # package's own store path; a NAR hashes the file list, not mtimes, so the path
+        # stops matching its recorded hash; the box that has it cannot see that).
+        #
+        # Measured here 2026-11-17, i.e. **nothing to repair**: every `*-strata*` path
+        # verifies clean, zero `__pycache__` anywhere despite running as root since
+        # 2026-11-15.  But this unit is root, the package carries the same
+        # `strata_control` modules, and there is no `PYTHON*` env — the only difference is
+        # that an engine bump or a config that turns the control plane on closes it.
+        # A fix that protects one of the two engines is the kind that gets forgotten.
+        #
+        # COST OF APPLYING: this unit restarts, and that is **55 s to `ready:`** measured
+        # here (this file's own header number) with the bot and the voice assistant dialing
+        # this engine — so one box at a time, and wait for `/health` before touching the
+        # other.
+        Environment = ["PYTHONDONTWRITEBYTECODE=1"];
         # The engine log (config "log") is written here; StateDirectory creates it.
         StateDirectory = "strata";
         RestartSec = 10;

@@ -418,6 +418,32 @@ in {
 
       serviceConfig = {
         ExecStart = "${strataPkg}/bin/strata-server --engine strata --config ${configFile} --host 10.3.1.32 --port 8080";
+        # A store path is read-only only against **non-root**: 0444 files in 0555
+        # directories, and root walks straight past that on ext4.  This unit has no `User=`,
+        # so the first time the engine imports its Python control layer (`strata_control`),
+        # CPython writes `__pycache__/*.pyc` **into the package's own store path** — and a
+        # NAR records the file list and contents but *not mtimes*, so adding files breaks
+        # the hash nix recorded.  Measured here 2026-11-16: 5 of 5 strata paths held
+        # 14-56 post-registration .pyc files; `nix path-info` and the running engine looked
+        # perfect, and the symptom appeared on services1 as `hash mismatch importing path`
+        # 898 derivations into a `just check-build`.  Repaired by deleting them (caches are
+        # regenerable; the engine never restarted) — `docs/nix-dev-workflow.md`, Gotchas,
+        # owns the mechanism, and `common/store-hygiene.nix` is the weekly net that fails a
+        # unit when it happens again.
+        #
+        # Not in the package wrapper (`strata-package.nix` already exports PYTHONPATH
+        # there), because that would rebuild the 39 MB package for a runtime habit and
+        # would still not cover a `nix-shell`-style root run.  Not a non-root `User=`
+        # either, which is the structurally better answer: the engine needs the MEMLOCK
+        # limit and the kfd/GTT access it has today, and that is a different experiment
+        # than a one-token guard.
+        #
+        # The same line is in `machines/services2/strata.nix` on purpose: that box is
+        # measured clean but has the identical shape (root, same package, no PYTHON* env),
+        # and the only thing separating it is that nothing has imported `strata_control`
+        # yet.  COST OF APPLYING THIS LINE: systemd restarts the unit, and an engine reload
+        # here is tens of GB — it belongs in a window, not on top of an unrelated switch.
+        Environment = ["PYTHONDONTWRITEBYTECODE=1"];
         # The engine log (config "log") is written here; StateDirectory creates it.
         StateDirectory = "strata";
         RestartSec = 10;
