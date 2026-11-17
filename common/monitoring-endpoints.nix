@@ -229,6 +229,24 @@
       group = "Inference";
       alert = slowStartSlackAlert;
     })
+    # Whisper is on the voice path, so its absence from the board was the gap that
+    # mattered: `voice-assistant` dials `aibox:8082` for every utterance and had no check,
+    # so "the assistant stopped understanding me" was a journal read rather than a red
+    # row.  `/health` is a cheap static answer, and the model is already loaded at start.
+    (mkHttp {
+      name = "Whisper (aibox, CPU)";
+      url = "https://whisper.int.leighhack.org/health";
+      group = "Inference";
+    })
+    # The voice gateway's own `/health` is one JSON line and answers even with the bot's
+    # ask socket down — which is the useful distinction: **deaf** (whisper unreachable,
+    # this row red via the Whisper row above) and **mute** (the agent socket down, this row
+    # green and `errors` climbing in `/status.json`) are different incidents with different
+    # fixes, and a check that conflates them tells you neither.
+    (mkHttp {
+      name = "Voice assistant (services1)";
+      url = "https://voice.int.leighhack.org/health";
+    })
 
     # --- Top-level ---------------------------------------------------
     (mkHttp {
