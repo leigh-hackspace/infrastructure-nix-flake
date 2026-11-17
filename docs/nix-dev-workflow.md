@@ -1204,3 +1204,46 @@ imperative `usermod -aG nixbld` / `gpasswd -a` within fifteen minutes and writes
 the reason to the journal (`journalctl -u nixbld-guard` is the first thing to read
 if a session ever dies during a build). Full story, nix 2.34.7 source references
 and evidence: `docs/nix-build-sigkill-2026-10-11.md`.
+
+## After a GC, `nix flake check --no-build` fails one build-time secret at a time
+
+Measured 2026-11-17 on services1, mid-session, with nothing changed in the tree:
+
+```
+error: path '/nix/store/64br6cr…-sops-secret-pg_pass.drv' is not valid
+```
+
+The trigger is the mechanism this doc already warns about from the other direction: a
+build-time secret (`config.sopsSecretText`, the names in `infra.buildTimeSecrets`) is
+**read at evaluation**, so realising it is not something `--no-build` will do. Normally the
+path is already in the local store because the last deploy or check built it, and nothing
+looks like a build. A GC that prunes those outputs turns `just check` red on an otherwise
+unmodified tree — and it comes out **one name at a time**, because evaluation stops at the
+first one: `pg_pass`, then `grafana_secret_key`, then whoever is next.
+
+Two things make this cheap rather than an afternoon:
+
+- **It is a copy, not a rebuild.** The delegate builder still has every one of these paths,
+  so realising them is a `nix copy` back: `copying path '…-sops-secret-pg_pass' from
+  'ssh://leigh-admin@10.3.1.32'`. The store on services1 had lost them; aibox had not.
+- **One command does them all, instead of chasing the names.** Evaluating each machine's
+  toplevel derivation path forces every eval-time read in that config, with no build
+  restriction on those forced paths:
+
+  ```bash
+  for m in services1 services2 services3 aibox gw; do
+      nix eval ".#nixosConfigurations.$m.config.system.build.toplevel.drvPath" --raw
+  done
+  ```
+
+  That finishes in tens of seconds (evaluation is warm, the secrets substitute) and
+  `just check` is green again.
+
+**Do not respond by "fixing" the sops evaluation.** `nix flake check --no-build` failing on
+this is the mechanism working as designed and as documented (`common/sops.nix` decrypts each
+name into its own fixed-output derivation, keyed on the whole `secrets.yaml`, and every unit
+that embeds one reads the result at eval time). The check is refusing to build a secret,
+which is exactly the behaviour rule 9 wants; what was missing was the store entry, not a
+guard. And as always with this command, verify against clean HEAD (`git stash -u`) before
+believing your own change caused it — the failure looks like a config error and is a store
+state.
