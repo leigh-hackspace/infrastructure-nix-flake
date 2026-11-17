@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The UMA arms (see ../strata-uma-2026-10-08.md): does the engine stop copying when the
+# The UMA arms (see ../STRATA.md, "UMA: `--pcie-mode direct` deployed"): does the engine stop copying when the
 # "PCIe" path is a direct read through the arena's device alias?
 #
 #   sudo ./run-arms-uma.sh            # all arms

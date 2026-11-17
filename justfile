@@ -173,7 +173,8 @@ switch-gw: (deploy "gw")
 # pinned nixpkgs (flake.nix's `formatter`), i.e. from the binary cache — NOT from a
 # devShell, because the wasm shell would build the pinned wasm-bindgen-cli and a
 # formatter must never be the reason a box compiles Rust (see `_build-host-guard`).
-# docs/repo-audit-2026-10-07.md §1.3 is why the whole tree is kept clean.
+# The whole tree is kept clean so `nix fmt -- --check` is a real gate rather than a
+# warning about the last file someone touched.
 fmt:
     nix fmt -- $(git ls-files '*.nix')
 
@@ -708,8 +709,6 @@ check: check-eval
 check-eval:
     #!/usr/bin/env bash
     set -euo pipefail
-    echo "=== config-to-gitlab assertions"
-    nix eval --impure --raw -f machines/services1/lib/check-config-to-gitlab.nix
     echo "=== printer-state tables (exporter <-> dashboards/alerts)"
     nix eval --impure --raw -f common/check-printer-states.nix
     # The router's two network tables: common/vlans.nix and common/dns-records.nix
@@ -1405,7 +1404,7 @@ pi-search-status user="leigh-admin":
 # Read `cameras/README.md` before changing anything on one.  The device-side story
 # (hardware, flash layout, how to flash) lives in the firmware's own repository,
 # `cjdell/thingino-firmware` branch `ssc333-infinity6b0`, whose camera guide is `tapo-c110.md`;
-# the pre-thingino bench guide is `docs/archive/c110.md`.
+# the pre-thingino bench guide (`cameras/c110.md`) was deleted on 2026-11-18: git history.
 # `cameras/inventory.sh` is the busybox-ash report; `cameras/config/` holds the
 # pulled /etc files.  The fleet is bootstrapped by `cam-key`, which is the one
 # recipe that asks for the device password (once, interactively): the devices
@@ -1582,7 +1581,7 @@ cam-keytest name:
 
 # ------------------------------------------------------------------- firmware
 # A firmware update on these boxes is a ceremony, not a command, and the four
-# recipes below are the ceremony in order.  `docs/archive/c110.md` §8 still describes
+# recipes below are the ceremony in order.  The pre-thingino bench guide still described
 # the 2024 route — an 8 MB full-chip image written from U-Boot with `sf erase` /
 # `sf write` — and that is *not* what upstream ships now: a current nightly tgz
 # holds `uImage.<soc>` + `rootfs.squashfs.<soc>` and nothing else, and the tool is

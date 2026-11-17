@@ -32,7 +32,7 @@
   # nix SIGKILLs before and after every build (`killUser()`: `setuid(uid);
   # kill(-1, SIGKILL)`). Left empty on a root daemon the default is `nixbld` too —
   # it is spelled out here so the intent survives a nixpkgs default change, since
-  # getting it wrong is docs/nix-build-sigkill-2026-10-11.md: with no build UID the
+  # getting it wrong costs a session: with no build UID the
   # build (and its cleanup sweep) runs as the invoking user.
   #
   # The mirror image of that rule is the part that actually bit: the group is the

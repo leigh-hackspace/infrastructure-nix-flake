@@ -21,7 +21,7 @@ X first", X has already cost someone a day.
 | touch DNS, dnsmasq, the router, the DigitalOcean zone, a new vhost's name | `docs/router-and-dns.md` (+ `machines/gw/README.md` — this box **is** the network's router, live at 10.3.1.1 since the 2026-10-21 cutover: it says what is proven on that box, what is still a guess, and what must not move) |
 | move TLS termination, a vhost, the nginx-sso gate, `anubis` or `headscale` **between boxes** — i.e. work the router-as-front-door plan is preparing | `docs/router-front-door-migration.md` (**deployed 2026-10-24: `gw` terminates everything the network has *one* of — cert, public + `*.int` vhosts, `nginx-sso`, `anubis`, the ACLs — and `services1` is an *origin*: plain HTTP on :80, `CONFIG.ROUTER_ONLY`, no cert, no gate, no anubis. `headscale`/`headplane` also run on `gw` now. Phase-by-phase history and the deploy findings are in that doc**) + `docs/router-and-dns.md` |
 | ask whether the router can be **redundant** — a second `gw`, or CARP / VRRP / keepalived / conntrackd, or "OPNsense did this with CARP" | `docs/router-ha.md` (**there is one router, and the retired appliance never configured CARP or pfsync either; the gate is an AAISP question about whether the routed `/29` and the delegated `/48` follow a failover dial, not a NixOS module; and nothing in this flake can tell a second `gw` from the first, because the network-tables guard reads tables and never asks which box is evaluating them**) |
-| ask why the network is on a **hotspot / WWAN / 4G / USB-tethered phone**, why the internet went away while every box and the router's own `curl` still worked, why the backup **cannot give IPv6 or inbound**, or why it is **slow (the hotspot is 2.4 GHz only)**, or touch `machines/gw/wan-backup.nix`, `wan-backup-emergency.sh`, or the WAN rows in `firewall.nix`/`networking.nix` | `docs/wan-manager-2026-11-09.md` — since 2026-11-09 `crates/wan-manager` owns every WAN: **no WAN interface, address or gateway is hardcoded in the firewall or networking.nix**; it discovers every non-LAN Ethernet NIC by its DHCP offer, every USB-tethered phone by the USB bus, and **every wireless adapter of any brand** (one supplicant each), scans for `Leighhack WAN Backup`, ranks every BSS and path by measured gateway/internet/throughput, and re-installs routes + the `wan_ifaces` NAT set every 5 s. A selected backup whose gateway is silent for 12 ticks is reset; the AAISP `/32` follows the working egress. Status is the **Uplink** tab of network-info (`/api/wan`). Break glass is `wan-backup-emergency.sh` (tries every candidate, retries until online) + `just wan-backup-handback`. The 2026-11-07 history is `docs/archive/wan-backup-uplink-2026-11-07.md`; the Android checkbox is the `-71`/EPROTO diagnosis in the new doc. |
+| ask why the network is on a **hotspot / WWAN / 4G / USB-tethered phone**, why the internet went away while every box and the router's own `curl` still worked, why the backup **cannot give IPv6 or inbound**, or why it is **slow (the hotspot is 2.4 GHz only)**, or touch `machines/gw/wan-backup.nix`, `wan-backup-emergency.sh`, or the WAN rows in `firewall.nix`/`networking.nix` | `docs/wan-manager-2026-11-09.md` — since 2026-11-09 `crates/wan-manager` owns every WAN: **no WAN interface, address or gateway is hardcoded in the firewall or networking.nix**; it discovers every non-LAN Ethernet NIC by its DHCP offer, every USB-tethered phone by the USB bus, and **every wireless adapter of any brand** (one supplicant each), scans for `Leighhack WAN Backup`, ranks every BSS and path by measured gateway/internet/throughput, and re-installs routes + the `wan_ifaces` NAT set every 5 s. A selected backup whose gateway is silent for 12 ticks is reset; the AAISP `/32` follows the working egress. Status is the **Uplink** tab of network-info (`/api/wan`). Break glass is `wan-backup-emergency.sh` (tries every candidate, retries until online) + `just wan-backup-handback`. The 2026-11-07 attempt it replaced is in git history (deleted 2026-11-18); the Android checkbox is the `-71`/EPROTO diagnosis in the new doc. |
 | touch the ProCurve switches (device side, RADIUS, logins) | `docs/procurve-switches.md` + `crates/switch-gui/README.md` |
 | touch NAS mounts, the NAS itself, or backups/borg | `docs/nas-and-borg.md` |
 | touch the UniFi controller, its backups, or UniFi OS Server | `docs/unifi-os-server.md` — the appliance is a *downgrade* of the running controller, and `.unf` backups are encrypted with a key that is not on disk |
@@ -40,9 +40,9 @@ X first", X has already cost someone a day.
 | touch how a machine's **`~/.pi/agent` config gets written** (`models.json`, `settings.json`'s `packages`, `web-search.json`) | `crates/pi-agent-sync/README.md` — one rule across three files: only what the tool can prove it wrote may be removed, and a file it cannot parse is left byte-for-byte alone. Provenance lives in `pi-agent-status.json` (`managedPackages`, `managedWebSearchKeys`) |
 | ask whether Frigate's **`person` detections are false positives**, or touch `/srv/frigate/config/config.yaml` — its detector, filters, motion, zones, stationary behaviour — or the idea of **offloading inference to a GPU** | **`docs/frigate-false-positives-2026-11-12.md`** — the measured anatomy of the false-positive population (18.4 % of events / 20.5 % of event-hours are `person` tracks that never move a pixel of frame width, main_space 25.8 %/24.2 %); the fact that the Coral is only ~37 % utilised so **throughput is not the cause**, and that a 640² model does not fit this box's iGPU (measured 34.8 ms → ~28 inf/s against ~41 inf/s of demand); **why Pascal can never be Frigate's detector** (no plugin in 0.18.2 addresses sm_61 — the only doors are `zmq` and `deepstack`, and both return a zero array on timeout, so a dead sidecar looks like an empty room); the 7B vision-LLM experiment, whose *verdict* was prompt-order noise and whose *self-consistency* was a 92 %-precision triage signal; the withdrawn `stationary.max_frames` advice (the never-moving cohort contains **real people who sit still**); and the one lever that measures — a box-size floor as `min_area` drops **~75 % of never-moving tracks for ~7 % of moving ones** on main_space and workshop. It also records that Frigate's asset retention makes a retrospective verifier impossible (the same snapshot URL answered 200 then 404 a day later), that `smart_motion` does not exist in this build, that `PUT /api/events/{id}/false_positive` is a **Frigate+ upload** rather than a local flag, and that detection runs **1.5–1.7× the requested fps** (1.68× across the eight cameras) because motion fires on nearly every frame |
 | touch the UPS, the power-cut behaviour, the fleet shutdown, or ask what happens when the mains go | `docs/ups-and-fleet-shutdown.md` (+ `machines/gw/ups.nix` for the deployed policy: the 300 s grace, the notice texts, the target list). **The UPS is on the router**, HID-only, so nothing sees it but NUT; the countdown is `upssched`'s, not Rust's; the outage and the shutdown both `wall` every server first, and that notice is the only intervention window there is |
-| touch the cameras (`cam5`/`cam7`/`cam9`/`cam8`, 10.3.2.10/.12/.17/.11) or their feeds into frigate — **since 2026-10-31 `cam5`+`cam8` run thingino (a bench-built SigmaStar port), `cam7`/`cam9` are still OpenIPC** | `cameras/README.md` (the fleet table, the reach, the proven/guess split, the faults) and **`docs/camera-thingino-migration-2026-10-31.md`** for the thingino units: the endpoints moved **twice** — `:554/streamN`, open by default, on the 2026-10-31 payload, and **`/ch0` main + `/ch1` sub, Digest-gated, since the thingino 2 (Figata) payload both units took on 2026-11-11** (`cameras/README.md` owns the current feed URLs and the go2rtc workaround that payload needs) — the data partition **must** be wiped on changeover, and the overlay-shadowing failure mode ("associated, no IP") is diagnosed there. **The C110 as a board is documented in the firmware's own repository, not here — rule 30**: `cjdell/thingino-firmware`, branch `ssc333-infinity6b0`, whose `tapo-c110.md` is the hardware/flash/rescue guide. A camera that boots but has **no WiFi** → `docs/camera-wifi-recovery.md` for OpenIPC, §3 of the migration doc for thingino. The pre-thingino bench guide is `docs/archive/c110.md` and the 2026-10-25 "thingino is Ingenic-only" measurement is `docs/archive/camera-thingino-evaluation-2026-10-25.md` — both frozen history, and `docs/archive/README.md` is the rule for that directory |
+| touch the cameras (`cam5`/`cam7`/`cam9`/`cam8`, 10.3.2.10/.12/.17/.11) or their feeds into frigate — **since 2026-10-31 `cam5`+`cam8` run thingino (a bench-built SigmaStar port), `cam7`/`cam9` are still OpenIPC** | `cameras/README.md` (the fleet table, the reach, the proven/guess split, the faults) and **`docs/camera-thingino-migration-2026-10-31.md`** for the thingino units: the endpoints moved **twice** — `:554/streamN`, open by default, on the 2026-10-31 payload, and **`/ch0` main + `/ch1` sub, Digest-gated, since the thingino 2 (Figata) payload both units took on 2026-11-11** (`cameras/README.md` owns the current feed URLs and the go2rtc workaround that payload needs) — the data partition **must** be wiped on changeover, and the overlay-shadowing failure mode ("associated, no IP") is diagnosed there. **The C110 as a board is documented in the firmware's own repository, not here — rule 30**: `cjdell/thingino-firmware`, branch `ssc333-infinity6b0`, whose `tapo-c110.md` is the hardware/flash/rescue guide. A camera that boots but has **no WiFi** → `docs/camera-wifi-recovery.md` for OpenIPC, §3 of the migration doc for thingino. The pre-thingino bench guide (`cameras/c110.md`) and the 2026-10-25 "thingino is Ingenic-only" measurement were both dead by 2026-11-04 and are deleted — git history holds them, and `cameras/README.md` carries the four commands that re-answer the support question for any firmware |
 | are told a **camera's picture is bad / stuttering / not arriving**, or are about to call one broken, or are about to change which AP/channel a camera uses | **`docs/camera-wifi-cells-2026-10-31.md`** — measured 2026-10-31: cam5 and cam8 on identical firmware, identical encoder config, both at −47 dBm, **22× apart in throughput (61 KB/s vs 1.38 MB/s)** purely because of which AP and channel each joined. Read the cell before the camera. That file also owns the AP/BSSID map, the controller-stats recipe, the falsified −63 dBm figure, and the recovery runbook for a camera you have de-associated — **and its §8 rule: never change a camera's association over ssh, because the only path back to the device is the association being changed** (that is how cam5 went off the air) |
-| flash or re-flash a camera's firmware, or plan to | **OpenIPC** (`cam7`, `cam9`): `docs/camera-sd-card-firmware-flash.md` (the measured procedure: the env's own `setsdcard`/`uknor`/`urnor`, the address map, what each command destroys, the card, the console, the recovery) + `docs/camera-firmware-audit-2026-10-25.md` (why, and what was believed before). **thingino** (`cam5`, `cam8`): the flashing procedure and the rescue-card mechanism are written up in the firmware's own repository (rule 30); this repo keeps the gate in front of it — `docs/camera-thingino-build-deploy-2026-10-31.md` |
+| flash or re-flash a camera's firmware, or plan to | **OpenIPC** (`cam7`, `cam9`): `docs/camera-sd-card-firmware-flash.md` (the measured procedure: the env's own `setsdcard`/`uknor`/`urnor`, the address map, what each command destroys, the card, the console, the recovery — and, in its own body, what was believed before the measurement). **thingino** (`cam5`, `cam8`): the flashing procedure and the rescue-card mechanism are written up in the firmware's own repository (rule 30); this repo keeps the gate in front of it — `docs/camera-thingino-build-deploy-2026-10-31.md` |
 | **build the thingino firmware** for these cameras, or deploy a built image (changeover of an OpenIPC unit, payload update of a thingino one) | **`docs/camera-thingino-build-deploy-2026-10-31.md`** is this repo's half: the pins (`cameras/thingino-manifest.sh`: `1286efbd3` = tag `c110-fleet-20261031`, buildroot `727b904c`), the artifact hashes, `just cam-fw-build`/`cam-fw-verify`/`cam-fw-fetch`, and why a payload update is `sudo just cam-rescue-card /dev/sdX` + a power cycle while a changeover is `MIG_PASS=… GO=1 just cam-migrate <cam> all` — **never ssh-into-a-thingino-unit-and-write-mtd3**, that is the watchdog reset, and `just cam-fw-verify` is the precondition of both. **How the image is built, what the C110's flash holds and what the firmware does are documented in that repository, not here (rule 30): `cjdell/thingino-firmware`, branch `ssc333-infinity6b0`, PRIVATE because its history carries the baked Wi-Fi PMKs — §7 of that doc before touching its visibility or assuming the PSKs are secret.** The pin survives only as its tag: a fresh clone's branch head is refused by the build gate, and the branch is 30 commits ahead of it — 10 of them new work, and one `cam5` payload push (2026-11-02) that this repo never saw — §1 and §3 there |
 | touch the netboot image the Pi Room boots, or aibox's tftp/ipxe/NFS export of it | `machines/pi-room-sys/README.md` (the image is built by aibox, not deployed) |
 | touch a Dioxus SPA (any of the five) or its headless-browser suite | `docs/filestore-gotchas-2026-10-05.md` (the dioxus 0.7 + wasm traps apply to all of them) + `crates/filestore/tests/README.md`, `crates/switch-gui/tests/README.md`, `crates/network-status/tests/README.md` |
@@ -52,9 +52,9 @@ X first", X has already cost someone a day.
 | touch how a box turns authentik into Unix accounts — sssd, `common/auth-posix.nix`, a Pi Room or aibox login, anything that could renumber a user | `docs/auth-posix-logins.md` — **every uid here is `2000 + an authentik Postgres primary key` and that number is the ACL on a person's NAS home directory**; it is stored nowhere, group gids are generated too, nested groups are unobtainable, and `id`/`getent` cannot tell a live directory read from a cache hit |
 | run a **full network upgrade** — one flake pass landed on every box the hop key reaches | `docs/network-upgrade-runbook.md` (the order, the gates, and what must *not* move). **A nixpkgs bump moves the NVIDIA driver, so a GPU box switched but not rebooted is running new user-space over an old kernel module and its engine answers 502 with zero failed units** — `common/gpu-driver-match.nix` now makes the unit say so instead of failing silently, `just pending-reboot` names the boxes still on the old kernel, and `just store-lock` finds the editor-held big lock that looked like a slow build; all three measured 2026-11-15 in `docs/work-log-2026-11.md` |
 | touch either Strata engine, or ask why the inference boxes moved at all — **services2's CUDA sm_86 (RTX 3060) and aibox's HIP gfx1030 build from the one flake `strata` input, so `nix flake update strata` moves both engines in the same switch**, and each card class gets different defaults | `machines/services2/STRATA.md` and `machines/aibox/STRATA.md` (each owns its own card's gates, measured bands and deploy receipts, **and aibox's carries "Can we overclock it?" measured 2026-11-14 — the iGPU is already at its clock ceiling, the DDR5 is at its rated speed, and the only slack is the ~45 W package window with 18 °C of thermal margin above it**; the model data under `/home/leigh-admin/{Models,Strata}` is outside the store and is *not* re-prepped by an engine bump), **and on the 3060 also `machines/services2/STRATA-TUNE-2026-11-14.md` before tuning anything** — 23 measured arms, the harness's noise floor (a control pass once read 807 tok/s of prompt, so under 10 % is nothing), the meters that say this card is neither power-capped nor clock-throttled, and the one flag that was faster but moves answers — **`STRATA_PF_FUSED=1`, deployed 2026-11-14 on the answer-key evidence (8/8 correct before and after), revert is one line + `just switch`** |
-| are new to this flake, or are about to **restructure** `flake.nix`/`common/` rather than add a service | `docs/flake-simplification-audit-2026-10-22.md` — where each fact lives, what `just check` actually does on each box, the two secret models, and the five structural changes worth making (**its Status table is current, its body is the tree at `f923c6e` — read the table first**) |
-| are about to **simplify** — delete, merge or move config, or judge what is fat | `docs/flake-simplification-pass-2026-10-24.md` — the 2026-10-24 re-measure of the same question: 91 % of the tracked bytes are one vendored asset tree, three `AGENTS.md` rules are 93 of its 151 rule-lines, 1,044 lines cannot be deployed; every finding is gated **do now / decide / don't**, and its §3 says what may **not** be cut |
-| ask "why is it shaped like this?" | `docs/work-log-2026-11.md` (the current month) and `docs/work-log-2026-10.md`, plus the dated post-mortems in `docs/` |
+| are new to this flake, or are about to **restructure** `flake.nix`/`common/` rather than add a service | the fact table in `README.md` (what one fact lives in, and what guards it), this file's Layout section, `docs/nix-dev-workflow.md` (what `just check` actually does on each box, the two secret models), and the two rows below about guards and parked modules |
+| are about to **simplify** — delete, merge or move config, or judge what is fat | **do not cut these:** the DATA tables (`common/dns-records.nix`, `front-door.nix`, `int-dns.nix`, `vlans.nix`, `monitoring-endpoints.nix` — their size *is* the design: one row, one fact, guarded by `machines/gw/lib/check-network-tables.nix`); the long comments in the nix (they are the contract); the guards (rule 24, `common/sops.nix`'s `buildTimeSecrets` assertion, `common/nixbld.nix`, `common/check-doc-pointers.nix`); `pi-room-sys`, which looks like an orphan machine and is a netboot image aibox builds; the flake-built SPA `dist/`s (rule 19). Two audits made that list longer and are deleted — git history (`git log --diff-filter=D -- docs/flake-simplification-pass-2026-10-24.md`) |
+| ask "why is it shaped like this?" | `docs/work-log-2026-11.md` (the current month) and the dated write-ups in `docs/`; a closed month's log and a spent post-mortem get **deleted**, not archived — `git log --diff-filter=D -- <path>` is the archive |
 
 ## The rules, in one place
 
@@ -151,11 +151,16 @@ X first", X has already cost someone a day.
     import list only names the file. Then
     `grep -rl '^# PARKED' machines/` *is* the list of what is not running — which it was
     not: the reason lived in a comment beside the import, invisible to grep, and a
-    parked module is never evaluated, so its rot is silent. The four in tree (affine,
-    samba, gitlab on services1; nvidia on aibox) each carry their own
-    re-verify command, because "just uncomment it" is not one. (`strata` on aibox came
-    out of that list on 2026-10-28; un-parking it is a nine-release engine bump and
-    the checklist for one is now in `machines/aibox/STRATA.md`.)
+    parked module is never evaluated, so its rot is silent. Parking is for a module
+    with a *live reason to come back*: the one in tree is
+    `machines/services3/vlan225.nix`, parked because the box is on the bench and it is
+    the plan for racking it. Dead config is **deleted**, not parked — that is what
+    happened on 2026-11-18 to `affine.nix`, `samba.nix`, `gitlab.nix` (+ its serializer
+    and checker) on services1 and `nvidia.nix` on aibox, none of which had a re-verify
+    path anyone intended to walk (`git log --diff-filter=D -- machines/` recovers any of
+    them, header and all). (`strata` on aibox came out of that list on 2026-10-28;
+    un-parking it was a nine-release engine bump and the checklist for one is now in
+    `machines/aibox/STRATA.md`.)
 24. **A vhost move is a guard move.** A name is a row in `common/int-dns.nix` (what it
     answers with) *and* a row in `common/front-door.nix` (what the door serves), and two
     evaluation-time guards refuse a half-move: `machines/gw/int-dns.nix` (gw's vhosts must
@@ -261,9 +266,10 @@ X first", X has already cost someone a day.
    pinned commit survives only as tag `c110-fleet-20261031` — the standalone re-creation
    replayed the branch, so `git merge-base --is-ancestor c110-fleet-20261031
    ssc333-infinity6b0` exits 1 and a fresh clone's head is refused by the build gate. So when
-   firmware work moves, move the documentation with it and leave a pointer here; supersede into
-   `docs/archive/` (its README is the rule: frozen on arrival, banner on the way in, every live
-   pointer repointed in the same commit) rather than editing a post-mortem into currency.
+   firmware work moves, move the documentation with it and leave a pointer here; and when a
+   write-up stops being something the fleet acts on, **delete it** rather than curating it —
+   `git log --diff-filter=D -- <path>` is the archive, and a doc nobody acts on still costs a
+   reader the question "is this live?". Repoint every pointer to it in the same commit.
    Re-verify with: `git -C ~/Projects/thingino-firmware log --oneline
    c110-fleet-20261031..ssc333-infinity6b0`, `just cam-fw-verify`, and
    `grep -rn "c110\|thingino" AGENTS.md justfile cameras docs`.
@@ -334,16 +340,17 @@ X first", X has already cost someone a day.
   `voice-assistant-2026-11-16.md`, `esp32-voice-satellites.md` (any new audio endpoint: the wire contract and what does not exist),
   `follow-ups.md`,
   `work-log-2026-11.md` (the current month — a full-fleet repin+deploy run, and the three
-  things it changed in the upgrade runbook) and the superseded `work-log-2026-10.md`) and the
-  dated narrative write-ups, post-mortems and audits
-  (gtx1060 saga, filestore gotchas, the repo audit, the gw cutover attempt). They live
+  things it changed in the upgrade runbook) and the dated narrative write-ups and
+  post-mortems (filestore's dioxus gotchas, the wan manager, the voice assistant). They live
   here rather than next to the modules so the flake source stays config only; module
-  comments point into them when they need the backstory. **`docs/archive/` is frozen
-  history** — superseded write-ups, banner on the way in, never edited again, and their
-  links are not repaired; [`docs/archive/README.md`](docs/archive/README.md) is the rule,
-  including the one that matters: moving a file there opts it out of `check-doc-pointers`
-  §3, so repointing every live reference in the same commit is the only thing keeping it
-  findable.
+  comments point into them when they need the backstory. **There is no archive directory and
+  the rule is to delete**: a write-up whose headline is falsified, whose hardware is gone, or
+  whose experiment ended in "don't" is removed, with its durable facts folded into the live
+  doc that owns the topic first, and every pointer to it repointed in the same commit (rule 30).
+  `check-doc-pointers` §3 is what makes the repointing non-optional: every `docs/*.md` still
+  in the tree has to be named by an entry point, another doc, or a machine README, so a doc
+  can neither be forgotten nor left pointing at nothing. Git history is the archive:
+  `git log --diff-filter=D -- docs/<name>.md`.
 - `common/` — shared modules imported by more than one machine: `tools.nix`, `users.nix`,
   `sops.nix`, `nixbld.nix` (the build-user invariant), `crane.nix` (the shared crane
   helpers), `pi-agent.nix` + `pi-endpoints.nix` + `pi-search.nix` (rule 31: the inference
@@ -390,7 +397,8 @@ X first", X has already cost someone a day.
 - `machines/services1/` — the services box: `hardware-configuration.nix` (the NAS export
   list the mounts and automounts are generated from), `containers.nix` (podman + the
   "never give up" restart policy for all `podman-*` services), `services/` (one file per
-  service), `lib/` (nginx SSO helpers + the config-to-gitlab assertions), `sops.nix`
+  service — it has no `lib/`: the one directory that was there held only the gitlab
+  serializer and its checker, and went with them on 2026-11-18), `sops.nix`
   (which runtime secrets exist as files under `/run/secrets` — **reference the paths, do
   not read the contents**), `machines/services1/secrets/.env.sample` (the shape of the
   shared env-file secret — `secrets/` at the top level holds only `secrets.yaml`).
@@ -429,16 +437,15 @@ X first", X has already cost someone a day.
   glue, but anything substantial belongs in Rust.
 - New shared code goes in `crates/common-rs/` — `service` and `json`'s emitters exist
   because both had already drifted between three callers, and the 2026-10-13
-  consolidation found a security bug while deduplicating them
-  (`docs/work-log-2026-10.md`).
+  consolidation found a security bug while deduplicating them.
 
 ## Deploying
 
 - Deploy with the justfile: `just switch` / `just boot` (`sudo nixos-rebuild
   switch --flake .` + `sudo nixos-confirm`, chained).
-- **Check before you deploy:** `just check` — `nix flake check --no-build`, the four
-  assertion evals (`machines/services1/lib/check-config-to-gitlab.nix`,
-  `common/check-printer-states.nix`, `machines/gw/lib/check-network-tables.nix` and
+- **Check before you deploy:** `just check` — `nix flake check --no-build`, the three
+  assertion evals (`common/check-printer-states.nix`,
+  `machines/gw/lib/check-network-tables.nix` and
   `common/check-doc-pointers.nix`, the last one checking the recipe names, repo paths and doc
   links these instructions promise), and `nix fmt -- --check` over every tracked `.nix`. The
   gatus endpoint guard is a module assertion in `machines/services1/services/monitoring.nix`,
@@ -586,9 +593,9 @@ is the **pool of UIDs nix runs builds as**: nix takes a member of it for each bu
 both before and after that build, runs `setuid(uid); kill(-1, SIGKILL)` (`killUser()`) to
 sweep the build's leftovers. A real account in that group therefore loses every process
 it owns to every build on the machine — which is why the sweep looked indifferent to who
-asked, to whether the build succeeded, and to which box it ran on. Full story, nix
-2.34.7 source references and evidence: **`docs/nix-build-sigkill-2026-10-11.md`**. The
-invariant, its assertion and its self-healing timer live in **`common/nixbld.nix`**.
+asked, to whether the build succeeded, and to which box it ran on. The mechanism with
+nix 2.34 source references, the invariant, its assertion and its self-healing timer all
+live in **`common/nixbld.nix`**; the 2026-10-11 post-mortem is in git history.
 
 - **Never put a real account in `nixbld`.** Not for a build farm, not "so the daemon
   accepts this client": that is `nix.settings.allowed-users` (already `*`) plus
@@ -668,9 +675,11 @@ The full command reference, the rendered-unit workflow and the gotchas are
 - **`nix eval`/`nix build` on a bare path** from the repo root resolves against the *repo*
   flake, not nixpkgs.
 - **`nix flake check --no-build` is expected to be warning-free**, so a warning is a
-  finding. The two at the 2026-10-14 lock (Grafana's plaintext `secret_key`, and four
-  `stdenv.is*` deprecations from the CUDA package set behind `packages.strata-cuda`)
-  are open in `docs/follow-ups.md`. The `error: path
+  finding. The two that were open at the 2026-10-14 lock (Grafana's plaintext
+  `secret_key`, and the `stdenv.is*` deprecations behind `packages.strata-cuda`)
+  **did not reproduce at the 2026-11-18 lock** — six configurations, no evaluation
+  warning — so re-read the baseline before treating either as a finding
+  (`docs/follow-ups.md` has the re-measurement). The `error: path
   '...sops-secret-grafana_secret_key.drv' is not valid` that used to end this command
   **did not reproduce at the 2026-10-14 lock** — a baseline is a fact about a lock,
   so re-read it rather than inheriting it, and **verify against clean HEAD (`git
@@ -737,8 +746,7 @@ listed here is in the doc named for it.
   the tunnel** — so a dead tunnel is a network with no IPv6 at all, and VLAN 225 must stay
   on the tunnel in both directions because its inbound arrives there
   (`docs/router-and-dns.md`, "Which uplink each VLAN leaves by"). Read
-  `machines/gw/README.md` before changing it and `docs/gw-cutover-attempt-2026-10-21.md`
-  for what broke at the cutover. **Never edit the generated
+  `machines/gw/README.md` before changing it — it owns what broke at the cutover. **Never edit the generated
   `/etc/dnsmasq.d/network.conf`.** The flake-owned records are
   `common/dns-records.nix` (devices) and `common/int-dns.nix` (the `*.int` vhost names,
   rendered into `/etc/dnsmasq-int-vhosts.hosts`); both are store paths and both are
@@ -767,11 +775,11 @@ listed here is in the doc named for it.
   Unchanged: the
   mandatory data-partition wipe on changeover, and the "associated but no IP, the OpenIPC
   overlay shadowed `/etc`" failure mode: `docs/camera-thingino-migration-2026-10-31.md` owns
-  all of it.** What follows describes OpenIPC (cam7/cam9) where not restated there: **no NixOS, no systemd, no flake module** — their whole state is `/etc` on a **704 KB jffs2 volume on the flash's own settings partition** (`/dev/mtdblock4 on /overlay type jffs2`; `/` is an `rw` overlay on top of it, 460 KB free), so **a write to a camera persists and a reboot undoes nothing** — this file said "tmpfs, re-read by init on boot" until 2026-10-25 and was wrong — and a kernel/rootfs reflash leaves that partition alone. A camera is managed by whole-file replace + md5 verify + `/etc/init.d/S95majestic restart`, never by a deploy, and `autoRollback`/GOLDEN RULE mean nothing there. services1's frigate pulls their RTSP through its own go2rtc, whose feed-name→camera table is **inside the container** (`/dev/shm/go2rtc.yaml`, generated from `/srv/frigate/config/config.yaml`, a runtime bind mount the flake only mounts), so both ends of the pipe are off-flake. The verbs are `just cam-probe/cam-check/cam-pull/cam-diff/cam-push/cam-init/cam-key` and, for OpenIPC firmware, `cam-preflight`/`cam-flashdump`/`cam-backup`/`cam-image`/`cam-env`/`cam-card`, and, for thingino firmware, `cam-fw-build`/`cam-fw-verify`/`cam-fw-fetch`/`cam-rescue-card`/`cam-migrate` (`docs/camera-thingino-build-deploy-2026-10-31.md`) — **there is no unattended update recipe, and the OpenIPC-side flashes are all `cam8`'s** — a rootfs rollback, then the `nightly-20261010-a40b399` update on 2026-10-28, **rootfs *and* kernel**: that build's WiFi driver oopses on the 2024 kernel, and it prunes `sc3338` while cam8 is genuinely `sc3338` (`docs/camera-sd-card-firmware-flash.md` §9a): the layout is **fixed-slot** (`256k(boot),64k(env),2048k(kernel),5120k(rootfs),-(rootfs_data)`, the whole 8 MiB, identical on all three), so a flash **does not move the settings** — what it threatens is `sf write`, which writes `${filesize}` bytes and never consults `rootsize`, so an oversized rootfs lands on the settings partition and **the only size check in the system is the one in the guide** (the tools' own checks fail open, and `-f` disables them). The flashing mechanism **needs no U-Boot work**: every env ships `setsdcard` (`fatload mmc 0`) + `uknor`/`urnor`/`ubnor` — but **`urnor` is unusable as shipped** (measured: the erase is refused, the write goes ahead, `Written: OK` lies; use `sf update` + a read-back `cmp.b`, `docs/camera-sd-card-firmware-flash.md` §8). Do not `fw_setenv`: `bootcmd` lives in the one partition a kernel/rootfs flash cannot restore, and `ubnor` erases boot **and** env. OpenIPC's `failsafe` rescue OS is gk7205-only, so a crash-loop here has no rescue — but a dump plus Linux booting means `flashcp` restores any partition with no console at all. **`docs/camera-sd-card-firmware-flash.md` is the procedure; `docs/camera-firmware-audit-2026-10-25.md` is the reasoning and the strike list;** `cameras/inventory.sh` is busybox-ash POSIX only, and `/var/log` is a symlink to `/tmp` so **a reboot wipes the log ring that recorded why it rebooted** (majestic's `watchdog` reboots a hung one — an unexplained boot on a camera is a sensor fault). Table, proven-vs-guess, and the faults found 2026-10-25 → `cameras/README.md`. **The firmware
+  all of it.** What follows describes OpenIPC (cam7/cam9) where not restated there: **no NixOS, no systemd, no flake module** — their whole state is `/etc` on a **704 KB jffs2 volume on the flash's own settings partition** (`/dev/mtdblock4 on /overlay type jffs2`; `/` is an `rw` overlay on top of it, 460 KB free), so **a write to a camera persists and a reboot undoes nothing** — this file said "tmpfs, re-read by init on boot" until 2026-10-25 and was wrong — and a kernel/rootfs reflash leaves that partition alone. A camera is managed by whole-file replace + md5 verify + `/etc/init.d/S95majestic restart`, never by a deploy, and `autoRollback`/GOLDEN RULE mean nothing there. services1's frigate pulls their RTSP through its own go2rtc, whose feed-name→camera table is **inside the container** (`/dev/shm/go2rtc.yaml`, generated from `/srv/frigate/config/config.yaml`, a runtime bind mount the flake only mounts), so both ends of the pipe are off-flake. The verbs are `just cam-probe/cam-check/cam-pull/cam-diff/cam-push/cam-init/cam-key` and, for OpenIPC firmware, `cam-preflight`/`cam-flashdump`/`cam-backup`/`cam-image`/`cam-env`/`cam-card`, and, for thingino firmware, `cam-fw-build`/`cam-fw-verify`/`cam-fw-fetch`/`cam-rescue-card`/`cam-migrate` (`docs/camera-thingino-build-deploy-2026-10-31.md`) — **there is no unattended update recipe, and the OpenIPC-side flashes are all `cam8`'s** — a rootfs rollback, then the `nightly-20261010-a40b399` update on 2026-10-28, **rootfs *and* kernel**: that build's WiFi driver oopses on the 2024 kernel, and it prunes `sc3338` while cam8 is genuinely `sc3338` (`docs/camera-sd-card-firmware-flash.md` §9a): the layout is **fixed-slot** (`256k(boot),64k(env),2048k(kernel),5120k(rootfs),-(rootfs_data)`, the whole 8 MiB, identical on all three), so a flash **does not move the settings** — what it threatens is `sf write`, which writes `${filesize}` bytes and never consults `rootsize`, so an oversized rootfs lands on the settings partition and **the only size check in the system is the one in the guide** (the tools' own checks fail open, and `-f` disables them). The flashing mechanism **needs no U-Boot work**: every env ships `setsdcard` (`fatload mmc 0`) + `uknor`/`urnor`/`ubnor` — but **`urnor` is unusable as shipped** (measured: the erase is refused, the write goes ahead, `Written: OK` lies; use `sf update` + a read-back `cmp.b`, `docs/camera-sd-card-firmware-flash.md` §8). Do not `fw_setenv`: `bootcmd` lives in the one partition a kernel/rootfs flash cannot restore, and `ubnor` erases boot **and** env. OpenIPC's `failsafe` rescue OS is gk7205-only, so a crash-loop here has no rescue — but a dump plus Linux booting means `flashcp` restores any partition with no console at all. **`docs/camera-sd-card-firmware-flash.md` is the procedure** (its own body carries what was believed before the measurement, and what was struck); `cameras/inventory.sh` is busybox-ash POSIX only, and `/var/log` is a symlink to `/tmp` so **a reboot wipes the log ring that recorded why it rebooted** (majestic's `watchdog` reboots a hung one — an unexplained boot on a camera is a sensor fault). Table, proven-vs-guess, and the faults found 2026-10-25 → `cameras/README.md`. **The firmware
 itself — how the thingino image is built, what the C110's flash holds, how one is flashed from
 stock — is documented in the firmware's own repository, branch `ssc333-infinity6b0`, per rule
 30, and this file deliberately restates none of it; the pre-thingino bench guide that used to
-sit in `cameras/` is archived at `docs/archive/c110.md`.**
+sit in `cameras/` is deleted — it was `cameras/c110.md`, and git history holds it.**
 - **3D print servers** `3d-blue` (10.3.14.62) / `3d-lime` (10.3.14.61), Klipper +
   Moonraker, user `hackspace`, polled by `moonraker-exporter` at **fixed IPv4 on purpose**
   (the two Pis were cloned from one SD card, so their DNS names used to advertise each
@@ -955,7 +963,7 @@ there is declarative. **Root SSH is keyed here** (unlike the flake machines):
   identifier. Each listed name is a credential in the store forever, by name. The comment
   this replaced listed "the exceptions" in `machines/services1/sops.nix` and had drifted to
   seven of ten — a comment listing exceptions is a list nobody updates — which is why the
-  list is an option with an assertion now (audit §4: `docs/flake-simplification-audit-2026-10-22.md`).
+  list is an option with an assertion now.
 - **What build-time decryption costs, in one place.** The secret boundary is *not*
   `root:secrets`; it is **any code that runs during a build, on any machine that takes a
   build**: the age key sits at `0440 root:nixbld`, `/var/lib/sops-nix` is in
@@ -1045,8 +1053,8 @@ there is declarative. **Root SSH is keyed here** (unlike the flake machines):
 
 - **`CREATE DATABASE` can fail with a `template1` collation version mismatch** after a
   glibc upgrade; `ALTER DATABASE template1 REFRESH COLLATION VERSION` on the maintenance
-  DBs is the fix, and the application DBs still record the old version.
-  `docs/work-log-2026-10.md`.
+  DBs is the fix, and the application DBs still record the old version (`template0`
+  refuses, so only the maintenance DBs get refreshed).
 - **A service's first start can legitimately fail** when it races a setup unit that creates
   its role/directory (e.g. `switch-gui` vs `postgresql-setup`); the never-give-up policy
   brings it up seconds later. Not a fault — read `Result=` and the second attempt.

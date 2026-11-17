@@ -19,8 +19,8 @@ they are the ones to run after any change to `dns.nix`, `networking.nix` or
 dialled (`81.187.223.123`), DHCP/DNS/RA serve every VLAN (`ip -4 addr` shows `.1` on
 225/226/227/1337 and `192.168.20.82` on the uplink; 70 live lines in
 `/etc/dnsmasq.d/network.conf`, three of them `ra-`; the lease file holds 65 leases),
-the policy routes and inbound NAT are installed. `docs/gw-cutover-attempt-2026-10-21.md`
-is the post-mortem of the attempt and the findings from the live cutover.
+the policy routes and inbound NAT are installed. The journals of the 2026-10-17 attempt and
+of the live cutover are in git history; what survived from them is in this file.
 `just switch-gw` defaults to `10.3.1.1`; the `10.3.1.254` seen below appears only in the
 co-existence narrative and no longer answers.
 
@@ -262,8 +262,9 @@ and passed.
 That is one line per record with the selectors comma-joined, and the assertion now asks
 that each record's IPv4 appear on exactly one `dhcp-host` line. The whole attempt — the
 uplink that did work, the resolver that did not, the port forwards the flake does not
-have — is written up in `docs/gw-cutover-attempt-2026-10-21.md`; read it before the next
-cutover.
+have — is in git history (`git log --diff-filter=D --
+docs/gw-cutover-attempt-2026-10-21.md`), and the durable half of it became the assertion
+above and the `dstnat` chain in `firewall.nix`. Read both before the next cutover.
 
 ## The third way dnsmasq breaks the LAN silently: its RA timer stops on a link flap
 
@@ -345,8 +346,8 @@ Two lessons worth more than the fix:
 
 * **A tunnel that is up is not a tunnel that routes.** Both cutover attempts recorded
   "the tunnel came up, CHAP succeeded, table 100 got its default" as the uplink proven,
-  and all of that was true while no packet ever crossed it
-  (`docs/gw-cutover-attempt-2026-10-21.md`). The proof is `ping -I ppp0 1.1.1.1` from the
+  and all of that was true while no packet ever crossed it — measured twice, on both
+  attempts. The proof is `ping -I ppp0 1.1.1.1` from the
   router and a `curl` from a VLAN-225 host — traffic *through* the tunnel, not a look at
   its interface.
 * **The failure mode is shaped like a firewall rule**, which is why it survived a

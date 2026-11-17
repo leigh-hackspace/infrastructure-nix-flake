@@ -1,13 +1,11 @@
 **/secrets/*
 
-# `junk/` is scratch and stays untracked — except `machines/services1/junk/`, which is
-# deliberately tracked: kept dead fragments, each explaining itself in its own header.
-# The alternative was what one of them used to be, an `*.ignore` file inside
-# `machines/services1/` that looked exactly like live config and that neither the flake
-# nor `git status` could see (AGENTS.md rule 5).
+# `junk/` is scratch and stays untracked. Dead config fragments are not kept anywhere in
+# this tree either — they are deleted, and git history is where they live. What must not
+# happen is the old shape: an `*.ignore` file sitting inside a machine's directory looking
+# exactly like live config while neither the flake nor `git status` can see it (AGENTS.md
+# rule 5). Ignore it, or delete it; do not park it in the tree under a name that lies.
 junk/
-!machines/services1/junk/
-!machines/services1/junk/*
 initrd*/
 tmp/
 result-fd
@@ -38,7 +36,8 @@ config.xml
 # The wake-word runtime and models: 22 MB of upstream binaries that are pinned
 # fetches in crates/whisper-ws/package.nix now. They used to be committed, and a
 # committed byte under here is a byte every evaluation of this flake copies into
-# the store — docs/flake-simplification-pass-2026-10-24.md §1. `npm run dev`
+# the store (measured: 27 store copies of 26 MB, 669 MB, on the build machine).
+# `npm run dev`
 # reads them from OWW_DIR instead; the fetch is documented in the README that
 # stays vendored next to the engine.
 /crates/whisper-ws/web/openwakeword/ort/
@@ -46,7 +45,7 @@ config.xml
 
 # A guard, not a workflow: `just cam-image` stages camera firmware in ~/camera-images,
 # *outside* this tree, because a tarball in the flake source is copied into the store by
-# every evaluation (docs/flake-simplification-pass-2026-10-24.md §1). This entry only
+# every evaluation. This entry only
 # makes a mistaken repo-local staging invisible instead of expensive.
 /camera-images/
 

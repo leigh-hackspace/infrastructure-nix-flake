@@ -5,8 +5,8 @@
   ...
 }: let
   # Whisper.cpp with the Vulkan backend + ffmpeg so whisper-server's --convert
-  # accepts non-WAV uploads. The Vulkan build was chosen for the GTX 1060
-  # (docs/gtx1060-followup.md §4); with that card removed (2026-09-02) it needs
+  # accepts non-WAV uploads. The Vulkan build was chosen for the GTX 1060, removed on
+  # 2026-09-02; the pin therefore needs
   # repinning — see the note under whisper-server below.
   whisperVulkan = pkgs.whisper-cpp.override {
     vulkanSupport = true;

@@ -201,8 +201,8 @@ grouped-GEMM throughput, not a cache or chunk-size problem.
    engine on an RX 6900 XT (gfx1030, 16 GB): 38–42 tok/s decode and 330–339
    tok/s prefill. aibox has a USB4/Thunderbolt host router, so an eGPU is
    physically plausible — but a supported card in the *internal* M.2→USB3 slot is
-   what killed the GTX 1060 attempt (2.5 GT/s ×1 ≈ 250 MB/s, 256 MB BAR; see
-   `gtx1060-followup.md`). Don't repeat that without a real USB4/TB4 dock.
+   what killed the GTX 1060 attempt (2.5 GT/s ×1 ≈ 250 MB/s, 256 MB BAR — measured
+   2026-08, in git history). Don't repeat that without a real USB4/TB4 dock.
 
 ## Operational notes
 
@@ -367,7 +367,8 @@ with `HSA_OVERRIDE_GFX_VERSION=10.3.0` reports `arch gfx1030`).
 
 ## UMA: `--pcie-mode direct` deployed, and what the copy actually costs (2026-10-08)
 
-`./strata-uma-2026-10-08.md` reads the engine's three delivery modes for the
+The deep dive of 2026-10-08 (in git history: `git log --diff-filter=D --
+machines/aibox/strata-uma-2026-10-08.md`) read the engine's three delivery modes for the
 "PCIe" share and predicts ~10 % decode from removing the copy. The arms measured
 it the same day: the mechanism is real, the size is ~1 %, and one reading of the
 profile in that doc is wrong. Arms: `strata-tune/run-arms-uma.sh` (decode, the

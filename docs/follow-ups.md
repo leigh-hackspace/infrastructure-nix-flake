@@ -6,7 +6,8 @@ context that makes it actionable. **Add an item here (with a date and what block
 it) rather than growing `AGENTS.md`** — that is what keeps the rules file a rules
 file.
 
-Narrative of work already finished: `docs/work-log-2026-10.md`.
+Narrative of work already finished: the current month's `docs/work-log-2026-11.md`; a month
+that is closed gets absorbed into the live docs and deleted, and git history holds it.
 
 ---
 
@@ -162,7 +163,7 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   build"** (found 2026-10-22, on gw, by accident: `just check` began failing with
   `Cannot build '/nix/store/7ac7180r…-Cargo.lock.drv'` — `local builds are disabled
   (max-jobs = 0)`). **Blocks:** any `just check` on gw, so the router currently has no
-  flake-level gate; nothing else is blocked, because the four assertion evals and
+  flake-level gate; nothing else is blocked, because the assertion evals and
   `just fmt-check` do not evaluate a machine. **It is not a regression** — the same call
   fails at `f923c6e`, the commit this pass branched from, from a clean `git worktree`. It
   was latent because `…-Cargo.lock` was sitting in gw's store, and it cannot go back: the
@@ -207,8 +208,7 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   `nix flake check --no-build` → `all checks passed!`, aibox 2026-10-25). So "run it on aibox"
   is not a workaround, it is a warm store, and this item's sibling — "`just check` is
   machine-dependent" — is the same read seen from the other side rather than a second door.
-  The read itself needs the decision written up in `docs/flake-simplification-pass-2026-10-24.md`
-  §2 (where a SPA's path dependencies live), not a pairing.
+  The read itself needs a decision about where a SPA's path dependencies live, not a pairing.
 
   **Decided 2026-10-25: name the gate instead of buying the wiring.** `just check` split into
   `check-eval` (the assertion evals + `fmt-check`, no machine evaluated — safe on `gw` by
@@ -326,9 +326,9 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   `just check` — gw, because it evaluates and formats without compiling — is now a
   box where that command fails for a reason that has nothing to do with the change
   being checked. Workaround, until the src read goes: run the gate on services1 or
-  aibox, and locally use the four standalone assertion evals
+  aibox, and locally use the standalone assertion evals
   (`machines/gw/lib/check-network-tables.nix`, `common/check-printer-states.nix`,
-  `machines/services1/lib/check-config-to-gitlab.nix`) plus `nix eval` of the option
+  `common/check-doc-pointers.nix`) plus `nix eval` of the option
   you changed. The durable fix is the one the crane header already prescribes — hand
   the SPA builder the source by path and never let it read a derivation.
 
@@ -336,7 +336,14 @@ Narrative of work already finished: `docs/work-log-2026-10.md`.
   (noticed 2026-10-14 while checking the `gw` machine; re-read on 2026-10-15 during
   the network upgrade). Checking `nixosConfigurations.services2` emits
   `evaluation warning: Grafana passwords will be stored as plaintext in the Nix
-  store! Use file provider or an env-var instead.`, which by rule 9 is a finding:
+  store! Use file provider or an env-var instead.`, which by rule 9 is a finding.
+  **Re-read at the current lock, 2026-11-18, and neither finding reproduces:** `just check`
+  on services1 evaluates all six configurations (`nix flake check --no-build`) and prints
+  no evaluation warning at all — the only `warning:` line in its output is `Git tree … is
+  dirty`, which is the uncommitted tree, not a finding. Close this item on the next
+  clean-tree run rather than inheriting either half of it (rule 9: a baseline is a fact
+  about a lock).
+  Original finding, for the record:
   either the Grafana provisioner moves to the file provider /
   `GF_SECURITY_ADMIN_PASSWORD__FILE`-style env, or the warning is the documented
   exception. **The blocker that used to hide it is gone at the 2026-10-14 lock:**
@@ -1583,8 +1590,8 @@ thing to do with either is to date it (`journalctl -u … | grep "Failed with re
 
 - **`gw` is the network's router as of 2026-10-21** (cut over from co-existence
   mode, `./coexist.nix`'s `enable = false`). The box is a Supermicro X9SCL/X9SCM that
-  used to run Windows; `machines/gw/README.md` has the install and the layout, and
-  `docs/gw-cutover-attempt-2026-10-21.md` has the post-cutover findings (missing
+  used to run Windows; `machines/gw/README.md` has the install, the layout and the
+  post-cutover findings (missing
   `*.int` records, no inbound NAT, dnsmasq's RA timer stopping after a LAN link flap)
   and the last four open items below. The `10.3.1.254` co-existence address is history.
 
@@ -1718,19 +1725,31 @@ thing to do with either is to date it (`journalctl -u … | grep "Failed with re
   which is what `--no-build` was refusing), is written up in `docs/nix-dev-workflow.md`,
   "Evaluation must not build". **Blocks:** nothing; it is a one-transaction change plus the
   dependent units. **To do:** set the role password, update `secrets/secrets.yaml`, redeploy
-  the boxes whose generated config embeds it (services1's URIs — outline, affine, postgres
-  itself — and anything in `CONFIG` reading `ENV_FILE`), then restart those units. The
+  the boxes whose generated config embeds it (services1's URIs — outline and postgres
+  itself — and anything in `CONFIG` reading `ENV_FILE`), then restart those units.
+  (The `affine` role was one of them until its module was deleted on 2026-11-18; the
+  role and its database are still on the box — see the item below.) The
   precedent for treating a transcript as a leak is the RADIUS shared secret (2026-10-12,
   still open below in "Switches / RADIUS").
 
 - **The application databases still record collation version 2.42** while the box
   runs 2.44, so each still logs `database "…" has a collation version mismatch` on
   connect. `template1`/`postgres` were refreshed on 2026-10-13, which is what
-  unblocked `CREATE DATABASE` (the full story, including why `template0` refuses, is
-  in `docs/work-log-2026-10.md`). Refreshing an application database is a one-liner
+  unblocked `CREATE DATABASE` (`template0` refuses the refresh because it is a copy-in-progress;
+  that is why only the maintenance DBs were refreshed). Refreshing an application database is a one-liner
   each — `ALTER DATABASE <name> REFRESH COLLATION VERSION;` — but it is a *statement
   about their indexes*, so it wants a decision per database rather than a loop. The
   strict alternative is `REINDEX` of the collated indexes.
+
+- **The `affine` Postgres role and database are still on services1, and nothing deploys
+  Affine any more** (found 2026-11-18 while deleting the parked modules: `affine.nix` was
+  one of them, so `postgres.nix`'s `dbs` table lost its row — which stops NixOS
+  *ensuring* them, it does not drop them). Same shape for the `affine` Redis server, which
+  was commented out and is deleted. **Blocks:** nothing. **To do, if anything:** decide
+  whether the database holds anything worth keeping (it was never serving a running
+  container as far as this tree knows: `grep -rl affine machines/` finds nothing but this
+  note), then `DROP DATABASE`/`DROP ROLE` as a one-off and rotate `pg_pass` per the item
+  above while the role list is being tidied anyway.
 
 ## Switches / RADIUS
 
@@ -1874,8 +1893,8 @@ thing to do with either is to date it (`journalctl -u … | grep "Failed with re
   fleet gates on `Infra` alone — `security.sudo.extraRules` in
   `machines/pi-room-sys/configuration.nix`, the same on aibox, and `Infra`'s 11 members are
   all direct, which is exactly what does resolve (`id Catryan`, `id cjdell`, `id phyushin`
-  → `21159(Infra)`) — and the only consumer of `Members` in the tree is
-  `gitlab.nix`'s `required_groups`, which is **PARKED** (rule 23). App-level group gates
+  → `21159(Infra)`) — and nothing in tree reads `Members` today (the module that did,
+  `gitlab.nix`, was deleted 2026-11-18). App-level group gates
   (OIDC `groups` scope for Grafana/switch-gui/filestore/gocardless-dashboard) go through
   authentik's API, not sssd, so they are unaffected. Nobody is locked out today; the day a
   share, unit or `required_groups` names `Members`/`Public`, it will name a group most of its
@@ -2145,7 +2164,7 @@ that **need an owner or a decision** rather than another measurement.
 
   **Two things to check before flashing it.** (1) The image **prunes `sc3338`**: its
   exclusion list drops `/etc/sensors/sc3338.bin` and `sensor_sc3338_mipi.ko` (the board is
-  SC3336 per `docs/archive/c110.md`), leaving sc3335/sc3336/sc401ai — and `cam8`'s env says
+  SC3336 per the firmware repo's board guide), leaving sc3335/sc3336/sc401ai — and `cam8`'s env says
   `sensor=sc3338` and its current rootfs loads that module with no `insmod` error. So WiFi
   would come back and the *picture* is what needs proving; `ipcinfo -s` (a real probe, not
   the env) decides it. (2) The build's own kernel is 2 003 264 B of a 2 097 152 B partition,
@@ -2165,19 +2184,12 @@ that **need an owner or a decision** rather than another measurement.
   overlay 216 KB of 704 KB. The measured recipe is `docs/camera-sd-card-firmware-flash.md`
   §9a. **Still open:** whether `cam8` joins the fleet (a `dns-records.nix` row by MAC) or
   stays a bench spare — and the 2024 pair is still at the card root as its rollback.
-- **`cam8` cannot stream video: its WiFi transmit is ~350 kbit/s while its receive is
-  716 KB/s** (measured 2026-10-29; `docs/camera-wifi-tx-2026-10-29.md` has the numbers and the
-  re-measure recipe). It boots, associates, serves H.264 2304×1296 in full 20 fps bursts, and
-  then stalls — 4 MB takes 5.6 s one way and over 90 s the other, camera→gateway loses 54 % of
-  200 small packets, and the stream runs 0.11× real time at 4 Mbit/s, 0.67× at 256 kbit/s. Not
-  the laptop (`cam5` pulls 1.38× from the same machine, same minute), not the encoder, not CPU
-  (72 % idle; the load is D-state `MI_SYS` waits), not power save. **Blocks:** using `cam8` for
-  anything but stills, and any claim that the 2026-10-10 build is good on this board. **Needs:**
-  load the 2024 `ssw101b_wifi_usb.ko` — it is inside the 2024 rootfs dump already on the
-  camera's card, and `mount -o loop,ro` works there — against the current kernel, restart the
-  network, and re-measure transmit. If TX recovers, keep the older module; if it does not, the
-  board is the fault and no firmware will fix it. The mismatch may oops the way the reverse
-  case did, so this is a bench job with a power cycle available.
+- **`cam8`'s OpenIPC-era TX ceiling was never the camera** (measured 2026-10-29 as ~350 kbit/s
+  up against 716 KB/s down, and attributed to the camera's transmit chain). That attribution
+  was wrong and the item that told someone to swap the `ssw101b_wifi_usb` module to fix it is
+  deleted for that reason: the fault was the AP and its channel, `cam8` streams at 1.38 MB/s on
+  the replacement AP, and `docs/camera-wifi-cells-2026-10-31.md` §3 says **don't** run that
+  module swap. Read the cell before the camera.
 - **`cam5`'s pulled `S99sdconf.sh` is not cam5's** (device md5 `ae29e67d…`,
   `cameras/config/cam5/S99sdconf.sh` md5 `1b4ac291…`, which is cam9's copy).  Every
   other pulled file's md5 matched its device byte-for-byte on 2026-10-25 (the
@@ -2261,8 +2273,8 @@ that **need an owner or a decision** rather than another measurement.
   service's, and — separately — whether three cameras should share one password at all,
   since they also share the `wlanpass`.
 - **`/etc/custom.ok` is settled, and the answer is about cam7** (measured with `[ -e ]`):
-  present, size 0, on cam5 and cam9; **absent on cam7**, which is the marker `c110.md` §8.5
-  says a fresh rootfs *deletes*. So the device with the open admin plane is also the device
+  present, size 0, on cam5 and cam9; **absent on cam7**, which is the marker the OpenIPC
+  install story says a fresh rootfs *deletes*. So the device with the open admin plane is also the device
   whose install never reported completion — consistent with it being two firmware versions
   behind. **Blocks:** nothing. **Needs:** nothing, unless cam7 is reflashed, in which case
   its absence is the baseline and not a symptom.
@@ -2302,27 +2314,16 @@ that **need an owner or a decision** rather than another measurement.
   from services1 at the router — the `docs/router-and-dns.md` VLAN 226 rules are the place that
   decision lands, not frigate's YAML. Read `cameras/README.md` fault 13 first: "fix it by editing
   frigate" is explicitly not the fix.
-- **thingino was looked at, and it is not a route off OpenIPC for this fleet** (measured
-  2026-10-25 — **`./archive/camera-thingino-evaluation-2026-10-25.md`**, one command per claim;
-  **that answer is dead and the doc is archived**: the SigmaStar port exists, `cam5` and `cam8`
-  ship it, and the port's own repository is the SSOT — rule 30. The item is kept because the
-  purchase note at its end still stands and because "how did we come to think that?" is worth
-  being able to answer). Short
-  form: thingino is firmware for **Ingenic** SoCs; 252 device configs and 176 release images
-  contain no SigmaStar board, and our cameras are `ssc337` ×2 and `ssc333` ×1 (cam1 is
-  Xiongmai-family, see the item above). Its August-2026 SigmaStar *seam* is real but its
-  platform PR #1424 was closed unmerged on 2026-08-16 — "nothing builds this board yet" — and
-  the one SigmaStar model its Kconfig knows (`ssc30kq`, `infinity6e`) is not our chip. The
-  update these cameras can actually take is the OpenIPC one already staged and pre-flighted
-  (`./camera-sd-card-firmware-flash.md`) — still true of `cam7`/`cam9`, which are the OpenIPC
-  units now. **Blocks:** nothing; it closes a question so it does
-  not get re-asked from a forum post. **Needs:** re-open only against evidence, with the four
-  commands in that doc's §8 — `Config.soc.in` naming `ssc333`/`ssc337`, *and* a `configs/**`
-  defconfig for a board with that chip, *and* a release asset for it. Two of three is not
-  support: thingino's `docs/brands/*.md` has catalogued `ssc337` machines since 2024 and issue
-  #370 is the maintainers saying they will not build one. The one live purchase note: an
-  Ingenic-board camera (Tapo C110 **v3** = T23N) is a thingino device, and that is a reason to
-  read the label before buying, not a reason to touch cam5/7/9.
+- **thingino on this fleet: answered, twice, and the second answer won.** The 2026-10-25
+  measurement said "Ingenic-only, not a route off OpenIPC" (252 device configs, no
+  SigmaStar board, platform PR #1424 closed unmerged); the port existed by 2026-10-31 and
+  `cam5`/`cam8` ship it (`docs/camera-thingino-migration-2026-10-31.md`). `cam7`/`cam9` are
+  the OpenIPC units, and the update they can take is already staged
+  (`./camera-sd-card-firmware-flash.md`). **Blocks:** nothing. **Needs:** nothing —
+  `cameras/README.md` carries the four commands that re-answer "does firmware X support our
+  SoC" for any X, and two of three is not support. The one purchase note that still stands:
+  an Ingenic-board camera (Tapo C110 **v3** = T23N) is a thingino device, so read the label
+  before buying.
 - **A second copy of the camera feed table was wrong in a justfile comment** (found
   2026-10-25 while writing the thingino note): `cam-probe`'s `CAM_FEED` hint said
   `cam5 -> main_space, cam7 -> pi_room, cam9 -> woodwork`, where `cameras/README.md`'s measured
@@ -2435,8 +2436,7 @@ that **need an owner or a decision** rather than another measurement.
   and `:54`, so nothing in this repo can currently read either unit, including its running payload
   hashes (the next item). Whatever re-keys them, `cam-*` and that read are both closed by it.
 - **The thingino pin moved out from under this repo, and its hash table is now a statement
-  about a release rather than about the fleet** (measured 2026-11-04 while archiving the C110
-  docs — rule 30, `docs/archive/README.md`). Two separate things, both verified from a fresh
+  about a release rather than about the fleet** (measured 2026-11-04, rule 30). Two separate things, both verified from a fresh
   clone of the SSOT: **(a)** recreating that repo as a standalone (the fork-network fix, the
   build-deploy doc §7) **replayed the branch**, so the pinned commit `1286efbd3` is on no branch
   at all — `git merge-base --is-ancestor c110-fleet-20261031 ssc333-infinity6b0` exits 1, and its

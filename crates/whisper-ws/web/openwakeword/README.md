@@ -26,8 +26,8 @@ one is in `package.nix` (and was checked against the committed copy when the mov
 was made, so "restore from git" and "fetch from upstream" are the same bytes).
 The reason they stopped being committed is the opposite of tidiness: a file under
 this directory is inside the flake's own source, so *every evaluation of the
-repo* copied all 22 MB into the store — `docs/flake-simplification-pass-2026-10-24.md`
-§1 measured 669 MB of those copies on the build machine.
+repo* copied all 22 MB into the store: measured 2026-10-24, 27 such copies and 669 MB on
+the build machine.
 
 ## Files
 

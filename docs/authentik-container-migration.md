@@ -239,8 +239,8 @@ postgres 16 and services1 is on 17. Same-major means the dump can be restored
 in *either* direction, which is the rollback, and it keeps authentik's
 connection pool off the cluster that outline, gocardless-dashboard, switch-gui
 and the door system share. It also sidesteps the `template1` collation-version
-mismatch (docs/work-log-2026-10.md): the dump is created and restored inside
-the same image.
+mismatch a cross-major restore invites after a glibc upgrade: the dump is created and
+restored inside the same image.
 
 The appliance's `postgres:16-alpine` is 16.9 and a pull today is 16.15, so the
 tags matching is not the same thing as the versions matching. `check` reports

@@ -33,11 +33,11 @@ in {
         # surface — `sopsSecretText` refuses a name that is not in it — because the
         # list used to be a comment at the top of machines/services1/sops.nix, and a
         # comment listing exceptions is a list nobody updates: it named seven names
-        # while ten were going down this path (audit §4.1).  Each of these is a
+        # while ten were going down this path.  Each of these is a
         # credential that is world-readable in the nix store, forever, by name; the
         # sentence is the reason someone accepted that.
         slack_url = "Slack webhook URL interpolated into alert ExecStart lines (postgres, backup, containers).";
-        pg_pass = "Postgres password inside connection URIs (outline's databaseUrl, affine's, postgres.nix's own clauses).";
+        pg_pass = "Postgres password inside connection URIs (outline's databaseUrl, postgres.nix's own clauses).";
         nginx_sso_auth = "Cookie signing key inside nginx-sso's generated YAML config.";
         nginx_sso_client_secret = "authentik client secret inside nginx-sso's generated YAML config.";
         unifi_db_password = "Password inside the UniFi controller's mongodb URI.";

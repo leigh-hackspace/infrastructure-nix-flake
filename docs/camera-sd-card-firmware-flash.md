@@ -24,8 +24,10 @@ thingino built only for **Ingenic** SoCs at the time, and this fleet is SigmaSta
 `ssc333` ×1). Receipts, the four commands
 that re-answer it for any other firmware, the purchase case where thingino *was* the right
 answer (C110 **v3** = Ingenic
-T23N), and what a firmware swap would cost the frigate pipe:
-**[`archive/camera-thingino-evaluation-2026-10-25.md`](archive/camera-thingino-evaluation-2026-10-25.md)**.
+T23N), and what a firmware swap would cost the frigate pipe: that evaluation was written up
+2026-10-25 and is in git history (`git log --diff-filter=D --
+docs/archive/camera-thingino-evaluation-2026-10-25.md`); its four-command re-check for *any*
+other firmware is reproduced in `cameras/README.md`.
 Everything below assumes an OpenIPC image (`uImage.<soc>` + `rootfs.squashfs.<soc>`), because
 thingino's images are a single assembled `.bin` with its own partition table — a different write
 entirely, not a different filename, and the geometry moves with the firmware (migration doc §1).
@@ -197,13 +199,13 @@ Before flashing anything, also:
 Everything in §8 needs the U-Boot prompt.
 
 - **Pins:** UART0, **3.3 V logic, 115200 8N1**, TX/RX on the main PCB near `TP501`, boot
-  banner `IPL` then `U-Boot 2015.01` — all from `docs/archive/c110.md` §8.3, which did this on a
-  donor board of this family. **Never 5 V TTL.** The `console=ttyS0,115200 panic=20` on the
+  banner `IPL` then `U-Boot 2015.01` — the console bring-up a donor board of this family went
+  through is in the firmware repo's `docs/cameras/tapo-c110.md` (rule 30). **Never 5 V TTL.** The `console=ttyS0,115200 panic=20` on the
   command line and `stdin/stdout/stderr=serial` in the env confirm the kernel and U-Boot
   both talk to it.
 - **Pads: proven reachable on `cam8` (2026-10-28), still unproven on the other three.**
-  `c110.md` §2 records the donor's being solder-jumpered to a header, and §"What is not
-  proven" says to assume hot air may be needed; on `cam8` a 3.3 V adapter on the same pads
+  The donor board of this family was solder-jumpered to a header, and the standing advice is
+  to assume hot air may be needed (firmware repo, `docs/cameras/tapo-c110.md`); on `cam8` a 3.3 V adapter on the same pads
   worked with the shield in place. Whether *cam5*/*cam7*/*cam9* are laid out the same is
   unknown, and it is the first thing a bench session on any of them decides.
 - **Interrupting autoboot with `bootdelay=0`:** the OpenIPC build for this family
@@ -223,8 +225,8 @@ Everything in §8 needs the U-Boot prompt.
 
 Tooling verified present on services1 (`sfdisk`, `mkfs.vfat`, `fatlabel`, `dosfsck`,
 `mtools`); no internal MMC slot, so a USB reader. **Verify the device node before every
-write — this destroys the card's contents, and `c110.md` §8.1 warns some cards never work,
-asking for a blank FAT32 card of ≤ 32 GB.**
+write — this destroys the card's contents, and some cards never work at all: the requirement
+is a blank FAT32 card of ≤ 32 GB (firmware repo, `docs/cameras/tapo-c110.md`).**
 
 ```bash
 DEV=/dev/sdX; PART=${DEV}1            # from lsblk -o NAME,SIZE,TRAN; re-read it twice
@@ -258,7 +260,7 @@ dd if=${DEV} bs=512 skip=$((8192 + $(sudo od -An -tu1 -j28 -N1 ${DEV} | tr -d ' 
    | head -1))) count=1 status=none 2>/dev/null | head -c 1 | od -c | head -1     # 0x0F
 ```
 
-The last two lines are the paranoia `c110.md` §8.1 says the card demands: the FAT32
+The last two lines are the paranoia that card demands: the FAT32
 signature at the partition start, and a boot indicator of `0x0F`/`0x00` in the table. A card
 that `mount` accepts and `fatload` refuses is the classic waste of an afternoon on a ladder.
 
@@ -521,11 +523,12 @@ cat "$d"/mtd0-boot.bin "$d"/mtd1-env.bin > bootenv-320k.bin     # 0x40000 + 0x10
 # fatload mmc 0 0x21000000 bootenv-320k.bin ; run ubnor
 ```
 
-…which is what `c110.md` §8.2 was doing with `openipc-ssc333-lite-8mb.bin` at offset `0x0`:
-writing a **whole-chip** image, not a kernel.
+…which is what the pre-thingino bench route did with `openipc-ssc333-lite-8mb.bin` at offset
+`0x0`: writing a **whole-chip** image, not a kernel.
 
-**L3 — neither.** SPI clip (`c110.md` §8.2: CH341A + SOP8, with the 3.3 V VCC note, plus
-OpenIPC's `snander`) or serial with the IPL's `sload` protocol (§8.3). The dumps restore the
+**L3 — neither.** SPI clip (CH341A + SOP8, with the **3.3 V VCC** note in the firmware repo's
+`docs/cameras/tapo-c110.md`, plus OpenIPC's `snander`) or serial with the IPL's `sload`
+protocol (same guide). The dumps restore the
 whole chip byte-for-byte here; `RECONSTRUCT.txt` in each dump directory holds the `dd
 conv=notrunc bs=1 seek=<offset>` lines that rebuild `chip.bin` from the five partitions, and
 `SHA256SUMS` holds what each partition must hash to.
@@ -572,8 +575,7 @@ conv=notrunc bs=1 seek=<offset>` lines that rebuild `chip.bin` from the five par
 - **Never `fw_setenv`** (§7). Not to add a bootcmd, not to "fix" `wlandev`, not to change
   `rootmtd` to make an image fit. `rootmtd`/`rootsize` are how this layout says where the
   rootfs ends; a camera whose env disagrees with its kernel's `mtdparts=` is unrecoverable
-  without the bench, and `docs/camera-firmware-audit-2026-10-25.md` §3 records upstream
-  issue #2238 being exactly that state.
+  without the bench, and upstream issue #2238 is exactly that state (measured 2026-10-25).
 - **Never `ubnor` without a boot+env image** (§10 L2) — it erases the env.
 - **Never `sf write` something you have not measured against the partition it lands in**
   (§3), never trust a `fatload` that did not print a plausible byte count, and **never trust
@@ -588,12 +590,9 @@ conv=notrunc bs=1 seek=<offset>` lines that rebuild `chip.bin` from the five par
 ## 13. Related
 
 `cameras/README.md` (the fleet record, the reach, the faults, and the corrected storage
-model), `docs/archive/c110.md` §8 (the original reflash route on the donor board — the IPL/
-`sload`/clip detail this document does not repeat; archived 2026-11-04, and the thingino-era
-flashing guide for this exact board is `docs/cameras/tapo-c110.md` in the firmware repo),
-`docs/camera-firmware-audit-2026-10-25.md`
-(what was believed before the measurement, what replaced it, and the strike list of claims
-that never had a source), `docs/camera-wifi-recovery.md` (the card-only recovery for a camera
+model), `docs/cameras/tapo-c110.md` **in the firmware repo** (rule 30: the C110 as a board —
+revisions, what is on the 8 MiB flash, flashing from stock with a programmer, the IPL/`sload`/
+clip detail this document does not repeat), `docs/camera-wifi-recovery.md` (the card-only recovery for a camera
 that boots without a radio, and what actually holds the credentials), `docs/follow-ups.md`
 (cam7's open admin, the PSK rotation, and the bench session), and the recipes: `cam-preflight`,
 `cam-flashdump`, `cam-backup`, `cam-image`, `cam-env`, `cam-card`.

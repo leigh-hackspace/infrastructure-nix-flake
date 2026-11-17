@@ -162,11 +162,14 @@ printed on success). `--target-host` targets a remote host without deploying, e.
 `leigh-admin` — root is not keyed — with its passwordless sudo), but local `build`
 is enough to validate config.
 
-`just check` = flake evaluation + the config assertions in
-`machines/services1/lib/check-*.nix` and `common/check-printer-states.nix` +
-`alejandra --check` over every tracked `.nix`. `just check-build` =
-`nixos-rebuild dry-build` for all three machines: compiles everything, activates
-nothing. Use the latter whenever anything is built rather than just evaluated.
+`just check` = `nix flake check --no-build` + the three assertion evals
+(`common/check-printer-states.nix`, `machines/gw/lib/check-network-tables.nix`,
+`common/check-doc-pointers.nix`) + `alejandra --check` over every tracked `.nix`; on `gw`
+the flake step is skipped out loud and `just check-eval` is the gate (AGENTS.md rule 22).
+`just check-build` = `nix build` of the five deployable machines' system toplevels
+(compiles everything, activates nothing, GC-roots each output under
+`/nix/var/nix/gcroots/check-build` until `just check-build-clean`). Use the latter whenever
+anything is built rather than just evaluated.
 
 ## Never evaluate to find out what a change does
 
@@ -408,8 +411,9 @@ rsa + ed25519 each, addresses from `common/hosts.nix`) handed to
 `/etc/ssh/ssh_known_hosts` on every box that imports `commonModules`, and the
 daemon's ssh is the pin whether or not its root ever visited anything. `just
 known-hosts` prints the lines to paste in, for the day a box is reinstalled or
-rotates its keys — pinning rather than `accept-new` is deliberate, and is the same
-call `docs/repo-audit-2026-10-07.md` §3.4 made for the router's keys.
+rotates its keys — pinning rather than `accept-new` is deliberate, and the router's own
+keys are pinned for the same reason: a box that regenerates its keys should fail the hop
+rather than silently re-trust whatever answers the address.
 
 Two things worth not rediscovering:
 
@@ -947,7 +951,7 @@ Poll `/tmp/deploy.log` and the unit state (`systemctl is-active deploy-build`,
 shell invocation. `nixos-rebuild switch` does link `/nix/var/nix/profiles/system`,
 so the boot target follows the switch; that only needs the manual `nix-env
 --profile ... --set` fix when activating a closure by hand with
-`switch-to-configuration switch` (see `docs/nix-build-sigkill-2026-10-11.md`).
+`switch-to-configuration switch` — the shape `common/nixbld.nix`'s header describes.
 
 ### The identity half of that hop is not the host half, and it was missing everywhere
 
@@ -1112,8 +1116,8 @@ adds a builder gets it from the module and a box that serves builds needs nothin
 
 Verified working 2026-10-12 (delegated build and a `--max-jobs 0` build both
 completed on services2 and copied back, with no SIGKILL sweep on either box) — the
-fix that made that true is `common/nixbld.nix`, and the incident behind it is
-`docs/nix-build-sigkill-2026-10-11.md`. The hop itself is box-agnostic (the same
+fix that made that true is `common/nixbld.nix`, whose header is the mechanism behind the
+incident. The hop itself is box-agnostic (the same
 key, user and `nix.settings.trusted-users` entry on both ends); re-verify it after
 the move with one delegated build rather than inheriting that date. Poll a
 delegated build rather than trusting it: **a remote builder that silently falls
@@ -1202,8 +1206,8 @@ on the machine. **Never put a real account in `nixbld`** — `common/nixbld.nix`
 fails the eval if the config asks for it, and `nixbld-guard.timer` undoes an
 imperative `usermod -aG nixbld` / `gpasswd -a` within fifteen minutes and writes
 the reason to the journal (`journalctl -u nixbld-guard` is the first thing to read
-if a session ever dies during a build). Full story, nix 2.34.7 source references
-and evidence: `docs/nix-build-sigkill-2026-10-11.md`.
+if a session ever dies during a build). The mechanism, with nix 2.34 source references, is
+the header of `common/nixbld.nix`; the 2026-10-11 post-mortem itself is in git history.
 
 ## After a GC, `nix flake check --no-build` fails one build-time secret at a time
 

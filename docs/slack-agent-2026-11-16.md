@@ -184,7 +184,7 @@ small Rust MCP server, both from our own crate tree — or take the packaged Pyt
 
 **Recommendation: A (Rust), with the honest caveat that B is about a third of the code and
 needs nothing vendored.** Rule 1 is not a purity rule — it exists because shared code had
-already drifted between three callers (`docs/work-log-2026-10.md`), and a second bot in a
+already drifted between three callers, and a second bot in a
 second language is exactly how that starts. If we take B, the argument that earns it is "the
 agent-loop library is the risky part and we would rather not own it", said out loud and
 written into this doc, not by drifting.

@@ -12,7 +12,11 @@
     # check` does not cover it, and the import list is not where its state of repair
     # should be recorded.  Uncomment, then run `just check`, and expect to fix it.
     #
-    # ./affine.nix
+    # Nothing here is parked as of 2026-11-18: `gitlab.nix` (+ its serializer and
+    # checker), `affine.nix` and `samba.nix` were deleted rather than left
+    # unevaluated, and the network does not run them — `git log --diff-filter=D --
+    # machines/services1/services/` recovers any of them, with their parking
+    # headers, if it ever does.
     # authentik — the IdP, since the 2026-10-28 cutover off the 10.3.1.36 appliance.
     # `staged` in that file decides whether it claims the network; read
     # docs/authentik-container-migration.md before changing either.
@@ -26,7 +30,6 @@
     # machines/services2/gatus.nix on 2026-10-17; the endpoint list is data in
     # common/monitoring-endpoints.nix and the vhost is ./monitoring.nix.
     ./gatus.nix
-    # ./gitlab.nix
     ./gocardless-dashboard.nix
     # Moved off `apps1` here on 2026-11-16; `10.3.1.30:8123` now forwards to it and
     # logs whoever still dials the old address. Read its header before touching the
@@ -58,7 +61,6 @@
     ./postgres.nix
     ./printer-monitoring.nix
     ./redis.nix
-    # ./samba.nix
     # The hackspace Slack bot, in two units: the read-only MCP tool server and the
     # agent that talks to Slack. First deploy posts nothing (see
     # `infra.slackAgent.dryRun`); design and measurements in

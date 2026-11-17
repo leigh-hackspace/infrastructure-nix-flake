@@ -326,7 +326,7 @@ fn scrape(printer: &Printer, out: &mut Vec<String>) {
             // MCU link health. `mcu.last_stats` holds the counters for the
             // running Klipper session. bytes_retransmit / bytes_invalid are
             // the early-warning signal for the flaky CH340 USB-serial link
-            // (docs/3d-blue-klipper-log-review-2026-10-03.md); exported as
+            // (docs/printer-servers.md, "The CH340 serial link"); exported as
             // cumulative counters so Prometheus can rate() them and alert
             // before a print is aborted with "Lost communication with MCU".
             match status.get("mcu") {

@@ -39,11 +39,11 @@ reason is [`../docs/camera-thingino-build-deploy-2026-10-31.md`](../docs/camera-
 §7).  That repository's `AGENTS.md` owns how the image is built.  This directory keeps the
 fleet: the table below, the reach, the proven/guess split, the faults, the verbs.  The bench
 guide that came with the cameras — "TP-Link Tapo C110 v2.0 — Complete Hacking Guide", the stock
-SPI-NOR carve-up, the boot chain, the app-less provisioning routes, §8 the OpenIPC reflash
-route — is archived at
-[`../docs/archive/c110.md`](../docs/archive/c110.md) (moved out of this directory on
-2026-11-04): history, kept whole, nothing in it actionable now that no camera here runs stock
-firmware and two of the four run thingino.
+SPI-NOR carve-up, the boot chain, the app-less provisioning routes, the OpenIPC reflash route —
+is gone: it was `cameras/c110.md`, and nothing in it was actionable once no camera here ran
+stock firmware.  It is in git history
+(`git log --diff-filter=D -- cameras/c110.md docs/archive/c110.md`), and everything in it that
+was still true lives in the firmware repo's guide.
 
 **What the fleet's own words say about which board it is**: cam7 reports `ssc333 (infinity6b0
 family), sc3338, 8 MB nor flash` with the board string `INFINITY6B0 SSC009A-S01A QFN88`, while
@@ -283,7 +283,7 @@ camera /etc/majestic.yaml (video0, rtsp port 554, `stream=0`)
   `/proc/partitions` holds `mtdblock0…mtdblock4` and **there is no `/dev/mmc*`
   node at all** (`flash_mmc_note`, `sdconf_mount=/mnt/mmcblk0p1`,
   `sdconf_mount_present=absent`), so the hook can never fire: the `mmcblk`/SD
-  story in `c110.md` is the vendor's, not ours.  cam7 does not even carry the
+  story the vendor tells is not ours.  cam7 does not even carry the
   hook (`sd_hook=0`).
 * **The pulled `/etc` files match the devices byte for byte, except two known
   cases** (md5s from the report's `etc_md5s` line against
@@ -322,7 +322,7 @@ camera /etc/majestic.yaml (video0, rtsp port 554, `stream=0`)
   consumed matters (`/etc` config, `/etc/sensors/*.bin` ~115 KB, `/tmp/webui`
   ~27 KB, `/tmp/log` up to 64 KB) and has to be measured, not inferred.
 * **What model each of these is.**  Their self-reported SoC/board puts cam7 on
-  the `c110.md` C110 v2 line and cam5/cam9 on the doc's `ssc337` branch, but
+  the firmware repo's C110 v2 line and cam5/cam9 on its `ssc337` branch, but
   nobody read a label or a stock-version string, so "cam5 is a Tapo C110 vX" is
   not a fact here — and the reflash image is chosen per SoC, which is exactly
   when the difference stops being academic.
@@ -408,7 +408,7 @@ camera's config before the repo can hold it (`cam-pull` → `cam-diff` →
    were part-right.** Measured 2026-10-25 with `[ -e ]`: **present, size 0, on cam5 and
    cam9; absent on cam7.** So an install hook ran to completion on two of the three, and
    cam7 — the 2.3.11.22 device, the odd firmware out, and the one whose admin plane is
-   open — never finished it. That is the marker `c110.md` §8.5 says a fresh rootfs
+   open — never finished it. That is the marker the OpenIPC install story says a fresh rootfs
    *deletes*, so on cam7 "deletable" and "never created" are indistinguishable.
 
 10. **cam5 carries a root-owned handler for a card slot it may not have.**
@@ -475,9 +475,7 @@ the flash sequence it now carries is `sf update` + a read-back `cmp.b`, **not**
 `run urnor`, which on this U-Boot is refused at the erase and then writes over un-erased NOR
 while printing `Written: OK` (§8 of that document has the receipt, and it is the reason the
 byte count is not a check).
-The reasoning that got there, including what this file and its author believed before the
-measurement, is **[`../docs/camera-firmware-audit-2026-10-25.md`](../docs/camera-firmware-audit-2026-10-25.md)**.
-What follows is only what a person touching a camera must know without opening either.
+What follows is only what a person touching a camera must know without opening that.
 
 * **The thingino firmware, its build, and its flashing guide are in the firmware's own
   repository** — `git@github.com:cjdell/thingino-firmware.git`, branch `ssc333-infinity6b0`,
@@ -496,10 +494,21 @@ What follows is only what a person touching a camera must know without opening e
 * **"thingino is not an option for this fleet" was measured on 2026-10-25, and was overturned
   on 2026-10-31** — the port runs on these boards and `cam5`/`cam8` shipped it
   ([`../docs/camera-thingino-migration-2026-10-31.md`](../docs/camera-thingino-migration-2026-10-31.md)).
-  The evaluation itself is archived at
-  [`../docs/archive/camera-thingino-evaluation-2026-10-25.md`](../docs/archive/camera-thingino-evaluation-2026-10-25.md);
-  it is where to go for what upstream said at `f083382` and for the four commands that re-answer
-  the same question about any other firmware.  Nothing in this file should restate it.
+  "Support" is a claim about a commit, so re-answer it rather than inheriting it — four
+  commands, and two of three is not support:
+
+  ```bash
+  git clone --depth 1 --no-recurse-submodules https://github.com/themactep/thingino-firmware /tmp/th
+  cd /tmp/th
+  grep -n "ssc3\|infinity6" Config.soc.in        # does its Kconfig know our chips?
+  ls board soc kernels; ls package | grep -i sigma   # did the board layer land?
+  grep -rliE "ssc333|ssc337" configs/ || echo none    # a defconfig for our boards?
+  curl -sS "https://api.github.com/search/issues?q=repo:themactep/thingino-firmware+sigmastar+type:pr+state:open" \
+    | python3 -c "import sys,json;d=json.load(sys.stdin);print(d['total_count']);[print(i['number'],i['title'],i['html_url']) for i in d['items']]"
+  ```
+
+  Re-open the question only when `Config.soc.in` names the chip **and** a `configs/**`
+  defconfig names a board with it **and** a release asset exists for that board.
 * **The flashing mechanism already exists and needs no U-Boot work.** All three environments
   ship `setsdcard` (`setenv updatetool fatload mmc 0`), `uknor` and `urnor` — load
   `uImage.${soc}` / `rootfs.squashfs.${soc}` off a FAT card and `sf erase`/`sf write` them at
@@ -527,8 +536,8 @@ What follows is only what a person touching a camera must know without opening e
   channel-6 BSS, and it streams at 1.38 MB/s on the replacement AP that chose channel 11.
   **Read the cell before the camera** — the AP map, the controller-stats recipe, the two-way `dd`
   ceiling test and the rule about never changing an association over ssh are all in
-  `../docs/camera-wifi-cells-2026-10-31.md`; `../docs/camera-wifi-tx-2026-10-29.md` is the
-  measurement with its headline retired.
+  `../docs/camera-wifi-cells-2026-10-31.md` (the 2026-10-29 measurement that started it, with
+  its headline retired, is in git history).
 * **The layout is fixed-slot, so a flash does not move the settings.** `256k(boot),
   64k(env),2048k(kernel),5120k(rootfs),-(rootfs_data)` = the whole 8,388,608 B chip,
   identical on all three; `rootfs_data` sits at 0x750000 regardless of squashfs size, and
@@ -595,8 +604,8 @@ the half a flash needs.
   boot chain, how to flash, what each command destroys, the traps.  It does **not** live here:
   a device story belongs next to the firmware it describes, and by 2026-11-04 every sentence in
   this directory about how the image is built or reflashed was a copy of one written there
-  first.  The pre-thingino bench guide that used to be `cameras/c110.md` is now
-  `docs/archive/c110.md`, frozen, and `docs/archive/README.md` is the rule for that directory.
+  first.  The pre-thingino bench guide that used to be `cameras/c110.md` was deleted on
+  2026-11-18 — git history is the archive (`git log --diff-filter=D -- cameras/c110.md`).
 * **`cameras/inventory.sh`** — the busybox-ash report one camera runs
   (`just cam-check` pipes it to `sh -s` over ssh).  **POSIX sh + busybox applets
   only, no `awk`, no bash** (busybox on these boxes has no awk, so a first
@@ -640,8 +649,7 @@ the half a flash needs.
    rule 16): it overwrites `/etc`, and `/etc` **is** the configuration.  Everything
    here is a config-file operation instead.  And a reflash is not a free operation
    on the network either: the image goes on over U-Boot from SD or TFTP
-   (`docs/archive/c110.md` §8.3 — archived 2026-11-04, and the thingino-era equivalent is
-   `docs/cameras/tapo-c110.md` in the firmware repo — which also points at a
+   (`docs/cameras/tapo-c110.md` in the firmware repo is the guide — which also points at a
    `jenkins.int.leighhack.org` OpenIPC
    Tapo-C110 artifact — that URL is the doc's claim, **not verified by this**
    **pass**), and the first boot afterwards has the published default serial

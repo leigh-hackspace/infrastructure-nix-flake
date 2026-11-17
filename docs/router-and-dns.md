@@ -25,8 +25,9 @@ appliance on 2026-10-21. Nothing about the running router is out-of-band any mor
 dnsmasq is generated from `common/vlans.nix`, `common/dns-records.nix` and
 `common/int-dns.nix`, nftables from `common/config.nix`, and the AAISP tunnel and
 tailnet client live in `machines/gw/`.
-Read `machines/gw/README.md` before changing it; `docs/gw-cutover-attempt-2026-10-21.md`
-has the findings from the cutover and what is still open.
+Read `machines/gw/README.md` before changing it — it owns the cutover's findings and what
+is still open (the journals of the two failed attempts, 2026-10-17 and 2026-10-21, are in git
+history: `git log --diff-filter=D -- docs/gw-cutover-attempt-2026-10-21.md`).
 
 What still spoke the retired OPNsense box's language, and when it stopped:
 

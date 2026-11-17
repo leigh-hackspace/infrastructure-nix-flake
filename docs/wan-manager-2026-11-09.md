@@ -1,8 +1,8 @@
 # The WAN manager — discover, rank and relentlessly repair the router's uplink
 
 **What this is:** `crates/wan-manager` + `machines/gw/wan-backup.nix`. It replaces the
-2026-11-07 backup-WAN module (now archived at
-[`docs/archive/wan-backup-uplink-2026-11-07.md`](archive/wan-backup-uplink-2026-11-07.md)).
+2026-11-07 backup-WAN module (its write-up is in git history: `git log --diff-filter=D --
+docs/archive/wan-backup-uplink-2026-11-07.md`).
 That module worked, but every fact in it was a name in the configuration: one Wi-Fi
 interface, one USB netdev, one hub gateway, one list of fallback paths, and a 10-second
 shell reconciler whose liveness was a separate timer. This one takes **no WAN name,

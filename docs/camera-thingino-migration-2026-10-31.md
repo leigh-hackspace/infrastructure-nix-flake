@@ -1,9 +1,8 @@
 # thingino on the SigmaStar fleet: the port exists, and `cam5` + `cam8` now run it
 
-**2026-10-31.** `cameras/README.md` and
-`docs/archive/camera-thingino-evaluation-2026-10-25.md` (archived 2026-11-04) both say, with
-receipts, that thingino is not an option for these cameras because upstream builds only Ingenic
-SoCs. **As of today that is no longer true**: a build tree porting
+**2026-10-31.** `cameras/README.md` said, with receipts, that thingino is not an option for these cameras
+because upstream builds only Ingenic SoCs (that 2026-10-25 evaluation is in git history; the
+four commands that re-answer it are now in `cameras/README.md`). **As of today that is no longer true**: a build tree porting
 thingino to the SigmaStar SSC333 / Infinity6B0 family exists — the SSOT is
 `git@github.com:cjdell/thingino-firmware.git`, branch `ssc333-infinity6b0` (private, see the
 build-deploy doc §7) — and two fleet cameras were migrated onto it
@@ -186,7 +185,7 @@ root password reset — plan a console for it.
   `quality=fair`. Its `authorized_keys` is gone (the changeover wipes the data partition),
   so ssh needs `just cam-key cam8` — the one recipe that asks for the device password —
   before any `cam-*` recipe will work on it. joined Leighhack seconds after
-  boot; its OpenIPC-era TX fault (`docs/camera-wifi-tx-2026-10-29.md`, <45 KB/s) **was not the
+  boot; its OpenIPC-era TX fault (measured 2026-10-29 at <45 KB/s) **was not the
   firmware**: it streams because the AP it is joined to was replaced that morning and chose
   channel 11, where cam8 is the only 2.4 GHz client. The driver-vs-hardware question is answered
   *neither*, and cam5 has inherited the same fault on channel 6

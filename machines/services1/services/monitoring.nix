@@ -9,8 +9,8 @@
 # anything else services1 runs (checked against the rendered units, not against this
 # file).
 #
-# This file also carries the drift guard that used to sit inside gatus.nix
-# (docs/repo-audit-2026-10-07.md §3.7).  It belongs here rather than with gatus,
+# This file also carries the drift guard that used to sit inside gatus.nix.
+# It belongs here rather than with gatus,
 # because the thing it checks is this box's own vhost list: every https
 # `*.int.leighhack.org` endpoint in common/monitoring-endpoints.nix has to be a
 # name this nginx actually serves, otherwise a renamed or removed app leaves gatus

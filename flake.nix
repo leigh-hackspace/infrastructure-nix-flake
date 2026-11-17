@@ -162,8 +162,7 @@
     voiceWakePkg = pkgs.callPackage ./crates/voice-wake/package.nix {};
 
     /*
-    The machines, as one function and one short call each (§2.1 of
-    docs/flake-simplification-audit-2026-10-22.md).
+    The machines, as one function and one short call each.
 
     Before this there were five copies of `nixpkgs.lib.nixosSystem`, nine
     `import nixpkgs`, six `config.allowUnfree = true` and three verbatim copies of
@@ -473,12 +472,6 @@
       # The klippy/print state tables read out of crates/moonraker-exporter still match
       # the Grafana value mappings and the Prometheus alert numbers generated from them.
       printer-states = asCheck "printer-states" (import ./common/check-printer-states.nix);
-
-      # The Nix -> GITLAB_OMNIBUS_CONFIG serializer.  It covers a **parked** module
-      # (gitlab.nix is not imported), so this is the one check in here that is green
-      # about something the network does not run — see `just check`'s own note and
-      # docs/flake-simplification-audit-2026-10-22.md §6.
-      config-to-gitlab = asCheck "config-to-gitlab" (import ./machines/services1/lib/check-config-to-gitlab.nix);
 
       # The instructions themselves: every `just <name>`, repo path and docs link in
       # AGENTS.md/README.md/justfile resolves to something that exists, and AGENTS.md

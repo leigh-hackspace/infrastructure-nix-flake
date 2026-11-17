@@ -19,10 +19,11 @@
 # and SIGKILLed the admin's whole process set: tmux, the Zed remote server,
 # `user@1234.service`, `network-status.service` (then running as `User=leigh-admin`
 # on services1; it is a DynamicUser on gw now),
-# and the ssh session of whoever delegated the build. That is the whole of
-# docs/nix-build-sigkill-2026-10-11.md — including why aibox, where nothing added
-# itself to the group, was never affected (not, as the post-mortem guessed, because
-# its `sandbox` is `true` rather than `relaxed`).
+# and the ssh session of whoever delegated the build. The receipts are in git history
+# (`git log --diff-filter=D -- docs/nix-build-sigkill-2026-10-11.md`); what that
+# post-mortem initially guessed about aibox — that its `sandbox` is `true` rather than
+# `relaxed` — was wrong: nothing there had added itself to the group, which is the only
+# reason it was never affected.
 #
 # Nothing needs the membership, whatever the comment in build-farm.nix used to say:
 #
@@ -68,7 +69,7 @@ in {
         `nixbld` group. That group is the pool of UIDs nix runs builds as: nix
         assigns one member per build and SIGKILLs that UID before and after it,
         so a real account in `nixbld` loses every process it owns to every build
-        on this machine (docs/nix-build-sigkill-2026-10-11.md).
+        on this machine; see the header of this file for the mechanism.
 
         A client that has to be allowed to ask the daemon to build things needs
         `nix.settings.trusted-users` (and `nix.settings.allowed-users`), not membership.
@@ -103,7 +104,7 @@ in {
 
         rc=0
         for u in $bad; do
-          echo "removing '$u' from the nixbld group: nix runs builds as a member of that group and SIGKILLs the UID it picked, before and after every build, so a real account in nixbld has its whole process set destroyed by every build (docs/nix-build-sigkill-2026-10-11.md)" >&2
+          echo "removing '$u' from the nixbld group: nix runs builds as a member of that group and SIGKILLs the UID it picked, before and after every build, so a real account in nixbld has its whole process set destroyed by every build (see common/nixbld.nix)" >&2
           gpasswd -d "$u" nixbld || { echo "nixbld-guard: FAILED to remove '$u' from nixbld" >&2; rc=1; }
         done
         exit $rc

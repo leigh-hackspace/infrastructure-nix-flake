@@ -80,8 +80,8 @@
     #
     # This was empty ("the old box answered IPv4-only on this VLAN") while the
     # plan was for networkd to take it from AAISP's DHCPv6-PD delegation.  It is
-    # written down now because PD has never been observed to work on this box
-    # (docs/gw-cutover-attempt-2026-10-21.md), and an empty `ipv6` next to a
+    # written down now because PD has never been observed to work on this box,
+    # and an empty `ipv6` next to a
     # non-empty `ra` is the worst of the two failure modes: dnsmasq advertises
     # `2001:8b0:1d14:226::/64` and the router has no address in it, so every
     # client on this VLAN configures a public address it cannot reach a gateway

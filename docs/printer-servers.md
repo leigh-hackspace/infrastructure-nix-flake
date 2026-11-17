@@ -82,7 +82,15 @@ re-imaged.
 **The `hackspace` user's password and `authorized_keys` are also shared by the
 clone.** Rotate them if the two boxes should not be interchangeable.
 
-## Write-ups
+## The CH340 serial link
 
-- `docs/3d-blue-klipper-log-review-2026-10-03.md` — the klippy.log investigation.
-- `docs/3d-lime-link-stress-harness-2026-10-03.md` — the link stress harness.
+Both MCUs are behind a CH340 USB-serial adapter, and that link is what fails:
+retransmits and invalid bytes drift up until a print aborts with `Lost
+communication with 'mcu'`. It was investigated from `klippy.log` on 2026-10-03
+(the log review and the out-of-band link-stress harness that followed are in git
+history); what survived is the telemetry, which is live config:
+`moonraker_mcu_bytes_retransmit_total` / `_bytes_invalid_total`, exported by
+`crates/moonraker-exporter`, graphed in `monitoring-dashboards.nix` and alerted on
+in `observability.nix`. So: read those two rates before blaming a printer, and
+read `/home/hackspace/printer_data/logs/klippy.log` on the box for the failure
+itself.

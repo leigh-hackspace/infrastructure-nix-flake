@@ -8,8 +8,8 @@
 #
 # That reason stopped holding on 2026-10-17: services2 has 30 GB of RAM and strata's
 # Coder engine runs at ~28 GiB RSS against it, so gatus living there is what takes
-# the monitor down under memory pressure (machines/services2/README.md, and the
-# OOM record in docs/work-log-2026-10.md).  It moved to services1, which has the
+# the monitor down under memory pressure (machines/services2/README.md carries the
+# OOM record).  It moved to services1, which has the
 # headroom and already serves the status page's vhost.
 #
 # What is lost is the one check that used to be worth having: gatus now runs on the

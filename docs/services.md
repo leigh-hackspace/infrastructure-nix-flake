@@ -356,8 +356,9 @@ deployment). OIDC via authentik, `Infra` gate (provider pk 34, app slug
 `--no-auth` (treat every request as a local session) is **only honoured on a
 loopback bind** — `main.rs` exits if it is combined with a non-loopback `--bind`,
 using `common_service::is_loopback`, which parses the host as an `IpAddr` rather
-than string-matching `127.` (the bug that made that gate a no-op is in
-`docs/work-log-2026-10.md`). `frontend/dist/` and `target/` are git-ignored.
+than string-matching `127.` — the gate used to end in `starts_with("127.")`, which accepted
+`--bind 127.example.com` and made the flag's only guard a no-op. `frontend/dist/` and
+`target/` are git-ignored.
 
 **Preview support is one table**: `crates/common-rs/preview` maps extension →
 what a browser can render itself (images incl. SVG, video, audio, PDF, text).
@@ -839,5 +840,5 @@ instead of hand-maintaining it is open in `docs/follow-ups.md`.
 
 **New shared code goes here, not into a second copy in the second crate.**
 `service` and `json`'s emitters exist because both had already drifted between
-three callers; the 2026-10-13 consolidation (`docs/work-log-2026-10.md`) is what
-found the `--no-auth` loopback bug while deduplicating them.
+three callers; the 2026-10-13 consolidation is what found the `--no-auth` loopback bug while
+deduplicating them.

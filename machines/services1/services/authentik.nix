@@ -40,7 +40,8 @@
 # services1 is on 17, and keeping the same major version meant the migration was a
 # same-version restore (dumpable straight back onto the appliance if the cutover were
 # reversed) and could not hit the `template1` collation-version mismatch a cross-major
-# restore invites (docs/work-log-2026-10.md).  That reason expired with the appliance —
+# restore invites that a glibc upgrade leaves behind (the record of hitting one is in
+# git history).  That reason expired with the appliance —
 # the dump has been restored into 16.15 and cannot go back to a 16.9 box that is now
 # stopped — but the container stays, because the other half of the reason is permanent:
 # it keeps authentik's connection pool off the shared cluster that outline,

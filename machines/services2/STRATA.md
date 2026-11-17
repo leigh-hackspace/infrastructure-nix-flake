@@ -914,7 +914,7 @@ this change.
 One slip to keep out of the habit: checking the vhost boundary by grepping services1's
 rendered `/etc/nginx/nginx.conf` printed the **injected `Authorization` header value**
 into the session transcript (2026-10-23). That value was already a world-readable store
-path (`docs/flake-simplification-audit-2026-10-22.md`, the `strata_api_key` bullet), so
+path (`strata_api_key` is in `infra.buildTimeSecrets`, `common/sops.nix`), so
 nothing new was exposed, but AGENTS.md rule 13 is the rule that was broken: read a
 header block by *name*, not with a grep that prints its value, and if a secret has to be
 compared, compare hashes.
@@ -988,7 +988,7 @@ this request, and the reason is memory, not a missing flag.
   for every layer. Also, the offloaded experts are mostly limited by memory bandwidth,
   and an iGPU reads the same system RAM as the CPU, so the gain would be small next to
   the cost. **Image generation is compute-heavy, which is why the iGPU helped there.**"
-  `machines/aibox/strata-uma-2026-10-08.md:46-48` already separates that issue (an iGPU as
+  aibox's 2026-10-08 UMA deep dive (in git history) already separates that issue (an iGPU as
   a *second* device beside CUDA) from aibox's own case (the iGPU as the *primary* device),
   so the closing reason is not a reading of a different question.
 - **And the number says it would not win anyway.** The nearest measured analogue is aibox's
@@ -1009,7 +1009,7 @@ this request, and the reason is memory, not a missing flag.
   keeps the memory-pressure and OOM story for whatever else competes with it. `src/core/expert_cache.cpp:30-34`
   prices the expert cache against UMA-aware `device_free_bytes()`, which asks the *current* device
   whether it is integrated — the comment there says a box can mix an APU with a discrete card, and
-  the answer is per device — and `machines/aibox/strata-uma-2026-10-08.md:31` states what it means:
+  the answer is per device — and that measurement states what it means:
   on UMA a cache is only worth having if reading it is faster than reading the arena — it isn't, it
   is the same DRAM.
 

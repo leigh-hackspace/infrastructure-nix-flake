@@ -11,11 +11,10 @@
 # so `nix flake check` cannot pass on a tree whose instructions point at things that are
 # not there.
 #
-# WHY AN EVALUATOR AND NOT THE RUST BINARY §7 OF THE AUDIT PROPOSED
-# (docs/flake-simplification-audit-2026-10-22.md: "Add a small Rust binary in crates/ —
-# call it docs-lint"): the same paragraph requires it to run "as the last step of
-# `just check` (~2 s, no evaluation, no build, so it is safe on gw by construction)",
-# and a binary has to be *compiled* before it can check anything — the one thing that
+# WHY AN EVALUATOR AND NOT A RUST BINARY
+# (`docs-lint`, proposed once and rejected): the gate has to run as the last step of
+# `just check` — ~2 s, no evaluation, no build, so it is safe on gw by construction —
+# and a binary has to be *compiled* before it can check anything, the one thing that
 # recipe promises never to do, and the whole reason rule 22 exists. Neither can an
 # evaluation ask `just --summary` what the recipes are, so the list is parsed out of the
 # justfile below. This is the shape the repo already uses for assertions over source

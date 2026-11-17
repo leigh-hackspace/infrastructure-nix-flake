@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The PREFILL arms of the UMA set (see ../strata-uma-2026-10-08.md): the short bench cannot
+# The PREFILL arms of the UMA set (see ../STRATA.md, "UMA: `--pcie-mode direct` deployed"): the short bench cannot
 # see prefill (its prompt is 70 tokens), and prefill is aibox's real limit (~45 tok/s, so a
 # 20k-token prompt costs ~7 min). These arms use the full bench - decode plus two cold ~6k
 # prompts - so each one is ~5 min plus the model reload.

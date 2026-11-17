@@ -20,8 +20,8 @@
 # Pinned, on purpose: a machine that regenerates its host keys (a reinstall, a key
 # rotation) now *fails* the hop until these lines are regenerated, so accepting a
 # re-installed box is a deliberate edit rather than `StrictHostKeyChecking=accept-new`
-# re-trusting whatever answers an address — `docs/repo-audit-2026-10-07.md` §3.4
-# made the same call for the router's keys, for the same reason.  Regenerate with
+# re-trusting whatever answers an address — and the router's own keys are pinned for
+# the same reason.  Regenerate with
 # `just known-hosts`, paste, deploy; keep all two key types per machine (a box
 # offering only one still has to be recognised by the type it presents).
 let

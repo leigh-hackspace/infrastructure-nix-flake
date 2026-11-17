@@ -50,7 +50,7 @@ Five-minute aggregates from the Network Application's own stats DB (mongo on 271
 | weakest client on the radio | **−79 dBm** | −46 dBm (= cam8 itself) |
 
 And the end-to-end consequence, measured from services1 and from the cameras themselves
-(the `dd` pair is the procedure `docs/camera-wifi-tx-2026-10-29.md` invented — it is a good
+(the `dd` pair is the procedure the 2026-10-29 investigation invented — it is a good
 test and it is what settled this):
 
 | | cam5 | cam8 |
@@ -67,7 +67,7 @@ test and it is what settled this):
 This is the whole finding, and it is cheap:
 
 * **Both directions are capped, and by about the same factor** (61 KB/s up, 76 KB/s down). A
-  weak transmit chain — the diagnosis `docs/camera-wifi-tx-2026-10-29.md` reached for `cam8`
+  weak transmit chain — the diagnosis the 2026-10-29 measurement reached for `cam8`
   — is *asymmetric*: the AP transmits at 20 dBm with better antennas, so a camera that cannot
   get its frames out still downloads well. cam5 downloads terribly too.
 * **The AP's own retries toward the camera are 50 %.** The AP's frames to a −47 dBm client
@@ -231,8 +231,8 @@ not a new fault, and it is why the frigate log's own lines are the better witnes
 * **DON'T cut cam5 to `/stream1`** (640×360@5, 512 kbit/s) **as the fix**: on the 0.49 Mbit/s
   this cell delivers it is *still* above the ceiling, and it silently drops detection
   resolution. It is a legitimate stopgap for the watchdog churn only if labelled that way.
-* **DON'T run the 2024-vs-2026 `ssw101b_wifi_usb` module swap** proposed by
-  `docs/camera-wifi-tx-2026-10-29.md` §"The two candidates" — see §3 above.
+* **DON'T run the 2024-vs-2026 `ssw101b_wifi_usb` module swap** the 2026-10-29 measurement
+  proposed as a candidate cause — see §3 above.
 * **Housekeeping, not the cause:** `Power Management:on` on both cameras; identical, so it
   cannot explain a difference between them, and it is still worth `iwconfig wlan0 power off`
   (runtime only, does not survive a reboot — the same one-liner the 2026-10-29 doc left off).

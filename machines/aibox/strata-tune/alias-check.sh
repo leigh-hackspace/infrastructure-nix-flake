@@ -4,7 +4,8 @@
 #
 #   sudo ./alias-check.sh
 #
-# This is the gate for `--pcie-mode direct` (see ../strata-uma-2026-10-08.md): the PCIe share
+# This is the gate for `--pcie-mode direct` (measured 2026-10-08; arms and verdicts in
+# ../STRATA.md, "UMA: `--pcie-mode direct` deployed"): the PCIe share
 # is delivered as `device_alias(layer, expert)`, i.e. the grouped kernel reading the pinned
 # expert arena through its device address instead of through a staged copy. If ROCr refuses
 # the alias, ArenaExpertSource::device_alias() returns null, pcie_layer() is false,

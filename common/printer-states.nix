@@ -5,9 +5,8 @@
 # the state as a `state=` tag and the *index into its own table* as the value.
 # The Grafana value mappings (machines/services1/services/monitoring-dashboards.nix) and the
 # Prometheus alert rules (machines/services1/services/observability.nix) used to restate those
-# tables by hand — three copies kept in step by a comment, which is exactly the
-# drift docs/repo-audit-2026-10-07.md §3.6 calls out.  They are generated from the
-# exporter instead:
+# tables by hand — three copies kept in step by a comment, which is the drift this
+# table exists to stop.  They are generated from the exporter instead:
 #
 #   PRINTER = import ../../common/printer-states.nix;
 #

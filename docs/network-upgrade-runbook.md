@@ -39,7 +39,7 @@ Skim this; the detail below is what each step means.
 12. Repeat 10–11 for the next box.
 13. Do the network's own after-effects: DNS records, netboot image, printers, VMs, router.
 14. If a box failed twice, stop the run and put the remaining boxes back on the old commit.
-15. Record what moved, what failed, what is now open — `docs/work-log-2026-10.md`, `docs/follow-ups.md`.
+15. Record what moved, what failed, what is now open — the current month's work log, `docs/follow-ups.md`.
 
 ---
 
@@ -601,7 +601,7 @@ Notes:
   to weigh** — the endpoint is already down, so there is no outage to avoid, only one to
   shorten. Poll the engine's own `/health` afterwards, not the unit state: `services3`'s
   model took ~1 min to load after ssh returned.
-- **Do not add anything to `nixbld`, ever** (rule 7 / `docs/nix-build-sigkill-2026-10-11.md`): the group is the pool of UIDs builds run as and nix SIGKILLs every process of the build UID before and after each build. `common/nixbld.nix` fails the eval if you ask, and `nixbld-guard.timer` undoes an imperative `usermod` within fifteen minutes.
+- **Do not add anything to `nixbld`, ever** (rule 7 / `common/nixbld.nix`): the group is the pool of UIDs builds run as and nix SIGKILLs every process of the build UID before and after each build. `common/nixbld.nix` fails the eval if you ask, and `nixbld-guard.timer` undoes an imperative `usermod` within fifteen minutes.
 - **Interrupting a build is harmless** now — the sweep lands on a throwaway `nixbldN` uid.
 - If a switch is aborted by the tool-call timeout, **the switch is still running**
   on that box. Find it (`pgrep -a -f nixos-rebuild`), and re-read
@@ -628,7 +628,7 @@ Then the things this network specifically needs:
   NAS-dependent service is failed, read `Result=` and the second attempt — the
   never-give-up policy (`Restart=always`, `StartLimitIntervalSec=0` in
   `common/containers.nix`) means a first-start race with a setup unit is
-  legitimate (`docs/work-log-2026-10.md`).
+  legitimate — read `Result=` before calling it a fault.
 - **Rendered units, not typed ones** (rule 10): if the upgrade changed an
   `ExecStart` or a flag, read it back from a real build —
   `/etc/systemd/system/<unit>.service` — because NixOS normalises quoting and
@@ -836,8 +836,9 @@ Abort the run, in this order of preference:
 ## Record it
 
 A network upgrade is the thing a later agent most wants a narrative for.
-Append to **the current month's** work log (created 2026-11: `docs/work-log-2026-11.md`;
-`docs/work-log-2026-10.md` is the previous month and is not edited again): the commit
+Append to **the current month's** work log (`docs/work-log-2026-11.md` at the time of
+writing; a finished month is not edited again and is deleted once the live docs have
+absorbed it — git history holds it): the commit
 range, which inputs moved, the
 order actually used (and why, if it was not the default), what each box's
 version string went from/to, what needed a reboot, what failed and how it was
@@ -888,10 +889,10 @@ README owns the detail:
   check` on the box rather than inheriting the sentence. No GitHub key of its own
   → push through services1.
 - **aibox** — `/etc/hosts` maps `aibox` to `127.0.0.2`, so use the IPs.  The
-  NVIDIA `nvidia.nix` + `legacy_580` patch on this box is **dead config** (the
-  GTX 1060 was removed — `docs/gtx1060-followup.md`); the live GPU box for that
-  driver is services2.  Since 2026-10-17 it is the network's **builder** and strata
-  is parked here (6c/12t, 59 GiB).  The netboot export and the ten clients live
+  GTX 1060 was removed from it on 2026-09-02, so its NVIDIA `nvidia.nix` +
+  `legacy_580` patch was dead config and was deleted on 2026-11-18; the live GPU
+  box for that driver is services2.  Since 2026-10-17 it is the network's
+  **builder**, and its own strata engine came back on 2026-10-28 (6c/12t, 59 GiB).  The netboot export and the ten clients live
   here, and that export is what makes a plain switch exit 4 (Phase 7). No
   tailscale unit at all.
 

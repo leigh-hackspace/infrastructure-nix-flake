@@ -34,8 +34,7 @@ arrangement: **this box's 30 GiB of RAM is strata's.** The Coder engine measured
 memory pressure, flushing caches" with gatus, Prometheus and Grafana living
 alongside it.  Whatever else lives here is what the kernel reaps when the engine
 asks for the next page — and the OOM victim does not have to be the engine, so
-the monitor was the thing that died while the thing it watches stayed up (the
-record is in `docs/work-log-2026-10.md`).  services1 has the headroom and already
+the monitor was the thing that died while the thing it watches stayed up.  services1 has the headroom and already
 serves these vhosts, so the apps moved to it.
 
 What that gives up is the rule it was built on — "the box that answers *is this
@@ -81,8 +80,8 @@ to be in that list; they are on services1 now and bind loopback.
   its own**: reach GitHub from here with `ssh -A` from services1 (agent forwarding — the key
   must be *in* the agent, `ssh-add ~/.ssh/id_ed25519`), and check `ssh-add -l` before
   suspecting the forwarding. Its own `nix.conf` also lives on a read-only symlink into the store, so
-  a stateful edit needs replacing that symlink with a real file (see
-  `docs/nix-build-sigkill-2026-10-11.md`).
+  a stateful edit needs replacing that symlink with a real file (the build-user
+  invariant and its history: `common/nixbld.nix`).
 - **Pushing from here needs a relay through services1** (which authenticates to GitHub as
   `cjdell`). Commit here, then, from services1, fetch this tree into `FETCH_HEAD` and push
   that — so services1's own checkout, which lags `origin/main` and carries its own dirty

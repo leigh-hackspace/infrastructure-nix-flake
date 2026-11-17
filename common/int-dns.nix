@@ -178,17 +178,17 @@
     # So they came across with their reason written down instead of being dropped
     # in the same breath as the sync tool.
     #
-    # `gitlab.int` is the redirect vhost in
-    # `machines/services1/services/gitlab.nix`, which is not enabled in
-    # `services/default.nix` (the container is not deployed). When gitlab comes
-    # back on, delete this entry and the vhost re-enters `names` through the drift
-    # check by itself.
-    gitlab = "the disabled gitlab container's redirect vhost (services/services/gitlab.nix)";
+    # `gitlab.int` is the redirect vhost of the gitlab container, which is not
+    # deployed — its module was deleted here on 2026-11-18 (git history: `git
+    # log --diff-filter=D -- machines/services1/services/gitlab.nix`). When
+    # gitlab comes back on, delete this entry and the vhost re-enters `names`
+    # through the drift check by itself.
+    gitlab = "the disabled gitlab container's redirect vhost";
     # The authentik LDAP outpost, historically reached this way; the tree's only
     # live LDAP client dials `authentik.int` instead
-    # (`machines/aibox/sso.nix`, `machines/pi-room-sys`), and
-    # `machines/services1/services/samba.nix` names it in a commented-out
-    # `ldapsam:` line. docs/authentik-container-migration.md is the thing to read
+    # (`machines/aibox/sso.nix`, `machines/pi-room-sys`); no module in tree
+    # dials it any more.
+    # `docs/authentik-container-migration.md` is the thing to read
     # before this one goes.
     ldap = "historical name for the authentik LDAP outpost; the outpost answers \"authentik.int\" (and 10.3.1.36) on 389/636, and nothing serves HTTPS on this name";
   };
