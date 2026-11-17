@@ -173,7 +173,8 @@ pub struct Stats {
     pub asked: usize,
     pub answers: usize,
     pub spoken: usize,
-    pub dry_run: usize,
+    /// Answers that were produced and deliberately not played (`--speaker off`).
+    pub unplayed: usize,
     pub ffmpeg_restarts: usize,
     pub last_error: String,
     pub last_transcript: String,
@@ -206,7 +207,7 @@ impl Default for Stats {
             asked: 0,
             answers: 0,
             spoken: 0,
-            dry_run: 0,
+            unplayed: 0,
             ffmpeg_restarts: 0,
             last_error: String::new(),
             last_transcript: String::new(),
@@ -592,7 +593,7 @@ fn handle_window(
             }
             match &opts.speaker {
                 Speaker::Off => {
-                    stats.dry_run += 1;
+                    stats.unplayed += 1;
                     let path = opts.out_dir.join(format!(
                         "answer-{}.wav",
                         SystemTime::now()
@@ -750,8 +751,9 @@ fn write_status(opts: &Options, stats: &Stats, started: Instant) {
     let body = format!(
         "{{\"uptime_secs\":{:.0},\"source\":{},\"wake_words\":[{}],\"speaker\":{},\
          \"probe_only\":{},\"windows\":{},\"ignored\":{},\"asked\":{},\"answers\":{},\
-         \"spoken\":{},\"dry_run\":{},\"ffmpeg_restarts\":{},\"floor_dbfs\":{:.1},\
-         \"last_transcript\":{},\"last_action\":{},\"last_error\":{}}}",
+         \"spoken\":{},\"unplayed\":{},\"ffmpeg_restarts\":{},\"floor_dbfs\":{:.1},\
+         \"threshold_dbfs\":{:.1},\"peak_dbfs\":{:.1},\"speech_frames\":{},\
+         \"captured_secs\":{:.0},\"last_transcript\":{},\"last_action\":{},\"last_error\":{}}}",
         started.elapsed().as_secs_f64(),
         common_json::quoted(&opts.source),
         opts.wake_words
@@ -760,7 +762,11 @@ fn write_status(opts: &Options, stats: &Stats, started: Instant) {
             .collect::<Vec<_>>()
             .join(","),
         common_json::quoted(match &opts.speaker {
-            Speaker::Off => "dry-run",
+            // "off", the deployment's own word, not "dry-run": the unit passes
+            // `--speaker off`, and a status file that answers a different question than
+            // the config asked — "is the speaker off?" — is how an operator ends up
+            // reasoning about a setting nobody set.
+            Speaker::Off => "off",
             Speaker::Ssh { .. } => "ssh:rac-play",
         }),
         opts.probe_only,
@@ -769,9 +775,17 @@ fn write_status(opts: &Options, stats: &Stats, started: Instant) {
         stats.asked,
         stats.answers,
         stats.spoken,
-        stats.dry_run,
+        stats.unplayed,
         stats.ffmpeg_restarts,
         stats.floor_dbfs,
+        // The three numbers that answer "is it deaf, and which kind of deaf" without
+        // anyone ssh-ing to the box to read a journal: what a frame had to beat, the
+        // loudest frame it actually got, and how many of them it thought were speech.
+        // `just voice-status` renders them through the front door.
+        stats.threshold_dbfs,
+        stats.peak_dbfs,
+        stats.speech_frames,
+        stats.captured_secs,
         common_json::quoted(&stats.last_transcript),
         common_json::quoted(&stats.last_action),
         common_json::quoted(&stats.last_error),

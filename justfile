@@ -1168,15 +1168,37 @@ slack-agent-events question: _build-host-guard
 voice-status:
     #!/usr/bin/env bash
     set -euo pipefail
-    curl -fsS -m 10 https://voice.int.leighhack.org/status.json \
-      | python3 -c 'import json,sys; s=json.load(sys.stdin)
-    print("gateway: %d asks, %d errors, %d turns, last %.1fs" % (s["asks"], s["errors"], s.get("turns",0), s.get("last_secs",0)))
-    print("wake:    " + ", ".join(s["wake_words"]))
-    print("config:  " + ", ".join("%s=%s" % (k,v) for k,v in sorted(s["config"].items()) if k in ("tts_voice","agent","max_speech_chars","record_questions")))
-    for q in s.get("recent_questions", [])[:5]:
-        print("  %s  %s%s" % (q["at"], q["question"][:48], (" -> " + q.get("answer","")[:44]) if q.get("answer") else (" -> [" + q["error"] + "]") if q.get("error") else " -> …"))
-    m = s.get("mic", {})
-    print("mic:     %s  open=%s  %s  heard=%s" % (m.get("source","(satellite not reporting)"), m.get("gate_open"), m.get("last_heard",""), m.get("last_transcript","")))
+    curl -fsS -m 10 https://voice.int.leighhack.org/status.json | python3 -c '
+    import json, sys
+    s = json.load(sys.stdin)
+    print("gateway: %d requests, %d transcribes, %d asks, %d tts, %d error(s) [%s]"
+          % (s["requests"], s["transcribes"], s["asks"], s["tts"], s["errors"], s["last_error"] or "clean"))
+    print("config:  whisper=%s agent=%s voice=%s@%d max=%d chars origins=%s record=%s"
+          % (s["whisper"].split("//")[1], s["agent"], s["voice"]["name"], s["voice"]["sample_rate"],
+             s["max_speech_chars"], ",".join(s["allow_origins"]), s["record_questions"]))
+    for q in s.get("recent", [])[:6]:
+        print("  %-9s %-14s %-46s %s" % (q.get("at", ""), q.get("route", ""),
+                                         (q.get("detail") or "")[:46],
+                                         ("ok %.1fs" % q["secs"]) if q.get("ok") else ("FAIL %.1fs" % q["secs"])))
+    m = s.get("satellite")
+    if not m:
+        print("mic:     no satellite reporting (infra.voiceAssistant.satellite.enable?)")
+    else:
+        print("mic:     %s  source=%s  up %.0fs" % (m["speaker"], m["source"], m["uptime_secs"]))
+        print("         floor %.0f dBFS  threshold %.0f  loudest %.0f  speech %d/%.0fs"
+              % (m["floor_dbfs"], m["threshold_dbfs"], m["peak_dbfs"], m["speech_frames"], m["captured_secs"]))
+        gap = m["threshold_dbfs"] - m["peak_dbfs"]
+        if m["windows"] == 0 and m["speech_frames"] == 0:
+            print("         -> nothing has been loud enough: %.0f dB below threshold (quiet room, or raise the level)" % gap)
+        elif m["windows"] == 0:
+            print("         -> %d loud frames never made a window: run gate-check on the clip" % m["speech_frames"])
+        else:
+            print("         -> %d window(s), %d ignored, %d asked, %d answered, %d unplayed(speaker), %d ffmpeg restart(s)"
+                  % (m["windows"], m["ignored"], m["asked"], m["answers"], m["unplayed"], m["ffmpeg_restarts"]))
+        if m["last_transcript"]:
+            print("         last: %r -> %s" % (m["last_transcript"][:60], m["last_action"]))
+        if m["last_error"]:
+            print("         last error: %s" % m["last_error"])
     '
 
 # One question, spoken-answer included, and no audio path at all: prints the text, the
