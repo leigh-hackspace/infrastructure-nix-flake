@@ -3231,3 +3231,45 @@ occurrence is a `systemctl --failed` line rather than a lost build.
    (`meta.mainProgram = "ups-watchdog";`, or `getExe'` at the call site) makes the router's
    eval quiet, which rule 9 asks for. Pre-existing; spotted while deploying the hygiene
    timer, not caused by it.
+
+## `update-containers.service` fails every night on services1 (found 2026-11-17, pre-existing)
+
+Noticed while reading fleet state after the strata deploys: `systemctl --failed` on
+services1 has had one unit in it **10 nights running** — `update-containers.service`,
+nixpkgs' `oci-containers` updater, which does `podman pull <image>` for every declared
+container:
+
+```
+Error: unable to copy from source docker://uosserver:c9603dec9010:
+       reading manifest c9603dec9010 in docker.io/library/uosserver:
+       requested access to the resource is denied
+```
+
+That is not a registry outage and not auth: the UniFi OS Server container's image is
+declared as a **bare local tag** — `machines/services1/services/unifi-os-server.nix:61`
+sets `passthru.imageTag = "uosserver:${imageVersion}"` and `:151` feeds it to
+`oci-containers.containers.<x>.image` — and an unqualified tag makes podman resolve
+`docker.io/library/uosserver`, which is not a thing.  So the updater is being asked to pull
+an image that only ever exists in this box's own store-and-container storage, and it fails
+every single night.
+
+Why it matters more than a nightly red line: the same unit is what keeps the *real* pulled
+containers current (Home Assistant is deliberately pinned and left alone — see
+`docs/home-assistant-on-services1-2026-11-16.md`), and a service that fails for a reason
+everyone knows is benign is the reason nobody reads `systemctl --failed`.  One of these is
+right, and it is a small change either way:
+
+- **name the image locally** — `localhost/uosserver:<ver>` (podman will not go to a registry
+  for a `localhost/` reference), which is probably what the module should have said anyway;
+  or
+- **tell the updater to leave that container alone** — `pullPolicy = "never"` on the
+  container if that option exists at this nixpkgs pin; I could not confirm it (the deep
+  `nix eval` of a `oci-containers` attr does not resolve against this flake, and guessing an
+  option name into a config file is how a comment becomes a lie), so check with
+  `nix eval --raw "nixpkgs#..."`/the module source before writing it.
+
+Re-verify: `sudo systemctl status update-containers` (green at the next 02:00), and
+`journalctl -u update-containers --since "-10 days" | grep -c "Failed to start"` going to 0.
+Untouched: this is the UniFi **trial** box's container (`docs/unifi-os-server.md` owns that
+story, including that the appliance is a downgrade of the running controller), and a
+container change there wants its own look, not a drive-by inside a strata deploy.
