@@ -384,6 +384,128 @@ pub fn vulcan_command(text: &str) -> bool {
     )
 }
 
+
+/// A question with exactly one tool behind it and **no judgement in it**.
+///
+/// The precedent is "what's on", answered this way since phase 1; this is that shape,
+/// widened, because `docs/slack-agent-2026-11-16.md` §15 measured these questions at 5-18 s
+/// of engine and the same question as a tool call at tens of milliseconds — and in the voice
+/// channel that difference is audible to a person standing in a room.
+///
+/// `None` is the important case and it is the common one: anything ambiguous, past-tense,
+/// multi-word or not about *now* goes to the model. A fast path is only allowed to make
+/// things faster, never wronger or shorter, so this function errs toward silence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Quick {
+    /// "what time is it" → `what_time`.
+    Time,
+    /// "is the space open" → `space_status` with `focus=open`.
+    Open,
+    /// "how warm is the workshop" → `space_status` with `focus=<room>`.
+    Room(String),
+    /// "which room is coldest", "is it cold in here" → `focus=extremes`.
+    Extremes,
+    /// "how many devices are on the network" → `network_clients`.
+    Devices,
+}
+
+/// Words that cannot be a room's name. Note what this list is *not*: it has no rooms in it.
+/// The space API owns that table, and a second copy of a list is exactly how
+/// `pi-models.json` came to claim a context window the engine had never reported
+/// (`AGENTS.md` rule 31). If a room is missing from the answer, that is the tool's list.
+const FILLER: &[&str] = &[
+    "a", "about", "an", "and", "are", "at", "building", "can", "cold", "coldest", "cool",
+    "coolest", "could", "current", "degrees", "did", "do", "does", "for", "freeze", "freezing",
+    "hackspace", "hack", "here", "how", "in", "inside", "is", "it", "me", "my", "of", "on",
+    "open", "opened", "opens", "closed", "closes", "closing", "shut", "our", "overall",
+    "tonight", "today", "now", "currently", "still", "yet", "anymore",
+    "please", "right", "room", "rooms", "so", "space", "temp", "temperature", "temperatures",
+    "temps", "the", "there", "this", "too", "to", "us", "very", "we", "were", "what", "whats",
+    "what's", "when", "where", "which", "who", "will", "with", "would", "you", "your",
+];
+
+/// About a *series* rather than about now, so it needs `home_assistant_history` and a model
+/// to decide which entity to ask and over what window.
+const PAST: &[&str] = &[
+    "overnight", "yesterday", "last night", "earlier", "all day", "this morning", "history",
+    "trend", "has it been", "have they been", "was it", "did it", "since ", "ago",
+];
+
+const TEMPERATURE_WORDS: &[&str] = &[
+    "temp", "temps", "temperature", "temperatures", "warm", "warmest", "cold", "coldest",
+    "cool", "coolest", "hot", "hottest", "chilly", "freezing", "degrees",
+];
+
+const OPEN_WORDS: &[&str] = &[
+    "open", "opened", "opens", "opening", "closed", "closes", "closing", "shut",
+];
+
+/// Which single tool answers this, if any? See [`Quick`].
+pub fn quick(text: &str) -> Option<Quick> {
+    let clean = text.trim().to_lowercase();
+    if clean.is_empty() || clean.len() > 200 || !clean.chars().any(|c| c.is_alphanumeric()) {
+        return None;
+    }
+    let words: Vec<&str> = clean.split_whitespace().collect();
+    let phrase = format!(" {clean} ");
+    let said = |needle: &str| phrase.contains(needle);
+    let word = |needle: &str| words.contains(&needle);
+    let any_word = |list: &[&str]| list.iter().any(|w| word(w));
+
+    if ["what time", "time is it", "current time", "the time now", "time right now"]
+        .iter()
+        .any(|p| said(p))
+        || ["what's the date", "whats the date", "what day is", "what's today", "whats today", "date is it"]
+            .iter()
+            .any(|p| said(p))
+    {
+        return Some(Quick::Time);
+    }
+    if ["how many devices", "how many clients", "how many leases", "how many ips",
+        "how many machines", "device count"]
+        .iter()
+        .any(|p| said(p))
+    {
+        return Some(Quick::Devices);
+    }
+    let temperature = any_word(TEMPERATURE_WORDS);
+    let openish = any_word(OPEN_WORDS);
+    if !(temperature || openish) || PAST.iter().any(|p| said(p)) {
+        return None;
+    }
+    if ["coldest", "coolest", "warmest", "hottest"]
+        .iter()
+        .any(|w| word(w))
+        || said("which room")
+        || said("what room")
+    {
+        return Some(Quick::Extremes);
+    }
+    // The noun the person actually named, if there is exactly one. Zero means they meant the
+    // building; more than one means we do not know what they meant, which is the model's
+    // problem to sort out, not this function's.
+    let named: Vec<&str> = words
+        .iter()
+        .copied()
+        .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric() && c != '\'' && c != '-'))
+        .filter(|w| !w.is_empty() && !w.chars().all(|c| c.is_ascii_digit()))
+        .filter(|w| !FILLER.contains(w) && !TEMPERATURE_WORDS.contains(w) && !OPEN_WORDS.contains(w))
+        .collect();
+    if temperature {
+        return match named.as_slice() {
+            [] => Some(Quick::Extremes),
+            [one] => Some(Quick::Room((*one).to_string())),
+            _ => None,
+        };
+    }
+    // open/closed with nothing else named is the building's state. "Is the door left open"
+    // names a door, which this tool knows nothing about, so it is not this question.
+    if named.is_empty() {
+        return Some(Quick::Open);
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::Triage;
@@ -496,6 +618,60 @@ mod tests {
     /// an interrogative yes, a bare imperative no. Voice and @-mentions never come through
     /// here, so a `no` only ever declines to barge into a conversation between two people — and
     /// "convert 12 feet to metres" is a thing one member says to another at the bench.
+    #[test]
+    fn the_fast_path_only_grabs_the_questions_with_one_obvious_tool() {
+        use super::{quick, Quick};
+        use Quick::*;
+        let yes = |q: &str, want: Quick| assert_eq!(quick(q), Some(want), "should be fast: {q:?}");
+        yes("what time is it", Time);
+        yes("what's the date today", Time);
+        yes("is the space open", Open);
+        yes("are we open tonight", Open);
+        yes("is hackspace open right now", Open);
+        yes("how warm is the workshop", Room("workshop".into()));
+        yes("what temperature in the workshop", Room("workshop".into()));
+        yes("how cold is the cnc", Room("cnc".into()));
+        yes("is it cold in the hackspace", Extremes);
+        yes("which room is the coldest", Extremes);
+        yes("how many devices are on the network", Devices);
+    }
+
+    /// Recognition is allowed to guess wrong, because it is not the last word: the tool
+    /// refuses an unknown room (`space_status.rs`'s `focused` returns an error, deliberately),
+    /// and `Agent::quick_answer` turns any error into a fall-through to the model. So "aibox"
+    /// being guessed as a room costs nothing the question would not have paid anyway — and the
+    /// alternative, a list of room names in here, is a second copy of a table the API owns.
+    #[test]
+    fn a_wrong_room_guess_is_vetoed_by_the_tool_not_by_this_function() {
+        use super::{quick, Quick};
+        assert_eq!(quick("how hot is aibox"), Some(Quick::Room("aibox".into())));
+    }
+
+    #[test]
+    fn anything_needing_judgement_goes_to_the_model_instead() {
+        // Every one of these has a plausible fast answer that would be the wrong answer.
+        use super::{quick, Quick};
+        for q in [
+            "has the workshop been cooling overnight",
+            "was it cold yesterday",
+            "is anyone in the space right now",
+            "is the door left open",
+            "are the cameras working",
+            "what's on at the hackspace this week",
+            "turn the heaters on in the workshop",
+            "how warm is the workshop and the cnc",
+            "",
+            "thanks!",
+            "does anyone have a spare cable",
+        ] {
+            assert_eq!(quick(q), None, "must NOT be answered fast: {q:?}");
+        }
+        // The past-tense guard is the one that matters most: a temperature question phrased
+        // about *now* is a tool call, and about *last night* it is a history query.
+        assert_eq!(quick("how warm is the workshop"), Some(Quick::Room("workshop".into())));
+        assert_eq!(quick("how warm has the workshop been today"), None);
+    }
+
     #[test]
     fn the_basics_tier_is_reachable_by_question_but_not_by_command() {
         yes("what time is it");

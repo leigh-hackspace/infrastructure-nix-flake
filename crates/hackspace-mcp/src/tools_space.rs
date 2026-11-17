@@ -31,8 +31,18 @@ pub fn register_tools(srv: &mut common_mcp::Server, src: &Arc<Sources>) {
          10-14 C is genuinely cold, 14-18 C is cool, and anything above 20 C is warm here. Rooms: \
          Main Space, Workshop, Fabrication, Craft Space, Dark Room, Pi Room, Rack 1. Call this \
          for any question about the space being cold, hot, open, closed, or how many members we \
-         have; it is one call and it answers all of those.",
-        object_schema(Vec::new(), Vec::new()),
+         have; it is one call and it answers all of those. \
+         For a one-line answer to a single question, pass focus: \"open\" for open/closed, \
+         \"coldest\" or \"warmest\" for which room, or a room name such as \"workshop\" or \"cnc\"
+         for that room alone. With no focus it returns the whole picture, which is what an \
+         answer that has to make a judgement wants.",
+        object_schema(
+            vec![(
+                "focus",
+                param("string", "Optional: \"open\", \"coldest\", \"warmest\", or one room name. Returns one sentence about just that."),
+            )],
+            Vec::new(),
+        ),
         src,
         space_status,
     );
@@ -86,7 +96,104 @@ fn sensor_rows<'a>(doc: &'a Json, group: &str, label_key: &str) -> Vec<(&'a Json
         .unwrap_or_default()
 }
 
-fn space_status(src: &Sources, _args: &Json) -> Result<String, String> {
+/// One sentence, from the state and temperatures it was handed. **Pure on purpose**: it is
+/// the only way to test what a person is told about their own building without a network.
+///
+/// Two formatting decisions are load-bearing, because this string is read **aloud** as well
+/// as posted:
+///
+/// * **no absolute dates.** `2026-11-17 15:34` is read by the speech front end with the word
+///   "dash" in it (measured; `docs/follow-ups.md`), so the focused answer gives a time of day
+///   and a relative span, and past a day it says "2 days ago". Nothing to misread either way.
+/// * **no bare unit letters.** "12.1 C" is read as "twelve point one cee". The voice prompt
+///   tells the model to write units as words, and a tool answering without a model has the
+///   same obligation to the same listener. Hence "degrees".
+fn focused(
+    state: &str,
+    since: Option<f64>,
+    now: f64,
+    temps: &[(String, Option<f64>)],
+    focus: &str,
+) -> Result<String, String> {
+    let f = focus.trim().to_lowercase().replace(['_', '-'], " ");
+    let f = f.split_whitespace().collect::<Vec<_>>().join(" ");
+    let aged = since.map(|s| ago_text(now - s)).unwrap_or_else(|| "a while".into());
+    let since_phrase = match since {
+        Some(s) if now - s < 86_400.0 => format!(
+            ", since {} UTC ({aged})",
+            utc_text(s).split(' ').nth(1).unwrap_or("??")
+        ),
+        Some(_) => format!(", for {aged}"),
+        None => String::new(),
+    };
+    if matches!(
+        f.as_str(),
+        "open" | "opened" | "closed" | "close" | "status" | "state" | "now" | "space"
+    ) {
+        return Ok(format!("Leigh Hackspace is {state}{since_phrase}."));
+    }
+    let values: Vec<(&String, f64)> = temps
+        .iter()
+        .filter_map(|(l, v)| v.map(|v| (l, v)))
+        .collect();
+    let rank = |worst: bool| -> Result<String, String> {
+        let Some((loc, v)) = (if worst {
+            values.iter().min_by(|a, b| a.1.total_cmp(&b.1))
+        } else {
+            values.iter().max_by(|a, b| a.1.total_cmp(&b.1))
+        }) else {
+            return Err("the space API gave no temperature to rank".into());
+        };
+        Ok(format!(
+            "{loc} is the {} room at {} degrees.",
+            if worst { "coldest" } else { "warmest" },
+            crate::sources::value(*v)
+        ))
+    };
+    if values.is_empty() {
+        return Err("the space API returned no temperatures to answer that from".into());
+    }
+    if f.starts_with("cold") || f.starts_with("cool") || f.starts_with("freez") || f == "chilly" {
+        return rank(true);
+    }
+    if f.starts_with("warm") || f.starts_with("hot") {
+        return rank(false);
+    }
+    if f.is_empty() || matches!(f.as_str(), "rooms" | "room" | "spread" | "extremes" | "which room") {
+        let min = values.iter().min_by(|a, b| a.1.total_cmp(&b.1)).unwrap();
+        let max = values.iter().max_by(|a, b| a.1.total_cmp(&b.1)).unwrap();
+        return Ok(format!(
+            "{coldest} is the coldest at {} degrees and {warmest} the warmest at {}, a spread              of {} degrees across {} rooms.",
+            crate::sources::value(min.1),
+            crate::sources::value(max.1),
+            crate::sources::value(max.1 - min.1),
+            values.len(),
+            coldest = min.0,
+            warmest = max.0,
+        ));
+    }
+    // A room, matched loosely in both directions: the API's location is `main_space` and a
+    // person types "main space", and neither of those is the other one's mistake.
+    match values.iter().find(|(loc, _)| {
+        let l = loc.to_lowercase().replace(['_', '-'], " ");
+        l.contains(&f) || f.contains(&l)
+    }) {
+        Some((loc, v)) => Ok(format!(
+            "{loc} is {} degrees.",
+            crate::sources::value(*v)
+        )),
+        // An **error**, not an answer: "I cannot see a room called aibox" is a refusal, and
+        // the harness fast path treats a refusal as its cue to ask the model instead — the
+        // model may know aibox is a server and reach for a different tool. A model that
+        // passes a bad focus also gets the list of what does exist, which it can correct.
+        None => Err(format!(
+            "no room called \"{focus}\". The temperatures I can see are: {}",
+            join_short(&temps.iter().map(|(l, _)| l.clone()).collect::<Vec<_>>(), 12)
+        )),
+    }
+}
+
+fn space_status(src: &Sources, arguments: &Json) -> Result<String, String> {
     let doc = src.fetch_json(&format!("{}/space.json", src.space))?;
 
     let open = doc.at(&["state", "open"]).and_then(|v| v.as_bool());
@@ -98,14 +205,31 @@ fn space_status(src: &Sources, _args: &Json) -> Result<String, String> {
         // someone the door is locked on the strength of a missing field.
         None => "UNKNOWN (the space API gave no open/closed field)",
     };
+    let since = doc.at(&["state", "lastchange"]).and_then(|v| v.as_f64());
+    let now = clock::now_epoch();
     let mut out = format!("Leigh Hackspace is {state}");
-    if let Some(since) = doc.at(&["state", "lastchange"]).and_then(|v| v.as_f64()) {
-        out.push_str(&format!(", since {} ({})", utc_text(since), ago_text(clock::now_epoch() - since)));
+    if let Some(since) = since {
+        out.push_str(&format!(", since {} ({})", utc_text(since), ago_text(now - since)));
     }
     out.push('\n');
 
     // Temperature, with the two derived facts a person asks for next.
     let temps = sensor_rows(&doc, "temperature", "location");
+
+    // **One question, one sentence, no model.** `focus` exists so the harness can answer the
+    // questions that need no judgement — "is it open", "how warm is the workshop" — straight
+    // from this call, in tens of milliseconds instead of the 5-18 s of engine the same
+    // question costs today (`docs/slack-agent-2026-11-16.md` §15 is the measurement that sent
+    // us here). The sentence is rendered **here** rather than by the caller for the same
+    // reason the calendar prose is: the digest, the voice answer and the Slack answer must
+    // not each own a copy of "how we say the temperature of a room".
+    if let Some(focus) = args::str_arg(arguments, "focus") {
+        let rows: Vec<(String, Option<f64>)> = temps
+            .iter()
+            .map(|(row, loc)| ((*loc).clone(), row.get("value").and_then(|v| v.as_f64())))
+            .collect();
+        return focused(state, since, now, &rows, &focus);
+    }
     if temps.is_empty() {
         out.push_str("Temperature: the API returned no temperature sensors\n");
     } else {
@@ -377,5 +501,72 @@ fn cal_tag(raw: &str) -> String {
         "calendar.public_events" | "public" | "public_events" => "public".to_string(),
         "calendar.member_events" | "members" | "member_events" => "members".to_string(),
         other => other.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_focused_answer_is_one_sentence_about_the_thing_asked() {
+        let temps = vec![
+            ("workshop".to_string(), Some(12.1)),
+            ("main_space".to_string(), Some(15.4)),
+            ("cnc".to_string(), Some(13.0)),
+            ("sensor_down".to_string(), None),
+        ];
+        let now = 1_794_900_000.0;
+        let since = now - 48.0 * 60.0;
+
+        let open = focused("OPEN", Some(since), now, &temps, "open").unwrap();
+        assert!(open.starts_with("Leigh Hackspace is OPEN, since "), "{open}");
+        assert!(open.contains("48m ago"), "{open}");
+        // A time of day, never a date: the speech front end says "dash".
+        assert!(!open.contains("2026-"), "{open}");
+
+        assert_eq!(
+            focused("CLOSED", Some(since), now, &temps, "workshop").unwrap(),
+            "workshop is 12.1 degrees."
+        );
+        // The API writes `main_space`; a person writes "main space". Both find it.
+        assert_eq!(
+            focused("OPEN", None, now, &temps, "main space").unwrap(),
+            "main_space is 15.4 degrees."
+        );
+        assert_eq!(
+            focused("OPEN", None, now, &temps, "coldest").unwrap(),
+            "workshop is the coldest room at 12.1 degrees."
+        );
+        assert_eq!(
+            focused("OPEN", None, now, &temps, "warmest").unwrap(),
+            "main_space is the warmest room at 15.4 degrees."
+        );
+        let spread = focused("OPEN", None, now, &temps, "").unwrap();
+        assert!(spread.contains("3.3 degrees across 3 rooms"), "{spread}");
+        // A sensor with no value is not a room at zero degrees.
+        assert!(!spread.contains("4 rooms"), "{spread}");
+    }
+
+    #[test]
+    fn a_room_that_is_not_there_says_what_is_rather_than_guessing() {
+        let temps = vec![
+            ("workshop".to_string(), Some(12.1)),
+            ("cnc".to_string(), Some(13.0)),
+        ];
+        let e = focused("OPEN", None, 1.0, &temps, "woodshop").unwrap_err();
+        assert!(e.contains("no room called \"woodshop\""), "{e}");
+        assert!(e.contains("workshop") && e.contains("cnc"), "{e}");
+        // And no temperatures at all is a sentence the caller can read, not an empty answer.
+        assert!(focused("OPEN", None, 1.0, &[], "coldest").is_err());
+    }
+
+    #[test]
+    fn a_day_old_reads_as_a_span_and_not_a_clock_time() {
+        let temps = vec![("workshop".to_string(), Some(12.1))];
+        let now = 1_794_900_000.0;
+        let r = focused("CLOSED", Some(now - 2.5 * 86_400.0), now, &temps, "open").unwrap();
+        assert!(r.contains("for 2d"), "{r}");
+        assert!(!r.contains("UTC"), "{r}");
     }
 }

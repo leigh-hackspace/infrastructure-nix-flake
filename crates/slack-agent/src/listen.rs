@@ -123,6 +123,10 @@ struct Stats {
     turns: AtomicU64,
     errors: AtomicU64,
     tool_calls: AtomicU64,
+    /// How many of those turns were answered with one tool call and no model. The hit rate is
+    /// the whole point of the fast path: it says which questions people actually ask, and
+    /// when it is 100 % of a quiet hour, the model was never needed for that hour at all.
+    quick: AtomicU64,
     last_turn_ms: AtomicU64,
     last_error: Mutex<String>,
     recent: Mutex<VecDeque<String>>,
@@ -250,6 +254,37 @@ fn ask(req: &Request, ctx: &Arc<Ctx>) -> Reply {
     } else {
         Kind::Voice
     };
+    // **The voice channel is where a fast path is audible.** Slack can tolerate nine seconds,
+    // because a person walked away and came back; a room with people standing in front of a
+    // speaker cannot. Same bargain `answer_events` has made since phase 1, and the same rule
+    // on failure: a tool declining is not an answer, it is a reason to go ask the model.
+    let quick_started = Instant::now();
+    let quick = ctx
+        .agent
+        .try_lock()
+        .ok()
+        .and_then(|mut a| a.quick_answer(&question, |w| eprintln!("warning: {w}")));
+    if let Some(hit) = quick {
+        let ms = quick_started.elapsed().as_millis() as u64;
+        let secs = ms as f64 / 1000.0;
+        ctx.stats.quick.fetch_add(1, Ordering::Relaxed);
+        ctx.stats.turns.fetch_add(1, Ordering::Relaxed);
+        ctx.stats.tool_calls.fetch_add(1, Ordering::Relaxed);
+        ctx.stats.last_turn_ms.store(ms, Ordering::Relaxed);
+        record(ctx, &question, &hit.text, secs);
+        eprintln!("deterministic: {} answered in {ms} ms (no model)", hit.label);
+        return Reply::json(
+            200,
+            &format!(
+                "{{\"answer\":{},\"engine\":\"none (fast path)\",\"rounds\":0,\"tools\":[{}],\
+                 \"secs\":{secs:.2},\"millis\":{ms},\"prompt_tokens\":0,\"completion_tokens\":0,\
+                 \"channel\":{},\"warnings\":[]}}",
+                json::quoted(hit.text.trim()),
+                json::quoted(&hit.label),
+                json::quoted(kind.as_str()),
+            ),
+        );
+    }
     let mut guard = match ctx.agent.try_lock() {
         Ok(agent) => agent,
         Err(_) => {
@@ -388,7 +423,7 @@ fn status(ctx: &Arc<Ctx>) -> Reply {
             "{{\"uptime_secs\":{:.0},\"listen\":{},\"turns\":{},\"errors\":{},\
              \"tool_calls\":{},\"last_turn_ms\":{},\"last_error\":{},\"tools\":[{}],\
              \"tool_count\":{},\"sessions\":[{}],\"mcp\":[{}],\"startup_warnings\":[{}],\
-             \"record_questions\":{},\"thinking\":{},\"recent\":[{}]}}",
+             \"record_questions\":{},\"thinking\":{},\"quick\":{},\"recent\":[{}]}}",
             ctx.started.elapsed().as_secs_f64(),
             json::quoted(&ctx.opts.listen),
             ctx.stats.turns.load(Ordering::Relaxed),
@@ -408,6 +443,7 @@ fn status(ctx: &Arc<Ctx>) -> Reply {
             warns.join(","),
             ctx.opts.record_questions,
             json::quoted(ctx.opts.thinking.label()),
+            ctx.stats.quick.load(Ordering::Relaxed),
             recent.join(","),
         ),
     )
@@ -557,6 +593,11 @@ mod tests {
             parsed.get("thinking").and_then(|v| v.as_str()),
             Some("on"),
             "status.json does not say how the engine is thinking: {body}"
+        );
+        assert_eq!(
+            parsed.get("quick").and_then(|v| v.as_u64()),
+            Some(0),
+            "status.json must count fast-path turns: {body}"
         );
         assert_eq!(parsed.get("tool_count").and_then(Json::as_f64), Some(2.0));
         let warnings = parsed.get("startup_warnings").and_then(Json::as_array).expect("array");

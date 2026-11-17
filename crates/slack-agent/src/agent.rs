@@ -362,6 +362,48 @@ impl Agent {
         self.call_tool(name, arguments)
     }
 
+    /// Answer with **one tool call and no model**, when the question is that kind of question.
+    ///
+    /// `None` means "ask the model", and it is what happens on every problem: no shape
+    /// matched, the tool errored, or the tool *refused* (`space_status` with a room it does
+    /// not know returns an error precisely so it lands here). A fast path is only allowed to
+    /// make an answer faster — never wronger, never shorter, never the answer to a different
+    /// question — so it declines rather than improvises, and the fall-through is the same
+    /// rule `answer_events` has followed since phase 1.
+    ///
+    /// The sentence is the tool's, not this crate's: see `hackspace-mcp`'s `focused`, which is
+    /// where "how we say a room's temperature" lives, so a fast answer and a model-relayed
+    /// answer cannot disagree about what 12.1 degrees sounds like.
+    pub fn quick_answer(&mut self, text: &str, mut warn: impl FnMut(&str)) -> Option<QuickHit> {
+        use crate::triage::Quick;
+        let hit = crate::triage::quick(text)?;
+        let (name, arguments, label) = match hit {
+            Quick::Time => ("what_time", common_json::object(vec![]), "what_time".to_string()),
+            Quick::Open => ("space_status", focus("open"), "space_status(open)".to_string()),
+            Quick::Extremes => (
+                "space_status",
+                focus("extremes"),
+                "space_status(extremes)".to_string(),
+            ),
+            Quick::Room(room) => {
+                let label = format!("space_status({room})");
+                ("space_status", focus(&room), label)
+            }
+            Quick::Devices => (
+                "network_clients",
+                common_json::object(vec![]),
+                "network_clients".to_string(),
+            ),
+        };
+        match self.call_tool(name, arguments) {
+            Ok(answer) => Some(QuickHit { label, text: answer }),
+            Err(e) => {
+                warn(&format!("fast path {label} declined ({e}); asking the model"));
+                None
+            }
+        }
+    }
+
     fn call_tool(&mut self, name: &str, arguments: Json) -> Result<String, String> {
         let Some((_, index)) = self.owners.iter().find(|(n, _)| n == name).cloned() else {
             return Err(format!(
@@ -375,6 +417,19 @@ impl Agent {
             // common-mcp already prefixes the URL; do not double it.
             .map_err(|e| if e.starts_with(url.as_str()) { e } else { format!("{url}: {e}") })
     }
+}
+
+/// A fast-path answer: the shape that matched (for the log and the metrics) and the sentence
+/// the tool rendered.
+#[derive(Debug)]
+pub struct QuickHit {
+    pub label: String,
+    pub text: String,
+}
+
+/// `{"focus": "…"}`, the one argument `space_status` needs to answer a single question.
+fn focus(value: &str) -> Json {
+    common_json::object(vec![("focus".to_string(), common_json::string(value))])
 }
 
 /// Drop the oldest exchanges until the transcript is within

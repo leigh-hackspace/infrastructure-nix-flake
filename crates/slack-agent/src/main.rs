@@ -35,6 +35,7 @@
 
 mod agent;
 mod engine;
+mod fastpath;
 mod prompt;
 mod slack;
 mod listen;
@@ -371,6 +372,14 @@ fn run_ask(config: &Config, argv: &[String]) -> Result<(), String> {
     if agent.tool_count() == 0 {
         return Err("no tools at all: every MCP server failed, so any answer would be invented".to_string());
     }
+    // The CLI runs the fast path too, so `just slack-agent-eval` and `just voice-ask`
+    // measure what a person in the room actually gets rather than what the model would have
+    // said. A fast hit prints 0 rounds, which is the whole point of measuring it this way.
+    if let Some(hit) = agent.quick_answer(&question, |w| eprintln!("warning: {w}")) {
+        println!("answer:\n{}", hit.text.trim());
+        println!("\n[fast path · {} · no model]", hit.label);
+        return Ok(());
+    }
     let mut transcript = agent::seed_transcript();
     println!("question: {question}\n({} tools available)", agent.tool_count());
     let answer = agent.ask(&mut transcript, &question, |event| println!("   · {event}"))?;
@@ -439,51 +448,7 @@ fn run_call(config: &Config, argv: &[String]) -> Result<(), String> {
 
 // --- the calendar, without a model ---------------------------------------------
 
-/// Days ahead for one deterministic calendar answer, from the words in the message.
-fn calendar_args(days: i64) -> Json {
-    json::object(vec![(
-        "days".to_string(),
-        json::number_from_int(days.clamp(1, 60) as u64),
-    )])
-}
 
-/// Answer "what's on" straight from the tool. Returns `Err` when anything in the path fails,
-/// and the caller then asks the model instead — a slow answer beats none.
-///
-/// No `eyes` reaction either: that one exists because a model turn takes ~17 s and a person
-/// deserves to know they were not ignored. This takes the length of one HTTP GET.
-fn answer_events(
-    agent: &mut Agent,
-    slack: &Slack,
-    config: &Config,
-    metrics: &Metrics,
-    mention: &slack::Mention,
-    days: i64,
-) -> Result<(), String> {
-    let started = Instant::now();
-    let text = agent.call("space_events", calendar_args(days))?;
-    let (thread_ts, at) = slack::reply_target(
-        mention.thread_ts.as_deref(),
-        config.thread_replies,
-        &mention.user,
-    );
-    let body = match at {
-        Some(at) => format!("{at} {}", slack::escape(&text)),
-        None => slack::escape(&text),
-    };
-    slack.post(&mention.channel, thread_ts.as_deref(), &body)?;
-    metrics.turns.fetch_add(1, Ordering::Relaxed);
-    metrics.tool_calls.fetch_add(1, Ordering::Relaxed);
-    metrics
-        .last_turn_ms
-        .store(started.elapsed().as_millis() as u64, Ordering::Relaxed);
-    println!(
-        "deterministic: space_events(days={days}) answered {} in {} ms (no model)",
-        mention.user,
-        started.elapsed().as_millis()
-    );
-    Ok(())
-}
 
 /// `slack-agent events "what's on tonight"` — exactly what the socket handler would send for
 /// those words, printed here. It is the whole reason the fast path is testable before anybody
@@ -504,7 +469,7 @@ fn run_events(config: &Config, argv: &[String]) -> Result<(), String> {
     };
     println!("{question:?} → space_events(days={days}), no model.");
     let client = McpClient::new(config.mcp.first().cloned().unwrap_or_default());
-    println!("{}", client.call_text("space_events", calendar_args(days))?);
+    println!("{}", client.call_text("space_events", fastpath::calendar_args(days))?);
     Ok(())
 }
 
@@ -549,7 +514,7 @@ fn run_digest(config: &Config, argv: &[String]) -> Result<(), String> {
             .ok_or_else(|| format!("no channel named {to:?} — the digest has nowhere to go"))?
     };
     let client = McpClient::new(config.mcp.first().cloned().unwrap_or_default());
-    let list = client.call_text("space_events", calendar_args(days))?;
+    let list = client.call_text("space_events", fastpath::calendar_args(days))?;
     let body = format!("{title}\n\n{}", slack::escape(&list));
     slack.post(&channel, None, &body)?;
     println!("digest posted to {channel} ({} days)", days);
@@ -714,9 +679,22 @@ fn run_serve(config: &Config) -> Result<(), String> {
             // fast path fails for any reason, fall through to the model rather than go silent:
             // a slower answer beats none, which is the same rule the tools follow.
             if let Some(days) = triage::events_window(&mention.text) {
-                match answer_events(&mut agent, &slack, config, &metrics, &mention, days) {
+                match fastpath::answer_events(&mut agent, &slack, config, &metrics, &mention, days) {
                     Ok(()) => return Ok(()),
                     Err(e) => eprintln!("calendar fast path failed, asking the model instead: {e}"),
+                }
+            }
+            // **One tool, no model.** The same bargain as the calendar fast path above, for
+            // the questions that have an obvious single answer ("what time is it", "is it
+            // open", "how warm is the workshop"): tens of milliseconds instead of the 5-18 s
+            // of engine §15 of the design doc measured. Anything the tool declines falls
+            // through, so the worst case here is the old behaviour.
+            let quick_started = Instant::now();
+            if let Some(hit) = agent.quick_answer(&mention.text, |w| eprintln!("warning: {w}")) {
+                let ms = quick_started.elapsed().as_millis() as u64;
+                match fastpath::answer_quick(&slack, config, &metrics, &mention, &hit, ms) {
+                    Ok(()) => return Ok(()),
+                    Err(e) => eprintln!("fast path could not post ({e}); asking the model"),
                 }
             }
             answer(&mut agent, &slack, config, &metrics, &mut sessions, &mut lru, &mention);
@@ -729,6 +707,7 @@ fn run_serve(config: &Config) -> Result<(), String> {
         let _ = std::io::stderr().flush();
     }
 }
+
 
 /// One turn: react, think, answer, un-react.
 fn answer(
