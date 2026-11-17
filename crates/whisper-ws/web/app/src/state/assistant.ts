@@ -38,13 +38,22 @@ const TARGET_RATE = 16000;
 /** After speech has been heard, this much quiet ends the turn. */
 const STOP_AFTER_QUIET_MS = 1200;
 /** Longest single push-to-talk recording. */
-const MAX_RECORD_MS = 15000;
+// 12 s, and the number is arithmetic rather than taste: the take is posted as 16 kHz
+// mono PCM16, so 12 s is 384 KB, and the front door's `client_max_body_size` for this
+// vhost is 900k — the 15 s this used to allow was 960 KB, i.e. a 413 from nginx for any
+// take that actually ran to the cap.
+const MAX_RECORD_MS = 12000;
 /** A take that has heard nothing at all by now is a muted input, not a paused person. */
 const NO_SPEECH_MS = 5000;
 /** Speech is this many dB above the quietest frame seen so far… */
 const SPEECH_MARGIN_DB = 8;
 /** …but never below this, or a silent room makes every breath speech. */
 const SPEECH_FLOOR_DB = -48;
+
+/** Whisper on CPU against a full-length take, with room for a loaded box. */
+const TRANSSCRIBE_TIMEOUT_MS = 90_000;
+/** The ask is a model loop with tools in it, so it gets the longest leash. */
+const ASK_TIMEOUT_MS = 180_000;
 
 let gatewayUrl = '';
 
@@ -72,9 +81,30 @@ function humanError(e: unknown): string {
   return msg.startsWith('TypeError') ? `cannot reach ${gatewayUrl || 'the gateway'} — is voice.int.leighhack.org up?` : msg;
 }
 
-async function post(path: string, body: BodyInit, contentType: string): Promise<Response> {
+async function post(path: string, body: BodyInit, contentType: string, timeoutMs: number): Promise<Response> {
   if (!gatewayUrl) throw new Error('the gateway URL is not configured on the server');
-  const r = await fetch(gatewayUrl + path, { method: 'POST', body, headers: { 'content-type': contentType } });
+  let r: Response;
+  try {
+    // `AbortSignal.timeout` so the browser is not the only hop without a deadline: the
+    // front door waits 300 s and whisper-ws waits on its own timer, so without this a
+    // wedged upstream reads as "thinking" until someone closes the tab.  On a browser
+    // too old for it the signal is undefined and the request is simply unbounded, which
+    // is the old behaviour rather than a new failure.
+    r = await fetch(gatewayUrl + path, {
+      method: 'POST',
+      body,
+      headers: { 'content-type': contentType },
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (e) {
+    if (e instanceof DOMException && (e.name === 'TimeoutError' || e.name === 'AbortError')) {
+      throw new Error(
+        `no answer in ${Math.round(timeoutMs / 1000)}s — the gateway or whisper is not replying. ` +
+          '`just voice-status` on services1 says which.',
+      );
+    }
+    throw e;
+  }
   if (!r.ok) {
     let detail = '';
     try {
@@ -127,18 +157,32 @@ async function speak(b64: string | null): Promise<void> {
   await audio.play();
 }
 
-/** Ask a question that is already text — the hands-free path. */
+/** Ask a question that is already text, unless one is already in flight. */
 export async function askText(text: string, source: string): Promise<void> {
   if (busy()) return;
   const q = text.trim();
   if (!q) return;
+  await runAsk(q, source);
+}
+
+/**
+ * The ask itself, with no busy guard — for callers that already hold the flag.
+ *
+ * The guard belongs to the hands-free path, where two wake results can race.  Routing
+ * push-to-talk through it made that path a silent no-op: `stopTalk` had set
+ * `busy = 'transcribing…'` for its own reasons, so `askText` looked at it, returned
+ * without doing anything, and left the card showing "transcribing…" forever with both
+ * buttons disabled — no error, no answer, nothing in any log.  Splitting the two makes
+ * the deadlock unrepresentable instead of merely commented against.
+ */
+async function runAsk(q: string, source: string): Promise<void> {
   setQuestion(q);
   setAnswer('');
   setBusy('asking…');
   setStatus(source);
   const started = performance.now();
   try {
-    const r = await post('/v1/ask', JSON.stringify({ text: q, voice: true }), 'application/json');
+    const r = await post('/v1/ask', JSON.stringify({ text: q, voice: true }), 'application/json', ASK_TIMEOUT_MS);
     const d = await r.json();
     const total = ((performance.now() - started) / 1000).toFixed(1);
     setAnswer(d.answer);
@@ -259,7 +303,7 @@ export async function stopTalk(): Promise<void> {
   const started = performance.now();
   try {
     if (secs < 0.3) throw new Error(`only ${secs.toFixed(1)}s of audio — say it a little longer`);
-    const r = await post('/v1/transcribe', new Blob([wav(samples)], { type: 'audio/wav' }), 'audio/wav');
+    const r = await post('/v1/transcribe', new Blob([wav(samples)], { type: 'audio/wav' }), 'audio/wav', TRANSSCRIBE_TIMEOUT_MS);
     const d = await r.json();
     const stt = ((performance.now() - started) / 1000).toFixed(1);
     if (!d.speech) {
@@ -268,7 +312,9 @@ export async function stopTalk(): Promise<void> {
       return;
     }
     setTiming(`transcribed in ${stt}s`);
-    await askText(d.text, 'push to talk');
+    // runAsk, not askText: this call holds the busy flag on purpose, and the guard would
+    // drop the question (see runAsk).
+    await runAsk(d.text, 'push to talk');
   } catch (e) {
     setBusy('');
     setStatus(`transcribe failed: ${humanError(e)}`);
