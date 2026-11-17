@@ -3053,20 +3053,23 @@ path-info -S | numfmt --to=iec`, and `nix path-info -S` on
   `nix flake check --no-build 2>&1 | grep -o 'sops-secret-[a-z_0-9]*' | sort -u` after
   `echo x | sops --set '["a","b"]' /dev/stdin secrets/secrets.yaml`-shaped no-op edit.
 
-- **The deterministic fast path is where voice latency lives, not the thinking.**
-  `docs/slack-agent-2026-11-16.md` §15 measured the obvious speedup (suppress the model's
-  thinking) and it **lost**: 33 % slower over the fixture, more rounds, more tokens. What the
-  same run shows is that the most-asked questions have one obvious tool and no judgement in
-  them — "what time is it" (`what_time`), "is it open"/"how warm is the workshop"
-  (`space_status`), "how many devices" (`network_clients`) — and they cost 5–16 s of model
-  time today. §13 already answers "what's on" deterministically (`triage::events_window` →
-  `space_events`, ~1 s instead of ~17 s) and posts the same renderer the Monday digest uses.
-  **Do:** extend that shape to those three, one table of question-shape → tool → sentence, in
-  `slack-agent` so the voice socket, Slack and the OpenAI-compat path all get it; keep the
-  model for anything needing judgement, and keep it answering the moment the shape does not
-  match. **Blocks:** nothing; it is pure latency. **Re-verify with:**
-  `just slack-agent-eval` before and after (it prints rounds, ms and tokens per question —
-  the fast path should show 0 rounds) and `just voice-ask "is the space open"`.
+- **Strip the wake phrase before the fast path sees the transcript.** Measured 2026-11-17:
+  `"how warm is the workshop"` answers in under a second through `Agent::quick_answer`,
+  `"hey jarvis how warm is the workshop"` takes 4 rounds and 19.1 s, because the recognizer
+  counts two named words and correctly backs off. The camera satellite already strips its
+  phrase (`wake::strip`); the browser and server-wake paths must do the same, or the fast
+  path is a lab result. **Do:** strip in the caller that owns the wake event, not inside
+  `quick` — the phrase list belongs next to the detector that produced it. **Re-verify
+  with:** `curl -s -X POST http://127.0.0.1:8194/v1/ask -d '{"text":"hey jarvis is the space
+  open","voice":true}'` and read `rounds` (0 = stripped, 2 = not).
+
+- **Piper is the voice floor now.** A fast-path answer costs 40 ms and the turn still costs
+  2.5-3.4 s wall, because `piper` is spawned per turn and reloads its voice every time.
+  **Do:** a warm synthesizer (a persistent child, or `wyoming-piper` on loopback behind the
+  gateway) plus audio that streams to the browser as it is made, so first sound lands with
+  the first sentence. **Blocks:** nothing; it is latency only. **Re-verify with:**
+  `time just voice-ask "is the space open"` — the fast path is 0.0 s of agent, so whatever
+  remains is synthesis and transport.
 
 - **The event list and the Monday digest still print ISO dates, and the voice says "dash".**
   Measured 2026-11-17 through the same espeak-ng front end piper uses (`espeak-ng -v en-gb -x -q`):

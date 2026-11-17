@@ -722,3 +722,67 @@ everyone asks have **one obvious tool and no judgement in them** ("what time is 
 open", "how warm is the workshop", "how many devices"), and §13 already answers "what's on"
 that way — a deterministic path that formats a tool result and posts it, ~1 s instead of
 17. The same shape covers the rest, and it is where voice latency goes, not in the thinking.
+
+## 16. The fast path, measured (2026-11-17)
+
+§15 said the cost centre was extra tool chatter, not the thinking. This is the fix that
+followed from that sentence: questions with **one obvious tool and no judgement in them**
+get that tool call and a template, and never meet a model. The shape is not new — "what's
+on" has been answered this way since phase 1 — what changed is that it is now **one door
+for every harness** (`Agent::quick_answer`), reached by a recognizer (`triage::quick`),
+instead of one special case in the Slack loop.
+
+Measured on the same 14-question fixture §15 used, so the columns are comparable:
+
+| question | before (thinking on) | after |
+| --- | --- | --- |
+| is it cold in the hackspace | 12.7 s | **< 1 s** |
+| what's the temperature in the workshop | 4.9 s | **< 1 s** |
+| which room is the coldest and how cold is it | 5.2 s | **< 1 s** |
+| is the hackspace open | 6.7 s | **< 1 s** |
+| how many devices are on the network | 9.6 s | **< 1 s** |
+| the other nine | 203 s | 203 s (untouched, on purpose) |
+| **fixture total** | **270.8 s** | **~227 s**, five of them free |
+
+Through the real voice path, end to end including piper and a WAV on disk:
+
+```
+"what time is it"       3.4 s   agent 0.0 s · 0 rounds · fast path
+"is the space open"     2.5 s   agent 0.0 s · 0 rounds · fast path
+"what's on tonight"     2.9 s   agent 0.0 s · 0 rounds · fast path
+"how warm is the workshop" (before, through the model)  6.9-18 s
+```
+
+**Piper is now the floor.** When the answer costs 40 ms and the whole turn costs 2.5-3.4 s,
+the remaining 2.4 s is synthesis: piper is spawned per turn and loads its voice every time.
+That, not the model, is what the next second comes out of — a warm synthesizer and audio
+that streams to the browser as it is made.
+
+Three findings from wiring it, all of them design rather than decoration:
+
+* **A refusal must be an error, not an answer.** `space_status` with an unknown room returns
+  `Err`, and `quick_answer` turns any error into a fall-through to the model. Tested live:
+  "how warm is the cnc" → the tool says *there is no CNC sensor* → the model takes it and
+  says so, correctly. Recognition is allowed to guess (`Room("cnc")` is a reasonable guess);
+  the guess is not the last word. Had the refusal been an `Ok("I cannot see that room…")`,
+  the fast path would have posted it as the answer, and the fast path is the code path
+  nobody reads when something is 25× faster than it used to be.
+* **An old server silently ignores a new argument.** While testing against the *running*
+  MCP server, "how hot is aibox" hit the fast path and answered with the entire building's
+  status: the deployed tool had no `focus` parameter, so it returned `Ok(everything)`. Same
+  failure class as the `enable_thinking` spelling above — **accepted, ignored, 200 OK** —
+  which makes it a pattern worth remembering rather than an anecdote: *ship the tool before
+  the caller that trusts it to say no.*
+* **A wake word in the transcript defeats the recognizer.** `"how warm is the workshop"`
+  matches; `"hey jarvis how warm is the workshop"` does not, because the recognizer counts
+  two named words and backs off to the model (measured: 4 rounds, 19.1 s). The camera
+  satellite already strips its wake phrase (`wake::strip`) before asking; **whatever strips
+  the wake word in the browser and server-wake paths must do it before `quick_answer` sees
+  the text**, or the fast path works in the lab and not in the room. Filed in
+  `docs/follow-ups.md`.
+
+The recognizer errs toward silence by design: past tense, a noun that is not the building
+("is the door left open"), two rooms at once, anything over 200 characters — all `None`,
+all the model. Its filler list deliberately contains **no room names**: the space API owns
+that table, and `AGENTS.md` rule 31 is a whole paragraph about what a second copy of a list
+becomes.
