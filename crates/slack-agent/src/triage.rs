@@ -491,6 +491,21 @@ mod tests {
         yes("what time does it close");
     }
 
+    /// The basics tier (`what_time`, `calculate`, `convert`) answers questions that are not
+    /// about the building at all, so this gate has to be explicit about which shape reaches it:
+    /// an interrogative yes, a bare imperative no. Voice and @-mentions never come through
+    /// here, so a `no` only ever declines to barge into a conversation between two people — and
+    /// "convert 12 feet to metres" is a thing one member says to another at the bench.
+    #[test]
+    fn the_basics_tier_is_reachable_by_question_but_not_by_command() {
+        yes("what time is it");
+        yes("what's 3/8 in mm");
+        yes("how many litres is 3 gallons");
+        yes("is it the weekend");
+        no("convert 12 feet to metres");
+        no("calculate the load for the truss");
+    }
+
     #[test]
     fn humans_addressing_humans_get_no_reply() {
         for q in [

@@ -49,6 +49,7 @@ mod args;
 mod clock;
 mod sources;
 mod tools;
+mod tools_basics;
 mod tools_hass;
 mod tools_space;
 mod tools_watch;
@@ -263,23 +264,43 @@ fn envelope(name: &str, arguments: &str) -> String {
     )
 }
 
-/// Call every tool the way a client would, print what came back, and exit non-zero
-/// if any of them failed.  This is the gate `docs/slack-agent-2026-11-16.md` sets
-/// for phase 1, and it is the thing to re-run after any engine or network change.
+/// One self-test call. `expect` is a substring the answer must contain, or `None` when the
+/// only honest check is "it answered" — which is the right check for a live sensor and the
+/// wrong one for arithmetic.
+struct Case {
+    name: &'static str,
+    args: &'static str,
+    expect: Option<&'static str>,
+    /// True for the tools that touch no network, which is what makes them the diagnostic.
+    offline: bool,
+}
+
+/// Call every tool the way a client would, print what came back, and exit non-zero if any
+/// of them failed.  This is the gate `docs/slack-agent-2026-11-16.md` sets for phase 1, and
+/// it is the thing to re-run after any engine or network change.
 fn self_test(srv: &common_mcp::Server) -> i32 {
-    let cases: Vec<(&str, &str)> = vec![
-        ("space_status", "{}"),
-        ("space_events", r#"{"days":7}"#),
-        ("home_assistant_states", r#"{"search":"temp","limit":6}"#),
-        ("home_assistant_states", r#"{"domain":"lock","limit":6}"#),
-        ("home_assistant_history", r#"{"entity_id":"sensor.workshop_temperature","hours":6}"#),
-        ("camera_activity", r#"{"hours":12}"#),
-        ("fleet_metric", r#"{"query":"up"}"#),
-        ("network_clients", "{}"),
+    let cases = vec![
+        Case { name: "space_status", args: "{}", expect: None, offline: false },
+        Case { name: "space_events", args: r#"{"days":7}"#, expect: None, offline: false },
+        Case { name: "home_assistant_states", args: r#"{"search":"temp","limit":6}"#, expect: None, offline: false },
+        Case { name: "home_assistant_states", args: r#"{"domain":"lock","limit":6}"#, expect: None, offline: false },
+        Case { name: "home_assistant_history", args: r#"{"entity_id":"sensor.workshop_temperature","hours":6}"#, expect: None, offline: false },
+        Case { name: "camera_activity", args: r#"{"hours":12}"#, expect: None, offline: false },
+        Case { name: "fleet_metric", args: r#"{"query":"up"}"#, expect: None, offline: false },
+        Case { name: "network_clients", args: "{}", expect: None, offline: false },
+        // The basics trio is here for a different reason from the other eight, and its answers
+        // are *checked* rather than merely collected: an inch is 25.4 mm by definition, so a
+        // wrong number means the binary is broken — and it needs no network to prove it.
+        Case { name: "what_time", args: "{}", expect: Some("Europe/London"), offline: true },
+        Case { name: "calculate", args: r#"{"expression":"3/8*25.4"}"#, expect: Some("9.525"), offline: true },
+        Case { name: "convert", args: r#"{"amount":1,"from":"in","to":"mm"}"#, expect: Some("25.4 mm"), offline: true },
     ];
     let mut bad = 0;
+    let mut offline_total = 0;
+    let mut offline_bad = 0;
     let total = cases.len();
-    for (name, arguments) in cases {
+    for case in &cases {
+        let (name, arguments) = (case.name, case.args);
         let body = envelope(name, arguments);
         let started = Instant::now();
         let reply = srv.handle(&body).unwrap_or_else(|| "{\"error\":\"no reply\"}".to_string());
@@ -290,29 +311,56 @@ fn self_test(srv: &common_mcp::Server) -> i32 {
             .and_then(|d| d.at(&["result", "isError"]))
             .and_then(|v| v.as_bool())
             .unwrap_or(true);
-        let summary: String = parsed
-            .as_ref()
-            .and_then(|d| d.at(&["result", "content"]))
-            .and_then(|c| c.as_array())
-            .and_then(|a| a.first())
-            .and_then(|i| i.get("text"))
-            .and_then(|t| t.as_str())
-            .unwrap_or("(unreadable reply)")
-            .chars()
-            .take(240)
-            .collect::<String>()
-            .replace('\n', " | ");
-        let status = if is_err { "FAIL" } else { "ok  " };
-        if is_err {
+        let text = extract(&parsed);
+        // Answered, but not with the thing arithmetic says, counts as a failure too: "ok" that
+        // hides a wrong number is precisely the fault this tier exists to remove.
+        let wrong = is_err || case.expect.map(|want| !text.contains(want)).unwrap_or(false);
+        let summary: String = text.chars().take(240).collect::<String>().replace('\n', " | ");
+        let status = if wrong { "FAIL" } else { "ok  " };
+        if wrong {
             bad += 1;
+            if case.offline {
+                offline_bad += 1;
+            }
         }
-        println!("[{status}] {name} {arguments}  {ms} ms\n        {summary}");
+        if case.offline {
+            offline_total += 1;
+        }
+        let note = match (is_err, case.expect) {
+            (false, Some(want)) => format!("  (checked for {want:?})"),
+            _ => String::new(),
+        };
+        println!("[{status}] {name} {arguments}  {ms} ms{note}\n        {summary}");
     }
+    // **The reason the offline trio is in this list at all.** Eight of these tools read the
+    // building or the servers, so all eight can legitimately fail at 03:00 while this process
+    // is perfectly healthy — and "8 of 11 failed" is then ambiguous about what to fix. The
+    // three that read nothing but their own tables settle it in one line.
     if bad == 0 {
         println!("\nall {total} tool calls answered");
         0
+    } else if offline_bad > 0 {
+        println!(
+            "\n{bad} of {total} failed, INCLUDING {offline_bad} of the {offline_total} that need no network — this process or its tables are broken, look here first."
+        );
+        1
     } else {
-        println!("\n{bad} of {total} tool calls reported an error");
+        println!(
+            "\n{bad} of {total} failed, but the {offline_total} tools that need no network all answered: this process is fine, the failures above are upstreams."
+        );
         1
     }
+}
+
+/// The first content block's text, which is the only part of a tool reply worth printing.
+fn extract(parsed: &Option<common_json::Json>) -> String {
+    parsed
+        .as_ref()
+        .and_then(|d| d.at(&["result", "content"]))
+        .and_then(|c| c.as_array())
+        .and_then(|a| a.first())
+        .and_then(|i| i.get("text"))
+        .and_then(|t| t.as_str())
+        .unwrap_or("(unreadable reply)")
+        .to_string()
 }

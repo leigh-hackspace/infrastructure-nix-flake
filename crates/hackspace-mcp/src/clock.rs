@@ -8,7 +8,9 @@
 //! tests; a dependency would make them someone else's problem in a way nobody
 //! reads.
 //!
-//! Everything here is **UTC on purpose.** The hackspace is in Europe/London and a
+//! Everything here is **UTC on purpose** — with one named exception, below.
+//!
+//! The hackspace is in Europe/London and a
 //! reader in the space wants local time, but the boundary where that matters is
 //! the *display* of an event's start, and the calendar API already carries its own
 //! offset (`2026-11-16T18:30:00+00:00`) — so [`iso_epoch`] honours the offset it is
@@ -16,6 +18,14 @@
 //! switched to server-local time would print "18:30" and mean 18:30±1 depending on
 //! the date, which is the kind of bug that survives forever because the answer is
 //! plausible either way.
+//!
+//! The exception is [`london_offset`], and it exists because "what time is it" is a
+//! different question from "when is the CTF": the first asks about **now**, there is
+//! no published timestamp to honour, and the alternative is the prompt telling a
+//! 30-billion-parameter quantised coder to add an hour in its head whenever the
+//! clocks change. So the zone rule is stated once, here, with the transitions tested,
+//! and every string it produces is **labelled** (`14:32 BST (UTC+1)`) — because the
+//! failure this file warns about is not converting, it is converting silently.
 
 /// Days from the civil epoch (1970-01-01) for a proleptic-Gregorian Y/M/D.
 ///
@@ -286,6 +296,88 @@ pub fn civil_text(epoch: f64, offset: i64) -> String {
     format!("{y:04}-{m:02}-{d:02} {:02}:{:02}", tod / 3600, (tod % 3600) / 60)
 }
 
+/// `2026-11-17` → `17 Nov 2026`, because the hyphenated form is **spoken** with the word
+/// "dash" in it. Measured through the same espeak-ng front end piper uses (`-x -q`):
+///
+/// ```text
+/// 2026-11-17  → t'u: T'aUz@nd @n tw'Enti s'Iks d'aS Il'Ev@n d'aS s'Ev@nt,i:n
+/// 17 Nov 2026 → s'Ev@nt,i:n n'0v t'u: T'aUz@nd @n tw'Enti s'Iks
+/// ```
+///
+/// So a tool that prints an ISO date is fine on a screen and says "dash" out loud, and the
+/// voice channel reads tool text straight through — `what_time` is why this exists, and the
+/// event list is the caller that still has not been moved to it (`docs/follow-ups.md`).
+pub fn nice_date(date: &str) -> String {
+    let month = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let Ok(y) = date[0..4].parse::<i64>() else {
+        return date.to_string();
+    };
+    let Ok(m) = date[5..7].parse::<usize>() else {
+        return date.to_string();
+    };
+    let Ok(d) = date[8..10].parse::<u32>() else {
+        return date.to_string();
+    };
+    match month.get(m.saturating_sub(1)) {
+        Some(name) => format!("{} {name} {y}", d),
+        None => date.to_string(),
+    }
+}
+
+/// Seconds to add to UTC to get **Europe/London** wall time at this instant.
+///
+/// The rule is the statutory one, not a table: British Summer Time runs from 01:00 UTC on
+/// the last Sunday in March to 01:00 UTC on the last Sunday in October. It is eleven lines
+/// because the *arithmetic* is easy; what is not easy is getting it silently wrong across a
+/// transition, so the suite pins the four minutes that matter (one either side of both
+/// changeovers) and the whole function is then checked against the system tzdata over
+/// sixteen years — see the crate README.
+///
+/// Deliberately a *named* zone rather than the host's: services1 could be set to UTC (it
+/// effectively is in winter, where the two agree) and the answer would still be the space's.
+pub fn london_offset(epoch: i64) -> i64 {
+    let year = civil_from_days(epoch.div_euclid(86_400)).0;
+    if epoch >= dst_start(year) && epoch < dst_end(year) {
+        3_600
+    } else {
+        0
+    }
+}
+
+/// `GMT` or `BST`, for putting next to the time so the number cannot be misread.
+pub fn london_abbr(epoch: i64) -> &'static str {
+    if london_offset(epoch) == 0 {
+        "GMT"
+    } else {
+        "BST"
+    }
+}
+
+/// 01:00 UTC on the last Sunday in March.
+fn dst_start(year: i64) -> i64 {
+    last_sunday_utc(year, 3, 31)
+}
+
+/// 01:00 UTC on the last Sunday in October.
+fn dst_end(year: i64) -> i64 {
+    last_sunday_utc(year, 10, 31)
+}
+
+/// The instant (01:00 UTC) of the last Sunday of a month, which is the shape every EU and
+/// UK daylight-saving rule takes. `last` is that month's last day number.
+fn last_sunday_utc(year: i64, month: u32, last: u32) -> i64 {
+    // Same Sunday-first weekday as [`weekday`]: day 0 of the civil epoch was a Thursday.
+    // So `dow` is *also* the number of days back from the last day of the month to the last
+    // Sunday — 0 when the month itself ends on a Sunday. (This was `(dow + 6) % 7` first,
+    // which is the formula for a Monday-first week and landed every transition six days
+    // early; the suite catches it because `2026-03-29` stops being BST at midnight.)
+    let dow = (days_from_civil(year, month, last) + 4).rem_euclid(7);
+    let day = last as i64 - dow;
+    days_from_civil(year, month, day as u32) * 86_400 + 3_600
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -388,5 +480,80 @@ mod tests {
     #[test]
     fn the_history_api_wants_its_window_in_the_shape_it_accepts() {
         assert_eq!(iso_utc(1_794_820_163.0), "2026-11-16T09:09:23+00:00");
+    }
+
+    #[test]
+    fn the_rule_matches_the_system_tzdata_for_every_year_we_might_run_in() {
+        // One assertion per year, at the exact second the offset changes and the second
+        // before it. tzdata owns the rule; this only has to agree with it, and if the UK ever
+        // changes the dates the table says so and the test fails here rather than in a room.
+        // Generated from the system tzdata (`Europe/London`) on 2026-11-17: for each year,
+        // the two instants the offset changes, both of which tzdata puts at 01:00 UTC.
+        const TRANSITIONS: &[(i64, i64, i64)] = &[
+            (2020, 1585443600, 1603587600),
+            (2021, 1616893200, 1635642000),
+            (2022, 1648342800, 1667091600),
+            (2023, 1679792400, 1698541200),
+            (2024, 1711846800, 1729990800),
+            (2025, 1743296400, 1761440400),
+            (2026, 1774746000, 1792890000),
+            (2027, 1806195600, 1824944400),
+            (2028, 1837645200, 1856394000),
+            (2029, 1869094800, 1887843600),
+            (2030, 1901149200, 1919293200),
+            (2031, 1932598800, 1950742800),
+            (2032, 1964048400, 1982797200),
+            (2033, 1995498000, 2014246800),
+            (2034, 2026947600, 2045696400),
+            (2035, 2058397200, 2077146000),
+            (2036, 2090451600, 2108595600),
+            (2037, 2121901200, 2140045200),
+            (2038, 2153350800, 2172099600),
+            (2039, 2184800400, 2203549200),
+            (2040, 2216250000, 2234998800),
+        ];
+        for &(year, start, end) in TRANSITIONS {
+            assert_eq!(london_offset(start - 1), 0, "{year}: GMT until the second of the changeover");
+            assert_eq!(london_offset(start), 3_600, "{year}: BST from the changeover");
+            assert_eq!(london_offset(end - 1), 3_600, "{year}: BST until the second of the changeover");
+            assert_eq!(london_offset(end), 0, "{year}: GMT from the changeover");
+            assert_eq!(london_abbr(start), "BST");
+            assert_eq!(london_abbr(end), "GMT");
+            // And the changeover is at one o'clock UTC by definition, which is the fact the
+            // `dst_start`/`dst_end` arithmetic rests on.
+            assert_eq!(dst_start(year), start, "{year} spring");
+            assert_eq!(dst_end(year), end, "{year} autumn");
+        }
+    }
+
+    #[test]
+    fn a_date_the_voice_can_say_is_not_the_one_a_database_writes() {
+        assert_eq!(nice_date("2026-11-17"), "17 Nov 2026");
+        assert_eq!(nice_date("2026-01-01"), "1 Jan 2026");
+        assert_eq!(nice_date("2028-12-31"), "31 Dec 2028", "a leap year's last day");
+        // Anything we cannot read comes back untouched rather than as a guess.
+        assert_eq!(nice_date("not a date"), "not a date");
+        assert_eq!(nice_date("2026-13-01"), "2026-13-01", "month 13 is not December's cousin");
+    }
+
+    #[test]
+    fn london_crosses_the_clocks_at_one_utc_on_the_right_sundays() {
+        // Four minutes that matter, pinned from tzdata rather than from belief: 2026's
+        // changeovers are Sun 29 Mar and Sun 25 Oct.
+        let into_bst = iso_epoch("2026-03-29T01:00:00Z").unwrap() as i64;
+        let out_of_bst = iso_epoch("2026-10-25T01:00:00Z").unwrap() as i64;
+        assert_eq!(london_offset(into_bst - 1), 0, "still GMT a second before");
+        assert_eq!(london_offset(into_bst), 3_600, "BST from 01:00 UTC");
+        assert_eq!(london_offset(out_of_bst - 1), 3_600, "still BST a second before");
+        assert_eq!(london_offset(out_of_bst), 0, "GMT again from 01:00 UTC");
+        // The wall clock at those instants, which is what a person in the room sees:
+        // 02:00 on the way into summer, 01:00 (twice) on the way out.
+        assert_eq!(civil_text(into_bst as f64, london_offset(into_bst)), "2026-03-29 02:00");
+        assert_eq!(civil_text(out_of_bst as f64, london_offset(out_of_bst)), "2026-10-25 01:00");
+        assert_eq!(london_abbr(into_bst), "BST");
+        assert_eq!(london_abbr(out_of_bst), "GMT");
+        // A deep-winter and a deep-summer date, so a broken comparison cannot pass both.
+        assert_eq!(london_offset(iso_epoch("2026-01-15T12:00:00Z").unwrap() as i64), 0);
+        assert_eq!(london_offset(iso_epoch("2026-07-15T12:00:00Z").unwrap() as i64), 3_600);
     }
 }

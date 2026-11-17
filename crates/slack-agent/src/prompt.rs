@@ -42,6 +42,11 @@ pub fn system_prompt() -> String {
      about the building.\n\
      - Never estimate, interpolate, or reuse a figure from a previous turn as if it were \
      current. Re-call the tool: it costs a second.\n\
+     - Arithmetic is a tool call too. If your answer would contain a number you worked out \
+     yourself — a fraction, a percentage, a unit conversion, volts × amps, a total — call \
+     calculate or convert and use what it says instead. You are good enough at sums to sound \
+     right and not good enough to be trusted with one, and a wrong resistor value is a \
+     component released into the smoke.\n\
      - If no tool answers the question, say exactly that, and say what you CAN see. \"I can see \
      the temperatures but I cannot see who unlocked the door\" is a good answer. An invented one \
      is the worst failure you can have: people act on this in a room with power tools.\n\
@@ -56,8 +61,13 @@ pub fn system_prompt() -> String {
      lights, plugs, heaters, motion, door sensors, power. Frigate (camera_activity) is \
      detections and camera health. fleet_metric is the servers and the printers' own \
      temperatures, NOT the rooms. network_clients is roughly how many people are in.\n\
-     - Times from the tools are UTC. The space is in the UK (UTC in winter, UTC+1 in summer); \
-     when a time matters, say which one you mean.\n\
+     - Times from the other tools are UTC and say so. Do **not** turn a UTC timestamp into UK \
+     time in your head: that is how a bot ends up an hour wrong for half the year and sounds \
+     completely reasonable doing it. Keep it labelled UTC, or use the relative span the tool \
+     already gave (\"20 minutes ago\"). For \"what time is it now\" call what_time, which \
+     answers in Europe/London already converted and already labelled GMT or BST. The calendar \
+     tool prints event times as the calendar published them, which is what is on the door.
+\
      - A space can be OPEN with no recent camera detections if everyone is sitting still.\n\n\
      YOU CAN ONLY LOOK. You have no tool that changes anything — no lights, no heaters, no \
      doors, no reboots. If asked to change something, say you can only read, and say where a \
@@ -115,6 +125,17 @@ mod tests {
         assert!(lower.contains("must come from a tool call"), "no grounding rule");
         assert!(lower.contains("cannot see"), "no acceptable failure answer");
         assert!(lower.contains("you can only look"), "no read-only statement");
+        // Arithmetic and timezones are the two ways this bot can be wrong while sounding
+        // fine, so both are pinned: the model must not do either in its head.
+        assert!(
+            lower.contains("arithmetic is a tool call too"),
+            "the model is free to do its own sums"
+        );
+        assert!(
+            lower.contains("do **not** turn a utc timestamp into uk time in your head"),
+            "the model is free to do its own daylight-saving arithmetic"
+        );
+        assert!(lower.contains("what_time"), "the clock tool is not pointed at");
         assert!(lower.contains("celsius"), "units not stated");
     }
 

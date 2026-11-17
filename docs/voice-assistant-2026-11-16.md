@@ -146,6 +146,33 @@ speech gate and produce a transcript that looks like a question. Its counter is
 is no honest threshold until someone has watched it for a week. That is the gate criterion
 for ever turning the speaker on: **run `just voice-probe` until you can say what its rate is.**
 
+## What it can be asked (added 2026-11-17)
+
+The voice answers come from the same ten tools Slack sees (`docs/services.md`), seven of
+them about the building and three — `what_time`, `calculate`, `convert` — that are the
+reason a voice assistant is worth switching on at all: "what time is it", "what's 3/8 in
+mm", "how many litres is three gallons". They were added because the prompt previously
+told the model, in prose, that the UK is "UTC in winter, UTC+1 in summer" — an instruction
+to do daylight-saving arithmetic in its head, on a quantised coder model, out loud.
+
+Two measurements from that work, both of which changed code rather than only docs:
+
+* **espeak-ng reads `2026-11-17` aloud as "…twenty sixteen *dash* eleven *dash*
+  seventeen"** (`nix run nixpkgs#espeak-ng -- -v en-gb -x -q`, the same front end piper
+  uses). So a tool that prints an ISO date is correct on a screen and says "dash" in a
+  room. `what_time` now prints `Tue 17 Nov 2026 16:14 GMT`; the shared formatter is
+  `clock::nice_date`, and the event list is still un-migrated (`docs/follow-ups.md`).
+  Times themselves are safe: `16:10` reads "sixteen ten", with no "colon".
+* **the basics trio needs no network**, which makes it the diagnostic in `--self-test`:
+  when all eight building tools fail at 03:00, "the 3 tools that need no network all
+  answered: this process is fine, the failures above are upstreams" is the difference
+  between fixing Home Assistant and restarting a healthy server.
+
+In Slack these are reachable **by question, not by command**: "what time is it" is
+answered unmentioned, "convert 12 feet to metres" is not, because that is two members
+talking at the bench. The gate is pinned both ways in `triage`'s suite. The voice path
+never reaches that gate — a spoken turn is always addressed.
+
 ## Proven / guessed, as of this writing
 
 Proven on these boxes today: the camera mic → whisper path (2.7 s); the camera's

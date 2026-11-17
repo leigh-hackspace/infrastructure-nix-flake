@@ -724,9 +724,13 @@ Two units, both `DynamicUser`, both on loopback, both `EnvironmentFile=
 — no `--token` flag exists on either binary, and neither prints its environment):
 
 - **`hackspace-mcp.service`** — `127.0.0.1:8191`, `POST /mcp` (stateless Streamable HTTP,
-  JSON-RPC 2.0, via `crates/common-rs/mcp`). Seven read-only tools: `space_status`,
+  JSON-RPC 2.0, via `crates/common-rs/mcp`). Ten read-only tools: `space_status`,
   `space_events`, `home_assistant_states`, `home_assistant_history`, `camera_activity`,
-  `fleet_metric`, `network_clients`. It only ever issues HTTP **GET**s, there is no Home
+  `fleet_metric`, `network_clients`, plus the **basics tier** — `what_time`, `calculate`,
+  `convert` — which exists because the alternative was the prompt telling a quantised coder
+  model to do daylight-saving arithmetic, division and unit lookups from memory. They live
+  here rather than in a third-party MCP server so there is still exactly **one** clock, one
+  value of an inch, and one set of tools every harness sees. It only ever issues HTTP **GET**s, there is no Home
   Assistant *service-call* path in the code at all, and a non-loopback bind is refused without
   `--allow-non-loopback`. Tool failures come back as MCP `isError` content rather than
   JSON-RPC errors, because the model has to be able to *read* the failure sentence.

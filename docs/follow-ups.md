@@ -3053,6 +3053,30 @@ path-info -S | numfmt --to=iec`, and `nix path-info -S` on
   `nix flake check --no-build 2>&1 | grep -o 'sops-secret-[a-z_0-9]*' | sort -u` after
   `echo x | sops --set '["a","b"]' /dev/stdin secrets/secrets.yaml`-shaped no-op edit.
 
+- **The event list and the Monday digest still print ISO dates, and the voice says "dash".**
+  Measured 2026-11-17 through the same espeak-ng front end piper uses (`espeak-ng -v en-gb -x -q`):
+  `2026-11-17` renders `t'u: T'aUz@nd @n tw'Enti s'Iks d'aS Il'Ev@n d'aS s'Ev@nt,i:n` — the word
+  *dash*, twice — where `17 Nov 2026` renders as a date. `clock::nice_date` now exists and is
+  what `what_time` prints (the tool was written ISO first and the measurement is what changed
+  it), but `space_events` still heads its groups `YYYY-MM-DD` and the digest reuses that
+  renderer, so a spoken "what's on" reads a heading aloud with dashes in it. **Blocks:** nothing
+  except a slightly stupid voice. **Do:** route the event headings through `clock::nice_date` in
+  the same change as the digest's own format pass, and keep the ISO form wherever it is a key.
+  **Re-verify with:** `cargo run -q -p hackspace-mcp -- --call space_events '{"days":7}'` and
+  `just slack-agent-digest`, then `nix run nixpkgs#espeak-ng -- -v en-gb -x -q "<first heading>"`.
+
+- **`hackspace-mcp`'s compiled-in default source URLs still name `apps1`.** `--space-url` and
+  `--hass-url` default to `http://10.3.1.30:…`, which is where Home Assistant lived before
+  2026-11-16; the unit on services1 passes `127.0.0.1:8081`/`127.0.0.1:8123` explicitly, so the
+  running server is right and only a **hand-run** binary or a fresh box inherits the old
+  address. Measured locally 2026-11-17: `--self-test` with no arguments reports
+  `connect 10.3.1.30:8081: Connection refused` for `space_status`, which reads like an outage.
+  **Blocks:** a quiet first run on a new machine. **Do:** default them to loopback (that is
+  where both live now) and leave the flag for anywhere else. **Re-verify with:**
+  `grep -n "10.3.1.30" crates/hackspace-mcp/src/main.rs` (zero hits) and
+  `cargo run -q -p hackspace-mcp -- --self-test` from a box with no arguments.
+
+
 ## `nixos-rebuild switch` did not re-arm `auto-rollback.timer` on services1 (measured 2026-11-16)
 
 AGENTS' GOLDEN RULE says activating a configuration restarts the auto-rollback timer and

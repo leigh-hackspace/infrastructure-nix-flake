@@ -11,12 +11,22 @@
 //! temperature" together: they are one upstream call, and splitting them would
 //! cost a round trip of ~243 tokens of prefill each.
 //!
+//! It is **ten** now, and the extra three are `tools_basics`' clock, calculator and unit
+//! converter. The rule above is about near-duplicates, and those are the expensive case:
+//! `space_status`/`temperature` would be two ways to answer one question. A wall clock, a
+//! sum and a conversion are as far apart as any three tools here get, none of them competes
+//! with an existing one, and every one of them replaces a job the model was previously told
+//! to do in its head. Ten is still "readable as one list", which is what the number is
+//! actually protecting; if a future tool's description has to say "not to be confused with
+//! X", that is the signal to merge rather than add.
+//!
 //! [`register`] is the single funnel so every tool gets the same three things
 //! without repeating them: a name that matches its function, the counter that
 //! makes a broken tool visible on `/metrics`, and no access to anything except
 //! the `Sources` it was handed.
 
 use crate::sources::Sources;
+use crate::tools_basics;
 use crate::tools_hass;
 use crate::tools_space;
 use crate::tools_watch;
@@ -27,6 +37,7 @@ use std::sync::Arc;
 pub fn build(src: &Arc<Sources>) -> Server {
     let mut srv = Server::new("hackspace-mcp", env!("CARGO_PKG_VERSION"));
     tools_space::register_tools(&mut srv, src);
+    tools_basics::register_tools(&mut srv, src);
     tools_hass::register_tools(&mut srv, src);
     tools_watch::register_tools(&mut srv, src);
     srv

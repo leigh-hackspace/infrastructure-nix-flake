@@ -50,6 +50,25 @@ pub fn required_str(args: &Json, name: &str, hint: &str) -> Result<String, Strin
     str_arg(args, name).ok_or_else(|| format!("argument \"{name}\" is required ({hint})"))
 }
 
+/// A number argument — not rounded, unlike [`int_arg`], because a quantity that has been
+/// rounded is a different quantity. Accepts a JSON number or a numeric string for the same
+/// reason `int_arg` does.
+pub fn num_arg(args: &Json, name: &str) -> Result<Option<f64>, String> {
+    let Some(v) = args.get(name) else {
+        return Ok(None);
+    };
+    let raw = match v {
+        Json::Num(n) => Some(*n),
+        Json::Str(s) => s.trim().replace(',', "").parse::<f64>().ok(),
+        _ => None,
+    };
+    let n = raw.ok_or_else(|| format!("argument \"{name}\" must be a number, e.g. 3.75"))?;
+    if !n.is_finite() {
+        return Err(format!("argument \"{name}\" is not a number"));
+    }
+    Ok(Some(n))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -82,5 +101,16 @@ mod tests {
         assert_eq!(str_arg(&with(vec![("q", json::string(" workshop "))]), "q").as_deref(), Some("workshop"));
         let e = required_str(&with(vec![]), "entity_id", "an entity id").unwrap_err();
         assert!(e.contains("required"), "{e}");
+    }
+
+    #[test]
+    fn a_number_argument_keeps_its_fraction_and_loses_its_thousands_separator() {
+        assert_eq!(num_arg(&with(vec![("n", json::number_from_f64(3.75))]), "n").unwrap(), Some(3.75));
+        assert_eq!(num_arg(&with(vec![("n", json::string("3.75"))]), "n").unwrap(), Some(3.75));
+        // Models write "1,000" for a thousand, and a comma is not a decimal point here.
+        assert_eq!(num_arg(&with(vec![("n", json::string("1,000"))]), "n").unwrap(), Some(1000.0));
+        assert_eq!(num_arg(&with(vec![]), "n").unwrap(), None);
+        let e = num_arg(&with(vec![("n", json::string("three quarters"))]), "n").unwrap_err();
+        assert!(e.contains("must be a number"), "{e}");
     }
 }
