@@ -407,6 +407,11 @@ pub enum Quick {
     Extremes,
     /// "how many devices are on the network" → `network_clients`.
     Devices,
+    /// "what's on this week" → `space_events`, for the number of days asked. This one already
+    /// had a deterministic path **in the Slack loop only**, so a person asking the same
+    /// question out loud paid 14 s of engine for a list the calendar already has in order.
+    /// Folding it in here is the point: one recognizer, one door, every harness.
+    Events(i64),
 }
 
 /// Words that cannot be a room's name. Note what this list is *not*: it has no rooms in it.
@@ -452,6 +457,11 @@ pub fn quick(text: &str) -> Option<Quick> {
     let word = |needle: &str| words.contains(&needle);
     let any_word = |list: &[&str]| list.iter().any(|w| word(w));
 
+    // The calendar shape first: it is the older, better-tested recognizer of the two, and its
+    // own suite pins "any events tonight" to 1 day and "is there anything on tomorrow" to 2.
+    if let Some(days) = events_window(&clean) {
+        return Some(Quick::Events(days));
+    }
     if ["what time", "time is it", "current time", "the time now", "time right now"]
         .iter()
         .any(|p| said(p))
@@ -634,6 +644,8 @@ mod tests {
         yes("is it cold in the hackspace", Extremes);
         yes("which room is the coldest", Extremes);
         yes("how many devices are on the network", Devices);
+        yes("what's on at the hackspace this week", Events(7));
+        yes("any events tonight", Events(1));
     }
 
     /// Recognition is allowed to guess wrong, because it is not the last word: the tool
@@ -657,7 +669,6 @@ mod tests {
             "is anyone in the space right now",
             "is the door left open",
             "are the cameras working",
-            "what's on at the hackspace this week",
             "turn the heaters on in the workshop",
             "how warm is the workshop and the cnc",
             "",

@@ -389,6 +389,17 @@ impl Agent {
                 let label = format!("space_status({room})");
                 ("space_status", focus(&room), label)
             }
+            Quick::Events(days) => {
+                let label = format!("space_events({days}d)");
+                (
+                    "space_events",
+                    common_json::object(vec![(
+                        "days".to_string(),
+                        common_json::number_from_int(days.clamp(1, 60) as u64),
+                    )]),
+                    label,
+                )
+            }
             Quick::Devices => (
                 "network_clients",
                 common_json::object(vec![]),
