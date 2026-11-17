@@ -7,12 +7,18 @@ The design and the argument for it are in `docs/voice-assistant-2026-11-16.md`. 
 the measurements, because an always-on detector in a shared space is judged by how often it
 interrupts strangers and that number cannot be inherited from a vendor's README.
 
-## What it is today: a harness, not a daemon
+## Two things in one binary
 
-`src/main.rs` scores WAV files with a streaming model and prints the three numbers that
-actually decide a deployment — peak score, detections per hour of real audio, and
-milliseconds of CPU per second of audio — so the next step (a Wyoming wake server) can be
-sized and thresholded from data instead of hope.
+**`serve`** is the deployed one: a loopback HTTP service that scores a live PCM stream per
+session. On services1 it is `voice-wake.service`, model pinned by hash, reached by browsers
+through the voice gateway's `/v1/wake/*` proxy (`crates/voice-assistant/src/serve.rs`'s
+header says why HTTP and not raw Wyoming TCP, and why that is still the Wyoming *event
+model*). Nothing else consumes it yet — no answering, no speaker, no camera.
+
+**`score` / `bench`** are the harness: WAV files in, and the three numbers that decide a
+deployment — peak score, detections per hour of real audio, milliseconds of CPU per
+audio-second. The daemon states its own CPU cost in `/status.json`, which is the same meter,
+so the two paths can be compared and disagreed with.
 
 ```
 nix develop --command bash -c 'cd crates/voice-wake && cargo build --release'

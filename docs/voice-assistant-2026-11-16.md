@@ -359,8 +359,10 @@ to the **pure-Rust `tract`** backend — `ldd` on the release binary is `libc`/`
 and nothing else — so there is no ONNX Runtime blob for a Nix build to fetch. Measured here,
 and the reason it is its own cargo workspace: `crates/voice-wake/README.md`.
 
-**Not enabled, not deployed.** What exists is the harness, because the gate is a number we
-have to earn: our own busy-hour false-accept rate, with the threshold picked from it the way
+**Deployed as detection only** (services1, `voice-wake.service` + the gateway's
+`/v1/wake/*` proxy, and `whisper.int` now offers `wake: server` per tab): nothing answers,
+nothing plays, no camera is wired to it. What is *not* earned yet is the threshold, and that
+is a number from this room: our own busy-hour false-accept rate, with the threshold picked from it the way
 Frigate's `min_area` floor was. Until that measurement exists, an always-on detector in a room
 where people are working is a feature someone will mute — and the one measured result that
 warns loudest is that piper's isolated "hey jarvis" scores **0.063** while the same phrase

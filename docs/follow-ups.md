@@ -3276,7 +3276,10 @@ container change there wants its own look, not a drive-by inside a strata deploy
 
 ## The wake tier: what has to be measured before any of it is switched on
 
-`crates/voice-wake/` is a harness, not a service: it scores WAVs with a streaming wake model
+`crates/voice-wake/` is deployed on services1 as `voice-wake.service` (loopback HTTP, model
+pinned, proxied at `voice.int.leighhack.org/v1/wake/*`, selectable per tab from `whisper.int`)
+— **detection only: it answers nothing and plays nothing**, and no camera feeds it yet.
+The open items are the thresholds and the measurements, not the code: it scores WAVs with a streaming wake model
 and prints peak score, detections per hour and CPU per audio-second. Architecture and engine
 choice are in `docs/voice-assistant-2026-11-16.md` §"the wake tier"; its `README.md` owns the
 numbers. Nothing is deployed, no unit exists, nothing listens. Open gates, in order:
