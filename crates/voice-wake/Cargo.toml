@@ -1,0 +1,33 @@
+[package]
+name = "voice-wake"
+version = "0.1.0"
+edition = "2021"
+
+# The always-on ear: streaming wake-word detection for any device that can only offer a
+# PCM stream, so that ASR runs on flagged turns instead of on everything the room makes.
+#
+# Unlike the other voice crates this one has external dependencies, and that is the
+# whole point of keeping it a separate process: `crates/voice-assistant` stays
+# zero-crates so a fleet-wide rebuild does not pull an ONNX runtime with it.  The engine
+# is `livekit-wakeword` (Apache-2.0) — a streaming classifier, one `.onnx` per phrase,
+# 80 ms steps — because hand-rolling a wake model was never on the table and hand-rolling
+# its melspectrogram/embedding frontend would have been worse: the crate already carries
+# the resampler, the per-model state and the step logic, and the published models are
+# the same files the browser client scores with.
+#
+# `docs/voice-assistant-2026-11-16.md` owns the measured budget and the deployment plan;
+# `crates/voice-wake/README.md` is what this binary measures.
+
+[dependencies]
+livekit-wakeword = "0.2.0"
+hound = "3.5"
+
+[[bin]]
+name = "voice-wake"
+path = "src/main.rs"
+
+# Not a member of `crates/` (the reason is stated there, and it is about eval-time
+# lock reading rather than anything here).  This table is what makes it a workspace of
+# one: its own `Cargo.lock`, so `livekit-wakeword`, `tract` and `ndarray` never appear
+# in the fleet's shared graph.
+[workspace]

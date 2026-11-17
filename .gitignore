@@ -15,8 +15,11 @@ result-fd
 
 # The cargo workspace's build output: crates/ is one cargo workspace (see
 # crates/Cargo.toml), so cargo writes a single target/ there rather than one per
-# crate.  The wasm SPAs are separate workspaces and ignore their own.
+# crate.  The wasm SPAs are separate workspaces and ignore their own — and so is
+# `voice-wake`, which is a non-member for the lockfile reason spelled out in
+# crates/Cargo.toml, so its 660 MB of ONNX-runtime artifacts also stays out of git.
 /crates/target/
+/crates/voice-wake/target/
 
 # Playwright for the headless-browser test suites (installed by each tests/run.sh);
 # the browser binaries themselves come from nixpkgs, not from Playwright's download.

@@ -297,3 +297,71 @@ gets built is through the checker, in the derivation as well as in dev (verified
 
 A build step nobody invokes is not a test. It was not a lint I skipped either — it was a lint
 that existed, in the repo, next to the code, and was simply never in the path.
+
+## The wake tier: detection separated from transcription, and why the ear is a model
+
+Asked plainly: *is a specialised model doing wake-word detection, or is it continuous
+Whisper?* The answer was **both, in two places**, and the two-ears split is what made the
+cam8 path wrong:
+
+| ear | spotting | what Whisper saw |
+| --- | --- | --- |
+| the browser page | OpenWakeWord, three ONNX sessions in the tab (`melspectrogram` → `embedding` → `hey_jarvis` head), threshold 0.5, 2 s cooldown | only the utterance *after* the keyword |
+| `cam8`'s satellite | **no model** — an energy gate, then Whisper transcribes **every** window, then `wake.rs` searches the *text* | everything that cleared the gate |
+
+The second one is a design mistake wearing a plausible face. Whisper medium on aibox costs
+**~900 ms of CPU per audio-second of gated speech** — roughly one stream per core, and it is
+paid per sentence the room happens to say, not per request. It also stores a transcript of
+everything the camera hears even when it was never addressed (`stats.last_transcript`), and
+it makes wake detection hostage to ASR output: piper-spoken "hey jarvis" comes back from
+Whisper as **`K Jarvis`**, which is the only reason bare `jarvis` is in the phrase list. Text
+matching on a hallucination-prone transcript is a reliability ceiling, not a threshold to
+tune.
+
+So the tier is now: **detect cheaply and always, transcribe only what was aimed at us** —
+with the seam designed for two classes of device, because a browser and a camera cannot be
+given the same job:
+
+```
+class 1 — device detects locally            class 2 — dumb audio stream
+browser (wasm), HA/Wyoming satellites       cam8 RTSP→go2rtc PCM, phones, ESP32s
+   │ flagged utterance only                    │ continuous 16 kHz PCM
+   ▼                                           ▼
+voice-gateway /v1/transcribe  ◄── pre-roll ring ──  voice-wake  (Wyoming, loopback/LAN only)
+   └► slack-agent listen → tools → piper              streaming scores, 80 ms steps
+```
+
+**Protocol: [Wyoming](https://github.com/OHF-Voice/wyoming)** (an Open Home Foundation
+standard, and Home Assistant's own voice plumbing) rather than a bespoke RPC — one JSONL
+header plus optional PCM, with `describe`→`info` (advertising `wake.models[]`,
+`active_wake_words`, `max_active_wake_words`), then `detect {names}` +
+`audio-start`/`audio-chunk{rate,width,channels}`/`audio-stop` → `detection {name, timestamp}`
+or `not-detected`. Reusing it means an ESP32 satellite or Home Assistant can point at our ear
+with a URI, and a device that detects for itself simply never appears at the wake server. It
+has **no authentication or encryption by design** ("trusted network, must not be exposed to
+the internet"), so it binds loopback/VLAN like everything else unauthenticated in this
+stack — never the front door.
+
+**Engine: [`livekit-wakeword`](https://github.com/livekit/livekit-wakeword)** (Apache-2.0) via
+its Rust crate, on its published benchmark — same phrase trained by each engine with its own
+recipe, `wakeword-bench` (7,873 clips of unseen voices/noise/rooms/codecs/near-misses plus
+24 h of TV, music and podcasts), recall at 0.5 false alarms/hour: **LiveKit 89 %, nanowakeword
+49 %, openWakeWord 46 %, microWakeWord 0 %**, at 16.5 / 30.5 / 29.5 / 2.2 ms of CPU per
+audio-second. Porcupine was rejected on licence volatility rather than merit: Picovoice's
+free-tier AccessKeys **stop working 2026-06-30**, and custom keywords mean uploading
+recordings to their console. And `hey_jarvis.onnx` is published ready-made — the phrase this
+fleet already uses — which matters because LiveKit's *training* path needs a CUDA GPU or Apple
+silicon plus LiveKit Cloud TTS, neither of which aibox is.
+
+The crate settles the two things that would otherwise have been hand-rolled: the melspectrogram
+and embedding frontend (with its FIR resampler) and the per-model streaming state. It resolves
+to the **pure-Rust `tract`** backend — `ldd` on the release binary is `libc`/`libm`/`libgcc`
+and nothing else — so there is no ONNX Runtime blob for a Nix build to fetch. Measured here,
+and the reason it is its own cargo workspace: `crates/voice-wake/README.md`.
+
+**Not enabled, not deployed.** What exists is the harness, because the gate is a number we
+have to earn: our own busy-hour false-accept rate, with the threshold picked from it the way
+Frigate's `min_area` floor was. Until that measurement exists, an always-on detector in a room
+where people are working is a feature someone will mute — and the one measured result that
+warns loudest is that piper's isolated "hey jarvis" scores **0.063** while the same phrase
+inside a sentence scores **0.62**.

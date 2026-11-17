@@ -85,7 +85,14 @@ members = [
 # silent.  The five SPAs are out because they are wasm (above);
 # `whisper-ws` is out because its `main.rs` includes a generated `src/assets.rs`
 # that only exists after an npm build, so it could never compile as a member and
-# is packaged on its own (crates/whisper-ws/package.nix).
+# is packaged on its own (crates/whisper-ws/package.nix);
+# `voice-wake` is out because it is the only crate with an ML runtime in its
+# dependency tree, and this workspace has one `Cargo.lock` that every crane-built
+# crate reads at *evaluation* time (`cargoLockContents = builtins.readFile`), so a
+# member's new dependency dirties the vendored tree — and therefore the build — of
+# every service on every box.  Its own lock is also what lets it be deployed to one
+# machine instead of being dragged into the fleet by association
+# (docs/voice-assistant-2026-11-16.md §the wake tier).
 exclude = [
   "filestore/frontend",
   "frigate-monitor/frontend",
@@ -93,6 +100,7 @@ exclude = [
   "network-status/frontend",
   "switch-gui/frontend",
   "whisper-ws",
+  "voice-wake",
   # The component library is out for the wasm-bindgen reason, not the npm one: it
   # is a `dioxus` crate, so as a member it would put `dioxus` (and the
   # `wasm-bindgen` behind it) under feature unification with the native graph —

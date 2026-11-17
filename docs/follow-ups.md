@@ -3273,3 +3273,45 @@ Re-verify: `sudo systemctl status update-containers` (green at the next 02:00), 
 Untouched: this is the UniFi **trial** box's container (`docs/unifi-os-server.md` owns that
 story, including that the appliance is a downgrade of the running controller), and a
 container change there wants its own look, not a drive-by inside a strata deploy.
+
+## The wake tier: what has to be measured before any of it is switched on
+
+`crates/voice-wake/` is a harness, not a service: it scores WAVs with a streaming wake model
+and prints peak score, detections per hour and CPU per audio-second. Architecture and engine
+choice are in `docs/voice-assistant-2026-11-16.md` §"the wake tier"; its `README.md` owns the
+numbers. Nothing is deployed, no unit exists, nothing listens. Open gates, in order:
+
+1. **Real human recall.** piper is the only positive we have and piper is a bad proxy for a
+   person (it is the voice Whisper returns as `K Jarvis`). Measured with piper: the isolated
+   phrase **0.063** — a miss — even with real room audio around it, while the same phrase
+   inside a sentence is **0.62**. A person saying "hey jarvis" alone, at camera distance, in
+   a room at −44 dBFS, is the case that has to be scored before anyone believes a threshold.
+   Re-verify: say it into cam8, `voice-wake score hey_jarvis.onnx clip.wav`.
+2. **A busy hour, in this room, for the false-accept rate.** We have 240 s of a quiet-ish
+   midday room: peak **0.031**, zero detections at 0.5. That is a baseline, not a rate, and
+   the number that decides the feature is FA/hour while people are actually working (the
+   upstream figure is 0.5–2.5/hour at threshold 0.5 on *conversational* speech — in a
+   hackspace, tune it by measurement like Frigate's `min_area`, not by default).
+   `just` recipe pending; the harness takes a directory of WAVs today.
+3. **cam8's input level against the model's band.** Room captured at mean **−44.5 dBFS** /
+   max −30.4; upstream's own positive fixture is mean −24.5 / max −6.0. Gain on a *clip* does
+   not change the score (flat 0.061–0.071 across 42 dB), which is reassuring about the model
+   and unhelpful about the mic — so if recall is poor, the answer is the camera's audio path
+   (`rac`'s `agc`/`hpf`/`ns` are all `false`) or a server-side gain stage, chosen by
+   measurement. Read `rac status` on cam8 first; it is the same interface that answered
+   `aec: false` for the half-duplex decision.
+4. **Concurrency.** ~**26 streams per core** is single-thread, single-stream
+   (38.3 ms CPU per audio-second, identical at 1280- and 16000-sample calls, so it is
+   inference and not per-call overhead). What N streams in one process actually cost — ONNX
+   session-per-stream memory, thread contention, the ring buffers — is unmeasured, and that
+   is the number "many more devices" hangs on.
+5. **The backend trade, if we ever outgrow it.** We measure 38.3 ms/s where upstream
+   publishes 16.5, because the Rust crate resolves to pure-Rust `tract` and gets a build with
+   no ONNX Runtime blob. `nixpkgs#onnxruntime` is 1.27.1 and is the 2.3×-faster alternative;
+   the price is a binary dependency in the derivation. Revisit only when stream count, not
+   core count, is the limit.
+6. **A second wake phrase (`computer`) needs a different route.** No published model for it,
+   and upstream's training CLI wants CUDA/Apple-silicon plus their cloud TTS. The two local
+   options are `nixpkgs#sherpa-onnx` (ships `sherpa-onnx-keyword-spotter`, takes a plain
+   keywords file, no training, English model available) and `rustpotter` (trains locally from
+   recordings). Nice-to-have; parked until the gates above say the first phrase works here.
