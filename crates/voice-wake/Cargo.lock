@@ -1301,6 +1301,9 @@ version = "0.1.0"
 dependencies = [
  "hound",
  "livekit-wakeword",
+ "ndarray 0.17.2",
+ "ort",
+ "ort-tract",
 ]
 
 [[package]]

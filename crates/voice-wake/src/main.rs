@@ -41,6 +41,8 @@ use std::time::{Duration, Instant};
 use hound::{SampleFormat, WavReader};
 use livekit_wakeword::WakeWordModel;
 
+mod oww;
+mod owwbench;
 mod serve;
 
 /// Samples in one 80 ms model step at 16 kHz.
@@ -93,6 +95,12 @@ same way; v1/openWakeWord classifier files do not, and say so.";
 
 fn main() {
     let argv: Vec<String> = std::env::args().skip(1).collect();
+    // The A/B verb for the openWakeWord pipeline (see `owwbench`). It exits here rather than
+    // joining the score/bench plumbing on purpose: the numbers in `README.md` came out of
+    // `bench`, so `bench` must keep producing exactly those.
+    if argv.first().is_some_and(|a| a == "oww-bench") {
+        std::process::exit(owwbench::run(&argv[1..]));
+    }
     if argv.first().is_some_and(|a| a == "serve") {
         let opts = match serve_options(&argv[1..]) {
             Ok(o) => o,

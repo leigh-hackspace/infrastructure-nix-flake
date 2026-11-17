@@ -22,6 +22,27 @@ edition = "2021"
 livekit-wakeword = "0.2.0"
 hound = "3.5"
 
+# The A/B harness (`oww-bench`) drives openWakeWord's three ONNX graphs directly.  These are
+# NOT new downloads: `ort 2.0.0-rc.11` and `ndarray 0.16.1` are already in `Cargo.lock` as
+# `livekit-wakeword`'s own dependencies, and the feature set below is copied verbatim from
+# that crate's manifest — `alternative-backend` is what keeps us on tract, so both engines in
+# the comparison run on the same native runtime and nothing here can be about wasm.
+[dependencies.ort]
+version = "2.0.0-rc.11"
+features = ["ndarray", "std", "alternative-backend"]
+default-features = false
+
+# `ort` with `alternative-backend` has no backend until one is installed, which is what the
+# line in `oww.rs` does; `ort-tract` is the same pure-Rust backend `livekit-wakeword` installs,
+# and the same version already in `Cargo.lock`, so the A/B really is one runtime, two models.
+[dependencies.ort-tract]
+version = "0.2.0+0.22"
+
+[dependencies.ndarray]
+version = "0.17"
+default-features = false
+features = ["std"]
+
 [[bin]]
 name = "voice-wake"
 path = "src/main.rs"
