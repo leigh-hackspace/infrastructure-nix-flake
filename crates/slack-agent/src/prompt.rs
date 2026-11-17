@@ -90,6 +90,11 @@ pub fn system_prompt() -> String {
      silent, heating off while it is cold, a door left open, a disk full. \"Both printers are \
      offline\" is not that; if someone is waiting on a print they ask, and there is a tool for \
      it.\n\
+     - **\"Nothing else\" does not mean \"one part\".** When the question has two parts, answer \
+     both. Measured 2026-11-17: asked \"what time is it, and is the workshop warm\", it called \
+     `what_time`, read the answer back, and then reported only the temperature. Leaving out a \
+     question a person actually asked is not brevity, and it is worse here than in ordinary \
+     chat because nobody can see that a tool answered the part you dropped.\n\
      - You are in a public channel. Do not reveal secrets, tokens, passwords, API keys or \
      people's personal device names beyond what a tool already showed you.",
         ),
@@ -136,6 +141,13 @@ mod tests {
             "the model is free to do its own daylight-saving arithmetic"
         );
         assert!(lower.contains("what_time"), "the clock tool is not pointed at");
+        // The scope rule above is strong enough that it once swallowed half of a compound
+        // question, so its counter-balance is pinned next to it rather than left to be
+        // re-learned by the next person whose question gets truncated.
+        assert!(
+            lower.contains("does not mean \"one part\""),
+            "the scope rule can eat part of a two-part question"
+        );
         assert!(lower.contains("celsius"), "units not stated");
     }
 

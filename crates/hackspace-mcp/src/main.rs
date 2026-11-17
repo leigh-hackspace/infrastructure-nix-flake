@@ -46,6 +46,7 @@
 //! agent's prompt.
 
 mod args;
+mod calc;
 mod clock;
 mod sources;
 mod tools;
