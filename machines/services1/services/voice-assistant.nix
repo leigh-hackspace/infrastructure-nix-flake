@@ -147,15 +147,23 @@
   # the **streaming** export loads (the crate refuses v1/openWakeWord classifier files with
   # `NotStreamingModel`); `crates/voice-wake/README.md` keeps the sha256 of every asset in
   # that release.
-  # `name` rather than `pname`/`version`, deliberately: the crate keys a model by its
-  # **file stem**, so the store file's name is the model's name as it appears in
-  # `/v1/wake/session`'s reply and in a `detection` event.  Left as `pname`+`version` it
-  # arrived as `hey_jarvis.onnx-v2.1.3`, which is a filename wearing a name field.
-  wakeModel = pkgs.fetchurl {
-    name = "hey_jarvis.onnx";
-    url = "https://github.com/livekit/livekit-wakeword/releases/download/v2.1.3/hey_jarvis.onnx";
-    sha256 = "sha256:i1VMUICYiKwU9n+iGsw72F5Y9WeO5PK+XQBB+aLmKEM=";
-  };
+  # `name` is not enough, and this is the reason: the crate keys a model by its **file
+  # stem**, and every store path's basename carries its own hash — so `--model
+  # /nix/store/h56ybx…-hey_jarvis.onnx` announced the model as
+  # `h56ybx10i07v2c7pcnd6hsg1dw3zdl6w-hey_jarvis`. That name is what a native Wyoming client
+  # would put in `detect {names: […]}` and what the page shows, so it gets a clean one here:
+  # a linkFarm gives the file a path whose stem is the phrase, exactly as `voiceDir` does for
+  # piper beside it.
+  wakeModel = pkgs.linkFarm "wake-models" [
+    {
+      name = "hey_jarvis.onnx";
+      path = pkgs.fetchurl {
+        name = "hey_jarvis.onnx";
+        url = "https://github.com/livekit/livekit-wakeword/releases/download/v2.1.3/hey_jarvis.onnx";
+        sha256 = "sha256:i1VMUICYiKwU9n+iGsw72F5Y9WeO5PK+XQBB+aLmKEM=";
+      };
+    }
+  ];
 
   voiceAssistant = CRANE.crate {
     pname = "voice-assistant";
@@ -486,7 +494,7 @@ in {
             "${pkgs.voice-wake}/bin/voice-wake serve "
             + lib.concatStringsSep " " [
               "--model"
-              wakeModel
+              "${wakeModel}/hey_jarvis.onnx"
               "--listen"
               "127.0.0.1:${toString cfg.wake.listen}"
               "--threshold"
