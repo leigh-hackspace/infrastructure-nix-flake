@@ -3053,6 +3053,20 @@ path-info -S | numfmt --to=iec`, and `nix path-info -S` on
   `nix flake check --no-build 2>&1 | grep -o 'sops-secret-[a-z_0-9]*' | sort -u` after
   `echo x | sops --set '["a","b"]' /dev/stdin secrets/secrets.yaml`-shaped no-op edit.
 
+- [ ] **Record real room speech to a WAV so the two wake detectors can be compared on bytes.**
+      `voice-wake oww-bench` (`docs/voice-assistant-2026-11-16.md`, "Which detector, where") runs
+      openWakeWord and LiveKit on the same runtime and the same model hashes, so the A/B is built
+      and has no valid input: piper-synthesised audio is out-of-distribution for openWakeWord
+      (0.000 there, 0.626 here) and the room recording has no wake word in it. What is needed is
+      a person saying the phrase into `cam8` and into a laptop — the same bytes through `bench`
+      and `oww-bench` — plus one busy hour of room audio through both for false accepts per hour.
+      Also unresolved by the same recording: **how much of the browser's edge is the silero VAD
+      gate**, which tract cannot load as exported (`If` op). Either re-source the VAD (older
+      export, or our own energy gate) or settle it with `--gate off` against the shipped engine
+      and say honestly that the gate is unmeasured. **Re-verify with:** `voice-wake bench
+      <hey_jarvis.onnx> <dir>` and `voice-wake oww-bench <model-dir> <dir> --gate off` on the
+      same directory.
+
 - **Strip the wake phrase before the fast path sees the transcript.** Measured 2026-11-17:
   `"how warm is the workshop"` answers in under a second through `Agent::quick_answer`,
   `"hey jarvis how warm is the workshop"` takes 4 rounds and 19.1 s, because the recognizer

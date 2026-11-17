@@ -173,6 +173,60 @@ answered unmentioned, "convert 12 feet to metres" is not, because that is two me
 talking at the bench. The gate is pinned both ways in `triage`'s suite. The voice path
 never reaches that gate — a spoken turn is always addressed.
 
+## Which detector, where — settled as far as it can be today (2026-11-17)
+
+The report this section supersedes said the browser's detector "was a floor, not a ceiling"
+and left the reason unexamined. Asked whether the reason was `wasm` — "why not run the wasm on
+the server?" — the answer turned out to be measurable rather than arguable.
+
+They are not two runs of one detector. From the code, not from memory: the page runs
+openWakeWord as **four ONNX graphs** (`melspectrogram.onnx` → `embedding_model.onnx` →
+`hey_jarvis_v0.1.onnx`, plus `silero_vad.onnx` as a gate), on 1280-sample (80 ms) frames from
+an `AudioWorklet` tap, firing only when score > 0.5 **and** the VAD is open, with a 2 s
+cooldown (`crates/whisper-ws/web/app/src/state/assistant.ts`). The server runs LiveKit's
+**single** `hey_jarvis.onnx` on 160-sample (10 ms) internal steps, no gate, fed as ~0.5 s PCM
+chunks over HTTP through `voice-gateway`. Model, gating, and the samples each one sees: three
+variables, none isolated. `wasm` is how a browser gets to run ONNX at all — it is not a
+property the server needs, since we already execute ONNX natively.
+
+So `voice-wake oww-bench` runs the browser's own graphs natively, on the same `ort`+tract
+runtime as the shipped engine, over the same sha256-pinned model files the page fetches
+(`crates/whisper-ws/package.nix` → `nix-store -r` on the assets derivation). Same runtime, same
+bytes, two models:
+
+| | CPU per audio-second | listeners per core |
+| --- | --- | --- |
+| shipped LiveKit model (`bench`) | **32.1 ms** (3.2 % of a core) | ~31 |
+| openWakeWord, native (`oww-bench --gate off`) | **287 ms** (28.7 % of a core) | ~3.5 |
+
+Three findings, and the first is the one that changes the decision:
+
+* **The browser's better-seeming detector costs ~9× the CPU per stream.** Invisible on the one
+  laptop a person happens to have open; it *is* the design on a server holding many
+  microphones. This is the arithmetic behind putting detection on devices that can afford it
+  and giving dumb endpoints the cheap engine — and it is now a measured number rather than an
+  intuition about ARM.
+* **The gate does not port as shipped**: silero's ONNX export uses the ONNX `If` op, which
+  onnxruntime-web runs and tract refuses to translate (`Failed to parse model: Translating
+  node #72 "If_25" If`). So the part of the browser's pipeline most likely doing the work
+  against music and room chatter is precisely the part that must be re-sourced — an older
+  silero export, or our own energy gate — before any parity claim is testable. Op support, not
+  runtime speed.
+* **The model question is still open, because the audio I had was invalid.** openWakeWord
+  scores 0.000 on piper-synthesised "hey jarvis" where LiveKit scores 0.626, and the 240 s room
+  recording has no wake word in it (0.000 against LiveKit's 0.031 — usefully, proof both
+  engines were fed the same bytes). Synthetic speech is out-of-distribution for one of the two,
+  so that gap is about training data, not about detectors. Settling it needs recorded human
+  speech from one microphone through both engines: the follow-up is in `docs/follow-ups.md`,
+  and until then the 9× CPU figure is the only number here that stands.
+
+Two measurement lessons from building it, both cheap to forget and expensive to trust:
+`ndarray = "0.16"` silently pulled a **second copy** of ndarray (ort was built against 0.17)
+and produced four trait errors on types that obviously implement the trait — same name,
+different crate instance, fixed by matching ort's version; and `Instant::now().elapsed()`
+measures from the instant it is called, which made the cost line print a flattering
+`0.0 ms per audio-second` for a pipeline that had definitely run.
+
 ## Proven / guessed, as of this writing
 
 Proven on these boxes today: the camera mic → whisper path (2.7 s); the camera's
