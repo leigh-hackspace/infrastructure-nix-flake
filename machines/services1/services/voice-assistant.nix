@@ -497,8 +497,20 @@ in {
   config = lib.mkIf cfg.enable {
     # The recorder's backstop: type `e` creates the directory and purges entries older than the
     # age.  Needed because the engine writes and forgets — see `wake.recordAge`.
+    #
+    # Mode only, never an owner, and that is a measurement rather than a style choice: the
+    # engine that writes here runs as a **DynamicUser**, so naming `root root` in a tmpfiles
+    # rule is a race the engine can lose — the first boot where tmpfiles wins chowns the
+    # recordings away from the writer and recording then fails quietly, one journal line for
+    # a whole window of silence.  (Written the day it was found: the directory did not exist
+    # at all after the switch, because nothing had been recorded yet and `e` had not created
+    # it either — the engine creates it on first write, as its own user.)
+    #
+    # Real retention belongs inside `dump()` beside the writer, mirroring `wav::prune_wavs`,
+    # so one program owns the files it creates; that is the open item in `docs/follow-ups.md`
+    # and this rule is the stopgap, not the mechanism.
     systemd.tmpfiles.rules = lib.optionals cfg.wake.record [
-      "e ${cfg.wake.recordDir} 0700 root root ${cfg.wake.recordAge}"
+      "e ${cfg.wake.recordDir} 0700 - - ${cfg.wake.recordAge}"
     ];
     # The two verbs that are tools rather than services — `probe` and `gate-check`, both
     # of which exist to answer a question about a room a person is standing in — have to

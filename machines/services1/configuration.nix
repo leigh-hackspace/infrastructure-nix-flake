@@ -28,19 +28,31 @@
   # crates/voice-assistant/README.md.
   infra.voiceAssistant.enable = true;
 
-  # ── Wake-word measurement window, opened 2026-11-17 ────────────────────────────────
-  # Server wake fires far less often than the browser's own detector (2 detections in
-  # 881 s of streamed audio), and every explanation so far has been a guess, because a
-  # score with no bytes behind it cannot be re-run or compared.  So: record what the
-  # engine is fed, and lower the threshold from upstream's inherited 0.5 to 0.30 — the
-  # measured room-noise peak against this model is 0.031, so 0.30 keeps a ~10x margin
-  # over noise while halving what an actual utterance has to reach.  Both are meant to
-  # come back out once `voice-wake bench` has been run over the recordings
-  # (`just voice-wake-recs`); the false-accept side of the trade is exactly what that
-  # measurement is for, and `wake.record` records the room, so it is a window, not a
-  # setting.
+  # ── Wake-word measurement window, opened 2026-11-17, threshold closed same day ─────
+  # Opened because server wake fired far less often than the browser's own detector and
+  # every explanation so far was a guess: a score with no bytes behind it cannot be
+  # re-run or compared.  So it records what the engine is fed, and the threshold went to
+  # 0.30 on the strength of a measured room-noise peak of 0.031 — a figure taken from a
+  # clip of a *nearly empty* room, which is the error to remember: the thing a wake word
+  # competes with is not silence, it is people talking.
+  #
+  # The corpus this window collected (418 s of the room with people in it, scored by the
+  # LiveKit model with `voice-wake bench` over the recordings) reads:
+  #
+  #     clean synthetic "hey jarvis"      peak 0.626
+  #     390 s of ordinary room speech     peak 0.583   ← eight accepts at 0.30, two at 0.50
+  #     21.7 s of room speech             peak 0.302
+  #
+  # A clean phrase and ordinary speech are a factor of two apart, so **no threshold
+  # separates them** and 0.30 was not a probe with margin, it was a probe with a guess in
+  # it.  0.50 is the least-bad setting, chosen while the detector is replaced rather than
+  # tuned; the number is not the problem and should not be re-tuned as if it were.
+  #
+  # `wake.record` stays on, because it is the only instrument that has ever compared two
+  # detectors on the same room audio — the replacement gets judged with it before it is
+  # trusted with a microphone.
   infra.voiceAssistant.wake.record = true;
-  infra.voiceAssistant.wake.threshold = 0.30;
+  infra.voiceAssistant.wake.threshold = 0.50;
 
   # `relaxed` rather than the default `true` for exactly **one** derivation in this box's
   # build closure: `door-entry-management-system`, whose `installPhase` runs `deno i` and

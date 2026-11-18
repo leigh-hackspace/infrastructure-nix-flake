@@ -3066,6 +3066,38 @@ path-info -S | numfmt --to=iec`, and `nix path-info -S` on
       /var/lib/voice-assistant/wake-record` after a reboot, and one synthetic session against
       `127.0.0.1:8195` (POST `/v1/session` → chunks → DELETE) producing a file.
 
+- [ ] **Decide: port openWakeWord to the server, or run the browser's own JS on it.**
+      Settled by measurement (2026-11-17, corpus from `wake.record`, 418 s of the room with
+      people in it): the LiveKit model peaks **0.583** on ordinary speech and **0.626** on a
+      clean utterance of the phrase — a factor of two, so **no threshold separates them** (8
+      accepts at 0.30 = 68/hour, 2 at 0.50). Threshold is therefore not a tunable, and the
+      detector has to be replaced. openWakeWord is the candidate because it is the detector
+      the room already trusts. My Rust port (`--engine oww`, `crates/voice-wake/src/oww.rs`)
+      is **not it**: it scores ~1e-5 and decays, and the exclusion list is now long —
+      identical model bytes (sha256 against the browser's own `dist/models`), identical f32
+      input scale, identical `/10+2` normalisation, identical 76-frame window / 8-frame step /
+      zero-initialised 16-embedding history / row-major `[1,16,96]`, and the window sweep
+      proves the graph's dim is 16 (8/12/24/32 error on shape). What is left is a
+      **tract-vs-ONNXRuntime numerical difference**, probably inside the TCN, which is not a
+      bug I can see by reading. **Option B, recommended:** stop porting and run the reference
+      code — `crates/whisper-ws/web/openwakeword/engine/WakeWordEngine.js` unmodified, under
+      `onnxruntime-node` — behind the `/v1/session|chunk|session` contract
+      `voice-wake serve` already implements, so `voice-assistant` and the page need no
+      change. That bends AGENTS rule 1 (Rust for anything new) and should be recorded as a
+      deliberate exception **with its reason**: the JS is not new code to maintain, it is the
+      only implementation of this detector that has ever worked here, and the port is what
+      failed. CPU is the price, measured: 287 ms per audio-second natively (~3.5 listeners
+      per core, `oww-bench`) and worse under WASM — fine for the two or three microphones
+      this could ever have, and the reason it is not fine for *many* microphones is the same
+      reason detection belongs on the device (`docs/esp32-voice-satellites.md`). **Do not
+      deploy it before it has been scored on the corpus** (`voice-wake bench` over
+      `/var/lib/voice-assistant/wake-record`) and watched for a day with `wake.record` on.
+      Also worth stealing from the browser regardless of which option wins: it does not emit
+      on score alone — `score > threshold && isSpeechActive` (silero VAD) and a 2 s cooldown,
+      so a big score on a non-speech frame is discarded. Our server gate exists but its
+      silero export will not load in tract (`If` op), so we are missing exactly that
+      half of the web version's precision.
+
 - [ ] **Fix the embedding → keyword handoff in `voice-wake`'s openWakeWord port, before anyone
       trusts `--engine oww`.** Built 2026-11-17 and measured immediately: the mel graph loads under
       tract, runs, and emits the browser's own log-mel (`shape=[1,1,5,32]`, values in the −20…−60
