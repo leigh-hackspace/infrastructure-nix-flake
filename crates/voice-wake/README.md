@@ -102,6 +102,30 @@ metres from a camera mic, is the case that may not fire. Whether *real* speech h
 property is unknown, because piper is a poor stand-in for a person (the same voice that
 Whisper transcribes as `K Jarvis`).
 
+## What this model does in a real room, measured (the rows that end the tuning)
+
+Everything above is fixtures. These are 418 s of the hackspace **with people in it**, recorded
+by the engine itself (`serve --record-dir`) and re-scored here — the only comparison anyone has
+run between two detectors on identical room audio, which is why it sits above the tuning advice:
+
+| clip | peak |
+| --- | --- |
+| clean synthetic "hey jarvis" | **0.626** |
+| 390 s of ordinary room speech | **0.583** |
+| 21.7 s of room speech | 0.302 |
+
+Eight accepts at 0.30 (**68 per hour** of this audio), two at 0.50. A phrase and a conversation
+are a factor of two apart in this model's output, so **the threshold is not the lever**: above
+~0.5 it rejects real attempts along with the room, below ~0.3 the room becomes wake words. Any
+threshold in between is a choice of which failure to prefer, not a tuned value.
+
+And a note about margins, because one fooled this repo for a session: the room-noise peak of
+**0.031** quoted above is real, and it was measured on a clip of a *nearly empty* room. A wake
+word does not compete with silence. It competes with people talking. That distinction is the
+whole reason a 0.30 probe looked safe on paper and produced 68 false accepts an hour in the
+room, and it is why the recorder exists: a score with no bytes behind it cannot be re-run,
+compared, or caught out like this one was.
+
 ## Not measured yet — the gates before anything is enabled
 
 1. **Real human recall**, in the room, at camera distance and level. piper positives are a
