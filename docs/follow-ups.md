@@ -3066,6 +3066,35 @@ path-info -S | numfmt --to=iec`, and `nix path-info -S` on
       /var/lib/voice-assistant/wake-record` after a reboot, and one synthetic session against
       `127.0.0.1:8195` (POST `/v1/session` → chunks → DELETE) producing a file.
 
+- [ ] **The wake page shows a score, but never shows whether it is still feeding the engine.**
+      Fixed the fault (2026-11-17, `5d15955`): a reaped session made the page stop streaming, its
+      score froze at the last value, its level meter kept moving, and it could not be re-armed
+      from the select — reported as "server seems to lock up after a minute or so, score stuck",
+      and provably not the engine (`NRestarts=0 Result=success`, `chunks 114 → 114` over 10 s,
+      journal `reaped 1 idle session(s); 1 live` then `0 live`). The contract the recovery relies
+      on was checked end to end through the front door rather than assumed, because a proxy that
+      rewrote the status would have made the fix dead code: `POST /v1/wake/session` → `DELETE` →
+      `POST /v1/wake/chunk` returns **410 `{"error":"no such session (idle too long? open
+      another)"}`** with the status intact, and a chunk to a live session returns
+      `{"score":0.0000,"peak":0.0000,"detected":false,…,"infer_ms":0.0,"cpu_ms_per_audio_s":25.8}`.
+      **Still open, and it is the same class of fault as rule 29 (a channel can die while still
+      answering):** nothing on the page distinguishes "the room is quiet" from "the engine has not
+      heard from me in four minutes" from "the tab lost its session" — a frozen number reads as a
+      low number. **Do:** put `audio_secs`/`chunks` from the engine's own replies on the card as
+      *seconds since the last accepted chunk*, and banner it past a few seconds like
+      `/api/leases` does for a stale table; the engine already answers `sessions_total` and each
+      chunk reply carries `audio_secs`, so it needs no new server field. **Re-verify with:** arm
+      the server engine, `sudo systemctl stop voice-gateway`, and confirm the card says it is no
+      longer being fed within a few seconds instead of quietly holding its last score.
+
+- [ ] **Should a browser tab be able to keep a wake session warm across its own take?** It
+      deliberately streams nothing while capturing a command (the ear must not hear it), so the
+      session ages for the whole take plus the answer. The 2026-11-17 fix is a widening (idle
+      120 → 300 s) plus recovery, both of which are treating the symptom; the clean version is a
+      keepalive the engine can see (`POST /v1/keepalive`, or refresh `last_seen` on any request
+      naming the session), which decouples "still listening" from "still sending audio" instead
+      of picking a timeout that happens to exceed today's worst answer.
+
 - [ ] **Decide: port openWakeWord to the server, or run the browser's own JS on it.**
       Settled by measurement (2026-11-17, corpus from `wake.record`, 418 s of the room with
       people in it): the LiveKit model peaks **0.583** on ordinary speech and **0.626** on a
