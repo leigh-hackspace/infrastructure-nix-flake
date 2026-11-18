@@ -437,6 +437,23 @@ in {
       '';
     };
 
+    wake.idleSecs = lib.mkOption {
+      type = lib.types.ints.positive;
+      default = 120;
+      description = ''
+        Reap a session that has not been fed for this long, freeing one of the `wake.maxSessions`
+        slots.  It is not a keep-alive of a live listener: a browser tab deliberately stops
+        streaming while a take is in flight (the ear must not hear the command it is about to
+        transcribe), and a slow answer can outlast the timeout — measured 2026-11-17, where the
+        reap of a tab that was still armed looked to the user exactly like an engine that had
+        locked up, because the page then disarmed itself and could not be re-armed from the
+        select.  So this must comfortably exceed one turn of conversation (the agent gives up at
+        150 s), and the page now re-arms transparently if a reap does happen
+        (`recoverWakeSession` in the whisper page) — the two changes are one fix, and either
+        alone leaves a visible fault.
+      '';
+    };
+
     satellite.enable = lib.mkOption {
       type = lib.types.bool;
       default = true;
@@ -553,6 +570,8 @@ in {
                 (toString cfg.wake.threshold)
                 "--max-sessions"
                 (toString cfg.wake.maxSessions)
+                "--idle"
+                (toString cfg.wake.idleSecs)
               ]
               # Opt-in, and absent when off: a unit that never writes room audio and one that does
               # must not be one line apart by accident.

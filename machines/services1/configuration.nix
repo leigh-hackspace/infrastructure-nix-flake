@@ -54,6 +54,13 @@
   infra.voiceAssistant.wake.record = true;
   infra.voiceAssistant.wake.threshold = 0.50;
 
+  # 300 s, not the module's 120: a turn that includes a slack question can run minutes, and
+  # during a take the page streams nothing by design.  Reaping a tab that is still armed is
+  # therefore a normal event at 120 s, and a normal event that looks like a lockup is worse
+  # than a bug.  See `wake.idleSecs` for the mechanism and `recoverWakeSession` in the
+  # whisper page for the half that makes a reap survivable.
+  infra.voiceAssistant.wake.idleSecs = 300;
+
   # `relaxed` rather than the default `true` for exactly **one** derivation in this box's
   # build closure: `door-entry-management-system`, whose `installPhase` runs `deno i` and
   # `deno cache` and therefore needs the network, so the package sets `__noChroot` — and nix

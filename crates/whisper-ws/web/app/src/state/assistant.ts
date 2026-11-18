@@ -351,7 +351,10 @@ function onChunk(chunk: Float32Array): void {
       else setStatus(`listening — talk now · ${levels()}`);
     } else if (
       now - lastLoudAt > (wakeOpened ? STOP_AFTER_QUIET_WAKE_MS : STOP_AFTER_QUIET_MS) ||
-      secs * 1000 > MAX_RECORD_MS
+      secs * 1000 > MAX_RECORD_MS ||
+      // The cap above counts audio seconds, which only advance with chunks — so a take that
+      // stops being fed never ends. This one counts the wall clock and cannot be starved.
+      now - startedAt > MAX_RECORD_MS + 20_000
     ) {
       void stopTalk();
     } else {
@@ -417,7 +420,9 @@ async function sendWakeChunk(): Promise<void> {
     const j = await r.json();
     if (j.error) {
       setStatus(`server wake: ${j.error}`);
-      if (r.status === 410) await disarmServerWake('the engine dropped this session');
+      // A reaped session is the expected consequence of a long answer, not a reason to stop
+      // listening. Anything else (a refused body, an unknown rate) stays a status line.
+      if (r.status === 410) await recoverWakeSession();
       return;
     }
     setServerScore(Number(j.score ?? 0));
@@ -449,6 +454,60 @@ async function sendWakeChunk(): Promise<void> {
   }
 }
 
+/**
+ * Open a session on the engine. One copy because two callers need the identical contract:
+ * arming for the first time, and recovering a session the engine reaped. Returns the id, or
+ * throws with the engine's own reason.
+ */
+async function openWakeSession(): Promise<{ session: string; model: string; threshold: number }> {
+  const r = await fetch(`${gatewayUrl}/v1/wake/session`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    // 16 kHz from here, not the mic's native rate: the engine would resample anyway, and
+    // doing it once in the page keeps the bytes we stream identical to the bytes we send
+    // to whisper, so the detector and the ASR cannot disagree about what was said.
+    body: JSON.stringify({ rate: TARGET_RATE }),
+  });
+  const j = await r.json();
+  if (!r.ok || !j.session) throw new Error(j.error ?? `HTTP ${r.status}`);
+  // The engine reports what it is actually running, so the status line is a fact from the
+  // process rather than a guess from this file's constants — which is how a stale tab is
+  // caught out when the deployment moves the threshold underneath it.
+  return { session: String(j.session), model: String(j.model ?? '?'), threshold: Number(j.threshold ?? 0) };
+}
+
+/**
+ * The engine reaps a session it has not heard from for `--idle` seconds, and a tab that is
+ * busy answering has not been feeding it: a take deliberately does not stream to the ear (the
+ * ear must not hear the command), and a slow answer can outlast the timeout. That is the
+ * engine being tidy about its 16 slots, not being broken — and the old response turned it into
+ * a dead listener: disarm. The user had to notice a frozen score, work out what it meant, and
+ * re-select an engine the select still said was selected, which `chooseWake` then ignored as a
+ * no-op. So: open another session and go on listening, because nothing about the intent
+ * changed. Bounded, because a gateway that is really down must not be re-posted to forever.
+ */
+let wakeRearms = 0;
+const MAX_WAKE_REARMS = 3;
+
+async function recoverWakeSession(): Promise<void> {
+  wakeSession = '';
+  wakeSpare = [];
+  if (wakeRearms >= MAX_WAKE_REARMS) {
+    await disarmServerWake('server wake: lost the session repeatedly — disarmed');
+    return;
+  }
+  wakeRearms += 1;
+  setStatus(`server wake: session expired — re-arming (${wakeRearms}/${MAX_WAKE_REARMS})`);
+  try {
+    const s = await openWakeSession();
+    wakeSession = s.session;
+    setServerScore(0);
+    setStatus(`server wake: re-armed on model ${s.model}, threshold ${s.threshold}`);
+  } catch (e) {
+    await disarmServerWake(`server wake: cannot re-arm — ${humanError(e)}`);
+  }
+}
+
 export async function armServerWake(): Promise<void> {
   if (armed) return;
   if (!gatewayKnown()) {
@@ -458,34 +517,29 @@ export async function armServerWake(): Promise<void> {
   setServerScore(0);
   setServerDetections(0);
   try {
-    const r = await fetch(`${gatewayUrl}/v1/wake/session`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      // 16 kHz from here, not the mic's native rate: the engine would resample anyway, and
-      // doing it once in the page keeps the bytes we stream identical to the bytes we send
-      // to whisper, so the detector and the ASR cannot disagree about what was said.
-      body: JSON.stringify({ rate: TARGET_RATE }),
-    });
-    const j = await r.json();
-    if (!r.ok || !j.session) {
-      setStatus(`server wake unavailable: ${j.error ?? `HTTP ${r.status}`}`);
-      return;
-    }
-    wakeSession = j.session;
+    const s = await openWakeSession();
+    wakeSession = s.session;
+    wakeRearms = 0;
     await ensureMic();
     armed = true;
     ring = [];
     ringLen = 0;
     wakeSpare = [];
-    setStatus(`armed on the server — model ${j.model}, threshold ${j.threshold}`);
+    setStatus(`armed on the server — model ${s.model}, threshold ${s.threshold}`);
   } catch (e) {
     setStatus(`server wake unavailable — ${humanError(e)}`);
+    setWakeEngine('off');
   }
 }
 
 export async function disarmServerWake(why = 'disarmed'): Promise<void> {
   if (!armed) return;
   armed = false;
+  wakeRearms = 0;
+  // The select renders from this signal. Leave it at "the server" and the card says it is
+  // listening while nothing is streamed, and re-selecting the same value is a no-op — the
+  // user's only route back is through "off" and back again, which nobody guesses.
+  setWakeEngine('off');
   const s = wakeSession;
   wakeSession = '';
   setServerScore(0);
@@ -534,8 +588,12 @@ function levels(): string {
 
 /** A take that heard nothing: say so with the levels, and do not send silence to whisper. */
 async function abortTake(): Promise<void> {
-  if (!recording()) return;
+  // Flag first, then the guard. `wakeSpare` is only filled while NOT capturing, so a `taking`
+  // that outlives the take also starves the wake stream forever — the page keeps its level
+  // meter and its frozen score and looks alive while it is deaf. Nothing downstream cares
+  // whether these were already cleared; the guard that follows is about the *send*.
   taking = false;
+  if (!recording()) return;
   setRecording(false);
   if (!armed) {
     await mic.stop();
@@ -551,8 +609,8 @@ async function abortTake(): Promise<void> {
 }
 
 export async function stopTalk(): Promise<void> {
+  taking = false; // see `abortTake`: a stuck `taking` starves the wake stream, so clear it first
   if (!recording()) return;
-  taking = false;
   setRecording(false);
   // Stay capturing if the server is armed — the stream is the wake listener's, and stopping
   // it here would silently disarm the thing the user just switched on.
