@@ -944,6 +944,17 @@ there is declarative. **Root SSH is keyed here** (unlike the flake machines):
   one-line test; a `git bundle` from services1 is the fallback.
 - Gotcha: on aibox, `/etc/hosts` maps `aibox` to `127.0.0.2` (self reference), so use the
   IPs rather than hostnames.
+- **A LAN ssh that prints nothing at all and only dies on your timeout is usually a dead
+  `SSH_AUTH_SOCK`, not a dead box** (measured 2026-11-18: aibox pinging at 0.08 ms and its
+  endpoint answering through the door, while every hop to it hung silently). Rules 25 and
+  32 cover the host half and the identity half; this is a third shape — a session that
+  came in through systemd's ssh-proxy leaves `SSH_AUTH_SOCK` pointing into `~/.ssh/agent/`,
+  the peer dies with the session, and `BatchMode` will not save you because it refuses to
+  *prompt*, not to *wait*. Fix: `unset SSH_AUTH_SOCK` (or `-o IdentityAgent=none`) — no
+  ssh-agent is meant to run on these boxes, so nothing is lost — and bound every hop with
+  `timeout 20 ssh …` so the hang is the answer rather than the timeout. Not to be fixed by
+  dropping `IdentitiesOnly yes`. Mechanism and re-verify: `docs/nix-dev-workflow.md`,
+  "a stale `SSH_AUTH_SOCK` makes a LAN hop *hang*".
 
 ## Secrets
 

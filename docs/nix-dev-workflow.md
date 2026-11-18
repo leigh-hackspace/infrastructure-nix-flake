@@ -1071,6 +1071,51 @@ There is nothing to `cat` in `~/.ssh`: the identity lives in the system file, an
 mutable-file shape this repo's own audit named, and the thing a deploy can no longer
 reproduce.
 
+### …and the third shape of it: a **stale** `SSH_AUTH_SOCK` makes a LAN hop *hang*
+
+Measured 2026-11-18 on services2, while trying to read aibox's engine version. aibox was
+up (0 % packet loss, `strata2.int` answering through the door), and every ssh to it
+produced **no output and no error** until the tool call's timeout killed it —
+the exact behaviour of "that box is down", on a box that was not down:
+
+```bash
+env | grep SSH_AUTH_SOCK        # …=/home/leigh-admin/.ssh/agent/s.eO13AVj5mY.sshd.212310.YWUjOvlEFh
+timeout 10 ssh -o BatchMode=yes 10.3.1.32 true           ; echo rc=$?   # rc=124, silent
+env -u SSH_AUTH_SOCK timeout 10 ssh -o BatchMode=yes 10.3.1.32 'hostname'  # aibox, rc=0
+ss -x -p | grep "$(basename $SSH_AUTH_SOCK)"            # nothing: no process at the other end
+```
+
+So this is a **third** failure mode of the same hop, and it is not the host half (rule 25)
+nor the identity half (rule 32) — `/etc/ssh/ssh_config` was correctly rendered and
+`ssh -G` showed the stanza, and `ssh -vv` gets as far as `Next authentication method:
+publickey` and *then stops*, because the agent named by the environment never answers.
+`BatchMode` does not save you here: it refuses to *prompt*, it does not refuse to *wait*.
+
+Where the variable comes from is the thing the section above already warned half about:
+the `~/.ssh/agent/` directory is systemd's ssh-proxy socket dir, and a session that was
+started through one (or a harness that forwards an agent) leaves `SSH_AUTH_SOCK` pointing
+into it. The peer dies with the session; the variable survives in whatever shells were
+inherited from it — and a long-lived one (tmux, an agent session, this harness's own
+shell) can carry a dead socket for hours. The sockets in that directory age back to
+2026-10-14 on this box, so the litter is normal; the hazard is only the exported name.
+
+The two lines that fix it, in order of preference:
+
+```bash
+unset SSH_AUTH_SOCK                          # this shell only; the honest default here,
+                                             # since no ssh-agent is meant to run at all
+ssh -o IdentityAgent=none 10.3.1.32          # or per-call, when you must not touch the env
+```
+
+Worth knowing before reaching for a fix in the tree: `programs.ssh` has no "ignore the
+agent" setting, and the identity the fleet needs is already a **file**
+(`IdentityFile ~/.ssh/agent-hop-key` + `IdentitiesOnly yes`), so the agent is never what
+a LAN hop needs — an unset `SSH_AUTH_SOCK` costs nothing on these boxes. Do **not** "fix"
+it by dropping `IdentitiesOnly yes` to let the agent be skipped: that is the option that
+makes `Too many authentication failures` come back (the bullet above), for a symptom the
+environment caused. Re-verify with the pair above: silent-then-124 with the variable set,
+answer-then-0 with it unset.
+
 The first line answers **two** lines once the stanza is deployed — `identitiesonly yes`
 and `identityfile ~/.ssh/agent-hop-key` — and six on a box that has not been switched
 since: `identitiesonly no` plus ssh's five built-in defaults (`id_rsa`, `id_ecdsa`,

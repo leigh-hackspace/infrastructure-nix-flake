@@ -50,7 +50,7 @@ same file as the original model's shard 2 — the engine reads it from the SSD
 | experts the GPU does not hold | ~16 GiB | RAM, pinned once (`--resident-experts`) |
 | expert cache | `auto` | VRAM, sized from free VRAM |
 | dense weights + buffers | ~5 GiB | VRAM |
-| KV int8 @ 131072 | ~1.8 GiB | VRAM |
+| KV int8 @ 262144, streamed | 0.9 GiB VRAM + 3.09 GiB pinned RAM | split (see "256K at full precision") |
 | PLE table | 0 | read from NVMe (`--ple-io direct`) |
 
 The model's own RAM figure (32 GiB) is above this box's, so the engine runs its
@@ -62,11 +62,215 @@ is `--mmap-experts`, which reads them through the OS file cache; it is faster in
 some reports but lets RAM fill to zero under long prompts, which is not wanted
 next to Prometheus.
 
-KV is **not** streamed to RAM: `setup.py`'s rule (`kv_streaming_wanted`) needs
-~34.8 GiB of RAM at 131072 with 8-bit KV, and this box does not have it, so the
-KV stays in VRAM and costs expert-cache slots. A longer context is possible
-(`--max-context`), but every extra 32K of context is another ~0.44 GiB of VRAM
-taken from the cache; 131072 is the balance chosen here.
+The KV is **not** streamed to RAM and **cannot** be made elastic here; both
+possibilities are dead ends with a guard at the front of them, and the numbers are
+in the next section, because that is where the context question actually lives.
+
+## Context and the KV cache: what each option costs (measured 2026-11-18)
+
+Asked: can this box reach 256K, or at least 192K?  **Yes, both — at 262144 the price
+is ~11 % of the expert cache and ~10 % on long prompts, and it is paid for by the KV
+format, not by anything else.**  Six arms were run on one engine build, one pack and
+one bench, changing only `--max-context` and `--kv` (`prompt/s` from
+`machines/services2/strata-tune/strata-bench.py` and its 200 K-token sibling
+`strata-needle.py`, slots and chunk from the engine's own start lines):
+
+| `--max-context` | `--kv` | cache slots | prompt chunk | 8k prompt | 28k prompt | long read | needle |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | :---: |
+| 131072 (was) | int8 | 1781 | 7680 | 1064 | 1193 | 1118 @127,669 | 2/2 |
+| 196608 | q4_0 | **1878** | 8192 | 1111 | 1097 | 1038 @127,669 | 2/2 |
+| 196608 | k8v4 | 1558 | 6400 | 966 | 1020 | — | not run |
+| **262144 (now)** | **q4_0** | **1580** | 6400 | 990 | 1055 | 995 @138,016; 974 @183,987 | 2/2 |
+| 262144 | k8v4 | 1152 | 4352 | 954 | 933 | 892 @138,016 | 2/2 |
+| 262144 | int8 | 785 | 2048 | 806 | 785 | 744 @138,016 | 2/2 |
+
+`prompt_n` is in the long-read column because it is the only fair way to compare a
+long prompt: the tokeniser, not the caller, fixes it.  Decode did not move in any
+arm — **37 to 45 tok/s across the whole table, with no ordering by config** — which
+is the shape of this box: decode is bought from the RAM tier and the experts, and
+the KV only really bites on the read.  (The 974 figure is the one number here taken
+with a nix build running on the same box, so read it as a floor.)
+
+**The mechanism, measured.** The card is left with 628–632 MiB free in *every* arm,
+because `--expert-cache auto` spends whatever is spare on slots.  So context is not
+paid for out of headroom: it is paid for out of **cache slots and the prompt chunk**,
+and both fall together — at 262144 with int8 the chunk is 2048, a quarter of the
+131072 arm's.  That is why `--max-context` alone is the most expensive way to ask
+for a longer context and `--kv q4_0` is the cheap one: the KV's bytes are what fund
+both.  Bytes per token, from `strata_control/vram_fit.py:49` (`B per token per
+attention layer × 13 layers`), which the engine's own sizing agrees with:
+
+| `--kv` | B/cell/layer | per token | 262144 | in words |
+| --- | ---: | ---: | ---: | --- |
+| fp16 | 2112 | 26.8 KiB | 6.7 GiB | does not fit; the arm was not run |
+| int8 | 1056 | 13.4 KiB | 3.4 GiB | upstream's own figure: "the K/V of a 262K context (3.35 GiB with the drafter's at int8)", `generate.cpp:10785` |
+| k8v4 | 816 | 10.4 KiB | 2.6 GiB | INT8 K (exact scores) + rotated Q4_0 V |
+| q4_0 | 576 | 7.3 KiB | 1.9 GiB | Hadamard rotation, then 4-bit codes |
+
+**What each KV format costs in answers** — this is the part this box cannot measure
+for itself, so the number is upstream's (`bench/results/2026-09-27-kv-q4/README.md`,
+teacher-forced, same text, same expert set, only `--kv` differing; fp16 the
+reference).  int8 is *indistinguishable from fp16* everywhere, and q4_0 costs more
+the longer the document is:
+
+| text | q4_0 same top-1 as fp16 | q4_0 perplexity vs int8 | q4_0 KL from fp16 / int8's |
+| --- | ---: | ---: | --- |
+| code agent (512) | 95.7 % | −2 % | 0.030 / 0.014 |
+| chat (1024) | 90.7 % | +1.5 % | 0.028 / 0.009 |
+| document (1024) | 91.3 % | **+7 %** | 0.039 / 0.009 |
+| document, 8K | 88.0 % | **+13 %** | 0.297 / 0.114 |
+
+k8v4 sits between them: 23 % less KV memory than int8, "more precise than `q4_0` on
+long documents, prompts 2–5 % slower" (`docs/DETAILS.md:234`), and its one big
+measured win is this model on a 24 GB card — 198K context, Coder, `--kv k8v4`: **99
+tok/s instead of 85**, same needle results (`docs/DETAILS.md:1435`).  It is the right
+choice on a card with room to spend the saving; on this 12 GB card at 262144 it does
+not buy enough to keep the chunk up (4352 against q4_0's 6400), so it reads slower
+than q4_0 at every depth and this box took q4_0.
+
+What our own instruments could and could not see: the answer key is **unchanged in
+every arm** (8 of 9, with the same `bit` item failing in all of them — nine short
+items cannot see a long-document perplexity), and retrieval is intact: two unique
+records buried at 2 % and 97 % depth of a 127,669- and a 138,016-token prompt come
+back 2/2 with q4_0, and the deployed config reads a **183,987-token** prompt the
+same way — a prompt this box could not accept before.  `strata-needle.py` is that
+check, kept.
+
+**262144 is the trained length, so nothing here needs rope scaling.**  Upstream
+sizes YaRN against it: "final context / 262,144, at least 1", and an explicit
+`--rope-scaling none` above 262,144 is *refused* (`docs/DETAILS.md:632-633`).
+Anything past 262144 is therefore a YaRN experiment plus the VRAM for it — and
+YaRN's own evidence is that it works (a `yarn 2` run read 421K and `yarn 4` 714K at
+8/8 on real-document Q&A, `docs/DETAILS.md:1570`) but that is a different question
+than this one.
+
+### 256K at full precision, at this box's speed: the KV in RAM, and what it bills (deployed 2026-11-18)
+
+Asked right after the table above: can 256K be had **at close to the old speed and
+without giving up output quality**?  That table says no, because it only spends VRAM — and
+the answer is **yes, by spending host RAM instead**, which is what the box now runs:
+
+```
+--max-context 262144  --kv int8  --kv-resident 32768   +   env.STRATA_RESIDENT_HEADROOM_GIB = 2
+```
+
+Measured on the deployed generation (`strata-bench.py`, `strata-needle.py`,
+`strata-answer-score.py`, and the engine's own start lines), against the config this box
+ran an hour earlier:
+
+| | 131072 int8 (was) | **262144 int8 + streamed (now)** |
+| --- | ---: | ---: |
+| expert cache | 1781 slots | **2332 slots** (4.47 GiB) |
+| prompt chunk (auto) | 7680 | **8192** |
+| 8k prompt | 1064 | **1210 / 1204** (+13 %) |
+| 28k prompt | 1193 | **1202 / 1199** (+0.7 %) |
+| 184k-token read | — | **1081 tok/s**, needle 2/2 at 2 %/97 % depth |
+| short decode | 39.7 | 46.7 |
+| answer key | 8/9 (`bit`) | 9/9, then 8/9 (`bit` again — that item is the flaky one) |
+| KV precision | int8, indistinguishable from fp16 | **the same int8, and the streamed path is checked against the resident one bitwise** (`kv_stream_parity` ctest) |
+| MemAvailable, idle | ~3.9 GiB (12.7 % of RAM) | **~1.1–1.6 GiB (~4 %)** |
+
+Why it works: at 32768 cells per QSA layer a session holds ~0.9 GiB of KV instead of
+3.4 GiB, so ~2.5 GiB comes back and `--expert-cache auto` spends it — on slots *and* on
+the prompt chunk.  A context of ≤ 32768 cells is **not streamed at all**, so ordinary
+turns never touch the host copy; the long ones pay one DMA per array to it
+(`STRATA_KV_HOST_DMA`, default on NVIDIA since 0.1.61 — the bump made this config cheaper
+than it would have been a week ago).
+
+**The line to read after any change to this start, before any benchmark:**
+
+```bash
+sudo grep "lendable slots" /var/lib/strata/strata.log | tail -1
+```
+
+It must read **`1533 of the prompt path's 1533 lendable slots keep their experts in RAM
+too`**.  During a prompt the prompt path borrows most of the cache, and every borrowed
+slot wants its expert in RAM; when they are not there the read goes to the NVMe
+mid-prompt and the speed collapses.  Four arms, same VRAM, differing only in how much RAM
+the resident expert copy was allowed to keep:
+
+| `STRATA_RESIDENT_HEADROOM_GIB` | complement | lendable covered | 8k prompt | 28k | 184k read | MemAvailable after that read |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 4 (`--resident-experts`' default) | 19.85 GiB | 475/1533 (31 %) | **562 / 725** | 1028 | 1045 | — |
+| 3 | 20.9 GiB | 1179/1533 (77 %) | 917 / 1186 | 1199 | 1077 | 859 MiB |
+| **2 (deployed)** | **21.88 GiB** | **1533/1533** | **1210 / 1204** | **1202** | **1081** | 1006 MiB |
+| 2 with `--kv k8v4`, at headroom 4 | 20.96 GiB | 1099/1503 (73 %) | 908 / 1068 | 1061 | 959 | 1503 MiB |
+
+The engine names the failure and the remedy in one line (`src/core/expert_source.cpp:4264`):
+*"Free RAM or lower STRATA_RESIDENT_HEADROOM_GIB (now the RAM left free at start) and
+restart; the line above should read N of N."*  That is the dial; `--expert-cache` is not,
+and neither is the KV format once the KV has left VRAM.
+
+**What it costs, once.** 21.88 GiB of experts page-locked + 3.09 GiB of pinned K/V + ~4
+GiB of OS and monitoring ≈ 29 GiB of a 30.7 GiB box; the old config was ~27 GiB, and the
+difference is exactly what streaming bought in VRAM.  In order of how much they matter:
+
+- **The fleet's `LowMemory` alert now fires on this box.**  It is
+  `node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes * 100 < 10` for 5m
+  (`machines/services1/services/observability.nix:101`) = 3.07 GiB here, and the box runs
+  at 1.1–1.6 GiB.  It sat at 12.7 % before this change, so the threshold has always been
+  this box's ceiling in disguise; making it per-instance, or buying the RAM, are in
+  `docs/follow-ups.md`.  Do not respond by paging someone: make the rule know this box.
+- Swap sits at ~1.7–2.3 GiB (the 16 GiB file; `vm.swappiness = 10`, per the section after
+  this one — which stays true, and now matters more).
+- No room for a spike: a `nix build` here (this box has no builder, so it builds locally),
+  a Prometheus churn, or a second 180k-token read at once.
+
+**The fix is hardware and it is small:** the board takes 128 GiB and has **two DIMM slots,
+both filled with 16 GiB DDR4-3200 running at 2933** (`dmidecode -t memory`), so it is a
+2×32 GiB swap rather than an added stick.  With 64 GiB the headroom goes back to 4, the
+`lendable slots` line still reads N of N, `LowMemory` stops firing, and the shape is
+exactly upstream's own measurement of this lever (a 12 GB card with 45 GiB of RAM: 756 →
+1267 slots, 32K prompt 21–34 s → 12–17 s, RAM used unchanged because the expert budget
+absorbs the KV).
+
+**Rollback, and both directions are short:** delete the `--kv-resident` pair and the
+`env.STRATA_RESIDENT_HEADROOM_GIB` line and set `"--kv"` to `"q4_0"` (990 / 1055, 974
+@184k, ~3.9 GiB free, −12 % at 28k, small precision cost on long documents); or keep int8
+and set `context = 196608` (int8 at 192K needs 2.8 GiB of VRAM, so the cache lands near
+1240 slots with ~3.9 GiB of RAM free — the old speed band, no precision cost, 192K
+ceiling).
+
+### The lever setup says no to, and what the no was really about
+
+Both hand the cache its slots back, and both are gated, so write the gate
+down rather than rediscovering it:
+
+- **KV streaming (`--kv-resident N`) — this is what the box now runs;** what follows is
+  why its own tooling declines to, and where that was right.  It puts the whole K/V in
+  host RAM and keeps only N cells per QSA layer in VRAM, and upstream's measured result on
+  a 12 GB card at 128K is the one this box wants — **756 → 1267 expert slots, a 32K prompt
+  in 12–17 s instead of 21–34 s** (`kv_streaming_need_gb`'s docstring, `setup.py:6494`,
+  citing KV-128).  Setup will not choose it here: it streams only when the box has
+  `min(ram_gb + kv + 1, arena + 10 + kv)` GB, i.e. **34.0–36.6 GB across 131072–262144**
+  (`LOW_RAM_HEADROOM_GB = 10`, `setup.py:6405`) against this box's 30.7.  That is why this
+  file said "not an option" on the morning of 2026-11-18 and was wrong about the outcome
+  while being right about the bill: the rule refuses to spend RAM the box has not got, and
+  spelling the flag into `engineArgs` is the owner's override — but the RAM the K/V takes
+  (3.09 GiB) comes **out of** the resident expert copy, not on top of it, which is why the
+  only thing that needed tuning was how much of that copy survives (the headroom table
+  above), and why the override left untuned reads 562 tok/s instead of 1210.  What the
+  0.1.61 bump changed in our favour: streaming on NVIDIA now ships a prompt's new K/V
+  cells to the host copy in one DMA per array (`STRATA_KV_HOST_DMA`, upstream
+  `f0356cb25`/`6aae30348`).
+- **The elastic K/V (`--kv-grow`).** The one whose description is written for this
+  box — "the K/V takes VRAM only for the cells the requests reach and the expert
+  cache holds the rest, giving slots back as the context grows … it pays on cards of
+  about 24 GB or less with contexts of 128K and more", and whose 0.1.40 record is a
+  262144 start that would not otherwise start (`docs/DETAILS.md:236`, `:1441`) —
+  **cannot run here at all**: its gate (`generate.cpp:7287-7295`) requires
+  `!o.resident_cpu_experts`, and this box is in the resident low-RAM mode, since
+  `--resident-experts` *is* `--mmap-experts --resident-cpu-experts`
+  (`generate.cpp:4021`).  Start it anyway and the engine says so: `--kv-grow is off
+  (one GPU, a profile, the whole K/V in VRAM, every expert in RAM, no --batch …)`.  To
+  earn it, the arena has to live in a pinned arena instead — and what the box lacks
+  for that is not the 21.8 GiB of arena but the **10 GiB of headroom** the same rule
+  asks beside it.
+
+**So the dial is `--kv`, and what it is dialled to is above:** 262144 with int8
+**streamed into host RAM** (full precision, the old speed or better, and the box's RAM
+headroom spent) — or `--kv q4_0` unstreamed if that headroom is wanted back (−7 % at 8k,
+−12 % at 28k, ~3.9 GiB free).  Either is a few lines and `just switch`.
 
 **Swap is a 16 GiB file, `/var/swap/services2`** (`./hardware-configuration.nix`; there is
 no swap partition on this NVMe). It is not there for the model: the arena is page-locked where
@@ -257,6 +461,99 @@ timer stopped (`systemctl show auto-rollback -p ExecStart` timestamps are the
 receipt). Fix forward instead: keep the tree dirty-but-good, re-switch, and confirm
 *that* (which is what happened here; the fixed engine came up 52 s after the new
 unit started).
+
+### Update: engine 0.1.59.1 → **0.1.61** (app 0.2.15), deployed — 2026-11-18
+
+`nix flake update strata`: `13eedf552` (2026-11-12) → `c77572806` (2026-11-16), **787
+commits, 2140 files differing**, and the one input moves both engines (the header in
+`flake.nix` is why).  **This switch took services2's CUDA engine; aibox's HIP engine
+is not deployed yet** — that is deliberate, it is the open item in
+`docs/follow-ups.md`, and the reason it matters is the "what is in this bump for the
+other box" bullet below.
+
+- **What the bump does to this card, read off the start line rather than the
+  changelog**: `journalctl -u strata | grep "exact speed switches"` compared across
+  the two starts is the whole diff that matters.  It went from *9 exact speed
+  switches on by default* to *8*: **`STRATA_ADAPT_NOWAIT` is no longer set on
+  sm_86** (`src/core/nv_defaults.cpp:33`, "repeatable output": with it, a verify
+  window ran a swapped-in expert on the GPU or the CPU by its copy's timing, so two
+  starts of the same request differed — on an RTX A6000 with a fixed draft table,
+  7 of 24 requests identical with it, 24 of 24 in 3 of 3 starts without; its price
+  there was decode ×0.988).  `ADAPT_LAG=2` stays, so the copies still get two
+  windows to land, and `STRATA_EXPERT_I8`-style rollback applies to the AMD side
+  only.  Every other number in the start block is the same engine it replaced: free
+  before the cache 4.56 → 4.58 GiB, cache 1770 → 1781 slots (rounding), draft layer
+  952 MiB, native Q5_K head 521,472,000 B, PCIe 13.4 GB/s, PLE probe 61,551 →
+  61,312 rows/s, `session is up (engine 0.1.61)`.
+- **Nothing on disk needs re-preparing**, checked rather than assumed:
+  `data/expert-profile-coder.bin` and `data/draft_vocab.bin` are **byte-identical at
+  both pins** (compared with `git show <pin>:data/… | sha256sum`), and the only
+  change to the preparation tools in range (`237ecb176`) moves them onto
+  `strata_gguf`/`strata_quants`, it is not a format change.
+- **The negative result, and it is the interesting one.** That default was removed
+  to make greedy output repeatable, and here it did not: `strata-answer-check.py 96
+  3` against the live unit answers **`stable 0/3`** (fib, sortdoc and arith each gave
+  two distinct hashes across three runs — *worse* than the 2026-11-14 record, which
+  at least had `arith` stable).  So the retraction in
+  `machines/services2/STRATA-TUNE-2026-11-14.md` stands: **the fingerprint gate is
+  still unusable on this box and only `strata-answer-score.py`'s answer key may carry
+  a before/after claim.**  The reading is that there were at least two causes and
+  upstream closed one of them: here the expert tier's *placement* is timing-dependent
+  and the engine says at every start that a cached expert is computed on the GPU,
+  which "rounds differently from the CPU".  Upstream's own repeatability run fixed the
+  expert set (`--adapt-swaps 0`) before it could see the effect; this box cannot fix
+  it without giving up the tier it exists for.
+- **Speed: neutral, to within the harness's noise**, which is what the start line
+  predicts once you know the bump's sm_86 work is tile rules for cards with **80+ SMs**
+  (this GA106 has 28).  Same config either side (131072/int8): 8k 1066.0/1064.0 →
+  1066.5/1065.2, 28k 1196.1/1193.3 → 1194.9/1190.5, short decode 39.5 → 39.7 tok/s.
+- **What is in this bump for the *other* engine, which is why aibox's turn is not
+  routine**: `9783e09f9` makes the RX 6000 series (**gfx1030 / 1031 / 1032**) read its
+  prompt experts on Strata's own int8 kernels **by default**, for expert groups of
+  256 entries and up (~512 tokens and more) — measured on an RX 6700 XT at **1.10 to
+  1.35 × MMQ** at 2,048 / 8,192 / 20,000 tokens for IQ2_S and IQ2_XXS gate/up with a
+  Q2_0 down, which is precisely aibox's pack and its common case.  Upstream's own
+  caveat, quoted so nobody skips it: *"No end-to-end run on a gfx103x card with a
+  model has been made (needs the lender's word)."*  So when aibox takes this pin: the
+  start line must name the new default, compare **cold-to-cold** as
+  `machines/aibox/STRATA.md` insists (its plateau is 225–231 ms per window), and
+  `STRATA_EXPERT_I8=0` is the one-line rollback.
+- **Retired in this range, not ours**: DeepSeek-V4.1-Flash.  Its engine of its own is
+  gone and a DeepSeek config is now refused before anything starts
+  (`strata_control/retired.py`).  Nothing on this network runs it; recorded so that a
+  refusal on some future box reads as a retirement rather than a breakage.
+- **New model surfaces, none of them forced on us.**  A person reading this range
+  will meet: `Gyro-S` / `Gyro-M` (agentionai's trellis quants, 27.6 / 35 GB of
+  VRAM+RAM together, the n-gram table inside the one file — upstream's own summary is
+  "Gyro is not a default, by our measurements"), `Swift 1.5` (a Qwen3.8-Flash-Next
+  fine-tune pitched at −63 % thinking tokens, which is a latency claim this fleet
+  cares about), the NVFP4 packs (68 GiB of experts, i.e. another box), and
+  Qwen3.6-35B-A3B (`qwen35moe`: no pack, no expert profile, no separate MTP layer —
+  the family `llm.ai.chrisdell.info` already serves).  **Our pack's entry is
+  byte-identical at both pins** (`"IQ1_M"`, family `coder`, `ram_gb 32 / arena_gb
+  23.4`), which is the fact that says *no re-download and no re-pack*, and the sizing
+  table above is unchanged by the bump for the same reason.
+- **How it was built, with the number, because the advice above is not enforced by
+  anything.**  `nix build .#strata-cuda` here: **15 derivations, ~30 min, on this box,
+  with the engine live on the same 16 cores** — services2 has no builder
+  (`/etc/nix/nix.conf`: `builders = `), and `common/build-farm.nix` says so in its own
+  header: "services2: neither — served builds until 2026-10-17, now a client with no
+  builder".  So "build it on aibox" is a thing you do on purpose, and
+  `just build-remote machine=services2` would *fail* rather than delegate (it passes
+  `--max-jobs 0`, and there is nothing to delegate to).  The switch itself built 434
+  derivations, because this checkout was 27 commits behind `origin/main` (rule 20 —
+  fast-forward it first; the extra 419 were that, not the bump).
+- **Gates**: `just check` was red on arrival, and not from this change —
+  `sops-secret-pg_pass.drv is not valid`, the GC'd build-time-secret class whose
+  remedy is the eval loop in `docs/nix-dev-workflow.md` ("After a GC, `nix flake check
+  --no-build` fails one build-time secret at a time"); ten seconds of it per machine
+  and the check is green, warning-free.  Then `just switch` + `nixos-confirm` chained
+  in one invocation, and `readlink -f /run/current-system
+  /nix/var/nix/profiles/system-good` equal.
+- **The end of the chain is the discovery, not the switch**: `just pi-agent-sync`
+  re-read `n_ctx` from `/v1/models` and `pi-agent-status` now reports
+  `strata-services2 … ctx=262144`.  No file anywhere was told that number (rule 31);
+  the engine is what changed, and the tool noticed.
 
 ### Update: engine 0.1.56 → **0.1.59.1** (app 0.2.13), deployed — 2026-11-14
 

@@ -768,6 +768,97 @@ that is closed gets absorbed into the live docs and deleted, and git history hol
   **What to do instead, cheapest first:** one dense BF16/FP16 cuBLAS GEMM on the card with the CUDA toolchain `packages.strata-cuda` already puts on this box — stock ~26 TFLOPS means the cap is live and the only remaining question is strata's GPU share of prefill (the engine's own `prefill plan inputs` line answers that); stock ~48 means the card is not paying it and there is nothing to win. Nobody has run either number here. **Do not reach for `nvidia-smi dmon -s c` to see the selectors** — upstream's own "check what you have" line: this box's `nvidia-smi` (595.104.02) prints only `mclk`/`pclk` for `-s c`.
   **The free half:** the cap covers *only* half-precision tensor math — FP32 FFMA and integer DP4A never pay it, which is why llama.cpp (upstream's own null there: pp512 1460.5 -> 1467.1) sees nothing and Strata does not. An upstream integer/DP4A prefill path would therefore buy the same thing with **zero boot risk**; nothing in `engineArgs` gives it today, and if it ever appears this item is the way back.
 
+- **aibox is still on engine 0.1.59.1 while the flake input is at 0.1.61 — and this is
+  the one bump that has a default switch for its exact chip** (split opened 2026-11-18,
+  when `nix flake update strata` was taken and deployed to services2's CUDA engine and
+  **not** to aibox's HIP one; `one input, both engines` is what `flake.nix` says, so
+  leaving this open is what makes the two engines out of step).
+
+  What is proven, so the next person starts from receipts rather than from the changelog:
+  the HIP package **builds** at this pin (`nix build .#strata` on services2:
+  `BUILD_EXIT=0`, one derivation, ROCm deps already in the store), and aibox's running
+  engine was read back as `session is up (engine 0.1.59.1)` on 2026-11-18 with its unit
+  active since 2026-11-17 23:47 — so nothing is broken, it is simply the older side of
+  the same input.
+
+  Why it should not be left: `9783e09f9` makes **gfx1030 / 1031 / 1032 — aibox's device —
+  read its prompt experts on Strata's own int8 kernels by default**, for expert groups of
+  256 entries and up (~512 tokens and more), measured at **1.10 to 1.35 × MMQ** at 2,048 /
+  8,192 / 20,000 tokens for IQ2_S / IQ2_XXS gate-up with a Q2_0 down.  That is exactly
+  aibox's pack, and prefill is exactly aibox's wall (`machines/aibox/STRATA.md`: "the real
+  limit for coding use is prefill", ~45 tok/s whatever the config).  Upstream's caveat is
+  in the commit message and must be read as the reason to measure rather than as
+  permission to assume: *"No end-to-end run on a gfx103x card with a model has been made
+  (needs the lender's word)."*
+
+  **How to take it**, in the order that doc already demands: `just deploy aibox` in a
+  window when nothing is building and the bot/voice tier can lose its 262144 endpoint for
+  a minute or two (aibox is the network's builder and runs 52 of 59 GiB with the arena
+  loaded, so its engine restart is not free for anyone).  Then read the start line for the
+  sentence that says the card class took the new default, compare **cold-to-cold** against
+  the plateau that doc names (225–231 ms per window) because the cold/warm boundary moved
+  under it once already, and do not judge the first start after any bump (that one pays
+  the cold-page cost, ~3 s → 2979/3374 ms recorded there).  Rollback without a rebuild is
+  `STRATA_EXPERT_I8=0` in that unit's `extraEnv`.
+
+  Re-verify with:
+
+  ```bash
+  sudo grep -hE "session is up|prompt experts|int8 kernels" /var/lib/strata/strata.log | tail -5
+  nix flake metadata --json | python3 -c "import json,sys; print(json.load(sys.stdin)['locks']['nodes']['strata']['locked']['rev'])"
+  # ...and the same `rev` short sha must appear in aibox's running engine's store path:
+  #   systemctl status strata --no-pager | grep -oE '[a-z0-9]{32}-strata-unstable'
+  ```
+
+- **services2 now runs its last ~1.5 GiB of RAM on the streaming K/V, so `LowMemory`
+  fires there — fix the rule to know this box, or buy the DIMMs** (deployed 2026-11-18,
+  the config and every number in `machines/services2/STRATA.md`, "256K at full precision,
+  at this box's speed").
+
+  `--max-context 262144 --kv int8 --kv-resident 32768` with
+  `STRATA_RESIDENT_HEADROOM_GIB=2` reads an 8k prompt **13 % faster** and a 28k prompt the
+  same as the old 131072/int8 config, at full int8 precision, with the expert cache *up*
+  from 1781 slots to 2332 — and the bill is host RAM: 21.88 GiB of experts page-locked +
+  3.09 GiB of pinned K/V + ~4 GiB of OS and monitoring against a 30.7 GiB box, so
+  `free -m` reports **1.1–1.6 GiB available (~4 %)** where it used to report ~3.9 GiB
+  (12.7 %).
+
+  Consequence, live now: `LowMemory` is
+  `node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes * 100 < 10` for 5m
+  (`machines/services1/services/observability.nix:101`), i.e. 3.07 GiB on this machine,
+  so it will sit firing on a box that is behaving exactly as designed.  Two ways out, and
+  they are not the same decision:
+
+  1. **Make the rule know what a strata box's `MemAvailable` means.** On this box most of
+     "unavailable" is the page-locked expert arena, which is the point, not a leak — so a
+     single fleet-wide percentage cannot describe it.  The minimal change is a per-instance
+     threshold (e.g. `and on instance != "services2"` at 10 %, with a 3 % rule for it, or
+     an offset that subtracts `node_memory_Shmem_bytes` held by `strata`).  **This is a
+     decision about when someone gets paged, so it was left undecided deliberately** — the
+     arithmetic is in the doc, the edit is one `expr` line.
+  2. **Buy the RAM, which retires the whole question.** `dmidecode -t memory` on services2:
+     **two DIMM slots, both filled with 16 GiB DDR4-3200 (M378A2K43DB1-CVF) running at
+     2933, board maximum 128 GiB** — so it is a 2×32 GiB swap, not an added stick, and it
+     matches upstream's own measured shape for this lever (12 GB card + 45 GiB RAM: 756 →
+     1267 expert slots, 32K prompt 21–34 s → 12–17 s).  After it, put
+     `STRATA_RESIDENT_HEADROOM_GIB` back to 4 (or delete it: 4 is `--resident-experts`'
+     default) and re-check the gate line below.
+
+  The one line that says whether any of this is healthy, on any start:
+
+  ```bash
+  sudo grep "lendable slots" /var/lib/strata/strata.log | tail -1
+  # must read: 1533 of the prompt path's 1533 lendable slots keep their experts in RAM too
+  # if it reads "N of M … (P %) will read their experts from the pack", the prompt path is
+  # reading experts off the NVMe and the 8k read costs 562-917 tok/s instead of ~1210
+  ```
+
+  **Blocks:** nothing for the config (it is deployed and confirmed); the alert fix blocks on
+  a choice about paging, and the RAM fix on a part.  Until one lands, decide which of
+  "alert permanently red on this box" and "give 256K back" is the smaller harm — the
+  second is a three-line revert (`"--kv"` to `q4_0`, delete the `--kv-resident` pair and
+  the headroom line).
+
 ## Machines / access
 
 - **aibox's switch fails on `exports-netboot-squashfs.mount`, reproducibly, and it is not
