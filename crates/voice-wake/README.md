@@ -102,6 +102,42 @@ metres from a camera mic, is the case that may not fire. Whether *real* speech h
 property is unknown, because piper is a poor stand-in for a person (the same voice that
 Whisper transcribes as `K Jarvis`).
 
+## Choosing the engine per session — and scoring one stream twice
+
+`serve` takes `--engine livekit|oww` as the **default for a session that names none**, and
+`POST /v1/session` may name its own:
+
+```
+POST /v1/session {"rate":16000,"engine":"livekit"}   → the shipped detector
+POST /v1/session {"rate":16000,"engine":"oww"}       → the browser\'s detector, same box
+POST /v1/session {"rate":16000,"engine":"both"}      → one stream, both scores, same bytes
+```
+
+Each chunk reply then carries an `engines` map alongside the top-level fields, and each engine
+keeps **its own threshold** (`--threshold` for livekit, `--oww-threshold` for openwakeword)
+because the two were trained separately on the same phrase and `0.5` is not the same claim in
+each. `GET /status.json` answers `engines` and `engine_default` so a caller can see what is on
+offer before asking.
+
+**An engine that is not loaded is a 400 that names the request and lists what is available —
+never a silent fallback.** A substituted engine returns real, confident numbers, so nothing in
+the reply is suspicious, and "I selected the other detector and it heard nothing" becomes
+indistinguishable from "that detector is bad". That confusion is the reason the parameter exists,
+so getting this wrong would make the feature a lie. (`select_engines` in `engines.rs` is pure for
+exactly this: every case is tested without loading a model.)
+
+`both` is the part a flag could not give us. Switching engines by hand compares a detector to a
+detector **across different moments in a different room**, which is not a comparison. One session
+scored by both ears is: same microphone, same room, same millisecond, and the answer so far, on
+the same clip:
+
+```
+peaks on identical bytes: {livekit: 0.6263, openwakeword: 0.0001}
+```
+
+which is the port\'s failure stated without adjectives, and the reason `oww` is offered by the
+API but not enabled by the deployment.
+
 ## What this model does in a real room, measured (the rows that end the tuning)
 
 Everything above is fixtures. These are 418 s of the hackspace **with people in it**, recorded

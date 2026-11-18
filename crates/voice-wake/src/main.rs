@@ -42,6 +42,7 @@ use hound::{SampleFormat, WavReader};
 use livekit_wakeword::WakeWordModel;
 
 mod ear;
+mod engines;
 mod oww;
 mod owwbench;
 mod serve;
@@ -109,6 +110,10 @@ fn main() {
                 eprintln!("voice-wake serve: {e}\n");
                                 eprintln!("usage: voice-wake serve --model <hey_jarvis.onnx> [--listen 127.0.0.1:8195]");
                 eprintln!("                         [--threshold T] [--cooldown S] [--idle S] [--max-sessions N]");
+                eprintln!("                         serve also takes [--engine livekit|oww] [--oww-models DIR]");
+                eprintln!("                         [--oww-keyword NAME] [--oww-threshold T]: the engine flag sets the");
+                eprintln!("                         DEFAULT for a session; each POST /v1/session may name its own");
+                eprintln!("                         (livekit | oww | both), and both scores one stream twice.");
                 eprintln!("                         [--engine livekit|oww] [--oww-models <dir>] [--oww-keyword NAME]");
                 eprintln!("                         [--record-dir <dir>]   (writes what a session was fed; room audio)");
                 std::process::exit(2);
@@ -402,6 +407,9 @@ fn serve_options(argv: &[String]) -> Result<serve::Options, String> {
             "--engine" => o.engine = need(i)?.clone(),
             "--oww-models" => o.oww_models = PathBuf::from(need(i)?),
             "--oww-keyword" => o.oww_keyword = need(i)?.clone(),
+            "--oww-threshold" => {
+                o.oww_threshold = need(i)?.parse().map_err(|_| "--oww-threshold wants a number")?
+            }
             "--record-dir" => o.record_dir = PathBuf::from(need(i)?),
             other => return Err(format!("unknown flag {other}")),
         }

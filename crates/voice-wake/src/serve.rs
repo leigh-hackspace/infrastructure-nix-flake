@@ -1,7 +1,8 @@
 //! `voice-wake serve` — the wake engine as a loopback service.
 //!
 //! ```text
-//! POST /v1/session          {"rate":16000}                    → {"session":"…","threshold":0.5,…}
+//! POST /v1/session          {"rate":16000,"engine":"livekit|oww|both"} → {"session":"…","engine":…,"engines":…}
+//! POST /v1/session          {"label":"laptop"}                   → recordings name the caller
 //! POST /v1/chunk            X-Voice-Wake-Session: <id>        → {"score":0.31,"detected":false,…}
 //! POST /v1/reset            X-Voice-Wake-Session: <id>        → {"ok":true}
 //! DELETE /v1/session        X-Voice-Wake-Session: <id>        → {"ok":true}
@@ -62,6 +63,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::ear::Ear;
+use crate::engines::{available_engines, engine_array, engines_json, select_engines};
 use hound::{SampleFormat, WavSpec, WavWriter};
 
 use crate::STEP_SAMPLES;
@@ -89,6 +91,11 @@ pub struct Options {
     /// the same files the page fetches, pinned by the same sha256, not a re-export of them.
     pub oww_models: PathBuf,
     pub oww_keyword: String,
+    /// The threshold for the openwakeword ear, **separate from `threshold` on purpose**: the two
+    /// detectors were trained separately on the same phrase, so the same number means different
+    /// things in each, and one shared dial would mean a session on one engine silently judged by
+    /// the other's scale.
+    pub oww_threshold: f32,
     /// Where to write the audio a session was fed, so a score has bytes behind it.  **Empty by
     /// default, and that is a privacy decision rather than a default:** these are recordings of a
     /// room with people in it, so the flag is for a measurement window, the files are 0600, and
@@ -108,6 +115,7 @@ impl Default for Options {
             engine: "livekit".to_string(),
             oww_models: PathBuf::new(),
             oww_keyword: "hey_jarvis_v0.1".to_string(),
+            oww_threshold: 0.5,
             record_dir: PathBuf::new(),
             threshold: 0.5,
             cooldown: 2.0,
@@ -117,8 +125,22 @@ impl Default for Options {
     }
 }
 
-struct Session {
+/// One engine's view of one session: its own streaming state, its own peak and detection count.
+/// Two engines scored off the same bytes have nothing to share except the bytes — which is
+/// exactly what makes them comparable.
+struct EarSlot {
+    name: String,
     ear: Ear,
+    peak: f32,
+    detections: u32,
+}
+
+struct Session {
+    /// The ears this session is scored by, in the order they were asked for. `ears[0]` is the
+    /// **primary**: it is what the top-level `score`/`peak`/`detected`/`detections` fields report,
+    /// so every caller written before multi-engine existed keeps seeing exactly the contract it
+    /// already depends on, and an A/B caller reads `engines` instead.
+    ears: Vec<EarSlot>,
     rate: u32,
     /// Seconds of audio this session has fed the model — the clock detections are stamped on,
     /// so the client can line a detection up with what it just heard.
@@ -133,6 +155,9 @@ struct Session {
     recorded: Vec<i16>,
 }
 
+/// Whether this process has been told to write room audio at all.  One place, because the
+/// answer decides both whether a session accumulates samples and whether anything is ever
+/// written — a half-enabled recorder would buffer audio in RAM and never show it to anyone.
 fn recording(state: &State) -> bool {
     !state.opts.record_dir.as_os_str().is_empty()
 }
@@ -174,18 +199,47 @@ pub fn serve(opts: Options) -> Result<(), String> {
     // One engine opened before a single socket opens: it proves the files load, and for `oww` it
     // fails here rather than on the first session if the model directory is wrong.  The livekit
     // error is the crate's own (`NotStreamingModel`) and says more than anything written here.
-    let probe = Ear::open(
-        &opts.engine,
-        &opts.model,
-        &opts.oww_models,
-        &opts.oww_keyword,
-        opts.threshold,
-        opts.cooldown,
-        16_000,
-    )
-    .map_err(|e| format!("cannot open the engine: {e}"))?;
-    let model_name = probe.name().to_string();
-    drop(probe);
+    // Probe **every** engine this process will offer, before any socket opens: it proves the
+    // files load, and it means a wrong `--oww-models` is a boot failure rather than a surprise on
+    // the first session that asks for that engine.  The livekit error is the crate's own
+    // (`NotStreamingModel`) and says more than anything written here.
+    let mut names: Vec<String> = Vec::new();
+    let mut keys: Vec<&'static str> = Vec::new();
+    let has_oww = !opts.oww_models.as_os_str().is_empty();
+    for kind in available_engines(has_oww) {
+        keys.push(kind);
+        let threshold = if kind == "oww" { opts.oww_threshold } else { opts.threshold };
+        let probe = Ear::open(
+            kind,
+            &opts.model,
+            &opts.oww_models,
+            &opts.oww_keyword,
+            threshold,
+            opts.cooldown,
+            16_000,
+        )
+        .map_err(|e| format!("cannot open the {kind} engine: {e}"))?;
+        names.push(probe.name().to_string());
+        drop(probe);
+    }
+    // The default engine has to be one this process loaded, or every session that names no engine
+    // falls off the end of the list at request time.  Compared against the **keys** (`livekit`),
+    // never the display names (`livekit/hey_jarvis`) — a guard that compares those two against
+    // each other refuses its own valid configuration, which is exactly what this one did, on the
+    // command line of the smoke test written to catch this class of thing.
+    let want = match opts.engine.as_str() {
+        "" | "both" => "livekit",
+        other => other,
+    };
+    if !keys.contains(&want) {
+        return Err(format!(
+            "--engine {} is not one of the engines this process can load [{}]",
+            opts.engine,
+            keys.join(", ")
+        ));
+    }
+    let model_name = names.first().cloned().unwrap_or_else(|| "?".to_string());
+    let loaded = names.join(" + ");
 
     let listener = TcpListener::bind(&opts.listen).map_err(|e| format!("bind: {e}"))?;
     let state = Arc::new(State {
@@ -194,11 +248,12 @@ pub fn serve(opts: Options) -> Result<(), String> {
         next_id: AtomicU64::new(1),
         opts,
         model_name,
+        loaded_engines: loaded,
     });
     eprintln!(
-        "voice-wake serving on {} · engine {} · threshold {:.2} · cooldown {:.1}s · idle {:?} · max {} sessions · recording {}",
+        "voice-wake serving on {} · engines {} · threshold {:.2} · cooldown {:.1}s · idle {:?} · max {} sessions · recording {}",
         state.opts.listen,
-        state.model_name,
+        state.loaded_engines,
         state.opts.threshold,
         state.opts.cooldown,
         state.opts.idle,
@@ -227,6 +282,8 @@ struct State {
     next_id: AtomicU64,
     opts: Options,
     model_name: String,
+    /// Every engine name this process offers, for `/status.json` and the refusal message.
+    loaded_engines: String,
 }
 
 fn handle(mut stream: TcpStream, state: Arc<State>) {
@@ -267,29 +324,70 @@ fn open_session(state: &State, req: &Request) -> String {
             ),
         );
     }
-    // Checked here as well as inside `Ear::open`: "your sample rate is wrong" is a 400 the client can
-    // act on, and a model that will not load is a 500 it cannot.
-    if state.opts.engine == "oww" && rate != 16_000 {
+    // Which ears this session wants, validated against what this process loaded.  An unknown
+    // name is a 400 that lists what *is* available; it never falls back to the default, because a
+    // silent substitution is how "I selected the other detector and it scored nothing" comes back.
+    let picked = match select_engines(
+        json_str(&req.body, "engine").as_deref(),
+        &state.opts.engine,
+        &available_engines(!state.opts.oww_models.as_os_str().is_empty()),
+    ) {
+        Ok(v) => v,
+        Err((_code, msg)) => {
+            return text(
+                400,
+                &format!(r#"{{"error":"{}"}}"#, msg.replace('"', "'")),
+            );
+        }
+    };
+    // Checked here as well as inside `Ear::open`: "your sample rate is wrong" is a 400 the client
+    // can act on, and a model that will not load is a 500 it cannot.
+    if picked.iter().any(|e| e == "oww") && rate != 16_000 {
         return text(
             400,
             &format!(r#"{{"error":"the openwakeword engine takes 16000 Hz only, not {rate}"}}"#),
         );
     }
-    let ear = match Ear::open(
-        &state.opts.engine,
-        &state.opts.model,
-        &state.opts.oww_models,
-        &state.opts.oww_keyword,
-        state.opts.threshold,
-        state.opts.cooldown,
-        rate,
-    ) {
-        Ok(e) => e,
-        Err(e) => {
-            return text(500, &format!(r#"{{"error":"{}"}}"#, e.replace('"', "'")));
+    let mut ears: Vec<EarSlot> = Vec::new();
+    for kind in &picked {
+        // Each engine is judged on its own scale, so each gets its own threshold.
+        let threshold = if kind == "oww" {
+            state.opts.oww_threshold
+        } else {
+            state.opts.threshold
+        };
+        match Ear::open(
+            kind,
+            &state.opts.model,
+            &state.opts.oww_models,
+            &state.opts.oww_keyword,
+            threshold,
+            state.opts.cooldown,
+            rate,
+        ) {
+            Ok(ear) => {
+                let name = ear.name().to_string();
+                ears.push(EarSlot {
+                    name,
+                    ear,
+                    peak: 0.0,
+                    detections: 0,
+                });
+            }
+            Err(e) => {
+                return text(500, &format!(r#"{{"error":"{}"}}"#, e.replace('"', "'")));
+            }
         }
-    };
+    }
     let label = json_str(&req.body, "label").unwrap_or_default();
+    let primary = ears[0].name.clone();
+    // Each engine is judged on its own scale, so the threshold a session is told about is the one
+    // its primary ear is actually using — never one number claimed for two detectors.
+    let primary_threshold = if primary.starts_with("openwakeword") {
+        state.opts.oww_threshold
+    } else {
+        state.opts.threshold
+    };
     
     let id = format!("w{}", state.next_id.fetch_add(1, Ordering::Relaxed));
     let mut sessions = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
@@ -305,7 +403,7 @@ fn open_session(state: &State, req: &Request) -> String {
     sessions.insert(
         id.clone(),
         Session {
-            ear,
+            ears,
             rate,
             audio_secs: 0.0,
             peak: 0.0,
@@ -318,11 +416,14 @@ fn open_session(state: &State, req: &Request) -> String {
     let n = sessions.len();
     drop(sessions);
     state.stats.lock().unwrap().sessions_created += 1;
+    let engines_list = engine_array(picked.iter().map(|e| e.as_str()));
     text(
         200,
         &format!(
-            r#"{{"session":"{id}","model":"{}","rate":{rate},"threshold":{},"cooldown":{},"max_body_bytes":{MAX_BODY_BYTES},"active_sessions":{n}}}"#,
-            state.model_name, state.opts.threshold, state.opts.cooldown
+            // `model` and `threshold` stay the **primary** ear's, so a page written against the
+            // single-engine contract keeps reporting the truth about the ear it is on.
+            r#"{{"session":"{id}","engine":"{primary}","model":"{primary}","engines":{engines_list},"rate":{rate},"threshold":{primary_threshold},"cooldown":{},"max_body_bytes":{MAX_BODY_BYTES},"active_sessions":{n}}}"#,
+            state.opts.cooldown
         ),
     )
 }
@@ -358,24 +459,46 @@ fn chunk(state: &State, req: &Request) -> String {
     // audio-time cooldown, so switching engine cannot also switch what "detected" means.  Cooldown
     // stays in audio time on purpose: a session paused while the assistant is talking must not
     // fire again on the tail of the same utterance.
-    let hit = match session.ear.feed(&samples) {
-        Ok(h) => h,
-        Err(e) => {
-            drop(sessions);
-            return text(500, &format!(r#"{{"error":"{}"}}"#, e.replace('"', "'")));
+    // Feed every ear from the same slice: the point of `both` is that the two detectors hear
+    // byte-identical audio at the same instant, which is the only comparison of two models that
+    // is not confounded by a different moment, a different tab, or a different room.
+    let mut hits = Vec::with_capacity(session.ears.len());
+    for slot in session.ears.iter_mut() {
+        match slot.ear.feed(&samples) {
+            Ok(h) => hits.push(h),
+            Err(e) => {
+                drop(sessions);
+                return text(500, &format!(r#"{{"error":"{}"}}"#, e.replace('"', "'")));
+            }
         }
-    };
+    }
     let infer_ms = t0.elapsed().as_secs_f64() * 1000.0;
-    let score = hit.score;
-    let detected = hit.detected;
+    let (score, detected) = (hits[0].score, hits[0].detected);
 
-    session.audio_secs = session.ear.audio_secs();
+    for (slot, h) in session.ears.iter_mut().zip(hits.iter()) {
+        if h.score > slot.peak {
+            slot.peak = h.score;
+        }
+        if h.detected {
+            slot.detections += 1;
+        }
+    }
+    // The session-level fields mirror the primary ear, so everything that reads them (the idle
+    // list, the recording's name, /status.json) means "the ear you are actually streaming to".
+    session.audio_secs = session.ears[0].ear.audio_secs();
     if score > session.peak {
         session.peak = score;
     }
     if detected {
         session.detections += 1;
     }
+    let rows: Vec<(String, f32, u32, crate::ear::Hit)> = session
+        .ears
+        .iter()
+        .zip(hits.iter())
+        .map(|(s, h)| (s.name.clone(), s.peak, s.detections, *h))
+        .collect();
+    let engines = engines_json(&rows);
     if recording(state) && (session.recorded.len() as f64) < MAX_RECORD_SECONDS * session.rate as f64 {
         session.recorded.extend_from_slice(&samples);
     }
@@ -401,7 +524,7 @@ fn chunk(state: &State, req: &Request) -> String {
     text(
         200,
         &format!(
-            r#"{{"score":{score:.4},"peak":{peak:.4},"detected":{detected},"audio_secs":{audio_secs:.2},"detections":{detections},"infer_ms":{infer_ms:.1},"cpu_ms_per_audio_s":{rate_ms:.1}}}"#
+            r#"{{"score":{score:.4},"peak":{peak:.4},"detected":{detected},"audio_secs":{audio_secs:.2},"detections":{detections},"engines":{engines},"infer_ms":{infer_ms:.1},"cpu_ms_per_audio_s":{rate_ms:.1}}}"#
         ),
     )
 }
@@ -416,8 +539,12 @@ fn reset(state: &State, req: &Request) -> String {
     };
     // Both halves have to go: the model's own history *and* our clock, or the next chunk
     // inherits a stale "already fired" timestamp.
-    if let Err(e) = session.ear.reset() {
-        return text(500, &format!(r#"{{"error":"reset: {e}"}}"#));
+    for slot in session.ears.iter_mut() {
+        if let Err(e) = slot.ear.reset() {
+            return text(500, &format!(r#"{{"error":"reset {}: {e}"}}"#, slot.name));
+        }
+        slot.peak = 0.0;
+        slot.detections = 0;
     }
     session.audio_secs = 0.0;
     session.peak = 0.0;
@@ -464,8 +591,12 @@ fn status_json(state: &State) -> String {
         0.0
     };
     format!(
-        r#"{{"model":"{}","threshold":{},"cooldown":{},"max_sessions":{},"active_sessions":{},"sessions_total":{},"chunks":{},"detections":{},"audio_secs":{:.1},"cpu_ms_per_audio_s":{per:.1},"streams_per_core_estimate":{},"uptime_s":{:.0},"step_samples":{STEP_SAMPLES},"recording":{}}}"#,
+        r#"{{"model":"{}","engines":{},"engine_default":"{}","threshold":{},"cooldown":{},"max_sessions":{},"active_sessions":{},"sessions_total":{},"chunks":{},"detections":{},"audio_secs":{:.1},"cpu_ms_per_audio_s":{per:.1},"streams_per_core_estimate":{},"uptime_s":{:.0},"step_samples":{STEP_SAMPLES},"recording":{}}}"#,
         state.model_name,
+        engine_array(available_engines(
+            !state.opts.oww_models.as_os_str().is_empty(),
+        )),
+        state.opts.engine,
         state.opts.threshold,
         state.opts.cooldown,
         state.opts.max_sessions,
@@ -564,7 +695,7 @@ fn dump(state: &State, id: &str, session: &Session) {
     eprintln!(
         "recording: {:.0} s from {} → {} ({} samples)",
         session.recorded.len() as f64 / session.rate as f64,
-        session.ear.name(),
+        session.ears[0].name,
         path.display(),
         session.recorded.len()
     );
@@ -708,6 +839,23 @@ fn json_u32(body: &[u8], key: &str) -> Option<u32> {
     digits.parse().ok()
 }
 
+/// The string field of a small JSON body — the same hand-rolled scan as `json_u32`, because this
+/// crate deliberately depends on almost nothing.
+fn json_str(body: &[u8], key: &str) -> Option<String> {
+    let text = std::str::from_utf8(body).ok()?;
+    let at = text.find(&format!("\"{key}\""))?;
+    let rest = &text[at + key.len() + 2..];
+    let open = rest.find('"')?;
+    let after = &rest[open + 1..];
+    let close = after.find('"')?;
+    let v: String = after[..close].chars().filter(|c| !c.is_control()).collect();
+    if v.is_empty() {
+        None
+    } else {
+        Some(v)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -741,22 +889,5 @@ mod tests {
         // A rate the crate cannot resample would otherwise surface as a 500 from model
         // construction, which reads like a server fault rather than a client bug.
         assert!(!matches!(8_000_u32, 16_000 | 22_050 | 32_000 | 44_100 | 48_000 | 88_200 | 96_000));
-    }
-}
-
-/// The string field of a small JSON body — the same hand-rolled scan as `json_u32`, because this
-/// crate deliberately depends on almost nothing.
-fn json_str(body: &[u8], key: &str) -> Option<String> {
-    let text = std::str::from_utf8(body).ok()?;
-    let at = text.find(&format!("\"{key}\""))?;
-    let rest = &text[at + key.len() + 2..];
-    let open = rest.find('"')?;
-    let after = &rest[open + 1..];
-    let close = after.find('"')?;
-    let v: String = after[..close].chars().filter(|c| !c.is_control()).collect();
-    if v.is_empty() {
-        None
-    } else {
-        Some(v)
     }
 }

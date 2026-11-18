@@ -437,6 +437,74 @@ in {
       '';
     };
 
+    wake.engines = lib.mkOption {
+      type = with lib.types; listOf (enum ["livekit" "oww"]);
+      default = ["livekit"];
+      apply = es: (lib.unique (lib.sort (a: b: a < b) es)) ++ lib.optionals (!lib.elem "livekit" es) ["livekit"];
+      description = ''
+        Which detectors the engine loads and therefore what a session may ask for.  The first
+        element is the default for a session that names none; "livekit" is always present,
+        because it is the only engine the page and `voice-assistant` have ever been scored by and
+        a session that names nothing must never fail.
+
+        **`oww` is offered, not recommended.**  It is the browser's model, run from the browser's
+        own bytes — see `wake.owwAssets` — under my Rust port, and the port **scores ~0 on audio
+        the browser detects confidently**: 1e-5 and decaying, on a clip the LiveKit model reads at
+        0.626.  The exclusion list is long (identical bytes, dtype, scale, normalisation, window,
+        step, history order, and a sweep proving the keyword graph's window is 16), so what is
+        left is a tract-vs-ONNXRuntime numerical difference, which is the open item in
+        `docs/follow-ups.md` together with the option of running the reference implementation
+        instead.  Enable it to **measure the gap on identical bytes with `"engine":"both""**, never
+        to drive a microphone: an always-no ear is worse than a mediocre one, and it is
+        indistinguishable from silence.
+
+        Cost if both are on: openwakeword is ~287 ms of CPU per audio-second against LiveKit's
+        ~32 ms (`crates/voice-wake/README.md`), so a `both` session pays about ten times what a
+        single-engine one does.  That is the price of an A/B that is not confounded by the room
+        changing between the two runs, and it is affordable for a measurement, not for the fleet.
+      '';
+    };
+
+    wake.owwAssets = lib.mkOption {
+      # `str`, not `path`: it is a command-line argument, and a `types.path` default would make
+      # this option a store path at eval time even when no engine is asked to load it.
+      type = lib.types.str;
+      default = "${pkgs.whisper-ws.passthru.openwakewordAssets}/models";
+      defaultText =
+        lib.literalExpression
+        ''"''${pkgs.whisper-ws.passthru.openwakewordAssets}/models"'';
+      description = ''
+        The openwakeword graphs: `melspectrogram.onnx`, `embedding_model.onnx`, the keyword head.
+        This is **the same store path the page serves**, so the server and the browser cannot be
+        comparing two different files — the single source of truth is the pinned fetch in
+        `crates/whisper-ws/package.nix`, and a second copy here would be a hash table waiting to
+        become a fiction.
+      '';
+    };
+
+    wake.owwKeyword = lib.mkOption {
+      type = lib.types.str;
+      default = "hey_jarvis_v0.1";
+      description = ''
+        Which keyword head to run.  Note the name: the browser ships `hey_jarvis_v0.1`, the
+        LiveKit model file is `hey_jarvis.onnx`, and microWakeWord on an ESP32 calls the same
+        phrase `hey_jarvis` again — three pins, one phrase, and scores that are not comparable
+        across them (`docs/esp32-voice-satellites.md`).
+      '';
+    };
+
+    wake.owwThreshold = lib.mkOption {
+      type = lib.types.float;
+      default = 0.5;
+      description = ''
+        Threshold for the openwakeword ear, deliberately separate from `wake.threshold`: the two
+        detectors were trained separately on the same phrase, so the same number means different
+        things in each, and one dial would mean a session on one engine judged by the other's
+        scale.  Nothing is tuned here yet — upstream's figure, and `crates/voice-wake/README.md`
+        states why 0.5 is a starting point rather than a measurement.
+      '';
+    };
+
     wake.idleSecs = lib.mkOption {
       type = lib.types.ints.positive;
       default = 120;
@@ -572,10 +640,25 @@ in {
                 (toString cfg.wake.maxSessions)
                 "--idle"
                 (toString cfg.wake.idleSecs)
+                # Explicit, so a session that names no engine has a value in the unit to read
+                # rather than a default buried in a binary that a future reader cannot see.
+                "--engine"
+                (builtins.head cfg.wake.engines)
               ]
               # Opt-in, and absent when off: a unit that never writes room audio and one that does
               # must not be one line apart by accident.
-              ++ lib.optionals cfg.wake.record ["--record-dir" cfg.wake.recordDir]);
+              ++ lib.optionals cfg.wake.record ["--record-dir" cfg.wake.recordDir]
+              # Only when a second ear is actually offered: an engine pointed at an empty model
+              # directory is a boot failure, and a unit that always names the assets would make
+              # every deploy load graphs nothing asked for.
+              ++ lib.optionals (lib.elem "oww" cfg.wake.engines) [
+                "--oww-models"
+                cfg.wake.owwAssets
+                "--oww-keyword"
+                cfg.wake.owwKeyword
+                "--oww-threshold"
+                (toString cfg.wake.owwThreshold)
+              ]);
         };
     });
 
