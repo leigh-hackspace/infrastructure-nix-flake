@@ -884,9 +884,10 @@ on `ppp0` is not on `vlan*` or `tailscale0`, and is dropped by the input chain's
 address was never the boundary here; the interface is.
 
 **The ACL is a source exception, and it is wider than the port policy.**
-`common/config.nix`'s `LOCAL_NETWORK` contains five *public* ranges —
+`common/config.nix`'s `LOCAL_NETWORK` contains six *public* ranges —
 `51.148.168.145/32`, `217.155.231.1/32`, `2a02:8010:6680::/48`,
-`2a0a:ef40:154a::/48`, `2001:4860:7::/48` — alongside the LAN and tailnet, and
+`2a02:8011:d000::/48`, `2a0a:ef40:154a::/48`, `2001:4860:7::/48` — alongside the
+LAN and tailnet, and
 both the input SSH rule and the forward chain trust the whole ACL.  So from those
 addresses port 22 is open and forwarded traffic on *any* port is admitted, which is
 not "80/443 + tailscale".  On top of that, `sshd -T` reports

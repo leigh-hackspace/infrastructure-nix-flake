@@ -241,6 +241,27 @@ because the router hands out leases and cannot hold one. One line per address (I
 public IPv6, ULA) — a name missing its IPv6 half is a dual-stack client that hangs
 before falling back, and dnsmasq's hosts syntax cannot put two addresses on one line.
 
+**The third answer is a public address, and that is what makes the ACL load-bearing for
+somebody else's VPN.** Measured 2026-11-19: an off-LAN client whose route into this
+network carries only IPv4 (the home bridge in `docs/home-side-hackspace-v6-2026-11-19.md`
+is the case in point) gets `2001:8b0:1d14:225::1` from this very table, finds no route to
+it in its tunnel, and dials it **over its own WAN** — so it arrives on `ppp0` and is judged
+by `common/config.nix`'s `LOCAL_NETWORK` as whatever its ISP gave it, not as a VPN client.
+The symptom is 403 on the `*.int` vhosts and `200`/`302` on the un-ACL'd public names, from
+the same tab, seconds apart. Two rules follow: check the *family* the client routes before
+suspecting a vhost, and read the client's source address in the access log rather than
+its explanation:
+
+```bash
+sudo grep '" 403 ' /var/log/nginx/access.log | awk '{print $1}' | sort | uniq -c
+```
+
+A hand-written row for somebody's residential prefix is the same mistake in the other
+direction, and it does **not** necessarily expire: the home in point cannot ask its ISP for a
+different prefix delegation, so its `/48` is permanent and the row will outlive every reason
+ever given for it. Either way it grants port 22 and forwarded traffic too
+(`machines/gw/README.md`, `docs/follow-ups.md`), and the fix is the tunnel, not the row.
+
 `machines/services1` is an **origin** now, not a second front door: it answers only the
 `upstream = "origin"` rows in `common/front-door.nix`, on plain HTTP :80, from
 `10.3.1.1` alone. `docs/router-front-door-migration.md` is the architecture and the

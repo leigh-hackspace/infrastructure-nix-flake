@@ -13,6 +13,16 @@ that is closed gets absorbed into the live docs and deleted, and git history hol
 
 ## Nix / build
 
+- **`gw`'s evaluation prints a deprecation warning that is ours to fix: `getExe: Package
+  "ups-watchdog-0.1.0" does not have the meta.mainProgram attribute`** (seen 2026-11-19 in
+  `/var/tmp/deploy-gw-2026-11-19.log` while switching gw for the ACL row, three times, once
+  per attribute path that reaches it). It is `machines/gw/ups.nix`'s package for the
+  workspace member, and nix states the assumption will become an error. Rule 9 makes a
+  warning a finding; the fix is one `meta.mainProgram = "ups-watchdog";`, which dirties
+  every unit that embeds the binary — so it rides along with the next gw change rather than
+  earning a switch of its own. Re-verify with:
+  `sudo nixos-rebuild dry-activate --flake .#gw 2>&1 | grep -c getExe`.
+
 - **A registry hiccup while fetching `whisper-ws`'s npm tree fails `just check-build` for
   the whole fleet — and the reason it had to fetch at all is the builder's GC, not the
   commit** (hit 2026-11-12, on the aibox toplevel: `whisper-ws-web-0.1.0-npm-deps` failed
@@ -1781,13 +1791,17 @@ thing to do with either is to date it (`journalctl -u … | grep "Failed with re
   `sudo nft list chain ip routerNat dstnat`, `ip6 router6 forward` and
   `ip routerIn input`.  Two things still mean "only 80/443 + tailscale" is not the
   whole truth for *specific sources*:
-  1. `common/config.nix`'s `LOCAL_NETWORK` contains five public ranges
+  1. `common/config.nix`'s `LOCAL_NETWORK` contains six public ranges
      (`51.148.168.145/32`, `217.155.231.1/32`, `2a02:8010:6680::/48`,
-     `2a0a:ef40:154a::/48`, `2001:4860:7::/48`) and both the SSH input rule and the
+     `2a02:8011:d000::/48`, `2a0a:ef40:154a::/48`, `2001:4860:7::/48`) and both the SSH
+     input rule and the
      forward chain trust the whole ACL, so those addresses get **port 22 and any
      forwarded destination**.  Moving them to the tailnet (or splitting the ACL into
      service clients vs routable admins) is the next decision; it was not made in the
-     audit because it cuts off access someone may still intend.
+     audit because it cuts off access someone may still intend.  Measured 2026-11-19, the
+     Zen rows are now known *why* they are load-bearing: 
+     `docs/router-and-dns.md` ("The third answer is a public address") and
+     `docs/home-side-hackspace-v6-2026-11-19.md`.
   2. `sshd -T` on gw reports `passwordauthentication yes` and
      `kbdinteractiveauthentication yes` (NixOS' `services.openssh` default).  Anyone in
      the ACL who can reach 22 can try a password.  The fleet's access is key-based
@@ -1800,6 +1814,47 @@ thing to do with either is to date it (`journalctl -u … | grep "Failed with re
   `ip6 saddr fe80::/10` to that rule would close an injection path; it is left as-is
   because DHCPv6-PD is not currently relied on and a wrong guess would silently
   remove the prefix if AAISP ever starts delivering it.
+
+- **The two Zen `/48` rows in `LOCAL_NETWORK` are a stopgap, and they have a retirement
+  criterion (2026-11-19).** A client whose tunnel carries only IPv4 cannot use the public AAAA
+  this box hands out for `*.int` (`common/vlans.nix`'s VLAN 225 answers IPv4 + public IPv6 +
+  ULA), so it dials that AAAA over whatever WAN it happens to have and needs a row naming its
+  ISP prefix. The failure was 794 × 403 from `2a02:8011:d000:672::/64` on the ACL'd vhosts
+  while the un-ACL'd public names answered 200/302, and it exposed that **no request has ever
+  arrived here from `100.64.0.19`**, the tailnet address the working path carries. The real fix
+  is on the caller's side and is written up in `docs/home-side-hackspace-v6-2026-11-19.md`;
+  when that file's `curl -6` returns 200/302, **delete both rows**, and item 1 above moves two
+  ranges closer to true.
+
+  **The reading written on the spot — "Zen re-delegated, the old row expired" — was wrong and
+  is corrected the same evening:** grafton-router cannot request a different prefix delegation,
+  so `2a02:8010:6680::/48` is permanent on their side and stays. What is unresolved is which
+  interface egresses `2a02:8011:d000:672::/64`, since it is not their PD; that question is in
+  the handover note, and until it is answered the ACL carries both. The lesson generalises
+  further than the prefix: a source row can also *outlive* its reason, and the pair "whose is
+  this address / is it still theirs" is not answerable from this side — which is a second
+  argument for the tailnet, whose addresses name a node. Re-verify with:
+  `sudo grep '" 403 ' /var/log/nginx/access.log | awk '{print $1}' | sort | uniq -c`.
+  **That prefix was written down three times**, and on 2026-11-19 only one copy was
+  discoverable from the 403: `common/config.nix`'s `LOCAL_NETWORK`, the anonymous-access rule
+  in `common/nginx-sso-config.nix` (now `^2a02:801[01]:`, covering both), and the single
+  `2a02:8010:6680::/48` line in that same file's `PG_AUTH` — which did **not** follow the table
+  on 2026-11-19 and nobody noticed, and fixing it means deploying services1's `pg_hba`.
+  Deriving the gate's network rules and `pg_hba`'s client rows from the one ACL table, rather
+  than copying it into a regexp and a `host` line, is rule 31 applied to source lists; until
+  then, a change to the ACL is a three-box hunt performed by hand.
+
+- **`nginx_sso_client_secret` and nginx-sso's cookie `authentication_key` were printed into
+  an agent transcript on 2026-11-19 and need rotating.** Self-inflicted, and the mechanism
+  is worth keeping: verifying the gate's new `x-real-ip` rule by dumping the config file its
+  `ExecStart` names — one JSON line holding both secrets — instead of asking that file the
+  one question (`sudo grep -o '"regexp":"[^"]*"' <that path>`). Rule 13 again: reading back
+  a rendered file is the right move, and the read has to be *shaped like the question*. The
+  store path is world-readable by design (`common/sops.nix` carries the sentence for those
+  two names); the transcript is the new audience, not the new exposure. **Needs:** rotate
+  `nginx_sso_client_secret` in sops **and** in authentik (client `pyBuPjaPD7xaiy8hAQpy4W02A3G0aIKyUakPtSaD`,
+  the id is in `common/nginx-sso-config.nix`), `just switch` gw, and re-issue the cookie key
+  in the same window — it logs every session out, so order the two rather than skipping one.
 
 
 ## Postgres

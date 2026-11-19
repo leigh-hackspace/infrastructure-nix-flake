@@ -118,12 +118,22 @@ in
         ];
         allow = ["@_anonymous"];
       }
-      # Grant Chris (IPv6)
+      # Grant Chris (IPv6) — **the same stopgap as the two `Chris Zen (IPv6)` rows in
+      # `common/config.nix`'s `LOCAL_NETWORK`, and the third hand-written copy of those
+      # prefixes** (the other is the `2a02:8010:6680::/48` row in that file's `PG_AUTH`,
+      # which tracked the table only by habit and did not follow it on 2026-11-19).
+      # Both /48s are here because the house is seen from both: grafton-router cannot ask
+      # Zen for a different prefix delegation, so `2a02:8010:6680::/48` is permanent on
+      # their side, and `2a02:8011:d000::/48` is where their traffic was measured arriving
+      # from on 2026-11-19. `docs/home-side-hackspace-v6-2026-11-19.md` is the home-side
+      # change after which every one of these rows gets deleted rather than kept in step.
+      # A gate whose network rules are typed twice is rule 31's shape seen from the other
+      # end: the copies can only disagree.
       {
         rules = [
           {
             field = "x-real-ip";
-            regexp = "^2a02:8010:6680";
+            regexp = "^2a02:801[01]:";
           }
         ];
         allow = ["@_anonymous"];

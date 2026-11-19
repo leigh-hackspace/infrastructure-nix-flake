@@ -84,6 +84,24 @@ rec {
 
   # NGINX Firewall for "*.int.leighhack.org"
   # Allow only LAN access for internal services
+  #
+  # **Everything in this string is spliced verbatim into every ACL'd vhost on every box
+  # that reads it, so comments here are duplicated ~29 times in `/etc/nginx/nginx.conf`
+  # and a prefix named here appears 29 times to the next `grep`.** Prose about a row
+  # belongs above the string, not inside it (measured 2026-11-19, while writing the stopgap
+  # rows below: the 10-line comment they carried landed in the live config 29 times, and a
+  # second copy of that prefix really does live in `PG_AUTH` at the bottom of this file, so
+  # the noise hid the signal).
+  #
+  # **The two `Chris Zen (IPv6)` rows are both live, and they are two rows because the home
+  # network is currently seen from two Zen /48s.** grafton-router cannot ask Zen for a
+  # different prefix delegation, so `2a02:8010:6680::/48` is permanent on their side and
+  # must not be deleted; `2a02:8011:d000::/48` is the /48 their traffic was *measured*
+  # arriving from on 2026-11-19 (794 requests in five hours, and none from the old /48 after
+  # 13:48:58). Which of the two a given client egresses from is unresolved and is an open
+  # item in `docs/follow-ups.md` — the honest summary is that a hand-listed residential
+  # prefix is the wrong credential either way, and `docs/home-side-hackspace-v6-2026-11-19.md`
+  # is the change that retires both.
   LOCAL_NETWORK = ''
     allow 10.3.0.0/16;              # Hackspace Internal
     allow 192.168.2.0/24;           # CS_VLAN Internal
@@ -95,7 +113,9 @@ rec {
     # Chris stuff...
     allow 192.168.49.0/24;          # Chris Home Internal
     allow 51.148.168.145/32;        # Chris Zen (IPv4)
-    allow 2a02:8010:6680::0/48;     # Chris Zen (IPv6)
+    # STOPGAP 2026-11-19, two rows for one house: see the block above `LOCAL_NETWORK`.
+    allow 2a02:8010:6680::0/48;     # Chris Zen (IPv6) — their PD, cannot be changed
+    allow 2a02:8011:d000::/48;      # Chris Zen (IPv6) — where their traffic arrived from 2026-11-19
     allow 2a0a:ef40:154a::0/48;     # Chris 2
     allow 2001:4860:7::0/48;        # Society1
 
@@ -104,6 +124,11 @@ rec {
     deny all;
   '';
 
+  # The home's Zen delegation, as a `pg_hba` client row: the second hand-written copy of
+  # the prefix in `LOCAL_NETWORK` above, and the third is in `common/nginx-sso-config.nix`.
+  # It tracks that table only by habit — when the ACL gained the second /48 on 2026-11-19
+  # this one did not, and nothing noticed. Deriving these client rows from the ACL table is
+  # the item in `docs/follow-ups.md`; changing anything here means deploying services1.
   PG_AUTH = ''
     #type   database  DBuser  auth-method
     local   all       all     trust
