@@ -339,11 +339,16 @@ It is inside aibox's closure already — `${build.squashfsStore}` is an export
 directory and `${build.kernel}/bzImage` is served by nginx — so `just switch` on
 aibox builds it, and `just check-build` covers it without naming it.  To rebuild
 just the image: `nix build .#nixosConfigurations.pi-room-sys.config.system.build.toplevel`.
-Measured on 2026-11-21, when the paper printers went in: that build finished rc=0
-having built 479 derivations, and the closure of the toplevel it wrote is 20.2 GiB
-over 2,389 paths (`nix path-info -h --closure-size`) — that is the number behind
-"the only cost worth counting", and the receipt, the caveat that aibox has not
-switched since so no squashfs has been re-cut, and the printers' own share of the
-20.2 GiB are `docs/paper-printers.md`.  After a switch, `just switch-netboot` (on
+Measured on 2026-11-21, when the paper printers went in — twice, build and
+switch: that build finished rc=0 having built 479 derivations, its toplevel's
+closure is 20.2 GiB over 2,389 paths (`nix path-info -h --closure-size`), and
+aibox's switch then re-cut the media, taking the export from 7,506,362,368 bytes
+over 2,360 entries to 7,552,843,776 over 2,390 — so the printers' boot-time cost
+is +44.4 MiB (+0.62%) and 30 entries, and the switch itself was ~8 min wall
+against the 2026-11-19 run's 18 min + 46-minute postStart, because nixpkgs did
+not move and the image's closure had already been built.  The receipts, including
+the loop-mount listing that shows CUPS the *package* was already in the old image
+while CUPS the *service*, the filters and the printer table are the new half,
+are `docs/paper-printers.md`.  After a switch, `just switch-netboot` (on
 aibox) remounts the export and reboots the clients; they are
 `10.3.14.101`–`10.3.14.110`.
