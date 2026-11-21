@@ -280,3 +280,52 @@ registration command itself is proven — on the previous guest
 `lpadmin -p brother -v ipp://10.3.2.30:631/ipp/print -m everywhere -E` returned 0 and
 `lpstat -p` then read `printer brother is idle`
 (`docs/follow-ups.md` carries it as the open item).
+
+## The third report: a printer that is switched off keeps its place in the dialog (2026-11-21 18:5x)
+
+The next report after the 17:58 deploy was *"i just tried on a pi room computer and
+could not see anything other than the option to print to PDF"* — and the image was
+working exactly as designed, which was the finding. Measured, in order:
+
+- **The client was on the new image.** `dnsmasq`'s log on the router shows
+  `pi-room-01` (10.3.14.101) DHCPing at 18:14–18:15, i.e. after the 17:58 re-cut, and a
+  guest booted from that same export answered `cups -> active`,
+  `paper-printers -> active`, `systemctl --failed` empty.
+- **Both printers were off the network, not answering slowly.** The router's own
+  neighbour table read `10.3.2.30 dev vlan226 INCOMPLETE` and `10.3.1.50 dev
+  vlan225 FAILED`; `arping` from the router got 0 replies from either, while the
+  cameras on the same VLANs (10.3.2.10, .17, .11) answered, so it is those two devices
+  and not their VLANs; and neither has DHCPed since 17:44 (`brother`) / 17:19
+  (`toshiba`), having both renewed earlier the same afternoon while they were awake.
+- **So the queue table was empty by design**: `-m everywhere` asks the *device* for its
+  attributes, so a dark printer registers nothing, and the dialog showed only the
+  virtual "Print to PDF" destination. One printer off = one missing destination;
+  both off = a print menu that looks broken.
+
+**The correction, measured on a booted client of the 2026-11-21 18:36 image:** a row
+that cannot go driverless gets a *placeholder* queue instead of nothing.
+
+- `lpadmin -p darktest -E -v ipp://10.3.2.30:631/ipp/print` — no `-m`, no `-i` — returns
+  **0 against a device that is completely dark**, and `lpstat -p` then reads
+  `printer darktest is idle. enabled since …`. That is the whole trick: the destination
+  needs a URI, not a PPD.
+- A failed driverless attempt **against an existing queue deletes it** — after
+  `lpadmin -p darktest -m everywhere` answered `Unable to connect to 10.3.2.30:631:
+  Host is down`, `lpstat -p` read `No destinations added.` So the placeholder is
+  re-created on every failure path, and the upgrade is gated behind a TCP probe
+  (`/dev/tcp/<addr>/631`, 3 s) rather than attempted blind.
+- The placeholder is held with `cupsreject -r`, so a job is refused with
+  *"the printer is switched off or asleep; this queue accepts jobs when it answers"* —
+  visible in the dialog, and better than a PPD-less queue spooling a document that would
+  print as whatever arrives once the printer wakes.
+- On the booted client both destinations existed: `lpstat -p` listed `brother` and
+  `toshiba` with that reason underneath each, `/run/paper-printers/{brother,toshiba}`
+  each said `placeholder`, and the journal read
+  `paper printers: brother is not answering — queue held with a reason until it does`
+  every pass without re-running `lpadmin` once the queue was held.
+
+**Still unproven:** the placeholder → driverless upgrade on a device waking up. The
+driverless registration itself is proven (17:45, `brother` awake, rc=0, `printer brother
+is idle`), and the upgrade is the same call behind a TCP gate, but it has not yet been
+watched happen — the open item is in `docs/follow-ups.md`, and it needs nothing but a
+printer being switched on while a client is booted.

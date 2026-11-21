@@ -45,6 +45,16 @@
 #   a sleeping printer costs its own queue and nothing else. docs/paper-printers.md
 #   owns the receipts.
 #
+# * **A printer that is off still gets a queue, and that is the second correction of
+#   2026-11-21.** Retrying alone was not enough: a room's desk with no destination in
+#   the dialog reads as "printing is broken", and both printers were off when the next
+#   report came in. So a row that cannot go driverless gets a *placeholder* queue —
+#   `lpadmin` without `-m`, which returns 0 against a dark device — held with
+#   `cupsreject` and one sentence of reason, and upgraded to the driverless PPD the
+#   moment the device answers TCP. The state machine, and the measured trap it is built
+#   around (a failed `-m everywhere` *deletes* an existing queue), are in the script's
+#   own comment below.
+#
 # Every definition below carries its `config.` prefix on purpose: this module's
 # guardrails are the list under `config.assertions`, and nixpkgs' module machinery
 # reports a module that mixes bare option names with that list as
@@ -75,36 +85,97 @@
 
   defaults = builtins.filter (n: PRINTERS.${n}.default) queues;
 
-  # One pass over the rows: register every queue that is not registered yet, and say
-  # which ones are still missing.  `lpstat -p` is the "already there" test rather than
-  # a flag file, because the queue table lives on tmpfs and the honest question after a
-  # `cups` restart is what the scheduler holds now.  `-m everywhere` is the driverless
-  # model: it asks the device for its attributes, so it is the step that needs the
-  # printer to be awake, and the reason each row is attempted on its own line.
-  registerRow = n: let
+  # The address a row dials, read out of the record it names — the same expression
+  # ./printers-data.nix builds the URI from, so the probe below cannot dial an address
+  # the queue does not.  A missing record falls back rather than throwing here for the
+  # reason that file states; the assertion names it.
+  addrOf = n: (RECORDS.${PRINTERS.${n}.record} or {ipv4 = "0.0.0.0";}).ipv4;
+
+  # The reason a placeholder queue is held with, shown in the app's print dialog and in
+  # the queue's own state.  It has to say what the *user* can do about it, because the
+  # alternative — no destination at all — is what sent someone to look for a bug here.
+  rejectReason = "the printer is switched off or asleep; this queue accepts jobs when it answers";
+
+  # One call per row, all of them running the function below with that row's four
+  # values.  Keeping the logic in one `provision_one` rather than generating a block per
+  # row is deliberate: this is a state machine (absent → placeholder → driverless), and
+  # two copies of a state machine is how they stop agreeing.
+  rowCall = n: let
     row = PRINTERS.${n};
   in ''
-    if ${pkgs.cups}/bin/lpstat -p ${lib.escapeShellArg n} >/dev/null 2>&1; then
-      :
-    elif ${pkgs.cups}/bin/lpadmin -p ${lib.escapeShellArg n} \
-        -D ${lib.escapeShellArg row.description} -E -m everywhere \
-        -v ${lib.escapeShellArg row.deviceUri}; then
-      echo "paper printers: registered ${n}"
-    else
-      echo "paper printers: ${n} has no queue yet — its device did not answer" >&2
-      pending="''${pending} ${n}"
-    fi
+    provision_one ${lib.escapeShellArg n} ${lib.escapeShellArg row.deviceUri} \
+      ${lib.escapeShellArg (addrOf n)} ${lib.escapeShellArg (builtins.toString row.port)} \
+      ${lib.escapeShellArg row.description}
   '';
 
   provision = pkgs.writeShellScript "paper-printers-provision" ''
     set -u
     # A loop rather than a one-shot: this image registers its queues at every boot, so
-    # the pass that runs before a printer is switched on has to be repeatable.  Exits 0
-    # once every row has a queue, which is what leaves the unit `inactive (dead)` on a
-    # healthy boot instead of running for the life of the client.
+    # the pass that runs before a printer is switched on has to be repeatable — and it
+    # has to keep running after every row exists, because "exists" is not the same as
+    # "is driverless" (see the placeholder branch).  It exits 0 only when every row has
+    # a driverless queue, which is the state a healthy boot ends in.
+    #
+    # Why a placeholder exists at all (measured on a booted client 2026-11-21):
+    # `-m everywhere` asks the *device* for its attributes, so a printer that is switched
+    # off gets no queue, and a print dialog with no destinations over two devices that are
+    # physically there reads as "printing is broken" rather than "the printer is off" —
+    # that is exactly the report this fixes.  `lpadmin -p X -E -v <uri>` with no `-m` or
+    # `-i` creates a driverless-less queue and returns 0 against a device that is dark
+    # (measured: rc=0, `printer X is idle. enabled`), so the destination can exist; holding
+    # it with `cupsreject` means a job is refused with the sentence below instead of
+    # spooling into a PPD-less queue and printing whatever arrives.  When the printer
+    # answers, the same call that registers a queue upgrades the placeholder.  A failed
+    # `-m everywhere` **against an existing queue deletes it** (measured, same day: the
+    # destination was gone afterwards), which is why every failure path re-creates the
+    # placeholder instead of assuming the old one survived.
+    provision_one() {
+      name=$1 uri=$2 addr=$3 port=$4 desc=$5
+      state=/run/paper-printers/$name
+
+      # The device answers TCP on its IPP port.  A probe rather than trusting `lpadmin`
+      # to fail cheaply: a failed driverless attempt on an existing queue removes it.
+      reachable() {
+        ${pkgs.coreutils}/bin/timeout 3 ${pkgs.bash}/bin/bash -c "exec 3<>/dev/tcp/$addr/$port" 2>/dev/null
+      }
+
+      placeholder() {
+        if ${pkgs.cups}/bin/lpadmin -p "$name" -D "$desc" -E -v "$uri" >/dev/null 2>&1; then
+          ${pkgs.cups}/bin/cupsreject -r ${lib.escapeShellArg rejectReason} "$name" >/dev/null 2>&1 || true
+          echo placeholder >"$state"
+        fi
+      }
+
+      if ${pkgs.cups}/bin/lpstat -p "$name" >/dev/null 2>&1 &&
+        [ "$(cat "$state" 2>/dev/null)" = driverless ]; then
+        return 0
+      fi
+
+      if reachable &&
+        ${pkgs.cups}/bin/lpadmin -p "$name" -D "$desc" -E -m everywhere -v "$uri" >/dev/null 2>&1; then
+        echo driverless >"$state"
+        ${pkgs.cups}/bin/cupsaccept "$name" >/dev/null 2>&1 || true
+        echo "paper printers: $name registered (driverless)"
+        return 0
+      fi
+
+      # A placeholder, created once and refreshed only if it vanished — re-running
+      # `lpadmin` every 20 s would churn the queue (and its
+      # `enabled since` state) for no reason, and a failed driverless attempt above is
+      # the one way the destination can disappear.
+      if ${pkgs.cups}/bin/lpstat -p "$name" >/dev/null 2>&1 &&
+        [ "$(cat "$state" 2>/dev/null)" = placeholder ]; then
+        : # already held — re-running lpadmin every 20 s would only churn the queue
+      else
+        placeholder
+        echo "paper printers: $name is not answering — queue held with a reason until it does" >&2
+      fi
+      pending="''${pending} $name"
+    }
+
     while :; do
       pending=""
-      ${lib.concatMapStringsSep "\n" registerRow queues}
+      ${lib.concatMapStringsSep "\n" rowCall queues}
       if [ -z "$pending" ]; then
         ${
       lib.optionalString (defaults != []) ''
@@ -118,7 +189,7 @@
     }
         exit 0
       fi
-      echo "paper printers: still missing$pending — retrying in 20 s" >&2
+      echo "paper printers: still not driverless:$pending — retrying in 20 s" >&2
       sleep 20
     done
   '';
@@ -151,6 +222,11 @@ in {
       ExecStart = provision;
       Restart = "on-failure";
       RestartSec = "20s";
+      # The "is this row driverless yet" state, one file per queue.  Under /run because
+      # it is a fact about this boot's CUPS, which is itself re-provisioned every boot
+      # (root is tmpfs) — a state file that outlived the queue it describes would have
+      # `provision_one` skip a registration that does not exist.
+      RuntimeDirectory = "paper-printers";
     };
   };
 

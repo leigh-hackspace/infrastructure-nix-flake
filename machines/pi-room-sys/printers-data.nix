@@ -72,10 +72,12 @@ let
       # docs/follow-ups.md.  Until then this queue exists, enables, and prints
       # nothing, which is the failure mode every check inside CUPS stays green through.
       #
-      # It also has no queue at all while the device is off, and that is not a bug in
-      # this row: `-m everywhere` asks the device for its attributes when the queue is
-      # registered, so the row is retried until it answers (`Host is down` on
-      # 2026-11-21, docs/paper-printers.md).
+      # Its queue exists whether or not the device does: `./printers.nix` registers a
+      # placeholder queue when `-m everywhere` cannot ask the device, holds it with
+      # `cupsreject` and one sentence of reason, and upgrades it to driverless the
+      # moment the device answers TCP.  That is what keeps a print dialog from being
+      # empty over two printers that are physically there (measured 2026-11-21, both
+      # devices switched off — docs/paper-printers.md).
       path = "/printers/toshiba";
 
       description = "The network's `toshiba` printer (untagged lease)";

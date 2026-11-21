@@ -2005,6 +2005,17 @@ thing to do with either is to date it (`journalctl -u … | grep "Failed with re
   client boots has no queue until it answers (`journalctl -u paper-printers` says which),
   and the test print above is still the outstanding proof.
 
+- **A placeholder queue exists while its printer is off, and its upgrade to driverless has
+  not yet been watched happen (opened 2026-11-21).** The second report of the same evening
+  was a dialog with only "Print to PDF" over both printers, because both devices were
+  switched off and `-m everywhere` asks the device at registration;
+  `machines/pi-room-sys/printers.nix` now registers a held placeholder (`lpadmin` without
+  `-m`, plus `cupsreject -r`) and upgrades it through a TCP gate when the device answers.
+  The upgrade is the same `lpadmin` call that is proven against an awake `brother`, and the
+  placeholder is proven on a booted client, but nobody has yet booted a client, switched a
+  printer on and read `registered (driverless)` in `journalctl -u paper-printers`. That one
+  observation — and then the sheet of paper in the item below — closes both.
+
 - **Whether driverless `model = everywhere` rasterises a page from these two is
   unmeasured.** The Brother's IPP reply announces 327 bytes of attributes and sends 72,
   and neither device has a vendor PPD in nixpkgs (Brother's `beh` PPDs and Toshiba's
