@@ -946,6 +946,25 @@ cheap to fix in a script file rather than inline — write `/tmp/nu-switch.sh` a
   Pick a fresh log path per run — `/var/tmp/deploy-<machine>-<date>.log` — and note that
   `sudo journalctl -u <unit>` needs `-u` for the *unit name you passed*, since `--collect`
   forgets it as soon as it exits.
+- **A unit whose `PATH` starts at `/run/current-system/sw/bin` has no working `sudo`,** and
+  the error is a lie about the filesystem: `sudo: /run/current-system/sw/bin/sudo must be
+  owned by uid 0 and have the setuid bit set`. NixOS's setuid sudo is the **wrapper** at
+  `/run/wrappers/bin/sudo` (`-r-s--x--x root root`); `sw/bin/sudo` is the same package's
+  bare, un-setuid binary, and it is what `PATH=/run/current-system/sw/bin:…` resolves.
+  Measured 2026-11-22 deploying `gw` **from `gw`**: rule 27 makes `just deploy gw` degenerate
+  into a local `nixos-rebuild switch && sudo nixos-confirm`, so the deploy that needs no
+  local root in general does need it here — and the unit died at that `sudo`, with nothing
+  activated, nothing confirmed and `auto-rollback` never armed (`readlink
+  /run/current-system /nix/var/nix/profiles/system-good` still equal, `is-active
+  auto-rollback.timer` = `inactive`: a clean refusal, which is the failure mode you want).
+  Same for `just check-build`, whose GC-root step is `sudo -n ln`. Fix: put the wrappers
+  first — `--setenv=PATH=/run/wrappers/bin:/run/current-system/sw/bin:/usr/bin:/bin` — or
+  skip `just` and call `/run/current-system/sw/bin/nixos-rebuild` + `nixos-confirm` from a
+  root unit, which is what the recipe at the head of this section does. `NoNewPrivileges` is
+  **not** the mechanism: the unit reports `NoNewPrivileges=no` and still fails, so do not go
+  looking there. Re-verify with:
+  `ls -l /run/wrappers/bin/sudo /run/current-system/sw/bin/sudo`, and
+  `sudo systemd-run --wait --pipe --collect --uid=leigh-admin --setenv=PATH=/run/wrappers/bin:/run/current-system/sw/bin /run/current-system/sw/bin/bash -c 'command -v sudo; sudo -n true'`.
 - **Confirm only if the switch exited 0.** Running `nixos-confirm` unconditionally
   marks the generation *currently in `/run/current-system`* good even when
   activation aborted halfway — and activation flips `/run/current-system` before it

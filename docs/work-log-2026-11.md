@@ -485,3 +485,71 @@ when it was written" kind:
   (the merge is not deployed), so the network is in the interval where both names point at one
   engine and only one of them says so. That interval is the item to close, and it is written
   up as one — `docs/follow-ups.md`, "`strata3.int` is declared and not deployed".
+
+## 2026-11-22 — one commit on every box, and the fleet on the current Strata pin
+
+The follow-up from the morning: land `services3`'s engine work, then everything the merge
+touched, on every box. What that turned out to involve, in the order it happened.
+
+**Two boxes held work nobody had pushed.** Phase 0's `git log -1` per box showed `aibox` on a
+commit `main` had never seen; fetching each box's `main` found **four** `paper printers`
+commits there and services3's one engine commit (already merged). A reset-to-one-rev, which
+is what the runbook's Phase 1 step 2 tells you to do, would have **deleted** aibox's four.
+That probe is now in Phase 0 as its own bullet, with the loop, because nothing else in the
+runbook asks the question. Both stacks rebased onto `main` — aibox's with zero conflicts,
+services3's with five, all of them append-mostly rows in `AGENTS.md`, the month's log,
+`docs/services.md`, the new `common/llm-endpoints.nix` and the box's own README.
+
+**The push was rejected, and correctly.** `origin/main` had moved to the same four printers
+commits aibox was holding, so my rebased copies were duplicates by content and divergent by
+SHA. Collapsing them (`git rebase --onto origin/main`, then proving the tip trees identical
+with `git diff tmp/collapse main` empty) is what `git cherry` is for: it said every aibox
+commit was already upstream (`-`) and services3's **was not** (`+`) — because I had edited
+inside it during the merge. Patch-id equality is not the same question as tree equality, and
+the two boxes needed different answers (`just deploy` could fast-forward aibox; services3 got
+a safety ref and a reset).
+
+**The gate refused to run where the runbook says to run it.** `just check-build` on aibox died
+on `door-entry-management-system`'s `__noChroot` — which is not a new finding, it is
+`docs/follow-ups.md`'s own item, quoted in advance ("that failure is this item, not your
+change"). services1 is the box that may build it, so the gate ran there, per machine, so each
+machine got its own exit code: services1 0, services2 0, services3 0, and it spent real time
+compiling CUDA 13 from source on aibox for services2's engine because the 2026-11-21 bump had
+since GC'd it — the lesson in `machines/services2/STRATA.md` ("build the CUDA half where the
+toolchain is warm") is about *timing*, not just toolchain choice.
+
+**A detached unit's `sudo` is a separate program from an interactive shell's.** Three launches
+died with `sudo: /run/current-system/sw/bin/sudo must be owned by uid 0 and have the setuid
+bit set`, and `NoNewPrivileges=no` proved it was not the usual cause: NixOS's setuid sudo is
+the **wrapper** at `/run/wrappers/bin/sudo`, and my `--setenv=PATH=/run/current-system/sw/bin:…`
+resolved the bare, un-setuid binary in `sw/bin`. It bit exactly once per shape — a `just`
+recipe that calls `sudo`, run as a unit — and it is worth noting what it did *not* do: the
+`just deploy gw` attempt died **before** activation, so nothing was switched, nothing was
+confirmed, and `auto-rollback` was never armed. Documented in `docs/nix-dev-workflow.md`, in
+the same bullet list that already warns about shebangs and `HOME=/root`.
+
+**Landed, in this order, each one read back:** `gw` first, because it owns the interval — the
+rendered `nginx.conf` gained the `strata3.int` block and lost every `llama.int` byte,
+dnsmasq answers the name on all three door addresses, `getent hosts llama.int…` returns
+nothing, and from the router through the door `/v1/models` answers **200 with no client key**,
+which is the only test that distinguishes an injected `strataBearer` from a configured one.
+Then `services1` (gatus's API on `:8999` now lists `Strata3 (services3, CUDA sm_61)` and no
+Llama row), `services2`, `services3` after the sm_61 engine finally built at the new pin, and
+`aibox` **last on purpose**: it is the builder, and switching it mid-build is how you kill
+someone else's compile. Five boxes, one commit `0bb5495`, `current == system-good` on all
+five, `systemctl --failed` empty on all five.
+
+Engines, through the door, after the run: `strata` Coder IQ1_M loaded, `strata2` IQ2_XS
+loaded, `strata3` Coder IQ1_M loaded — the last two having gone 0.1.59.1 → **0.1.63**, so the
+one `strata` input finally means one engine version on all three cards. `just pi-agent-status`
+discovers `strata-services3 … ctx=131072` from the live endpoint, which is the rename working
+end to end — and it also reported `not managed here: llama-services3`, because renaming a
+provider id strands the old one in every box's `models.json` by design; that is
+`docs/follow-ups.md`'s problem now, not this run's.
+
+Left open, deliberately, by this run: **`gw` is running kernel `6.18.56` against a generation
+built for `6.18.63`** (`just pending-reboot` says so), which is a reboot of the thing that
+answers DNS for the network and is therefore a decision with a time of day, not a step; the
+ten Pi Room clients have the new image exported at them and will take it **on their own next
+boot**; and services3's 18.2-tok/s band in its README is 0.1.59.1's measurement, now a prior
+rather than a number.

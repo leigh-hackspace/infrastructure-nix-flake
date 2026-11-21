@@ -778,8 +778,22 @@ that is closed gets absorbed into the live docs and deleted, and git history hol
   **What to do instead, cheapest first:** one dense BF16/FP16 cuBLAS GEMM on the card with the CUDA toolchain `packages.strata-cuda` already puts on this box — stock ~26 TFLOPS means the cap is live and the only remaining question is strata's GPU share of prefill (the engine's own `prefill plan inputs` line answers that); stock ~48 means the card is not paying it and there is nothing to win. Nobody has run either number here. **Do not reach for `nvidia-smi dmon -s c` to see the selectors** — upstream's own "check what you have" line: this box's `nvidia-smi` (595.104.02) prints only `mclk`/`pclk` for `-s c`.
   **The free half:** the cap covers *only* half-precision tensor math — FP32 FFMA and integer DP4A never pay it, which is why llama.cpp (upstream's own null there: pp512 1460.5 -> 1467.1) sees nothing and Strata does not. An upstream integer/DP4A prefill path would therefore buy the same thing with **zero boot risk**; nothing in `engineArgs` gives it today, and if it ever appears this item is the way back.
 
-- **`strata3.int` is declared and not deployed, and meanwhile `llama.int` answers with the
-  wrong engine** (measured 2026-11-22, merging services3's `strata3` work into `main`). The
+- ~~**`strata3.int` is declared and not deployed, and meanwhile `llama.int` answers with the
+  wrong engine**~~ — **done 2026-11-22**, in the order set out below, each step read back.
+  `gw` first (`just deploy gw`: exit 0, `/run/current-system` == `system-good`, zero failed
+  units): `/etc/nginx/nginx.conf` carries the `strata3.int` server block and
+  `grep -c llama.int` on it is **0**; `/etc/dnsmasq-int-vhosts.hosts` answers the name with
+  all three door addresses (IPv4, public IPv6, ULA — the dual-stack rule holds); `getent
+  hosts llama.int.leighhack.org` returns nothing, which was this item's own stated
+  done-state. From the router, through the door: `/health` 200 and `/v1/models` **200 with no
+  client key** — the only proof that `strataBearer` is actually injecting against this engine
+  rather than merely configured — and `front-door-cert-check.service` still says Let's
+  Encrypt, not minica. Then `services1`: gatus's own API on `:8999` now lists
+  `Strata (services2, CUDA)`, `Strata2 (aibox, HIP)`, `Strata3 (services3, CUDA sm_61)` and
+  **no Llama row**, so the row that was green about the wrong engine is gone. Text below kept
+  as the record of the state that was closed.
+
+  (measured 2026-11-22, merging services3's `strata3` work into `main`). The
   row, the DNS entry, the gatus check and pi's provider all moved in one commit, but that
   commit lives only in `main`: `gw` still serves the old door table and dnsmasq still answers
   the old name, so today `strata3.int.leighhack.org` does not resolve at all
@@ -812,8 +826,29 @@ that is closed gets absorbed into the live docs and deleted, and git history hol
   and `grep -c 'llama\.int' common/front-door.nix common/int-dns.nix common/monitoring-endpoints.nix`
   (0 on all three).
 
-- **services3's engine has never been compiled at the 0.1.63 pin, and merging that bump into
-  the box's own work is what made it so** (opened 2026-11-22, the day services3's
+- ~~**services3's engine has never been compiled at the 0.1.63 pin, and merging that bump into
+  the box's own work is what made it so**~~ — **done 2026-11-22: built, deployed, verified.**
+  The box's own work is what made it so (opened 2026-11-22). `strata-unstable-sm61.drv` built
+  on **aibox**, which is the box predicted below and was confirmed before starting (aibox
+  holds `cuda12.8-cuda_nvcc-12.8.93` and the previous engine output; services2 holds both
+  CUDA-13 halves and neither of these), producing
+  `/nix/store/gm5jwjykj0l4x61vqn8ays9d848lagi1-strata-unstable-sm61` with all four binaries —
+  `strata`, `strata-device`, `strata-prep`, `strata-server`, the last two being exactly what
+  the `terminal/` copy list and the vendored gguf-py could have broken, so their presence is
+  the receipt for the reconciliation. `services3` then switched: `strata` active, its log
+  reading **engine 0.1.63** (from 0.1.59.1), `strata3.int` 200 with `loaded: true`, GPU guard
+  agreeing at `580.196.07`, zero failed units — and since a native (IQ) pack will not start
+  without `--spec`, "loaded" is itself the confirmation that flag survived the bump. **What
+  was not re-measured:** the 18.2 tok/s decode and 464-539 tok/s prefill band in
+  `machines/services3/README.md` belongs to 0.1.59.1. Treat it as a prior until it is
+  re-measured on this engine — there is no `just` verb for it on this box; the harness is
+  `machines/services2/strata-tune/` (`strata-bench.py`, `strata-answer-score.py`), written
+  for the 3060 and needing its paths and model name pointed at `/srv/strata` and
+  `strata3.int` before its numbers mean anything here. The pack was *not* re-prepared,
+  because the 2026-11-21 bump proved the pack, expert profiles and `draft_vocab.bin`
+  byte-identical across the pin move.
+
+  The original text follows as the record (opened 2026-11-22, the day services3's
   `strata3.int` work was merged into `main`). The box was built and brought up on the input
   as it stood at its own commit (`13eedf552`, pre-0.2.16), while `main` had moved `strata` to
   `3142b66b9` and to `flake = false`. So the merge had to reconcile a third
@@ -846,12 +881,26 @@ that is closed gets absorbed into the live docs and deleted, and git history hol
   `ls -d /nix/store/*-strata-unstable-sm6* /nix/store/*cuda12.8-cuda_nvcc*` — whichever box
   answers is the warm one, and both answers were the same on 2026-11-22.
 
-- **aibox is still on engine 0.1.59.1 while the flake input is at 0.1.63 — three
-  releases behind, and the middle one is the one its chip was waiting for** (split
-  opened 2026-11-18 at 0.1.61, retitled 2026-11-21 when the input moved to 0.1.63:
+- ~~**aibox is still on engine 0.1.59.1 while the flake input is at 0.1.63 — three
+  releases behind, and the middle one is the one its chip was waiting for**~~ — **done
+  2026-11-22.** `just deploy aibox` (exit 0, `current == system-good`, zero failed units,
+  kernel `7.3.4` matching its generation), and `/var/lib/strata/strata.log` reads **engine
+  0.1.63** with `strata.service` active and `strata2.int.leighhack.org/health` 200
+  `loaded: true` afterwards. **Its stated blocker had already gone**: the 2026-11-21 note
+  below says the switch was held off because the root filesystem was at 100 %, and reading
+  the box before deploying showed **79 GiB free (91 % used)** — so the gate was somebody
+  having reclaimed the space, not a change in this flake; re-read `df` rather than inheriting
+  the blocker. The netboot squashfs re-export (the activation trap that makes aibox exit 4 on
+  a moved bind-mount source) was handled inside `just deploy`'s lazy unmount, and the Pi Room
+  clients were left alone — `findmnt` shows the export pointing at the new store path and
+  they pick it up **on their own next boot**, which is a decision, not a side effect.
+  All three engines are now on the one input, which is what the sentence below was written
+  to achieve.
+
+  (split opened 2026-11-18 at 0.1.61, retitled 2026-11-21 when the input moved to 0.1.63:
   `nix flake update strata` was taken and deployed to services2's CUDA engine and
-  **not** to aibox's HIP one, and `one input, both engines` is what `flake.nix` says,
-  so leaving this open is what makes the two engines out of step).
+  **not** to aibox's HIP one, and `one input, both engines` is what `flake.nix` says —
+  **three** engines now — so leaving this open is what makes the two engines out of step).
 
   What is proven, so the next person starts from receipts rather than from the
   changelog: the HIP package **builds** at the new pin — built on aibox on 2026-11-21
@@ -3063,6 +3112,24 @@ one UPS cleanly and reports it as an APC HID unit.
   the contrast: two engines, same model family, 262144 and 131072, and only the endpoint knows
   which is which. **Blocks:** nothing. **To do:** nothing; see the table in
   `docs/pi-agent-models.md`.
+
+- **Renaming a provider id leaves a provider behind on every box, and `pi-agent-status` says
+  so as `not managed here`** (measured 2026-11-22, the day `llama-services3` became
+  `strata-services3`). `~/.pi/agent/models.json` on gw now holds **both**: the live
+  `strata-services3` row, and `llama-services3` — whose endpoint no longer resolves — sitting
+  in the file because `pi-agent-sync`'s rule is that only what it can prove it wrote may be
+  removed, and after a rename the previous id is no longer in its own provenance list, so it
+  is foreign and preserved. That is the rule working as designed (it is the same rule that
+  stops it mangling a hand-edited file), but the consequence is that pi lists a model nobody
+  can dial, on every box, until someone notices. **Blocks:** nothing; pi's default provider on
+  the boxes checked is `strata-services2`, so no session lands there by accident. **To do,
+  one of:** (a) teach `pi-agent-sync` to reap an id that is absent from the table **when the
+  status file from the previous run lists it as managed** — the provenance to make that sound
+  already exists, it is just keyed to the new ids only; or (b) declare the retired ids and
+  delete exactly those, with the reason in the code. Not (c), hand-deleting on five boxes:
+  that is the habit this file exists to replace. **Re-verify with:**
+  `just pi-agent-status` on any box (look at the `not managed here:` line), and
+  `grep -c '"llama-services3"' ~/.pi/agent/models.json` (1 on gw today, 0 is the done-state).
 
 - **`strata-services3`'s `compat` block is inherited from `strata-services2` and has never
   been measured on the Pascal box** (the row was `llama-services3`, with an *empty* `compat`,

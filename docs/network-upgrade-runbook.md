@@ -205,6 +205,42 @@ What each answer rules out:
   baseline. Note what is failing *before* the change, so the post-upgrade
   failure list has something to diff against. A failure you did not record
   beforehand is indistinguishable from one the upgrade caused.
+- **A box ahead on its own commits** → this is the one Phase 0 check that can save work
+  rather than time, because Phase 1 step 2's reset **deletes** it and rule 20's "check
+  `git log -1` before blaming a config change" never asks the question. Every flake box
+  holds this repo, its own copy of the hop key, and (since `498d400`) a working
+  `/etc/ssh/ssh_config` identity — so the engine work of a box is routinely committed *on
+  that box* and never pushed: measured 2026-11-22, **two of the four deployable boxes were
+  ahead** (`aibox` by four `paper printers` commits, `services3` by its whole
+  `strata3.int` engine), and `just deploy` of either would have refused the divergence with
+  a non-obvious error rather than telling you what it was protecting. Probe it in one loop
+  before anything is pushed or reset:
+
+  ```bash
+  for m in services1 services2 services3 aibox gw; do
+    a=$(nix eval --impure --raw --expr "let h = import ./common/hosts.nix; in h.$m")
+    ssh -o BatchMode=yes -o ConnectTimeout=5 leigh-admin@"$a" \
+      "cd ~/Projects/infrastructure-nix-flake && git log --oneline -1"
+    git remote add "$m" "ssh://leigh-admin@$a/home/leigh-admin/Projects/infrastructure-nix-flake" 2>/dev/null
+    timeout 120 git fetch -q "$m" main && printf '  %s: %s commit(s) not in main\n' "$m" \
+      "$(git rev-list --count main..$m/main)"
+  done
+  ```
+
+  A non-zero count is a **merge, not a reset**: fetch that ref, rebase the stack onto your
+  `main` and *then* Phase 1 can reset everyone. What that costs is proportional to how much
+  prose you both touched: today aibox's four-commit stack rebased with **zero** conflicts,
+  while services3's single engine commit conflicted in five files (`AGENTS.md`,
+  `common/pi-endpoints.nix`, `docs/services.md`, the month's work log and its own README) —
+  all append-mostly tables and logs where two people each added a row, so the resolution is
+  "keep both, and keep the newer structure": main's deletion of a dead doc wins over a branch
+  that still points at it, and main's newer fact table wins where the branch pre-dates it.
+  Two things to check while you are there, both of which today's merge needed: whether the box's branch was written
+  against **inputs `main` has since moved** (services3's third `strata-package.nix` had to be
+  reconciled with upstream's 0.2.16 layout — `docs/follow-ups.md`, "services3's engine has
+  never been compiled at the 0.1.63 pin"), and whether a **name it retired is still being
+  served** (the same commit believed `llama.int` was dead; Strata had taken llama.cpp's port
+  8080, so the door was answering it with a different engine).
 - **Different `git log -1` per box** → Phase 1 is mandatory, not optional. (On
   2026-10-15 this was true: services1 was two commits ahead of `origin/main`,
   services2 and aibox were one behind services1.)
