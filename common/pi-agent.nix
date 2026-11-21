@@ -169,8 +169,10 @@
         description = ''
           Provider-level `compat`, emitted verbatim. Only **verified** differences from
           the standard request/response behaviour belong here (pi's own guidance, and the
-          reason `llama-services3` has none); a model-level `compat` overrides these per
-          field, so one copy covers whatever the endpoint loads next.
+          reason every block in `common/pi-endpoints.nix` names an engine that has been
+          driven from pi — bar the one `strata-services3` copy that is inherited from
+          services2, which that file's own `note` calls out); a model-level `compat`
+          overrides these per field, so one copy covers whatever the endpoint loads next.
         '';
       };
       thinkingLevelMap = lib.mkOption {

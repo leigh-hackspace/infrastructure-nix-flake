@@ -58,7 +58,13 @@
     # second model is the kind of coupling this flake has been deleting for a month.
     #
     # So: one input, one job — the upstream tree, tracked on its default branch like
-    # `strata`, and only services3 builds from it. `nix flake update
+    # `strata`, and only services3 builds from it — **which since 2026-11-21 means no
+    # machine at all**: Strata replaced that box's llama.cpp and `machines/services3/llama.nix`
+    # is parked (rule 23), so this input feeds a module nothing imports and costs a
+    # `nix flake update` slot to stay pinned. It is kept because the parked module is the
+    # only record of how this card behaved as a Vulkan device and because un-parking it is
+    # a live option while Strata owns the card. Dropping it is the honest alternative and
+    # is open in `docs/follow-ups.md`. `nix flake update
     # llama-cpp-upstream` moves services3's engine and nothing else; `llama-cpp` stays
     # the fork aibox depends on. **Moving it owes two edits in `machines/services3/llama.nix`**
     # — that module's `npmDepsHash` (its UI lock changed, and the refusal only appears inside
@@ -87,10 +93,14 @@
 
     # Strata (https://github.com/Niko1221/Strata), the ggml-based engine that serves
     # Qwen3.8-Flash-Next across GPU VRAM, RAM and the CPU.  This input is the source
-    # of **both** engines: services2's CUDA one (machines/services2/strata-package.nix)
-    # and, since 2026-10-28, aibox's HIP/gfx1030 one (machines/aibox/strata-package.nix)
-    # build from it.  Both are packaged by hand here — upstream ships no packaging for
-    # the engine, only a devShell (its `tools/nix/flake.nix`) — and the input is tracked
+    # of **all three** engines: services2's CUDA 13/sm_86 one
+    # (machines/services2/strata-package.nix), aibox's HIP/gfx1030 one
+    # (machines/aibox/strata-package.nix) since 2026-10-28, and services3's CUDA
+    # 12.8/sm_61 one (machines/services3/strata-package.nix) since 2026-11-21 — so
+    # `nix flake update strata` moves three engines in one switch, which is the point.
+    # Only the toolkit and the CUDA architecture differ per box, and those are
+    # arguments, not pins.  All are packaged by hand here — upstream ships no packaging
+    # for the engine, only a devShell (its `tools/nix/flake.nix`) — and the input is tracked
     # on `main` on purpose: the engine is the bleeding edge and this network wants the
     # RDNA2/CUDA fixes as they land.  (`aibox's package used to pin its own
     # fetchFromGitHub, which is why `nix flake update strata` once moved one engine and
@@ -453,7 +463,9 @@
         cudaPackages = pkgsCuda.cudaPackages_13_0;
       };
       strata-cuda12 = pkgsCuda.callPackage ./machines/services3/strata-package.nix {
-        src = flakeInputs.strata.outPath;
+        # The same source path as the other two — `flake = false`, so there is no
+        # `.outPath` to take; see the input's header.
+        src = flakeInputs.strata;
         stdenv = pkgsCuda.cudaPackages_12_8.backendStdenv;
         cudaPackages = pkgsCuda.cudaPackages_12_8;
       };

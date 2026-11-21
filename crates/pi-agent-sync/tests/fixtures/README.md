@@ -23,9 +23,19 @@ else is byte-for-byte the response. Re-capture with:
 ```bash
 curl -sS https://strata2.int.leighhack.org/v1/models  > tests/fixtures/strata2-v1-models.json
 curl -sS https://strata2.int.leighhack.org/props      > tests/fixtures/strata2-props.json
-curl -sS https://llama.int.leighhack.org/v1/models    > tests/fixtures/llama-services3-v1-models.json
-curl -sS https://llama.int.leighhack.org/props        > tests/fixtures/llama-services3-props.json
+
+# The two llama.cpp bodies cannot be re-captured: the endpoint they came from is gone
+# (services3 replaced llama.cpp with Strata on 2026-11-21, and
+# `llama.int.leighhack.org` was retired rather than repointed). They are the network's
+# only copy of that dialect, so treat them as permanent fixtures, not as captures:
+# re-capturing the llama.cpp half needs a box that runs llama-server again — aibox's
+# displaced `llama-server.service` is the nearest one (`docs/follow-ups.md`).
 ```
+
+The Strata pair above is the live capture; if services3's own engine is ever wanted as a
+third sample, it answers the same dialect as aibox's at
+`https://strata3.int.leighhack.org/v1/models` (`docs/pi-agent-models.md`, "The two
+dialects").
 
 …then trim `chat_template` again before committing, and check the numbers in
 `docs/pi-agent-models.md`'s table while you are there — those are the same measurements.

@@ -159,6 +159,8 @@ in {
 
     # aibox (7 direct rows, counting strata2; the `ai.*` pair below are origin rows
     # whose vhost is on services1 and whose upstream is llama-server on *this* box).
+    # services3 has exactly one direct row (`strata3.int`), and it is listed with the
+    # inference names below rather than in a block of its own.
     "alexandria.int.leighhack.org" = {
       upstream = "http://${hosts.aibox}:4200";
       websockets = true;
@@ -223,8 +225,8 @@ in {
     # (dnsmasq runs on this box and nginx must not ask it to start itself).
     #
     # `strataBearer = true` because the engine has an `api_key` and the key is one
-    # secret (`strata_api_key`, shared by both engines by necessity — the door
-    # injects one header): the name is LAN-only, so a client on the LAN should not
+    # secret (`strata_api_key`, shared by all three Strata engines by necessity — the
+    # door injects one header): the name is LAN-only, so a client on the LAN should not
     # have to hold the inference key to use it, and taking the injected Bearer away
     # would 401 every request rather than open anything.  The engine's own
     # `allowed_hosts` (machines/aibox/strata.nix) lists this name, because nginx

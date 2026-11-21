@@ -778,6 +778,74 @@ that is closed gets absorbed into the live docs and deleted, and git history hol
   **What to do instead, cheapest first:** one dense BF16/FP16 cuBLAS GEMM on the card with the CUDA toolchain `packages.strata-cuda` already puts on this box — stock ~26 TFLOPS means the cap is live and the only remaining question is strata's GPU share of prefill (the engine's own `prefill plan inputs` line answers that); stock ~48 means the card is not paying it and there is nothing to win. Nobody has run either number here. **Do not reach for `nvidia-smi dmon -s c` to see the selectors** — upstream's own "check what you have" line: this box's `nvidia-smi` (595.104.02) prints only `mclk`/`pclk` for `-s c`.
   **The free half:** the cap covers *only* half-precision tensor math — FP32 FFMA and integer DP4A never pay it, which is why llama.cpp (upstream's own null there: pp512 1460.5 -> 1467.1) sees nothing and Strata does not. An upstream integer/DP4A prefill path would therefore buy the same thing with **zero boot risk**; nothing in `engineArgs` gives it today, and if it ever appears this item is the way back.
 
+- **`strata3.int` is declared and not deployed, and meanwhile `llama.int` answers with the
+  wrong engine** (measured 2026-11-22, merging services3's `strata3` work into `main`). The
+  row, the DNS entry, the gatus check and pi's provider all moved in one commit, but that
+  commit lives only in `main`: `gw` still serves the old door table and dnsmasq still answers
+  the old name, so today `strata3.int.leighhack.org` does not resolve at all
+  (`getent hosts` on gw: nothing) and the box is reached by IP. What is worse than a name
+  that does not resolve is the name that does: **`llama.int.leighhack.org` still resolves (to
+  the door) and still proxies to `10.3.2.213:8080`, and Strata took llama.cpp's port** — so
+  that name now answers `{"service":"strata","model":"qwen3.8-flash-next-coder-iq1m","api_key":true}`
+  with `/health` **200** and `/v1/*` **401**, because its row deliberately injects no key (the
+  llama row's own note argued, correctly for llama.cpp, against pointing an unrelated engine
+  at `strata_api_key`). So: the gatus `Inference` row for "Llama (services3, Vulkan)" is
+  **green on an engine that is not llama.cpp**, and every llama.cpp client on the network is
+  401-ing against a name whose documentation promises a different model. The merge's commit
+  message says "`llama.int` is dead either way; that name is retired, not broken" — it is not
+  dead, it is answering, and that is the state to end.
+  **Blocks:** nothing that is running, but it is the reason the next `gw` switch should be
+  this one rather than an arbitrary later one.
+  **To do, in this order:** (1) build the engine at the new pin (`.#strata-cuda12`, on aibox —
+  the item below), so services3 does not cross a name move and an unverified engine build in
+  one switch; (2) push `main`, then `just deploy gw` and **read the rendered door**
+  (`/etc/nginx/nginx.conf` for the `strata3.int` server block, `/etc/dnsmasq-int-vhosts.hosts`
+  for the name — rule 21, never evaluate to find out what a change does) and run
+  `sudo systemctl start front-door-cert-check.service` after it, which is the only check that
+  tells a CA-issued cert from minica's fallback; (3) `just deploy services1`, whose gatus row
+  moves with the table; (4) switch services3. Confirm the GOLDEN RULE way, in the same shell
+  invocation, on each box — and remember on `gw` that a switch whose activation runs long is
+  the one case the rollback timer becomes the failure (`docs/router-front-door-migration.md`).
+  **Re-verify with:** `getent hosts strata3.int.leighhack.org` (one answer, the door),
+  `curl -s -o /dev/null -w '%{http_code}\n' https://strata3.int.leighhack.org/health` (200),
+  `getent hosts llama.int.leighhack.org` (**NXDOMAIN** — that is the done-state of this item),
+  and `grep -c 'llama\.int' common/front-door.nix common/int-dns.nix common/monitoring-endpoints.nix`
+  (0 on all three).
+
+- **services3's engine has never been compiled at the 0.1.63 pin, and merging that bump into
+  the box's own work is what made it so** (opened 2026-11-22, the day services3's
+  `strata3.int` work was merged into `main`). The box was built and brought up on the input
+  as it stood at its own commit (`13eedf552`, pre-0.2.16), while `main` had moved `strata` to
+  `3142b66b9` and to `flake = false`. So the merge had to reconcile a third
+  `strata-package.nix` with a layout move it had never seen — `cmakeDir = "../engine"`, the
+  `terminal/` copy list, the vendored gguf-py, and the `-DSTRATA_GGML_DIR`/`fetchFromGitHub`
+  pair deleted — and those edits are **reasoned from services2's working package and from
+  reading `3142b66b9`'s tree, not from a build**: nothing on this network has compiled the
+  CUDA 12.8/sm_61 arm since the pin moved. The two things that could still bite, both read
+  off the pinned tree rather than guessed: `STRATA_EXPERIMENTAL_SM60` and the sub-sm_75
+  refusal it lifts are still there (`engine/cmake/backends/cuda.cmake` at that rev, so the
+  flags are right), and `strata-device` still builds (proven by services2's installPhase
+  succeeding at this pin). **Blocks:** the next switch of services3, which rebuilds its
+  engine. **To do:** build `.#strata-cuda12` on **aibox**, which is the box that already
+  compiled it — measured 2026-11-22: aibox's store holds
+  `/nix/store/29cm6lmacqp2nqdvl44b84fn240ny4sc-strata-unstable-sm61` (1.8 GB, the
+  2026-11-21 bring-up's output, which services3 delegates its builds there for) and
+  `cuda12.8-cuda_nvcc-12.8.93`, while services2 has neither path. (That is deliberately the
+  opposite of the aibox note below and of the 2026-11-21 bump's "build the CUDA half on
+  services2": that one is about `.#strata-cuda`'s CUDA **13.0** toolkit, which only services2
+  holds. One CUDA major per warm box, and the two notes must not be collapsed.)
+  Then deploy services3 and read
+  back `strata3.int.leighhack.org/health` and a live `/v1` completion; `strata-device
+  --selftest` is the card check. If the build dies, the fallback is one line each way: pin
+  the input back for the merge, or hold services3 on its current generation until the CUDA-12
+  arm is proven — do **not** move this box onto CUDA 13 to make the build pass, which is the
+  whole thing `machines/services3/strata-package.nix`'s header exists to forbid.
+  Re-verify with: `git log --oneline -1 -- flake.lock`, on services3
+  `systemctl show strata -p ExecStart --value` (the engine's store path, hence its pin), and
+  on each candidate builder
+  `ls -d /nix/store/*-strata-unstable-sm6* /nix/store/*cuda12.8-cuda_nvcc*` — whichever box
+  answers is the warm one, and both answers were the same on 2026-11-22.
+
 - **aibox is still on engine 0.1.59.1 while the flake input is at 0.1.63 — three
   releases behind, and the middle one is the one its chip was waiting for** (split
   opened 2026-11-18 at 0.1.61, retitled 2026-11-21 when the input moved to 0.1.63:
@@ -1086,8 +1154,10 @@ that is closed gets absorbed into the live docs and deleted, and git history hol
      were both 502-ing with zero failed units and the board had no row that could have shown
      either. Probe **`/health`, not `/`**: llama.cpp's UI is gzipped into the binary and `/`
      answers `415` to a client that sends no `Accept-Encoding: gzip`
-     (`machines/services3/README.md`). What is still open is the other half: see the next
-     item.
+     (`machines/services3/README.md`). **2026-11-21:** that third row is
+     `strata3.int.leighhack.org/health` now, with services3's llama.cpp gone (the row's `name`
+     says "Strata3 (services3, CUDA sm_61)"). What is still open is the other half: see the
+     next item.
 
 - **`ai.int.leighhack.org` and `ai.leighhack.org` answer 502 as the designed steady state, and
   no check can say so** (found 2026-11-15; the endpoints were probed while diagnosing the
@@ -2994,13 +3064,20 @@ one UPS cleanly and reports it as an APC HID unit.
   which is which. **Blocks:** nothing. **To do:** nothing; see the table in
   `docs/pi-agent-models.md`.
 
-- **`llama-services3` has no `compat` block because nothing has been verified about it, and
-  its `input: [text image]` is the *engine's* claim, not a tested one.** pi's guidance is to
-  describe verified differences rather than enable them because an endpoint advertises OpenAI,
-  so this is deliberately empty; nobody has run a picture through pi on that endpoint or
-  checked its usage-in-streaming. **Blocks:** nothing but effort. **To do:** one image
-  session and one long tool-call session on `llama-services3`, then either write the `compat`
-  row or write down that the defaults held.
+- **`strata-services3`'s `compat` block is inherited from `strata-services2` and has never
+  been measured on the Pascal box** (the row was `llama-services3`, with an *empty* `compat`,
+  until services3 replaced llama.cpp with Strata on 2026-11-21; the block arrived with the
+  merge of that work). pi's guidance is to describe verified differences rather than enable
+  them because an endpoint advertises OpenAI, so this row currently makes eight claims about
+  a card no arm of services2's tuning ever ran — same engine binary and same Coder IQ1_M pack,
+  which is a strong reason to expect them to hold and is not a measurement. **Blocks:**
+  nothing but truthfulness. **To do:** one image session and one long tool-call session
+  through `strata3.int.leighhack.org` on this endpoint, then either keep the block and record
+  that it held here too, or delete the fields that did not and say which. Re-verify with:
+  `nix eval --impure -f common/pi-endpoints.nix strata-services3.compat` (that table is DATA,
+  so it reads the declaration without evaluating a machine — the shape `just check-eval`
+  already uses),
+  `just pi-agent-status` on any box, and the two sessions themselves.
 
 - **`ai.int.leighhack.org` / `ai.leighhack.org` answer 502 by design, and nothing in this
   repo can tell that from an outage** (found 2026-11-15 while verifying the fleet after a
@@ -3017,7 +3094,7 @@ one UPS cleanly and reports it as an APC HID unit.
   fact no check can currently express; **(b)** `settings.json` still carries
   `llamaServerUrl = "https://ai.int.leighhack.org"` (the item above), so pi's
   router-integration provider dials a known-dead endpoint on every box that keeps it.
-  **Blocks:** nothing; `programs.pi-agent`'s `llama-services3` provider is the live path.
+  **Blocks:** nothing; `programs.pi-agent`'s `strata-services3` provider is the live path.
   **To do:** pick one — add a check whose expectation is stated (`up` iff strata is
   displaced), or make the door answer those two names `503` with the reason rather than
   proxying into a dead port, or retire `llamaServerUrl` per `machines/aibox/STRATA.md`.
@@ -3027,7 +3104,7 @@ one UPS cleanly and reports it as an APC HID unit.
 - **pi now has two ways of finding local models, both switched on.** `settings.json` carries
   `llamaServerUrl = "https://ai.int.leighhack.org"`, which gives pi its own `llama.cpp`
   provider via the router integration (four GGUFs on aibox's `llama-server`), while
-  `programs.pi-agent` writes a `llama-services3` provider for services3's engine. Different
+  `programs.pi-agent` writes a `strata-services3` provider for services3's engine. Different
   servers, so no conflict — `pi --list-models` (measured 2026-11-14) lists both families side
   by side — but the overlap is a decision nobody wrote down, and `machines/aibox/STRATA.md`
   tells the next person to drop `llamaServerUrl` if llama-server stays displaced. **Blocks:**

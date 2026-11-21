@@ -64,6 +64,14 @@
 # door's key injection are both satisfied by that name, and the box binds its LAN
 # address rather than loopback because the door is another box on another VLAN
 # (the argument ./llama.nix makes at length, and `services3` has no firewall).
+#
+# One caveat about `allowed_hosts` below, measured from `gw` on 2026-11-22 rather than
+# read off the code: `curl` to this port answers **200 on `/health` with any `Host`,
+# including `Host: example.com`**. That is the behaviour services2's module already
+# records — upstream runs the Host check only when the engine has *no* key, and this
+# engine has one — so listing the name here is documentation of intent, not the gate.
+# The gate is the LAN ACL on the door row plus the key the door injects; do not cite
+# `allowed_hosts` as a control in anything that needs one.
 {
   config,
   lib,
@@ -76,9 +84,12 @@
   cfg = config.services.strata3;
 
   # The CUDA 12.8 / sm_61 engine. Same source as services2's and aibox's (one
-  # `strata` input, so the three cannot drift), a different toolkit and arch.
+  # `strata` input, so the three cannot drift), a different toolkit and arch. The
+  # input is `flake = false` since upstream deleted its root flake.nix, so it *is*
+  # the source tree — there is no `.outPath` to take (machines/services2/strata.nix
+  # passes it the same way).
   strataPkg = pkgs.callPackage ./strata-package.nix {
-    src = strata.outPath;
+    src = strata;
     stdenv = pkgs.cudaPackages_12_8.backendStdenv;
     cudaPackages = pkgs.cudaPackages_12_8;
   };

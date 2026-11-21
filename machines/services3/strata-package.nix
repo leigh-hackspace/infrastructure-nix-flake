@@ -40,34 +40,46 @@
 # Upstream's own recipe for this build (docs/OLDER_GPUS.md, "Building it
 # yourself") is the shape below, with the arch narrowed to the one card:
 #
-#   cmake -S . -B build-cuda12 -DSTRATA_ENABLE_CUDA=ON -DSTRATA_BUILD_TESTS=OFF \
+#   cmake -S engine -B build-cuda12 -DSTRATA_ENABLE_CUDA=ON -DSTRATA_BUILD_TESTS=OFF \
 #         -DSTRATA_EXPERIMENTAL_SM60=ON -DCMAKE_CUDA_ARCHITECTURES="61;70" ...
+#
+# **Upstream's 0.2.16 layout move (4058aa782, 2026-11-17) is what `cmakeDir` and the
+# copy list below exist for**, and it is the same change
+# `machines/services2/strata-package.nix` documents at length — read that header once
+# and this is that file with a Pascal toolkit. At the locked pin (`3142b66b9`, re-read
+# 2026-11-22 against the tree rather than the commit message) the repository root is
+# `app/ engine/ terminal/ docs/ tools/`, with **no root `CMakeLists.txt` and no root
+# `flake.nix`**, so:
+#   * the CMake project is `engine/` — configure there with the cmake hook's `cmakeDir`
+#     and not with `sourceRoot` (stdenv chmods `sourceRoot`, and a store subpath cannot
+#     be chmodded);
+#   * the Python serve layer is `terminal/{serve,strata_control,strata_cli,tools,data}`,
+#     and `tools/` is on the *serve* layer's import path too, not only the prep tools';
+#   * llama.cpp is **vendored** at `engine/third_party/strata-ggml` — its `UPSTREAM.md`
+#     pins the very `3cf03257f219…` this file used to `fetchFromGitHub` — and carries
+#     gguf-py as `strata-gguf-py`, so there is no second pin and no `-DSTRATA_GGML_DIR`
+#     left here: one source, one pin, like the other two packages.
+#
+# The Pascal half survived that move, which is what makes this build still correct
+# rather than merely inherited: `engine/cmake/backends/cuda.cmake` at this pin still
+# FATAL_ERRORs on any arch below 75 unless `STRATA_EXPERIMENTAL_SM60=ON`, still names
+# CUDA 13's `nvcc` refusal of `compute_70` as the reason, and `docs/OLDER_GPUS.md`
+# still gives the recipe above (`61;70` there is for a mixed Pascal+Volta box; one card
+# here). Its `STRATA_DENSE_F32` row still says that route's parity was measured with
+# cuBLAS 12.4.5.8 only — which is why `machines/services3/strata.nix` states that
+# switch as upstream-measured and unverified on this card.
 {
   lib,
   stdenv,
-  fetchFromGitHub,
   cmake,
   pkg-config,
   makeWrapper,
   python3,
   cudaPackages,
-  # The upstream Strata source tree (the flake's `strata` input outPath).
+  # The upstream Strata source tree (the flake's `strata` input; `flake = false` since
+  # upstream deleted its root flake.nix, so this is the tree's store path).
   src,
 }: let
-  # Upstream pins llama.cpp (for ggml + its i-quant block layouts) at this exact
-  # revision (setup.py `LLAMA_CPP_COMMIT`); passing it as STRATA_GGML_DIR keeps
-  # the build offline and lets Nix pin it. The same source's `gguf-py` is what
-  # the one-time pack tools need via STRATA_GGUF_PY (it knows Q2_0 = type 42).
-  #
-  # Re-read at this bump: `grep -n 'LLAMA_CPP_COMMIT = ' $src/setup.py` — the
-  # same revision services2's package names, because both build from one input.
-  llama = fetchFromGitHub {
-    owner = "ggml-org";
-    repo = "llama.cpp";
-    rev = "3cf03257f219afbe7334045ff7c6a06ac68c627d";
-    hash = "sha256-SRGoXa+4ACBCB3eaG9XFYhMN1i0FyPEy9Rrer+dFGYI=";
-  };
-
   # serve/server.py needs jinja2 (chat template) and regex (tokenizer); pillow
   # (WebP image parts) and psutil (Monitor) are optional.
   serverPython = python3.withPackages (
@@ -98,6 +110,12 @@ in
 
     inherit src;
 
+    # 0.2.16 layout: configure in `engine/` (see the header). The cmake setup hook
+    # runs `mkdir -p build; cd build; cmake $cmakeDir`, so this names the source
+    # directory as seen from `build/`; the phases' cwd is still the tree root, which
+    # is why `install -Dm755 strata` below still finds the binary in `build/`.
+    cmakeDir = "../engine";
+
     nativeBuildInputs = [
       cmake
       pkg-config
@@ -123,13 +141,12 @@ in
       # "compute capability 7.5 or newer" refusal.
       "-DSTRATA_EXPERIMENTAL_SM60=ON"
       "-DCMAKE_CUDA_COMPILER=${cudaPackages.cuda_nvcc}/bin/nvcc"
-      "-DSTRATA_GGML_DIR=${llama}"
     ];
 
     # Upstream has no install() rules for `strata`; install the binary, the
     # card-check tool, the Python serve layer and the pack tools by hand, plus
-    # the pinned llama.cpp's gguf-py — the same list as services2's package, and
-    # the import guard below is what keeps it honest.
+    # the vendored gguf-py — the same list as services2's package, and the import
+    # guard below is what keeps it honest.
     installPhase = ''
       runHook preInstall
       mkdir -p $out/bin $out/share/strata
@@ -142,12 +159,23 @@ in
       # for K-quant packs; IQ1_M is an i-quant, so it may not exist here.
       if [ -e libstrata_kq.so ]; then install -Dm755 libstrata_kq.so $out/bin/libstrata_kq.so; fi
 
-      # The runtime Python layer.  `strata_control` and `strata_cli` are not
+      # The runtime Python layer — under `terminal/` since the 0.2.16 layout move
+      # (see the header).  `strata_control` and `strata_cli` are not
       # optional: `serve/lifeline.py` imports `strata_control` at module scope,
-      # so a tree without them starts and dies in a crash-loop.
-      cp -r ${finalAttrs.src}/serve ${finalAttrs.src}/strata_control ${finalAttrs.src}/strata_cli \
-        ${finalAttrs.src}/tools ${finalAttrs.src}/data $out/share/strata/
-      cp -r ${llama}/gguf-py $out/share/strata/gguf-py
+      # so a tree without them starts and dies in a crash-loop (2026-10-20, the
+      # first boot on 0.1.46.1).  And `tools/` is on that layer's import path as
+      # well, not just the prep tools' directory: `strata_control/gguf_preflight.py:15`
+      # imports `tools.gguf_reader`.  The guard below is what keeps this list honest.
+      cp -r ${finalAttrs.src}/terminal/serve ${finalAttrs.src}/terminal/strata_control \
+        ${finalAttrs.src}/terminal/strata_cli ${finalAttrs.src}/terminal/tools \
+        ${finalAttrs.src}/terminal/data $out/share/strata/
+      # gguf-py for the pack tools, from the vendored copy (same llama.cpp pin as the
+      # vendored ggml). `terminal/tools/_paths.py` looks for exactly this shape —
+      # `third_party/strata-gguf-py` beside the `tools/` folder — so the tools find it
+      # with no environment set; the wrapper below names STRATA_GGUF_PY anyway, since
+      # that is the documented override and naming it is free.
+      mkdir -p $out/share/strata/third_party
+      cp -r ${finalAttrs.src}/engine/third_party/strata-gguf-py $out/share/strata/third_party/
 
       # Contract guard, not a smoke test: import the server with only the
       # installed tree on the path, so a copy list that lags upstream's imports
@@ -165,11 +193,11 @@ in
 
       # strata-prep: the one-time model-prep tools (iq_pack.py, mtp_fetch.py,
       # mtp_pack.py, mtp_rt.py), run from their own directory with numpy/pyyaml/
-      # tqdm and STRATA_GGUF_PY already pointing at the pinned gguf-py.
+      # tqdm and STRATA_GGUF_PY already pointing at the vendored gguf-py.
       makeWrapper ${prepPython}/bin/python3 $out/bin/strata-prep \
         --chdir "$out/share/strata/tools" \
         --set PYTHONPATH "$out/share/strata/tools" \
-        --set STRATA_GGUF_PY "$out/share/strata/gguf-py"
+        --set STRATA_GGUF_PY "$out/share/strata/third_party/strata-gguf-py"
 
       runHook postInstall
     '';

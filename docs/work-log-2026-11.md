@@ -453,3 +453,35 @@ discriminators (slub_debug=F, then the pinned nixpkgs' 6.12 LTS) are written dow
 The bring-up, with what the first boot actually measured, is
 `machines/services3/README.md`; the flags and the VRAM budget are
 `machines/services3/strata.nix`'s header.
+
+### 2026-11-22 — merging that branch back, and the two things the branch could not have known
+
+`services3`'s commit arrived on a box that had kept working, so `main` had to take it without
+having been able to test it against anything. Two findings, both of the "the branch was true
+when it was written" kind:
+
+* **`main` had moved the one input all three Strata engines share.** The box was built on
+  `13eedf552`; `main` is on `3142b66b9`, past upstream's 0.2.16 layout move and with the input
+  declared `flake = false`. So the third `strata-package.nix` arrived configuring a root CMake
+  project that no longer exists, copying `serve/` from a path that is now `terminal/serve/`,
+  and carrying its own `fetchFromGitHub` of llama.cpp next to a tree that vendors it — and
+  `strata.outPath` on an input that is now a bare source path. Reconciled with services2's
+  working package (`cmakeDir = "../engine"`, the `terminal/` copy list, the vendored gguf-py,
+  the second pin deleted). The Pascal half was checked against the pinned tree rather than
+  assumed: `STRATA_EXPERIMENTAL_SM60` and the sub-sm_75 refusal it lifts are still there in
+  `engine/cmake/backends/cuda.cmake`, and `docs/OLDER_GPUS.md` still gives the CUDA-12 recipe.
+  **What is not proven is the build itself**: nothing has compiled the sm_61 arm at the new
+  pin, and the box is live on engine 0.1.59.1 (read out of `strata.log`, and its
+  `ExecStart` names `…-strata-unstable-sm61`, which lives in **aibox**'s store — services2,
+  warm for CUDA 13, does not have it). `docs/follow-ups.md` owns the order.
+* **the commit's own last claim is false, and measuring it took one `curl`.** It said
+  "`llama.int` is dead either way; that name is retired, not broken" — but Strata took
+  llama.cpp's port 8080, and neither the door table nor dnsmasq had moved yet, so from `gw`:
+  `https://llama.int.leighhack.org/health` answers **200** with
+  `{"service":"strata","model":"qwen3.8-flash-next-coder-iq1m","api_key":true}` and `/v1/*`
+  answers **401**, because that row deliberately injects no key. A retired name that resolves
+  is worse than one that does not: the gatus `Inference` row for "Llama (services3, Vulkan)"
+  is green, and it is green about a different engine. `strata3.int` does not resolve yet
+  (the merge is not deployed), so the network is in the interval where both names point at one
+  engine and only one of them says so. That interval is the item to close, and it is written
+  up as one — `docs/follow-ups.md`, "`strata3.int` is declared and not deployed".

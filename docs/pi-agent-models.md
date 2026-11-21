@@ -69,7 +69,7 @@ hand-written list has to be told that, per row, per box, forever; asking takes o
 
 **Where a model id is still written down, and why that is the right end of it:** the engines
 themselves — `machines/services2/strata.nix`'s `model_name = "qwen3.8-flash-next-coder-iq1m"`,
-`machines/services3/llama.nix`'s `modelName`, and aibox's equivalent — name the model they
+`machines/services3/strata.nix`, and aibox's equivalent — name the model they
 serve, because that is the process *deciding* what it is rather than a client guessing, and it
 is the id `GET /v1/models` then answers with. Nothing downstream of a socket repeats a model id
 any more: `grep -rn "qwen3.8-flash-next" --include=*.nix` finds the engines' own config and
@@ -83,16 +83,22 @@ prose, not a client's list.
 | `baseUrl`, `api`, `apiKey`, `headers` | declared | `apiKey` is a **placeholder**; see §credentials |
 | model `id` | `GET {baseUrl}/models` | two dialects, both live here — §dialects |
 | `contextWindow` | `data[].meta.n_ctx`, else `/props` `default_generation_settings.n_ctx`, else last run, else declared | the ladder is the feature; each rung is recorded in the status file as `ctxSource` |
-| `input` | `architecture.input_modalities`, else `/props` `modalities.vision`, else last run, else declared | pi's vocabulary is `text`/`image`; services3's `video` modality is **dropped**, not translated into an image claim |
-| `reasoning` | the loaded chat template contains `<think>` | **not** `params.reasoning_format`: on services3 that reads `"none"` while the template ends with `<think>` — it is a request-*parsing* knob, not a capability. `reasoning = "auto" | "true" | "false"` per endpoint to override |
+| `input` | `architecture.input_modalities`, else `/props` `modalities.vision`, else last run, else declared | pi's vocabulary is `text`/`image`; a `video` modality — what services3's llama.cpp reported — is **dropped**, not translated into an image claim |
+| `reasoning` | the loaded chat template contains `<think>` | **not** `params.reasoning_format`: on services3's llama.cpp that read `"none"` while the template ended with `<think>` — it is a request-*parsing* knob, not a capability. `reasoning = "auto" | "true" | "false"` per endpoint to override |
 | `maxTokens` | policy: `n_ctx / 8`, clamped to `[4096, 32768]`, never above `n_ctx` | one eighth reproduces **both** hand-written values it replaces (131072→16384, 262144→32768). Nothing an engine reports says how much of the window you may ask back, which is why this is a policy in Nix rather than a measurement in Rust |
 | `compat`, `thinkingLevelMap`, `cost` | declared, verbatim | not discoverable. `compat` is provider-level (pi merges model over provider per field) so one copy covers whatever the endpoint loads next; `thinkingLevelMap` is a *model* field in pi's schema, so it is written on each model |
 | `name` | generated: `"<model id> — <provider name>"` | |
 
 Declared fields use `pi`'s own guidance on `compat` — *describe verified differences, do not
-enable them because an endpoint advertises OpenAI compatibility* — which is why
-`llama-services3` has **no** `compat` block: nobody has measured its tool-calling or
-usage-in-streaming behaviour from pi, and an unverified `true` there is a claim, not a config.
+enable them because an endpoint advertises OpenAI compatibility* — so a `compat` block is
+written only for an engine this fleet has driven from pi. One block in the table is not such a
+block: `strata-services3`'s `compat` and `thinkingLevelMap` are **copied from
+`strata-services2`** — same engine binary, same Coder IQ1_M pack, the Pascal card being the one
+variable no arm of services2's tuning ever ran on. That is the one row whose claims are
+inherited rather than measured; the row's own `note` says so, and `docs/follow-ups.md` carries
+the item that either measures it or empties it. (Until 2026-11-21 that row was
+`llama-services3`, and its `compat` was empty for exactly this reason — an unverified `true`
+there is a claim, not a config.)
 
 ## Credentials: the finding, and the open item
 
@@ -120,14 +126,19 @@ consequences:
 
 ## The two dialects
 
-`GET {baseUrl}/models`, live on this network, in two shapes:
+Both dialects are still parsed, even though only the first is still served:
 
-* **Strata** (aibox, services2): `data[]` with `id`, `status.value`, `meta.n_ctx`,
-  `architecture.input_modalities`. The context window is *in the model list*.
-* **llama.cpp** (services3): `data[]` with `id`, `architecture`, **and** an Ollama-compatibility
+* **Strata** (aibox, services2, and services3 since 2026-11-21): `data[]` with `id`,
+  `status.value`, `meta.n_ctx`, `architecture.input_modalities`. The context window is *in
+  the model list*.
+* **llama.cpp** (what services3 served until Strata replaced it on 2026-11-21, and what
+  `aibox`'s displaced `llama-server` would answer again if it were started): `data[]` with
+  `id`, `architecture`, **and** an Ollama-compatibility
   `models[]` list with `capabilities` — so a reader that walks the first array it finds can end
   up with a model that has no id, and one that walks both can double-count. `probe.rs` prefers
-  `data[]` and falls back to `models[]` only if `data[]` produced nothing.
+  `data[]` and falls back to `models[]` only if `data[]` produced nothing. The fixtures for
+  this dialect (`tests/fixtures/llama-services3-*.json`) are now the only copy of that answer
+  the network holds, which is why they outlived the endpoint.
 
 Both engines also serve `GET /props` (not part of the OpenAI API), which is where the loaded
 model's `n_ctx`, `modalities` and `chat_template` live. The four bodies are checked-in fixtures
@@ -236,7 +247,8 @@ rather than believing the module.
   when its channel dies; a `pi-agent` equivalent (last success older than an hour *and* at
   least one endpoint configured) wants a decision about who is paged by a stale model list,
   which nobody has asked for yet.
-* services3's `compat` is empty because it is unmeasured, and its `input` says `image` because
-  the *engine* says so — nobody has run a picture through pi on that endpoint.
+* `strata-services3`'s `compat` is inherited from `strata-services2` and has not been
+  re-measured on the Pascal box, and its `input` says what the *engine* says — nobody has run
+  a picture through pi on that endpoint.
 * `settings.json` (`defaultProvider`/`defaultModel`/`defaultThinkingLevel`) is still per-person,
   hand-edited state. This module can now *say* what the defaults should be; it does not.

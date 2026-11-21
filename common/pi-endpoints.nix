@@ -115,7 +115,14 @@ in {
       the rest in RAM and on the NVMe. It exists because the box is here and the
       card would otherwise be idle; it is not the endpoint to pick when a session
       needs to be quick. Same API and same key contract as the other two (the door
-      injects `strata_api_key`, so `apiKey` here is a placeholder).'';
+      injects `strata_api_key`, so `apiKey` here is a placeholder).
+
+      **`compat` and `thinkingLevelMap` below are inherited from
+      `strata-services2`, not measured here**: same engine binary, same Coder IQ1_M
+      pack, so the claim is 'the same dialect on a slower card' — and the card is the
+      one variable no arm of services2's tuning ran on. That is the one `compat` block
+      in this table whose provenance is inference rather than measurement, and
+      `docs/follow-ups.md` carries the item that closes it.'';
     compat = {
       supportsStore = false;
       supportsDeveloperRole = false;

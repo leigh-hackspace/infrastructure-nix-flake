@@ -328,8 +328,10 @@ X first", X has already cost someone a day.
   this repo evaluates every machine and `just check` runs anywhere. Machines:
   `services1` (main services box, 10.3.1.20), `services2` (strata + its own status
   dashboard, 10.3.1.21 — `machines/services2/README.md`), `services3` (assimilated
-  2026-11-11 from another fleet, on the bench, Wi-Fi-only, running Strata/Coder-IQ1_M (llama.cpp before 2026-11-21)
-  (a 9B-class `Q2_0` + vision) on a GTX 1080 Ti as `llama.int.leighhack.org` —
+  2026-11-11 from another fleet, on the bench, Wi-Fi-only, running the network's **third
+  Strata engine** — the Coder IQ1_M pack on a GTX 1080 Ti, CUDA 12.8/sm_61 — as
+  `strata3.int.leighhack.org`; it ran llama.cpp there until 2026-11-21, and
+  `machines/services3/llama.nix` is parked rather than deleted —
   `machines/services3/README.md`; it answers on
   10.3.2.213, **not** in 10.3.1.x),
   `aibox` (10.3.1.32,
