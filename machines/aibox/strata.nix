@@ -101,8 +101,9 @@
   pkgs,
   INFRA,
   # The flake's `strata` input (upstream main), which arrives through specialArgs
-  # (flakeInputs) exactly as it does for machines/services2/strata.nix: its outPath
-  # is the source both engines build from.
+  # (flakeInputs) exactly as it does for machines/services2/strata.nix. Since
+  # upstream's 0.2.16 layout move the input is `flake = false`, so what arrives is
+  # the source path itself - the tree both engines build from.
   strata,
   ...
 }: let
@@ -112,7 +113,7 @@
   # source services2's CUDA engine builds from, so the two cannot drift by nine
   # releases again.
   strataPkg = pkgs.callPackage ./strata-package.nix {
-    src = strata.outPath;
+    src = strata;
   };
 
   # The ROCm 10.0.0 (TheRock) userspace runtime.  Only reaches the engine when

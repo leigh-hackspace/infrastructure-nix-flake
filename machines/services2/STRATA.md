@@ -379,14 +379,20 @@ nix build .#strata-cuda     # the same derivation the service installs
 
 The source is the flake's **`strata` input, tracked on upstream `main`** (the
 point of "bleeding edge"): `nix flake update strata` moves it, and the service
-and the `.#strata-cuda` package rebuild from the same tree. The llama.cpp
-revision the engine vendors is pinned separately in `strata-package.nix` (from
-`setup.py`'s `LLAMA_CPP_COMMIT`), so the ggml side is reproducible.
+and the `.#strata-cuda` package rebuild from the same tree. The input is
+`flake = false` — upstream deleted its root `flake.nix` in the 0.2.16 layout move,
+so it is a source and not a flake (see the 2026-11-21 update below) — and the
+llama.cpp revision the engine builds is now **vendored inside that tree** at
+`engine/third_party/strata-ggml` (`UPSTREAM.md` names `3cf03257f219…`, the same
+pin `third_party/ggml/VERSION.txt` carries), so the ggml side is reproducible from
+the one lock rather than from a second `fetchFromGitHub`.
 
 The CUDA build is `STRATA_ENABLE_CUDA=ON`, `-DCMAKE_CUDA_ARCHITECTURES=86`, and
-CUDA 13.0 (`cudaPackages_13_0`). Note `STRATA_PREFILL_MMQ=ON` is HIP-only
-(CMake fails the configure if CUDA is also on), so it is **not** passed here —
-do not copy it from `machines/aibox/strata-package.nix`.
+CUDA 13.0 (`cudaPackages_13_0`), configured in `engine/` by `cmakeDir`. The
+`-DSTRATA_PREFILL_MMQ=ON` that aibox used to pass is **gone from both packages**:
+0.2.16 removed the option and llama.cpp's MMQ prompt kernels with it, so Strata's
+own prompt kernels are the whole engine now — neither copy the flag from the other
+package, nor expect it in a `cmake --help-string`.
 
 ### Updating the engine (what a bump actually touches)
 
@@ -432,21 +438,37 @@ have already moved once:
 - the JSON keys of `configFile` (`exe args cwd tokenizer model_name log
   allowed_hosts api_key backend lib_dirs env`) — read by `serve/server.py`.
 
-**Build it on aibox, not here.** Any edit to `strata-package.nix` or a new rev
-invalidates the whole engine derivation: ~7 min at `-j6` on aibox, ~1.5 GiB of
-output, and a build on services2 competes with the 27 GiB engine for the memory
-that made this box the network's builder's opposite (see the sizing table).
+**Build the CUDA engine here and the HIP engine on aibox — and the reason is a
+measurement, not a preference (2026-11-21).** What this file used to say, "build it
+on aibox", is right about *competition for the engine's RAM* and wrong about the
+CUDA engine: aibox's store has never held services2's toolchain (services2 has no
+builder and has always built its own toplevel), so `nix build .#strata-cuda` there
+spends its first 25 derivations **compiling the CUDA 13.0 toolkit from source** —
+it was still on `cuda_nvcc` and `libcublas` after ten minutes, before it had read a
+line of Strata. services2 has that whole toolchain warm, and the same engine built
+here in **under five minutes**, which is why the copy step below is not part of a
+CUDA bump at all (it is what the 2026-11-18 bump used, and it cost nothing then
+only because the path was already in the store). The HIP half is the other way
+round: aibox has ROCm warm and builds `.#strata` in ~5 min, so build the HIP engine
+there — `machines/aibox/strata-package.nix`.
 
 ```bash
-# on aibox, with the bump (and the fixed copy list) in its checkout
+# the CUDA engine: here, where the toolchain is
 nix build .#strata-cuda --no-link --print-out-paths
+just switch            # builds the toplevel from the store, activates, confirms
+
+# the HIP engine: on aibox, where ROCm is
+ssh 10.3.1.32 'cd ~/Projects/infrastructure-nix-flake && nix build .#strata --no-link --print-out-paths'
+
+# and *if* a CUDA engine ever has to be built on aibox, warm it first — this copies
+# the toolchain (1.4 GB) instead of compiling it, and it does not build Strata itself:
+nix copy --to 'ssh://leigh-admin@10.3.1.32?ssh-key=/home/leigh-admin/.ssh/agent-hop-key' '.#strata-cuda^*'
 # on services2, as root: `trusted-users = root`, and the path is unsigned because
 # aibox's daemon signs nothing it builds, so --no-check-sigs (only a trusted
 # client may ask the daemon to add an unsigned path)
 sudo nix copy --no-check-sigs \
   --from 'ssh://leigh-admin@10.3.1.32?ssh-key=/home/leigh-admin/.ssh/agent-hop-key' \
   /nix/store/<new strata-unstable>
-just switch     # builds the toplevel from the store, activates, confirms
 ```
 
 **Do not confirm a failed activation.** This is AGENTS.md's rule, and this box is
@@ -461,6 +483,124 @@ timer stopped (`systemctl show auto-rollback -p ExecStart` timestamps are the
 receipt). Fix forward instead: keep the tree dirty-but-good, re-switch, and confirm
 *that* (which is what happened here; the fixed engine came up 52 s after the new
 unit started).
+
+### Update: engine 0.1.61 → **0.1.63** (app 0.2.17), **the layout move**, deployed on services2 — 2026-11-21
+
+`nix flake update strata`: `c77572806` (2026-11-16) → `3142b66b9` (2026-11-20),
+**1005 commits**, and this input moves both engines (the `flake.nix` header). It
+also refused to update at all until the flake changed, which is the headline.
+
+- **Upstream moved its whole tree, and that broke the input before it broke the
+  build.** `4058aa782` "Layout move for 0.2.16: the top level becomes app/, engine/,
+  terminal/, docs/, tools/ and .github/" (2026-11-17) **deleted the repository's root
+  `flake.nix`** — its devShell lives at `tools/nix/flake.nix` now, still no more than
+  that — so as an ordinary flake input this tree cannot be locked:
+  `error: path '«github:Niko1221/Strata/3142b66b9…»/flake.nix' does not exist`, and
+  `flake.lock` is left untouched, so a `nix flake update strata` in a script reports
+  the failure and the bump silently does not happen. The fix is on the input:
+  **`flake = false`** (`flake.nix` carries the reasoning). Consequences to remember:
+  the input *is* its store path, so `inputs.strata.outPath` is gone (both
+  `strata.nix` modules and both `packages.*` now pass `src = strata;`), the
+  `inputs.nixpkgs.follows` line went with it — a source has no inputs to pin — and
+  `nix flake update` prints `Removed input 'strata/nixpkgs'` as it does it.
+- **What the new layout is, and the two lines of packaging it cost.** `engine/` is
+  the CMake project, `terminal/` is the Python layer (`serve/`, `strata_control/`,
+  `strata_cli/`, `tools/`, `data/`), `app/` the TypeScript host and desktop front
+  ends, `tools/` upstream's CI and release scripts. Both packages gained
+  **`cmakeDir = "../engine"`** and a copy list that reads `terminal/...`. Two
+  details, because both look free and are not: the *whole* input has to stay the
+  source root — `engine/cmake/strata_gpu_engine.cmake:495` compiles
+  `../terminal/tools/hip/tune_rocblas.cpp`, so a `src` narrowed to `engine/` breaks
+  the HIP build — and `cmakeDir` rather than `sourceRoot`, because stdenv
+  `chmod -R u+w`s `sourceRoot` after unpack (read-only store subpath) while the
+  cmake hook simply configures `$cmakeDir` from inside `build/`.
+- **llama.cpp is now vendored at the pin this file already carried**, so the
+  `fetchFromGitHub` and `-DSTRATA_GGML_DIR` are gone from **both** packages:
+  `engine/third_party/strata-ggml/UPSTREAM.md` pins `3cf03257f219…` (the same
+  revision, the same one `third_party/ggml/VERSION.txt` names), byte-identical to
+  llama.cpp except for CMake trims, and it ships gguf-py as `strata-gguf-py`.
+  Upstream calls that override "kept for two releases, then removed", so this is
+  the direction of travel as well as one pin instead of two. `STRATA_GGUF_PY` for
+  the prep tools is now `$out/share/strata/third_party/strata-gguf-py`, installed
+  exactly where `terminal/tools/_paths.py` looks without being told.
+- **The MMQ build option is gone** (0.2.16 removed it; `docs/AMD_HIP_PERFORMANCE.md`
+  says so and tells anyone wanting it back to build the `v0.2.15` tag). aibox's
+  `-DSTRATA_PREFILL_MMQ=ON` is deleted, so Strata's own prompt kernels are the only
+  path there — which is the same direction as the 0.1.61 gfx1030 int8 default, not a
+  new axis. `STRATA_EXPERT_I8=0` stays the runtime rollback.
+- **Nothing on disk is re-prepared**, checked rather than assumed:
+  `expert-profile-coder.bin` `a514661124d5…`, `expert-profile.bin` `8f59b4aa8873…`
+  and `draft_vocab.bin` `b1e1d3a7a9e4…` are **byte-identical at both pins**
+  (`tar -xzO` of the old rev against the new tree), so the sizing table above and
+  the pack under `/home/leigh-admin/Strata` are untouched by the bump.
+- **Contracts re-read at the new pin, not trusted.** All 18 flags in `engineArgs`
+  are still parsed by `src/program/generate.cpp` — with one trap worth its own
+  sentence: **`--pcie-mode` is parsed (`generate.cpp:3989`) but does not appear in
+  `--help`**, so `--help | grep` is not a removal test; the removal test is the
+  parser. Every `configFile` key (`exe args cwd tokenizer model_name log
+  allowed_hosts api_key backend lib_dirs env`) is still read by `terminal/serve/`,
+  `serve` is still the thing that imports `strata_control` (`serve/server.py:327`
+  onwards, `serve/server_parts/…` is the new split inside `serve/`), and
+  `terminal/strata_control/gguf_preflight.py:15` imports `tools.gguf_reader` — which
+  is why `terminal/tools` is part of the *serve* layer's copy list now, not just the
+  prep tools' directory. The in-build import guard caught nothing this time because
+  the copy list was fixed first; it is still the only thing standing between a stale
+  list and a crash-loop.
+- **What this bump actually changes for sm_86 — one default, and it is not in the
+  switch table.** The start block is otherwise the same engine as the one it
+  replaced: `sm_86 (Ampere): 8 exact speed switches on by default` with the **same
+  eight names** as 0.1.61 (`ADAPT_LAG CPU_IQ_ALL_EXACT1 SIDE_MIXER ATTN_DAILY
+  GR_UP75 GU_SWIGLU QSA_ROWS B6_MMVQ_ROWS`), `1533 of the prompt path's 1533
+  lendable slots keep their experts in RAM too`, `prompt chunk auto: 8192 tokens`,
+  `PCIe 13.4 GB/s`, 2333 experts in the GPU cache, 632 MiB of VRAM free, `strata
+  0.1.63`, `--families` still `qwen4exp qwen35moe`. What moved is **route tail
+  skip**: rank 7 was the CUDA default since 0.1.42 (+13-16 % decode, measured on an
+  RTX 3060 by upstream), 0.1.63 reads an unset value as **off**, and the app/Terminal
+  additionally *write* `=0` at every start — though the serve layer this unit uses
+  does not, so here it is simply off unless the run config names it. Three arms of
+  `strata-exp.sh auto auto` on this pack, cold-to-cold, same prompts:
+
+  | arm | decode median (steady) | prefill-8k | `strata-answer-score.py` |
+  | --- | --- | --- | --- |
+  | 0.1.61, skip on (the old default) | **45.0** (47.0), spread 43.3-48.9 | 1216.7 | 8/9, `bit` incomplete |
+  | 0.1.63, upstream default (off) | **39.3** (40.8), spread 38.1-42.4 | 1202.0 | **9/9** |
+  | 0.1.63, `STRATA_ROUTE_TAIL_SKIP=7` | **46.6** (46.7), spread 43.6-46.7 | 1201.4 | **9/9** |
+
+  −13 % decode for the new default, all of it recovered by one `env` line, prefill
+  flat, and the answer key does not separate the two 0.1.63 arms — so this box
+  **opts out of the new default** (`env.STRATA_ROUTE_TAIL_SKIP = "7"` in
+  `machines/services2/strata.nix`, receipts in its comment). Note the skip only
+  applies while under 90 % of the experts are cached, and this box's decode hit rate
+  through those arms was 58-79 %, so it applies here; on a box that keeps its whole
+  expert set resident the two arms would be identical. That the baseline scored 8/9
+  and one item *incomplete* is the harness's own noise, not a regression: the item
+  (`bit`) passed in both 0.1.63 arms.
+- **The harness could not run until it was fixed.** `strata-exp.sh` refuses a bench
+  it cannot `test -x`, and four of this directory's benches (`strata-bench.py`,
+  `strata-bench-fast.py`, `strata-answer-check.py`, `strata-answer-score.py`) are
+  mode **644** in git while aibox's equivalents are 755 — so the documented arm
+  invocation died at once with `no such bench script`, having measured nothing, which
+  is the failure mode the script's own header says it was written to prevent. They
+  are +x now.
+- **Build and deploy receipts.** `nix build .#strata-cuda` here: **under 5 min**
+  (toolchain warm — see the rewritten "Build it on aibox" above); `nix build
+  .#strata` on aibox, from a copy of the tracked tree (`rsync --files-from=` fed by
+  `git ls-files`, because the bump was uncommitted): **~5 min, one derivation**.
+  `just check-eval` green (assertions, doc pointers, source sizes, alejandra).
+  `just switch` → generation 57, `SWITCH_EXIT=0`/`CONFIRM_EXIT=0` in one invocation,
+  `readlink -f /run/current-system /nix/var/nix/profiles/system-good` equal, unit
+  active with 0 restarts, `/health` 200, ready 59 s after the unit started. Two
+  unrelated `gw` commits (`ce1d5aa`, `45270cb` — the v6 ACL and a dnsmasq RA fix)
+  rode along, because this checkout was fast-forwarded first, as rule 20 says to do;
+  gen 56 is the rollback for both.
+- **Not done:** **aibox is still running 0.1.59.1**, so it is now three engine
+  releases behind this input rather than one. Its HIP engine **builds** at the new
+  pin (verified above, including the MMQ flag's removal and the `terminal/` copy
+  list), and the read it owes is a bigger one than last time — gfx1030's int8
+  prompt-expert default (0.1.61), MMQ gone (0.2.16), `87c9821bb` "HIP Linux: keep
+  the kernel's NUMA balancing off the engine's memory", `8d92f0a38` per-card arch
+  choices for the prompt path and the drafters. Open item and the order to do it
+  in: `docs/follow-ups.md`.
 
 ### Update: engine 0.1.59.1 → **0.1.61** (app 0.2.15), deployed — 2026-11-18
 

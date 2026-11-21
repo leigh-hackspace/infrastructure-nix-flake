@@ -778,48 +778,82 @@ that is closed gets absorbed into the live docs and deleted, and git history hol
   **What to do instead, cheapest first:** one dense BF16/FP16 cuBLAS GEMM on the card with the CUDA toolchain `packages.strata-cuda` already puts on this box — stock ~26 TFLOPS means the cap is live and the only remaining question is strata's GPU share of prefill (the engine's own `prefill plan inputs` line answers that); stock ~48 means the card is not paying it and there is nothing to win. Nobody has run either number here. **Do not reach for `nvidia-smi dmon -s c` to see the selectors** — upstream's own "check what you have" line: this box's `nvidia-smi` (595.104.02) prints only `mclk`/`pclk` for `-s c`.
   **The free half:** the cap covers *only* half-precision tensor math — FP32 FFMA and integer DP4A never pay it, which is why llama.cpp (upstream's own null there: pp512 1460.5 -> 1467.1) sees nothing and Strata does not. An upstream integer/DP4A prefill path would therefore buy the same thing with **zero boot risk**; nothing in `engineArgs` gives it today, and if it ever appears this item is the way back.
 
-- **aibox is still on engine 0.1.59.1 while the flake input is at 0.1.61 — and this is
-  the one bump that has a default switch for its exact chip** (split opened 2026-11-18,
-  when `nix flake update strata` was taken and deployed to services2's CUDA engine and
-  **not** to aibox's HIP one; `one input, both engines` is what `flake.nix` says, so
-  leaving this open is what makes the two engines out of step).
+- **aibox is still on engine 0.1.59.1 while the flake input is at 0.1.63 — three
+  releases behind, and the middle one is the one its chip was waiting for** (split
+  opened 2026-11-18 at 0.1.61, retitled 2026-11-21 when the input moved to 0.1.63:
+  `nix flake update strata` was taken and deployed to services2's CUDA engine and
+  **not** to aibox's HIP one, and `one input, both engines` is what `flake.nix` says,
+  so leaving this open is what makes the two engines out of step).
 
-  What is proven, so the next person starts from receipts rather than from the changelog:
-  the HIP package **builds** at this pin (`nix build .#strata` on services2:
-  `BUILD_EXIT=0`, one derivation, ROCm deps already in the store), and aibox's running
-  engine was read back as `session is up (engine 0.1.59.1)` on 2026-11-18 with its unit
-  active since 2026-11-17 23:47 — so nothing is broken, it is simply the older side of
-  the same input.
+  What is proven, so the next person starts from receipts rather than from the
+  changelog: the HIP package **builds** at the new pin — built on aibox on 2026-11-21
+  from a working copy of the bump (`nix build .#strata`, one derivation, ~5 min, out
+  path `wd40i8bgr2dg0hwc2j5c1544r6cr1pws-strata-unstable`) — which means the 0.2.16
+  layout rework in `machines/aibox/strata-package.nix` is real: `cmakeDir =
+  "../engine"`, the `terminal/` copy list, the vendored ggml/gguf-py instead of a
+  `fetchFromGitHub`, and the **deletion of `-DSTRATA_PREFILL_MMQ=ON`** (0.2.16 removed
+  that option; `docs/AMD_HIP_PERFORMANCE.md` says so and points anyone who wants MMQ
+  back at the `v0.2.15` tag). And aibox's running engine was read back as
+  `session is up (engine 0.1.59.1)` on 2026-11-18, so nothing is broken — it is
+  simply the older side of the same input.
 
-  Why it should not be left: `9783e09f9` makes **gfx1030 / 1031 / 1032 — aibox's device —
-  read its prompt experts on Strata's own int8 kernels by default**, for expert groups of
-  256 entries and up (~512 tokens and more), measured at **1.10 to 1.35 × MMQ** at 2,048 /
-  8,192 / 20,000 tokens for IQ2_S / IQ2_XXS gate-up with a Q2_0 down.  That is exactly
-  aibox's pack, and prefill is exactly aibox's wall (`machines/aibox/STRATA.md`: "the real
-  limit for coding use is prefill", ~45 tok/s whatever the config).  Upstream's caveat is
-  in the commit message and must be read as the reason to measure rather than as
-  permission to assume: *"No end-to-end run on a gfx103x card with a model has been made
-  (needs the lender's word)."*
+  Why it should not be left, in the order the read will price them:
+  1. `9783e09f9` (in 0.1.61, so already owed) makes **gfx1030 / 1031 / 1032 — aibox's
+     device — read its prompt experts on Strata's own int8 kernels by default**, for
+     expert groups of 256 entries and up (~512 tokens and more), measured at **1.10 to
+     1.35 × MMQ** at 2,048 / 8,192 / 20,000 tokens for IQ2_S / IQ2_XXS gate-up with a
+     Q2_0 down. That is exactly aibox's pack, and prefill is exactly aibox's wall
+     (`machines/aibox/STRATA.md`: "the real limit for coding use is prefill", ~45
+     tok/s whatever the config). Upstream's caveat is in the commit message and must
+     be read as the reason to measure rather than as permission to assume: *"No
+     end-to-end run on a gfx103x card with a model has been made (needs the lender's
+     word)."*
+  2. The MMQ path is now **gone from the build**, so that default is not a switch
+     beside the old one — the old one is not compiled in. `STRATA_EXPERT_I8=0` is the
+     one-line runtime rollback of the *int8* half; there is no rollback of MMQ's
+     removal short of an older pin.
+  3. `87c9821bb` "HIP Linux: keep the kernel's NUMA balancing off the engine's
+     memory" and `8d92f0a38` "HIP: the arch choices of the prompt path and the
+     drafters are made per card, not by the first card that asks" are both new lines
+     in this box's start block, and aibox is a single-socket box whose "VRAM" is its
+     own DDR5 — read the start lines rather than assuming they changed nothing.
 
   **How to take it**, in the order that doc already demands: `just deploy aibox` in a
-  window when nothing is building and the bot/voice tier can lose its 262144 endpoint for
-  a minute or two (aibox is the network's builder and runs 52 of 59 GiB with the arena
-  loaded, so its engine restart is not free for anyone).  Then read the start line for the
-  sentence that says the card class took the new default, compare **cold-to-cold** against
-  the plateau that doc names (225–231 ms per window) because the cold/warm boundary moved
-  under it once already, and do not judge the first start after any bump (that one pays
-  the cold-page cost, ~3 s → 2979/3374 ms recorded there).  Rollback without a rebuild is
-  `STRATA_EXPERT_I8=0` in that unit's `extraEnv`.
+  window when nothing is building and the bot/voice tier can lose its 262144 endpoint
+  for a minute or two (aibox is the network's builder and runs 52 of 59 GiB with the
+  arena loaded, so its engine restart is not free for anyone — and note the
+  2026-11-14 receipt in `machines/aibox/STRATA.md`: the netboot bind mount must be
+  umounted *before* the switch or the activation dies and auto-rolls the box back).
+  Then read the start line for the sentence that says the card class took the new
+  default, compare **cold-to-cold** against the plateau that doc names (225–231 ms per
+  window) because the cold/warm boundary moved under it once already, and do not judge
+  the first start after any bump (that one pays the cold-page cost, ~3 s → 2979/3374 ms
+  recorded there).
 
   Re-verify with:
 
   ```bash
-  sudo grep -hE "session is up|prompt experts|int8 kernels" /var/lib/strata/strata.log | tail -5
+  sudo grep -haE "session is up|prompt experts|int8 kernels|tail skip" /var/lib/strata/strata.log | tail -6
   nix flake metadata --json | python3 -c "import json,sys; print(json.load(sys.stdin)['locks']['nodes']['strata']['locked']['rev'])"
   # ...and the same `rev` short sha must appear in aibox's running engine's store path:
   #   systemctl status strata --no-pager | grep -oE '[a-z0-9]{32}-strata-unstable'
   ```
 
+- **services2 runs decode 13 % faster than upstream's 0.1.63 default, on purpose,
+  and the setting is one this fleet now owns** (decided and deployed 2026-11-21,
+  receipts in `machines/services2/STRATA.md`, "Update: engine 0.1.61 → 0.1.63").
+  `env.STRATA_ROUTE_TAIL_SKIP = "7"` in `machines/services2/strata.nix` opts out of a
+  default upstream flipped to off in 0.2.16/0.1.63 because *answers differ slightly*
+  (upstream's KL against exact routing on an RTX 3060: 0.0058, perplexity x1.011,
+  HumanEval not separated; ours: 9/9 on the answer key either way, prefill flat,
+  decode 46.6 against 39.3 tok/s). Two things to watch, neither urgent: **upstream can
+  retire the setting**, the way it retired `STRATA_PREFILL_MMQ` in the very release
+  this bump crossed, and then the line is dead config that only the start line will
+  expose (`sudo grep "ROUTE_TAIL_SKIP" /var/lib/strata/strata.log | tail -1` must keep
+  printing the `is ON` sentence); and **`strata-answer-score.py` is too coarse to be
+  the gate here** — nine greedy arithmetic/one-line items cannot see KL 0.006, so what
+  actually protects this decision is pi's usage, and if completions ever read worse on
+  this endpoint the revert is deleting one line and `just switch`.
 - **services2 now runs its last ~1.5 GiB of RAM on the streaming K/V, so `LowMemory`
   fires there — fix the rule to know this box, or buy the DIMMs** (deployed 2026-11-18,
   the config and every number in `machines/services2/STRATA.md`, "256K at full precision,

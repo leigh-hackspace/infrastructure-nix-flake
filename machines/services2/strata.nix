@@ -3,8 +3,9 @@
   lib,
   pkgs,
   INFRA,
-  # The flake's `strata` input: upstream main (bleeding edge). Its `outPath` is
-  # the source the CUDA engine is built from.
+  # The flake's `strata` input: upstream main (bleeding edge). Since upstream's
+  # 0.2.16 layout move the input is declared `flake = false`, so it arrives as the
+  # source path itself — the tree the CUDA engine is built from.
   strata,
   ...
 }:
@@ -69,7 +70,7 @@ let
   # The CUDA engine, from the bleeding-edge flake input source. Passing the CUDA
   # backendStdenv is what lets nvcc use a gcc it supports (CUDA 13.0 -> gcc 15).
   strataPkg = pkgs.callPackage ./strata-package.nix {
-    src = strata.outPath;
+    src = strata;
     stdenv = pkgs.cudaPackages_13_0.backendStdenv;
     cudaPackages = pkgs.cudaPackages_13_0;
   };
@@ -362,6 +363,38 @@ let
       # after a start costs 917 instead of 1200 - it buys ~1 GiB of margin and pays for
       # it on the cold read, which is why 2 is what is set.
       env.STRATA_RESIDENT_HEADROOM_GIB = "2";
+
+      # STRATA_ROUTE_TAIL_SKIP=7: **we opt back in to a default upstream turned off
+      # in 0.2.16/0.1.63, because on this card it is worth 13 % of decode for free.**
+      # The skip drops a missed expert (one not on the card) that *every* token of a
+      # verify window routes at rank 7 or lower: neither copied nor computed.
+      # Until 0.1.62 an unset value meant rank 7 on CUDA; from 0.1.63 the engine
+      # reads unset as **off**, and `strata_control/speed_switches.py:174`
+      # (`ENGINE_START_DEFAULTS`) writes `=0` at every start made through the app or
+      # the Terminal — the serve layer this unit uses does **not** write it, so
+      # without this line the engine simply starts with the skip off.
+      # Upstream's reason for flipping it is quality, not speed: answers differ
+      # slightly from a run without it (KL 0.0058 against exact routing on an RTX
+      # 3060, top-1 agreement 97.7 %, perplexity x1.011, and HumanEval 76/78/78 —
+      # "the runs do not separate the settings", docs/DETAILS.md:1143-1161 and its
+      # 0.1.42 rows, which measured +15.6 % decode on a 3060, 5/5 pairs).
+      #
+      # Measured here 2026-11-21, three `strata-exp.sh auto auto` arms back to back
+      # on this pack (IQ1_M, 256 of 512 experts), same prompts, cold-to-cold
+      # (machines/services2/STRATA.md, "Update: engine 0.1.61 → 0.1.63"):
+      #   0.1.61, skip on by default ... decode median 45.0 (steady 47.0), prefill-8k 1216.7
+      #   0.1.63, upstream default ..... decode median 39.3 (steady 40.8), prefill-8k 1202.0
+      #   0.1.63, this line ............ decode median 46.6 (steady 46.7), prefill-8k 1201.4
+      # i.e. **-13 % decode for the new default, and it all comes back**; prefill is
+      # flat in all three, and `strata-answer-score.py` reads **9/9 in both 0.1.63
+      # arms** — the answer key does not separate on from off on this pack, so the
+      # only thing this line decides is 7 tok/s of decode on the endpoint pi dials.
+      # It also *applies* here, which is not automatic: the skip is off when 90 % or
+      # more of the experts are cached, and this box's decode hit rate during those
+      # arms was 58-79 %.  Revert = delete the line and `just switch`.
+      # Re-verify with:
+      #   sudo grep "route tail skip" /var/lib/strata/strata.log | tail -1   # counts, not `off`
+      env.STRATA_ROUTE_TAIL_SKIP = "7";
     }
   );
 in {

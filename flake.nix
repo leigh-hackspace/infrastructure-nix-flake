@@ -89,18 +89,30 @@
     # Qwen3.8-Flash-Next across GPU VRAM, RAM and the CPU.  This input is the source
     # of **both** engines: services2's CUDA one (machines/services2/strata-package.nix)
     # and, since 2026-10-28, aibox's HIP/gfx1030 one (machines/aibox/strata-package.nix)
-    # build from its outPath.  Upstream's own flake ships only a devShell, so both are
-    # packaged by hand here, and the input is tracked on `main` on purpose — the
-    # engine is the bleeding edge and this network wants the RDNA2/CUDA fixes as they
-    # land.  (`aibox's package used to pin its own fetchFromGitHub, which is why
-    # `nix flake update strata` once moved one engine and not the other; the nine-
-    # release gap that produced is what the 2026-10-28 un-parking closed.)  The
-    # engine itself, the pin and what a bump involves: machines/services2/STRATA.md
-    # and machines/aibox/STRATA.md.  The `follows` line is the rule in the door-entry
-    # note above, and it is the rule for every input here.
+    # build from it.  Both are packaged by hand here — upstream ships no packaging for
+    # the engine, only a devShell (its `tools/nix/flake.nix`) — and the input is tracked
+    # on `main` on purpose: the engine is the bleeding edge and this network wants the
+    # RDNA2/CUDA fixes as they land.  (`aibox's package used to pin its own
+    # fetchFromGitHub, which is why `nix flake update strata` once moved one engine and
+    # not the other; the nine-release gap that produced is what the 2026-10-28
+    # un-parking closed.)  The engine itself, the pin and what a bump involves:
+    # machines/services2/STRATA.md and machines/aibox/STRATA.md.
+    #
+    # `flake = false` is what upstream's 0.2.16 layout move (4058aa782, 2026-11-17,
+    # "the top level becomes app/, engine/, terminal/, docs/, tools/") forced: that
+    # commit deleted the root `flake.nix`, so as an ordinary flake input this tree is
+    # unfetchable — `nix flake update strata` answers
+    # `path '«github:Niko1221/Strata/<rev>»/flake.nix' does not exist` and writes no
+    # lock.  A source-only input is also what this one always was in practice: nothing
+    # here reads an output of it, only its store path, and with `flake = false` the
+    # input **is** that path (there is no `.outPath` to take).  The `follows` line this
+    # replaced is the rule in the door-entry note above and it is the rule for every
+    # input *here*; a source has no inputs of its own to pin, so dropping it changes
+    # nothing — the engine's nixpkgs is still this flake's, because this flake is the
+    # only thing that builds it.
     strata = {
       url = "github:Niko1221/Strata";
-      inputs.nixpkgs.follows = "nixpkgs";
+      flake = false;
     };
   };
 
@@ -424,11 +436,13 @@
       # The wake tier: its own cargo workspace, because an ONNX-runtime dependency tree
       # in the shared lock would dirty every service's build (crates/voice-wake/package.nix).
       voice-wake = voiceWakePkg;
+      # `flakeInputs.strata` is the source path itself, not a flake: see the input's
+      # header.  Both engines take the same path, which is the whole point of it.
       strata = pkgs.callPackage ./machines/aibox/strata-package.nix {
-        src = flakeInputs.strata.outPath;
+        src = flakeInputs.strata;
       };
       strata-cuda = pkgsCuda.callPackage ./machines/services2/strata-package.nix {
-        src = flakeInputs.strata.outPath;
+        src = flakeInputs.strata;
         stdenv = pkgsCuda.cudaPackages_13_0.backendStdenv;
         cudaPackages = pkgsCuda.cudaPackages_13_0;
       };
