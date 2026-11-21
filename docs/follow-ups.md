@@ -3121,8 +3121,13 @@ one UPS cleanly and reports it as an APC HID unit.
   removed, and after a rename the previous id is no longer in its own provenance list, so it
   is foreign and preserved. That is the rule working as designed (it is the same rule that
   stops it mangling a hand-edited file), but the consequence is that pi lists a model nobody
-  can dial, on every box, until someone notices. **Blocks:** nothing; pi's default provider on
-  the boxes checked is `strata-services2`, so no session lands there by accident. **To do,
+  can dial, on every box, until someone notices. The same run showed the **other** half of
+  the rule doing its job: on aibox, one timer interval after the door took the name away,
+  `pi-agent-status` read `llama-services3 FAILED … Could not resolve host` with
+  `kept from last time: llama-services3` — the previous answer kept while the socket is dead,
+  which is rule 31's deliberate choice, not a bug — and `just pi-agent-sync` closed it in
+  seconds. **Blocks:** nothing; pi's default provider on the boxes checked is
+  `strata-services2`, so no session lands there by accident. **To do,
   one of:** (a) teach `pi-agent-sync` to reap an id that is absent from the table **when the
   status file from the previous run lists it as managed** — the provenance to make that sound
   already exists, it is just keyed to the new ids only; or (b) declare the retired ids and
