@@ -11,8 +11,8 @@ four boxes' `~/.pi/agent/models.json` with nothing in it.
 | --- | --- | --- |
 | `strata2-v1-models.json` | aibox's Strata | the dialect with `data[].meta.n_ctx` **and** `status.value` |
 | `strata2-props.json` | aibox's Strata | `default_generation_settings.n_ctx`, `modalities.vision: false`, the thinking block |
-| `llama-services3-v1-models.json` | services3's llama.cpp | `data[]` **plus** the Ollama-compatibility `models[]` — the double-list trap |
-| `llama-services3-props.json` | services3's llama.cpp | `modalities: {vision: true, video: true}`, `model_ftype` |
+| `llama-services3-v1-models.json` | services3's llama.cpp (**gone**) | `data[]` **plus** the Ollama-compatibility `models[]` — the double-list trap. Kept after the engine was replaced by Strata on 2026-11-21: llama.cpp is still a dialect this parser must survive, and this file is now the only copy of that endpoint's answer |
+| `llama-services3-props.json` | services3's llama.cpp (**gone**) | `modalities: {vision: true, video: true}`, `model_ftype` — same note |
 | `front-door-502-body.txt` | services2 (engine stopped) | the nginx page a client gets when the upstream is off; an HTML body a JSON parser must survive |
 
 **One edit was made, and it is inside the file:** `chat_template` on the two `*-props.json`

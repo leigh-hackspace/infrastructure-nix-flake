@@ -414,6 +414,12 @@
     # `nix build .#strata-cuda` - the same engine built for services2's RTX
     # 3060 (CUDA 13.0 / sm_86), from the bleeding-edge `strata` flake input.
     #
+    # `nix build .#strata-cuda12` - the same engine built for services3's GTX
+    # 1080 Ti (CUDA 12.8 / sm_61, `-DSTRATA_EXPERIMENTAL_SM60=ON`): CUDA 13
+    # dropped Pascal, so this is upstream's "CUDA 12 engine" shape. Read the
+    # header of ./machines/services3/strata-package.nix before moving the
+    # toolkit.
+    #
     # `nix build .#rocm10-runtime` - the ROCm 10.0.0 (TheRock) user runtime aibox's
     # engine can be told to load instead of nixpkgs' ROCm 7.2: an 8 GB image layer
     # from Docker Hub, filtered to `lib/`.  Read the header of
@@ -445,6 +451,11 @@
         src = flakeInputs.strata;
         stdenv = pkgsCuda.cudaPackages_13_0.backendStdenv;
         cudaPackages = pkgsCuda.cudaPackages_13_0;
+      };
+      strata-cuda12 = pkgsCuda.callPackage ./machines/services3/strata-package.nix {
+        src = flakeInputs.strata.outPath;
+        stdenv = pkgsCuda.cudaPackages_12_8.backendStdenv;
+        cudaPackages = pkgsCuda.cudaPackages_12_8;
       };
       rocm10-runtime = pkgs.callPackage ./machines/aibox/rocm10-runtime.nix {};
     };

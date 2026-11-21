@@ -267,8 +267,8 @@
       alert = slowStartSlackAlert;
     })
     (mkHttp {
-      name = "Llama (services3, Vulkan)";
-      url = "https://llama.int.leighhack.org/health";
+      name = "Strata3 (services3, CUDA sm_61)";
+      url = "https://strata3.int.leighhack.org/health";
       group = "Inference";
       alert = slowStartSlackAlert;
     })

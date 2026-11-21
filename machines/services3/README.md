@@ -1,9 +1,14 @@
 # services3
 
 The sixth configuration in this flake and the fourth deployable box. **On the bench, on
-Wi-Fi, running nothing yet.** This file owns what that means: the measured hardware, the
-two things that make it different from the other services boxes, the move to VLAN 225,
-and what was deliberately left behind when the box came off its previous fleet.
+Wi-Fi, and since 2026-11-21 the network's third Strata engine** — Qwen3.8-Flash-Next
+Coder on the GTX 1080 Ti, `strata3.int.leighhack.org`. It was llama.cpp (Vulkan) from
+2026-11-12 to that day; one GPU cannot serve two engines, so `./llama.nix` is parked and
+its measurements are kept below under "History".
+
+This file owns the measured hardware, the two things that make the box different from
+the other services boxes, the engine's sizing on *this* card, the move to VLAN 225, and
+what was deliberately left behind when it came off its previous fleet.
 
 Nothing here is a guess unless it says it is. Everything under "Measured" was read off
 `10.3.2.213` on 2026-11-11 through the account the box arrived with; the previous owner's
@@ -13,42 +18,46 @@ write-up is quoted only where it is the *only* record (and then as quoted, not a
 
 | | |
 | --- | --- |
-| Board / CPU | ASUS Z170 PRO GAMING, i7-6700 (Skylake 4c/8t, `kvm-intel`), 16 GiB RAM |
+| Board / CPU | ASUS Z170 PRO GAMING, i7-6700 (Skylake 4c/8t, `kvm-intel`), **40 GiB RAM** — `MemTotal: 41999736 kB`, measured 2026-11-21. Earlier versions of this file (and of ./hardware-configuration.nix) said 16 GiB, which is how the box arrived and was never re-measured; the difference is what makes the Coder pack fit |
 | GPU | **exactly one, and it is a GTX 1080 Ti (GP102/Pascal) on `01:00.0`** (+ its HDMI audio function `01:00.1`), driven by this flake on `nvidia 580.178.04` — ./nvidia.nix. Re-measured 2026-11-12 because "why is the 1060 missing?" was asked: `lspci -nn -d 10de:` lists those two functions and nothing else, NVML reports `GPU 0` only with `/dev/nvidia0` the sole card node, and `llama-server --list-devices` prints one line. **There is no second GPU in this box.** The network's GTX 1060 lived in **aibox** and was physically removed on 2026-09-02 (its llama.cpp verdicts were negative; the write-up is in git history) |
 | No iGPU either | `lspci -nn \| grep -ciE 'intel.*(vga\|display\|3d)'` = **0** — the i7-6700's HD Graphics 530 has no display function on this bus (disabled in the firmware), which is why `vulkaninfo` shows the NVIDIA ICD and Mesa's `llvmpipe` and nothing in between. An earlier version of this file and of ./llama.nix asserted the iGPU was a second Vulkan device; it had never been measured |
 | Free slots | DMI slot table: `PCIEX16_1` **In Use**, `PCIEX16_2` **Available**, `PCIEX16_3` **Available** (both reported "Short" — the board's electrically-x4 slots), `PCIEX1_1` Available; and the kernel log has no BAR/MMIO refusal, so nothing is seated-and-refused. A second card could therefore be fitted. What that changes is `vulkanDevice` in ./llama.nix (the index order is ICD load order, **not** PCI order) and, if the intent is one model across two cards, the `--device` list — not the driver, and not this table's VRAM ladder |
-| Disk | `sda` 111.8 GiB: `sda1` 1 GiB vfat (label `BOOT`) + `sda2` 110.8 GiB ext4 (label `ROOT`). 84 GiB used, **20 GiB free**, `/nix/store` = 77 GiB at arrival |
+| Disk | `sda` 111.8 GiB: `sda1` 1 GiB vfat (label `BOOT`) + `sda2` 110.8 GiB ext4 (label `ROOT`) — the OS, the store and the generations. `nvme0n1` **476.9 GiB** (SK hynix PC601): one ext4 filesystem labelled `STRATA` since 2026-11-21, mounted at `/srv/strata`, holding the model data. It arrived with a previous owner's two-partition ZFS pool (`dbthr33`) and an 11.9 GB swap partition, neither referenced by this tree nor mountable here (no ZFS), so the whole disk was wiped — ./hardware-configuration.nix carries the decision |
 | Boot | UEFI 2.40, systemd-boot, Secure Boot off, no TPM. `mitigations=off` on the live command line |
-| Swap | **none** |
+| Swap | **none**, and none added for the engine: the arena is RAM-resident (`--resident-experts`) and a swap file would sit on the same NVMe that serves the PLE table. ./hardware-configuration.nix has the argument |
 | Wired NIC | `enp0s31f6`, Intel I219-V, MAC `70:8b:cd:a8:50:bc` — **no cable**, `NO-CARRIER` |
 | Wi-Fi | `wlp0s20f0u1`, MAC `90:de:80:e1:4e:42`, Realtek RTL8821CU (`0bda:c811`) on `rtw88_8821cu`, connected to SSID `WiFi Go Brrr` |
 | Address | `10.3.2.213/24`, gateway `10.3.2.1`, DNS `10.3.2.1`, search `int.leighhack.org` — i.e. **VLAN 226**, the wireless block, not the services block |
 | IPv6 | two temporary SLAAC addresses in `2001:8b0:1d14:226::/64`; no stable address, hence `ipv6 = []` in `common/dns-records.nix` |
 | Reachability | `10.3.1.1`, `10.3.1.20`, `10.3.1.32` and `cache.nixos.org` all answer a ping from the box, so builds can delegate to aibox and substitutes work |
 | Host keys | `ed25519` + `rsa`, both dated Aug 2025 — the box's own, unchanged by this flake and pinned in `common/ssh-known-hosts.nix` |
-| OS at arrival | NixOS 26.11 (Zokor), nixpkgs `26.11.20261017.09063bd`, kernel 6.18.57, nix 2.34.9 |
+| OS | NixOS 26.11 (Zokor) on kernel 6.18.63 / nvidia 580.196.07 as of 2026-11-21; at arrival (2026-11-11) nixpkgs `26.11.20261017.09063bd`, kernel 6.18.57, nix 2.34.9 |
 
 ## What it runs
 
-**Nothing, deliberately.** The module list (`default.nix`) is a box that has been
-brought under management and measured but not yet given a job: `common/base.nix`, the
-shared modules every services box gets through `flake.nix`'s `commonModules` (sops,
-podman, crane args, build delegation to aibox — verified rather than assumed: `nix build
---max-jobs 0 --option substitute false nixpkgs#fastfetch` on the box compiles on aibox and
-copies the result back, which proves the hop, the `trusted-users` half and the pinned host
-keys together — the NAS client with no exports declared, the tool set, the users), plus
-`common/exporters.nix` (`node`/`systemd`/`smartctl` on `:9100`/`:9558`/`:9633`, all three
-listening). This box's three scrape rows are written into services1's Prometheus config
-but **do not scrape it yet** — they land when services1 next switches, and until then
-nothing reads those ports (`Monitoring depth` below has what that costs and why it was not
-paid here).
+**Strata** — `./strata.nix` (service + engine flags) and `./strata-package.nix` (the
+CUDA 12.8 / sm_61 build), serving the **Coder IQ1_M** pack on the GTX 1080 Ti at
+`10.3.2.213:8080`, behind the door name `strata3.int.leighhack.org`. It is the
+network's third Strata instance and the same model file services2 serves. The
+sizing, the VRAM budget, the exact flags and the hand-run pack preparation are in
+`./strata.nix`'s header; `docs/services.md` has the contract table and the four
+checks that answer something.
 
-The first real service added here gets its own module in this directory and a line in
-`default.nix`'s import list — not a stanza in `configuration.nix`. If it needs the NAS,
-it also declares `after` **and** `requires` `wait-for-nas.service` and keeps restarting
-forever (AGENTS.md rule 12), and the export goes in this directory's
-`hardware-configuration.nix` as `infra.nas.exports`, which is what `common/nas.nix`
-generates both the mount and its automount unit from.
+Nothing else on this box competes for the card or the RAM. `common/base.nix` and the
+shared `commonModules` (sops, podman, crane args, build delegation to aibox, the NAS
+client with no exports declared, the tool set, the users) are unchanged from every
+services box, `common/exporters.nix` puts `node`/`systemd`/`smartctl` on
+`:9100`/`:9558`/`:9633`, and `programs.pi-agent.enable` is config plus a timer. The
+`llama-server` unit that used to be the box's job is gone from the module list and
+`./llama.nix` begins with its PARKED notice.
+
+What the box delegates, and why it matters more here than elsewhere: builds go to
+aibox (`common/build-farm.nix`), because this box is 8 threads of Skylake against
+aibox's 6c/12t Zen 3+ and its uplink is a Wi-Fi dongle — a local compile is work done
+by the machine that is also carrying its own ssh, and a CUDA engine build is exactly
+that kind of compile (nvcc, ~30 minutes of device code). Nix prefers the external
+builder and falls back to local only when aibox is unreachable, which is what keeps a
+deploy of this box possible while the dongle is the only path to it.
 
 ## The two things that make it different from the other services boxes
 
@@ -166,7 +175,114 @@ the password-authenticated way back onto a box whose only uplink is Wi-Fi — ve
   <numbers> && sudo nix-collect-garbage -d`. That destroys the rollback path to the
   folding configuration, so it is a decision, not housekeeping.
 
-## The engine: llama.cpp (Vulkan) serving Ternary-Bonsai-2-9B-Q2_0 (+ vision)
+## The engine (2026-11-21): Strata on a Pascal card
+
+`strata.service` serves **Qwen3.8-Flash-Next Coder IQ1_M** — the same pack services2
+serves — with the experts' ~23.4 GiB arena resident in RAM (`--resident-experts`), the
+dense weights and the KV in VRAM, and the ~27 GiB PLE table read from the NVMe. The
+flags and the VRAM budget are `./strata.nix`; the build shape is
+`./strata-package.nix`; the contract table is `docs/services.md`.
+
+Three things about *this* box make it different from services2's instance, and all
+three are why the numbers here are not services2's:
+
+- **Pascal, so CUDA 12.** CUDA 13 dropped sm_60/sm_61/sm_70 outright; `nvcc` refuses
+  the architecture. This is the only box in the network that builds the CUDA 12 branch
+  of the toolkit (12.8, because 12.9's math headers clash with glibc >= 2.43 and this
+  box runs 2.44), and the only one that sets `-DSTRATA_EXPERIMENTAL_SM60=ON` —
+  upstream's opt-in path for cards below compute capability 7.5, which is the row of
+  their hardware matrix the GTX 10 series sits on.
+- **11 GB of VRAM instead of 12, and no tensor cores.** Consumer Pascal runs FP16 at
+  1/64 of its FP32 rate, so `STRATA_DENSE_F32=1` is on: the dense projections go
+  through `cublasSgemm` on FP32 copies. Upstream measured that route as a large prompt
+  win on a Tesla P40 (their other sm_61 card); it is *unverified here*, and the run
+  that would verify it upstream's way (`gemm_f32_parity`, a tests build) has not been
+  made. It is one line to revert.
+- **A 4-core Skylake CPU pool.** The experts the card and the RAM-resident copy do not
+  cover are computed on the CPU; services2 has 6 cores of Zen 3. Expect prompts to be
+  the better half of this engine's behaviour and decode the worse half.
+
+The card check is the first thing to run after any engine move, and it is the only
+thing that proves nvcc really emitted sm_61 and the driver will load it:
+
+```bash
+STRATA=$(cd ~/Projects/infrastructure-nix-flake && nix build .#strata-cuda12 --no-link --print-out-paths)
+$STRATA/bin/strata-device --list-devices     # must say the 1080 Ti, compute capability 6.1
+$STRATA/bin/strata-device --selftest
+```
+
+### First boot, measured (2026-11-21)
+
+The load takes ~30 s and the log's own plan is the sizing in one place: *"23.4 GiB
+experts, 5.1 GiB in the GPU caches, 21.7 GiB RAM copy (1779 lend slots kept)"*,
+*"716 MiB of VRAM free with everything loaded"*, a 4096 MiB conversation cache sized
+from the free RAM, and a prompt chunk of 8192. Decode runs the **prompt-lookup
+(suffix) drafter** — `--lookup-max-t 12`, MTP windows of 4 — which accepted 38 of 45
+drafts on the long probe.
+
+| what | measured (32K, first boot) | measured (**128K**, deployed) |
+| --- | --- | --- |
+| **Decode** | 17.6–21.0 tok/s warm, 10.4 cold | **18.2 tok/s warm**, 11.8 cold — the smaller expert cache costs ~13 % |
+| **Prefill** | 471.7 tok/s at 1,830 tokens | **464.6 tok/s** at 1,830; **538.7** at 37,622; **507.8** at 77,612 — flat with depth |
+| **Long context** | — | a needle at 60 % depth of **77,612 tokens** was answered correctly (`ZX-4471`, 152.8 s prefill); same at 37,622 (69.8 s) |
+| Expert cache | 4,105 slots, ~5.7 GiB | **1,988 slots, 3.82 GiB** (the KV took the difference), 89.6 % hit rate |
+| VRAM | 10,447 MiB of 11,264, 716 free | 10,449 at load, **418 MiB free after a 77K request**, 714 at idle |
+| RAM | ~26 GiB used of 40 | 29 GiB used, 9 available (page cache for the PLE/GGUF) |
+
+**128K is at the card's edge, not comfortably inside it.** The engine says so itself
+after a long request: *"WARNING: only 418 MiB of VRAM free at the start of this request
+(below 512 MiB): when the card is this full the driver can page GPU memory to system
+memory"*. It held (no `LOW: requests may stall` line, no paging in the log), and the
+retrieval at 77K was correct — but the two dials are now known and both are one line:
+`--vram-reserve-mib 512` (costs ~512 MiB of cache, buys the headroom back) or
+`context = 65536` (halves the KV, ~0.9 GiB). Watch `nvidia-smi` at 59 °C, not 89 — this
+is VRAM pressure, not thermal.
+
+For scale: services2's RTX 3060 does ~32 tok/s on the same pack. This card has 92 % of
+the 3060's VRAM, no tensor cores, 1/64-rate FP16 and 4 Skylake cores instead of 6 Zen 3
+— 16–21 tok/s is the card being used properly, not the card being misconfigured.
+
+**`--spec` is not optional on a native (IQ) pack**, which the first boot proved by
+refusing: `strata generate: … is a native (IQ) pack: it needs --native SHARD1, --spec T
+(T >= 2) and --prefill CHUNK`. `--native` was given and `--prefill auto` resolves after
+that check, so `--spec` was the only missing piece — it is the verify-window width, and
+it feeds the suffix drafter, which needs no MTP weights. It is in `./strata.nix`'s base
+flag list now, and `useMtp` only adds `--mtp`.
+
+### One stability fact this box earned the hard way
+
+**The box crashed once during this bring-up** (2026-11-21 17:50, ~30 min into a 58 GB
+download): three kernel Oopses, all `general protection fault … kmem_cache_alloc_noprof`,
+all at the same faulting address, one bit away from a canonical pointer, in a
+`buffer_head` allocation that `curl` and then `jbd2` were making. The filesystem wedged,
+journald hit its watchdog, and the box went down. No NVMe error, no MCE, no ECC on this
+board (`EDAC ie31200: No ECC support`) — so nothing can tell "bad RAM" from "kernel
+overwrote its own freelist", and both remain open. It did **not** reproduce in the 90
+minutes of downloading, pack preparation and a full model load that followed (16 GiB of
+`memtester`, one pass, was clean too, which is weak evidence and not a clearance).
+
+If it recurs, the cheap discriminators, in order: `slub_debug=F` on the kernel command
+line (it names the corrupting cache instead of faulting), then this flake's pin also
+carries **6.12 LTS** (`boot.kernelPackages = pkgs.linuxPackages_6_12`) — the running
+6.18 is newer than both the fault and the evidence. Only after those does it become a
+repair job: reseat/replace DIMMs, and a `memtester` loop long enough to matter.
+
+The model data is at `/srv/strata` (the wiped NVMe) and is prepared by hand once —
+`./strata.nix`'s header holds the exact commands (`iq_pack.py`, then the MTP tools if
+`useMtp` is ever turned on). A **missing pack does not crash-loop**: the unit has
+`ConditionPathExists` on `index.txt`, so it stays inactive rather than restarting
+forever, and the door answers 502 until the pack exists.
+
+## History: llama.cpp (Vulkan), 2026-11-12 → 2026-11-21 (parked)
+
+What follows is the record of the box's first engine, kept because it is the only
+measurement of this card as a *compute* device before Strata, and because the
+llama.cpp packaging decisions in it (why nixpkgs' expression builds the input's tree,
+why the web UI is built with it) are reusable the day something else wants a Vulkan
+engine here. `./llama.nix` is parked with this notice at the top of the file, and
+un-parking it means un-parking it *instead of* `./strata.nix` — one GPU, one engine.
+The name `llama.int.leighhack.org` went with the unit: its door row is now
+`strata3.int.leighhack.org`.
 
 One service, `llama-server`, from the flake's **`llama-cpp-upstream`** input — the second
 llama.cpp in this flake, and the comment on that input in `flake.nix` is the reason it
@@ -551,11 +667,11 @@ remember `gw` is the box that has previously run *ahead* of its own line —
 
 | | |
 | --- | --- |
-| Endpoint auth | `llama.int.leighhack.org` is **LAN-only and keyless** — the LAN ACL is the gate, and the model is a public weight. A public name takes `sso = true` + `acl = "none"` **and a key of its own** in the same change; `strataBearer` is not it, being `strata_api_key` and another engine's credential. |
-| Privileges | `llama-server` still runs as root, but since 2026-11-12 the weights are no longer under `/home/leigh-admin` (mode `0700`): `./llama.nix` creates `/srv/models` (`0755`, root) by `tmpfiles` rule and reads the model there. What is left of that upgrade is the **system account** — the unit is still uid 0, still inherits root's `HOME` unless `StateDirectory` says otherwise, and both Strata engines remain in the first half. The home's mode was the actual blocker, so this half of the change is the half that mattered. |
+| Endpoint auth | `strata3.int.leighhack.org` is **LAN-only**, and `strataBearer = true` injects `strata_api_key` like the other two Strata rows (one engine credential, one door header — a per-engine key would 401 the door's own path). A public name would take `sso = true` + `acl = "none"` in the same change, like `strata.leighhack.org`. |
+| Privileges | `strata.service` runs as root (as both other Strata engines do); `.nix`'s system account is still open in `docs/follow-ups.md`. The weights are not under `/home/leigh-admin` (mode `0700`): `./llama.nix` creates `/srv/models` (`0755`, root) by `tmpfiles` rule and reads the model there. What is left of that upgrade is the **system account** — the unit is still uid 0, still inherits root's `HOME` unless `StateDirectory` says otherwise, and both Strata engines remain in the first half. The home's mode was the actual blocker, so this half of the change is the half that mattered. |
 | ~~Context headroom~~ | **Closed 2026-11-12 at 262,144** — the model's trained `ctx_train`, at 3,026 MiB of 11,264. What is left as a *decision*, not a gap: going past the trained length with yarn (./llama.nix has the ladder and the reasoning), which needs a retrieval measurement, not a bigger number. |
 | Power | Not in `machines/gw/ups.nix`'s `shutdownTargets` (see above), and `crates/ups-watchdog/src/plan.rs`'s order list is the same three. |
 | Wi-Fi PSK | Off-flake (see above). Decide when it is racked: delete it with the dongle's reservation, or make it declarative. |
-| 20 GiB free | Prune the old generations (see above) or add disk before giving the box a build. Measured **9.7 GiB free** with the engine and driver installed. |
+| `/` free space | Model data moved to the NVMe, so `/` only carries the store and the generations; measured 2026-11-21 after the engine's closure, `df -h /` has tens of GiB free and the old generations are still prunable (see above) if a nixpkgs bump needs the room. |
 | Root's ssh identity | `nix copy`/remote-build ssh runs as root out of `HOME=/root`, and the identity it offers comes from a **hand-written `/root/.ssh/config`** (aibox stanza since Sep 2025, services3 added 2026-11-11 — item 5 above). The *host keys* are declarative (rule 25); the identity is not, so `nix copy` to a new box fails with `Too many authentication failures` until a stanza is added by hand or `common/build-farm.nix` grows an identity for the delegating side. **The operator account's half closed 2026-11-15:** `common/build-farm.nix` now carries `programs.ssh.hosts` for the network's own addresses (`IdentityFile ~/.ssh/agent-hop-key`, `IdentitiesOnly yes`, `ConnectTimeout 5`), rendered into `/etc/ssh/ssh_config` — the *system* file, because this nixpkgs has no home-file option in `users.users.<name>` at all (`just check` refuses it; `machines/gw/README.md`'s "authorized keys are a fact about the directory sshd reads" is the same shape). Root is **not** covered by that block: `~` in `IdentityFile` expands to `/root`, where no `agent-hop-key` exists, so root still needs its absolute-path stanza and `sudo env NIX_SSHOPTS='-i /home/leigh-admin/.ssh/agent-hop-key -o IdentitiesOnly=yes' nix copy …` remains the escape hatch. Re-verify the operator half with `ssh -G 10.3.1.20 | grep -E 'identitiesonly|agent-hop'` as `leigh-admin` (two lines once deployed; `ssh -G` also prints ssh's five built-in defaults on an unswitched box, so count them) and by the checkout's own `git remote -v` answering `origin` + `infra`. |
-| Monitoring depth | Scraped **once services1 next switches**: the three scrape rows are in `machines/services1/services/observability.nix`, and a `dry-activate` of that change showed it would stop and restart six of services1's apps (`filestore`, `gocardless-dashboard`, `moonraker-exporter`, `prometheus`, `status-dashboard`, `switch-gui`) — the crates' unit paths move because the flake source moved. That is a services1 deploy decision (`docs/network-upgrade-runbook.md`), not a fee for adding a box, so it was not paid here. Until then the exporters run on this box and nobody reads them. Alerting is the same shape and now possible: `common/monitoring-endpoints.nix` is the gatus half, its guard wants an `https *.int` endpoint, and `llama.int.leighhack.org` is one since the door row landed — so `/health` can be added to that table, on the same deferred services1 deploy rather than as its own restart of six apps. |
+| Monitoring depth | Scraped **once services1 next switches**: the three scrape rows are in `machines/services1/services/observability.nix`, and a `dry-activate` of that change showed it would stop and restart six of services1's apps (`filestore`, `gocardless-dashboard`, `moonraker-exporter`, `prometheus`, `status-dashboard`, `switch-gui`) — the crates' unit paths move because the flake source moved. That is a services1 deploy decision (`docs/network-upgrade-runbook.md`), not a fee for adding a box, so it was not paid here. Until then the exporters run on this box and nobody reads them. Alerting is the same shape and now possible: `common/monitoring-endpoints.nix` is the gatus half, its guard wants an `https *.int` endpoint, and `strata3.int.leighhack.org` got its `/health` row in the same change as the door row — it goes live with the deferred services1 deploy, not as its own restart of six apps. |

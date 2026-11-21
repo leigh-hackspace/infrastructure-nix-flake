@@ -40,8 +40,7 @@ Every address is in `common/hosts.nix`.
 | voice tier: gateway + camera satellite + wake engine | `crates/voice-assistant/`, `crates/voice-wake/`, `machines/services1/services/voice-assistant.nix` | 127.0.0.1:8193 (gateway) and 127.0.0.1:8195 (wake, reachable **only** through the gateway's `/v1/wake/*` proxy) → `voice.int.leighhack.org`; `voice-satellite` listens on nothing and writes a status file the gateway serves; the answer path is `slack-agent listen` on 127.0.0.1:8194 | `docs/voice-assistant-2026-11-16.md` (the design and the receipts), `crates/voice-assistant/README.md` (the pipeline's traps), `docs/esp32-voice-satellites.md` (the wire contract for any new microphone) |
 | MQTT broker (mosquitto) | `machines/services1/services/mqtt.nix` | services1:1883 (no HTTP, no 8883) | `docs/mqtt-int-legacy-answer-2026-11-02.md` |
 | Frigate (NVR) | `machines/services1/services/frigate.nix` (podman; the **camera config is off-flake**, `/srv/frigate/config/config.yaml`) | services1:5000 insecure, :8971 secure, :1984 go2rtc, :8554-5 | `docs/frigate-false-positives-2026-11-12.md` (detection quality, detectors, and why there is no GPU offload) |
-| strata | `machines/*/strata.nix` | services2:8080 → `strata.int.leighhack.org` (LAN, key injected) and `strata.leighhack.org` (public, API key); aibox:8080 → `strata2.int.leighhack.org` (LAN, key injected) | `machines/aibox/STRATA.md`, `machines/services2/STRATA.md` |
-| llama.cpp (Ternary-Bonsai-2-9B-Q2_0 + vision) | `machines/services3/llama.nix` + `nvidia.nix` | services3:8080 → `llama.int.leighhack.org` (LAN only, **no** key injected) | `machines/services3/README.md` |
+| strata | `machines/*/strata.nix` (services3 also `strata-package.nix`, CUDA 12.8 / sm_61) | services2:8080 → `strata.int.leighhack.org` (LAN, key injected) and `strata.leighhack.org` (public, API key); aibox:8080 → `strata2.int.leighhack.org`; services3:8080 → `strata3.int.leighhack.org` (both LAN, key injected) | `machines/aibox/STRATA.md`, `machines/services2/STRATA.md`, `machines/services3/README.md` |
 | Home Assistant | `machines/services1/services/home-assistant.nix` (podman, **host network**, image **pinned**; state is `/srv/homeassistant`, which the flake only mounts) | `127.0.0.1:8123` here → `ha.int.leighhack.org` via the door; `10.3.1.30:8123` is a logging forwarder, not the app | `docs/home-assistant-on-services1-2026-11-16.md` (the move, the client map, the Zigbee-radio trap, `just ha-legacy-watch`) |
 | Space API (the hackspace's public status feed) | `machines/services1/services/hackspace-api.nix` (podman; **its credential is runtime state at `/var/lib/hackspace-api/env`, deliberately not sops** — read the module header before changing that) | `127.0.0.1:8081` here → `api.int.leighhack.org` / `api.leighhack.org` (public, `acl = "none"`) | `docs/home-assistant-on-services1-2026-11-16.md` (what it is, the 40 h of external pollers, why the env file is not in the store) |
 | ups-watchdog | `crates/ups-watchdog/` | no port: it is a oneshot, and it calls out (ssh `wall`, ssh `poweroff`) | `docs/ups-and-fleet-shutdown.md`, `machines/gw/ups.nix` |
@@ -487,7 +486,7 @@ and the RADIUS root cause are in `docs/procurve-switches.md`; the browser suite
 (`just switch-gui-test`, a real fake-console Telnet server) is
 `crates/switch-gui/tests/README.md`.
 
-## `machines/*/strata.nix` + `strata-package.nix` — the two Strata engines
+## `machines/*/strata.nix` + `strata-package.nix` — the three Strata engines
 
 Strata (`github.com/Niko1221/Strata`) is not a crate and not llama.cpp: it is its
 own ggml-based engine for Qwen3.8-Flash-Next, run as `strata.service` on services2.
@@ -497,7 +496,15 @@ and the two builds differ only in backend:
 | box | model | backend | source | detail |
 | --- | --- | --- | --- | --- |
 | aibox | full 125B, IQ2_XS | **HIP/gfx1030** (Radeon iGPU) + optional ROCm 10 runtime | `.#strata` | `machines/aibox/STRATA.md` |
-| services2 | **Coder** IQ1_M | **CUDA/sm_86** (RTX 3060) | `.#strata-cuda` | `machines/services2/STRATA.md` |
+| services2 | **Coder** IQ1_M | **CUDA 13.0/sm_86** (RTX 3060) | `.#strata-cuda` | `machines/services2/STRATA.md` |
+| services3 | **Coder** IQ1_M | **CUDA 12.8/sm_61** (GTX 1080 Ti, Pascal, `-DSTRATA_EXPERIMENTAL_SM60=ON`) | `.#strata-cuda12` | `machines/services3/README.md` |
+
+The third row is not a copy of the second: **CUDA 13 cannot compile for Pascal at
+all** (`nvcc` fails CMake's compiler test with `compute_70`), so services3 builds
+the CUDA 12 branch upstream ships for exactly these cards, one arch (`61`). That is
+the whole reason `strata-package.nix` exists three times instead of once with
+`cudaPackages` as an argument — and it is why `nix flake update strata` moves all
+three engines in the same switch while the *toolkit* stays each box's own choice.
 
 The aibox instance was parked 2026-10-17 when that box became the network's build
 machine (`common/build-farm.nix`) — the IQ2_XS expert arena is ~33 GiB, which is the
@@ -507,8 +514,9 @@ before a nixpkgs bump, and enabling it clears `llama-server`'s `wantedBy`, which
 the `ai.*` vhosts. Model data is outside the store and was never removed by the
 parking; that is the only reason the un-parking was a config change.
 
-Both engines take their upstream source from the flake's **`strata` input, tracked on
-`main`** (`nix flake update strata` moves both — aibox's package pinned its own
+All three engines take their upstream source from the flake's **`strata` input,
+tracked on `main`** (`nix flake update strata` moves all three — aibox's package
+pinned its own
 `fetchFromGitHub` until 2026-10-28 and drifted nine releases behind). Each
 `strata-package.nix` pins the vendored llama.cpp revision from `setup.py`'s
 `LLAMA_CPP_COMMIT`. Model data (GGUF, pack, MTP runtime) is deliberately outside
@@ -539,7 +547,7 @@ door proxies straight to `10.3.1.21:8080`. aibox's engine is the third name,
 open to the world and the engine's `api_key` (sops `strata_api_key`) is what makes
 that safe, while the `.int` name injects that same key at nginx so LAN clients — and
 the engine's own dashboard, which is nothing but `/v1/*` calls — stay keyless.
-The key is **one secret for both engines**, because `strataBearer` renders one
+The key is **one secret for all three engines**, because `strataBearer` renders one
 `proxy_set_header Authorization`: a per-engine key would 401 the door's path.
 **A LAN vhost name and the engine's
 `allowed_hosts` are one fact in two files**: upstream's server refuses any `Host`
@@ -550,47 +558,46 @@ header upstream, so a vhost added without the name in
 switched off by the API key, which is why the public name is *not* in the list:
 remove the key and the public vhost 403s instead of serving an open engine.
 
-## `machines/services3/llama.nix` + `nvidia.nix` — llama.cpp (Vulkan) serving
-Ternary-Bonsai-2-9B-Q2_0 (+ vision)
+## `machines/services3/strata.nix` + `strata-package.nix` — Strata (CUDA 12.8 / sm_61)
 
-The network's second inference box, and its only one whose engine is llama.cpp rather than
-Strata: `llama-server` from the `llama-cpp-upstream` input (upstream's because the model that
-first made it so, LFM3, declares `general.architecture = lfm3`, which the 0.3.0 fork this flake
-already carries does not have; nixpkgs' `llama-cpp` was 0.6.0 and had neither, **and is now
-0.9.0 at the 2026-11-12 lock with both `lfm3.cpp` and `qwen35.cpp` — so the input survives on
-pinning rather than on capability, which `docs/follow-ups.md` has open as an engine decision**)
-on a **GTX 1080 Ti**, on **services3** (10.3.2.213).  What is
-served since 2026-11-12 has arch `qwen35` and `full_attention_interval = 4` — a hybrid/SSM
-model, which is why its per-token cost barely moves with its size (the measured GB/s of both
-models is in `machines/services3/README.md`).
+services3's engine, and the network's third Strata instance: the **Coder IQ1_M**
+pack (the same file services2 serves) on a **GTX 1080 Ti** (GP102, Pascal, compute
+capability 6.1) in a box with 40 GB of RAM and 11 GB of VRAM. It replaced that
+box's llama.cpp on **2026-11-21** — one GPU, one engine — and
+`machines/services3/llama.nix` is parked with its measurements intact.
 
-The contract, in the rows that matter to anyone routing to it:
+Why it is a different build rather than an argument to services2's: CUDA 13
+dropped Pascal and Volta, so `nvcc` cannot emit `sm_61`. The toolkit here is
+**CUDA 12.8** (12.9 clashes with glibc >= 2.43 in the toolkit's math headers, and
+this box runs glibc 2.44) and the tree is built with
+`-DSTRATA_EXPERIMENTAL_SM60=ON` — upstream's opt-in path for GPUs below compute
+capability 7.5, which is the community shape the GTX 10 series runs under.
 
 | | |
 | --- | --- |
-| Listens | `10.3.2.213:8080` — **the LAN address, not loopback**, because the front door is a different box; so this is one of the few apps here whose socket is reachable from the whole LAN and the LAN ACL in `common/config.nix` is the only gate |
-| Served as | `llama.int.leighhack.org` — a row in `common/front-door.nix` with the LAN ACL, TLS at `gw`, `proxyBuffering = false` for SSE, and **no `strataBearer`**: `strata_api_key` is another engine's credential and reusing it here would widen its audience for free |
-| Paths | OpenAI-compatible API — `/health`, `/props`, `/v1/models`, `/v1/chat/completions`, `/completion` — **and llama.cpp's own web UI at `/`** (SvelteKit: `/_app/immutable/bundle.*.js` 2.88 MB, `/_app/immutable/assets/bundle.*.css` 305 KB, manifest, icons). **The UI is stored gzipped, so a client that sends no `Accept-Encoding: gzip` gets `415 Error: gzip is not supported by this browser` at `/`** — every browser sends it, a plain `curl` does not, and a monitoring probe must (`curl -H 'Accept-Encoding: gzip' …`). aibox's `ai.*` remains the network's prettier chat UI; this one is the engine's own |
-| Model | `/srv/models/Ternary-Bonsai-2-9B-Q2_0.gguf` — **2,556,640,128 B**, fetched 2026-11-12 by hand from `prism-ml/Ternary-Bonsai-2-9B-gguf` with `Ternary-Bonsai-2-9B-mmproj-Q8_0.gguf` (624,229,664 B) beside it; the flake creates `/srv/models` (`systemd.tmpfiles.rules`) and never the weights. LFM3-1.7B's file (1,099,627,808 B) is still at `/home/leigh-admin/Models/` and serves nothing. Runtime data outside the store either way: no switch fetches it, an engine bump does not re-prepare it, and a missing file is a unit that restarts forever and a door that answers 502 |
-| Context | **262,144 tokens** — the served model's trained `n_ctx` (`n_ctx_train = 262144`), and it fits here with room to spare: **8,005 MiB of the card's 11,264** including the 624 MB vision projector, measured 2026-11-12 with the whole card to itself. Its KV slope is **16.6 KiB/token** (q8_0 K+V over the 8 full-attention layers of the 32) plus 50.25 MiB of recurrent state **per slot** (`n_slots = 4`, `kv_unified = true`), so one doubling past the trained length wants ~4 GiB more card than exists — the trained length is the ceiling, not a generous margin. LFM3's own ladder (~1,137 MiB fixed + 7.4 KiB/token; 3,026 MiB here, 3,971 MiB at 393 KiB) is history, kept in `machines/services3/README.md`. Decode here is **63–64 tok/s**, prefill **305 tok/s** at 1,650 tokens. **The new model's retrieval at depth has not been measured** — LFM3's was proven with a needle at ~105k of a 117,839-token request, and the rope lever (`--rope-scaling yarn --yarn-orig-ctx`) has never been tried on either |
-| GPU path | **Vulkan, not CUDA** — CUDA 13's nvcc has no Pascal target, so `GGML_VULKAN` + `legacy_580` + `open = false` is the only way this card is a compute device at all. `--device Vulkan0`, and index 0 is the card *because* index 1 is llvmpipe: check `vulkaninfo --summary` by name |
+| Listens | `10.3.2.213:8080` — **the LAN address, not loopback**, because the front door is a different box on a different VLAN; this box has no firewall (`machines/services3/networking.nix`), so the LAN ACL at the door is the gate |
+| Served as | `strata3.int.leighhack.org` — a row in `common/front-door.nix` with the LAN ACL, TLS at `gw`, `proxyBuffering = false` for SSE, and `strataBearer = true` (it is a Strata engine, so it takes the one `strata_api_key` the door injects; the name is in the engine's `allowed_hosts`) |
+| Paths | OpenAI-compatible (`/v1/chat/completions`, `/v1/messages`, `/v1/models`) plus `/health`, `/props`, `/metrics` and the engine's own dashboard at `/` (which is `/v1/*` calls, so it needs the door's injected key to work — same as services2's) |
+| Data | `/srv/strata` on the **476 GB NVMe** (`nvme0n1`, one ext4 label `STRATA`, wiped 2026-11-21): 54.4 GB of GGUF shards, the prepared pack, the MTP draft. Outside the store, prepared once by hand; the unit has `ConditionPathExists` on the pack index |
+| Sizing | experts' arena ~23.4 GiB resident in RAM (`--resident-experts`), ~5 GiB of dense weights + buffers in VRAM, `--expert-cache auto` (≈3,800 slots) and **32K context** — every +32K of context is ~0.44 GiB taken from the cache, and the cache is what decides whether an expert is a VRAM read or a RAM/SSD read |
+| Card-specific | `STRATA_DENSE_F32=1` (consumer Pascal runs FP16 at 1/64 of FP32, so cuBLAS's FP16-operand GEMMs are the slowest thing on the card); sm_61's wide dequant, expert-mode 8 and interleaved matvec are on by default; the fused int8 prompt kernels are **not** (they need sm_80+) |
+| Speed | **18.2 tok/s decode, 464–539 tok/s prefill** (1,830 → 77,612 tokens), measured 2026-11-21 on the live unit at **128K context** — a correct needle at 77,612 tokens in 152.8 s of prefill. 10,449 MiB of the card's 11,264 at load, **418 MiB free after a 77K request**, which is the engine's own `below 512 MiB` warning: this is the card's edge, and `--vram-reserve-mib` / `context = 65536` are the two one-line ways back. All of it, including why a 65-token prompt reads at 18 tok/s and must not be quoted, is `machines/services3/README.md` |
 
 Four checks, in the order that answers something:
 
 ```bash
-systemctl is-active llama-server                      # and: journalctl -u llama-server -n 20
-curl -sS -m 8 http://10.3.2.213:8080/ | head -c 80     # "<!doctype html>" = the UI is embedded
-                                                       # (with no gzip header this answers 415, which is not a fault)
-curl -m 5 http://10.3.2.213:8080/health                # "ok" (note: not localhost — see Listens)
-sudo nvidia-smi --query-compute-apps=pid,used_memory    # llama-server holding ~2.5 GiB = the 9B's weights are on-GPU (the shipped shape peaks at 8,005 MiB of the card's 11,264)
-vulkaninfo --summary | grep -E 'deviceName|driverName'  # NVIDIA GeForce GTX 1080 Ti, not llvmpipe
+systemctl is-active strata                                 # and: journalctl -u strata -n 50
+curl -sS -m 5 http://10.3.2.213:8080/health                # "ok" — not localhost: see Listens
+sudo nvidia-smi --query-compute-apps=pid,used_memory       # the engine holding ~9-10 GiB of the 11,264
+grep -E "experts|expert cache|chunk" /var/lib/strata/strata.log | tail -5   # what the load actually sized
 ```
 
-The box's own half — the measured numbers (the KV ladder, 105.6 → 84.0 tok/s, the 117,839-token retrieval proof), why a driver
-change needs a **reboot** and what llama.cpp does to `nouveau` in the interval, how the engine
-is built out of nixpkgs' expression instead of the input's flake, and the Wi-Fi/disk/bootstrap
-state of the machine — is `machines/services3/README.md`. The front-door mechanics are
-`docs/router-front-door-migration.md`; the row's ACL semantics are rule 14.
+The build-side facts — why CUDA 12.8 and not 13, what `STRATA_EXPERIMENTAL_SM60`
+compiles in, why the arch is `61` on its own — are the header of
+`machines/services3/strata-package.nix`; the flags, the VRAM budget and the hand-run
+pack preparation are `machines/services3/strata.nix`. The box's own half (the NVMe,
+the Wi-Fi uplink, what happened to the old llama.cpp) is
+`machines/services3/README.md`.
 
 ## `crates/status-dashboard/` and `crates/moonraker-exporter/`
 

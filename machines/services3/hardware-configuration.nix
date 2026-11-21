@@ -71,12 +71,37 @@
     ];
   };
 
+  # **The NVMe, added 2026-11-21.** `nvme0n1` (476.9 GB, SK hynix PC601) arrived holding
+  # a previous owner's pools — `nvme0n1p4`/`p5` were `zfs_member` members of a pool called
+  # `dbthr33` and `p6` was an 11.9 GB swap partition, none of it referenced by this tree
+  # and none of it mountable (no ZFS on this box). It was wiped and is now one ext4
+  # filesystem labelled `STRATA`, mounted at `/srv/strata`, and it is where Strata's
+  # 54 GB of GGUF, its prepared pack and its MTP draft live (./strata.nix). `/` stays on
+  # the 120 GB SATA SSD: 40 GB free there is enough for the NixOS generations and the
+  # store, and the model data is 60 GB of things that must survive a `nix-collect-garbage`.
+  #
+  # By **label**, like the two mounts above, and for the same console-readable reason.
+  # `boot.initrd.availableKernelModules` already carries `nvme`.
+  fileSystems."/srv/strata" = {
+    device = "/dev/disk/by-label/STRATA";
+    fsType = "ext4";
+  };
+
   # No swap, and that is an observation rather than a plan: 16 GiB of RAM with nothing
   # behind it.  It is fine for what this box does today (it runs the three Prometheus
   # exporters and nothing else) and it is the first thing to revisit before it is given
   # anything that holds a model or a build in RAM — services2's
   # hardware-configuration.nix is the file to copy, and its comment about a box
   # running out of room while evaluating *this* flake is not theoretical.
+  #
+  # **Re-read 2026-11-21, when Strata landed: the premise was wrong, not the advice.**
+  # The box has 40 GB of RAM (`MemTotal: 41999736 kB`; the "16 GiB" in this file and in
+  # ./README.md was how it arrived and was never re-measured), and the Coder pack's
+  # ~23.4 GiB arena fits beside the OS with room to spare. So no swap was added: the
+  # engine's own low-RAM mode (`--resident-experts`) is what holds the arena, and a swap
+  # file on the **same NVMe that serves the PLE table** would compete with the one tier
+  # this box is short of. `vm.swappiness` is still set to 10 (./strata.nix) because the
+  # arena is shared memory, and so it is swappable in principle.
   swapDevices = [];
 
   # **The GTX 1080 Ti is driven by ./nvidia.nix**, not here, and the reason it is a

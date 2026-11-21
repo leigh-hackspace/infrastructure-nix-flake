@@ -386,3 +386,70 @@ one Vulkan device and it is llama-server's). A stale "this is broken" comment ha
 pointing at a service that had been quietly running on the other backend for two months,
 which is the same failure shape as the `mqtt.int` row: the doc, not the config, was wrong.
 The follow-up is now honestly stated as *decide the backend*, not *make it start*.
+
+## 2026-11-21 — services3 becomes the network's third Strata engine (Pascal, CUDA 12)
+
+The box on the bench had a GTX 1080 Ti doing 63 tok/s of a 9B model under llama.cpp and
+40 GB of RAM doing nothing. It now runs **Qwen3.8-Flash-Next Coder IQ1_M** — the same pack
+services2 serves — across the card, the RAM and the 476 GB NVMe that arrived holding a
+previous owner's ZFS pool. `strata3.int.leighhack.org`, in place of `llama.int`.
+
+What made it more than "copy services2's module", in the order it bit:
+
+- **It is a different CUDA, and that is not a preference.** CUDA 13 dropped Pascal: `nvcc`
+  fails CMake's compiler test with `compute_70`. GP102 is compute capability 6.1, so the
+  build is **CUDA 12.8** (12.9's math headers clash with glibc >= 2.43 and this box runs
+  2.44) with `-DSTRATA_EXPERIMENTAL_SM60=ON`, upstream's opt-in path for cards below
+  sm_75, one arch (`61`). `machines/services3/strata-package.nix` is the third
+  `strata-package.nix` in the tree for exactly this reason, and `.#strata-cuda12` is its
+  flake output — building it is also the only way to know the toolkit choice is right,
+  because the failure is in CMake's first test compile, not in the engine.
+- **The card is not a small RTX 3060, it is a fast fp32 card with no half precision.**
+  Consumer Pascal runs FP16 at 1/64 of FP32, so cuBLAS's FP16-operand GEMMs — the dense
+  projection path — are the slowest thing on it. `STRATA_DENSE_F32=1` sends those through
+  `cublasSgemm` on FP32 copies instead (upstream measured that on a Tesla P40, the other
+  sm_61 card: 430-474 tok/s of prompt against 360-432). The fused int8 prompt kernels
+  services2 deployed are **not** an option here: they need sm_80.
+- **`--resident-experts`, not `--mmap-experts`.** The Coder arena is ~23.4 GiB and the
+  card holds ~9 of them; the rest are copied into RAM once. 40 GB of RAM is what makes
+  that the right shape, and it is why this box needed no swap (a swap file on the same
+  NVMe that serves the 27 GiB PLE table would fight the one tier it is short of).
+- **The name moved with the engine.** `llama.int.leighhack.org` was a row in
+  `common/front-door.nix` with no injected key (that row's own note argued, correctly,
+  that pointing an unrelated engine at `strata_api_key` widens a secret's audience).
+  Strata *is* that engine, so the row became `strata3.int.leighhack.org` with
+  `strataBearer = true`, the `llama` entry in `common/int-dns.nix` became `strata3`, and
+  the gatus `/health` row and pi's `llama-services3` provider moved with them — five
+  files, one fact, and the two evaluation-time guards are what say whether they agree.
+
+What was **not** carried over: `llama-server` (parked, with its measurements, in
+`machines/services3/llama.nix` — one GPU serves one engine), the four things it had
+loaded into `/srv/models` (still there; nothing reads them), and any claim that this box
+is quick. Its RAM is the engine's and its CPU pool is four Skylake cores, so it is the
+network's slowest endpoint by construction and `docs/services.md` says so rather than
+quoting the P40's numbers.
+
+**It works, and the numbers are the point:** 18.2 tok/s decode and 464–539 tok/s
+prefill on the live unit at **128K context** (Coder IQ1_M), with a needle at 60 % depth
+of a 77,612-token prompt answered correctly in 152.8 s of prefill. At 32K the same
+engine did 17.6–21.0 tok/s — the 128K KV moves ~1.35 GiB of expert cache to KV, which
+costs about 13 % of decode and nothing measurable of prefill. 418 MiB of VRAM free after
+the 77K request is the card's edge, and the engine says so; the two dials are in the
+module. The 3060 does ~32 tok/s on the same pack, so this is the card's ceiling
+being reached, not the box being misconfigured. One flag was learned by refusal: a
+native (IQ) pack will not start without `--spec T (T >= 2)` — the suffix drafter's
+verify window, which needs no MTP weights — and `--prefill auto` resolves after that
+check, so the error named three things and wanted one.
+
+**The box also crashed once, and it is not resolved.** 17:50, ~30 min into the
+download: three Oopses at the same address, `kmem_cache_alloc_noprof` inside
+`alloc_buffer_head`, a faulting pointer one bit from canonical, filesystem wedged,
+journald watchdog, down. It did not reproduce in the 90 minutes of downloading, pack
+prep and model load that followed. No ECC on this board, no NVMe error, no MCE — "bad
+RAM" and "a kernel bug that overwrote its own freelist" are both still open, and the
+discriminators (slub_debug=F, then the pinned nixpkgs' 6.12 LTS) are written down in
+`machines/services3/README.md` rather than guessed at here.
+
+The bring-up, with what the first boot actually measured, is
+`machines/services3/README.md`; the flags and the VRAM budget are
+`machines/services3/strata.nix`'s header.

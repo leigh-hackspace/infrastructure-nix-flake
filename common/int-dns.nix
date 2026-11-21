@@ -103,7 +103,7 @@
     "ha"
     "id"
     "jenkins"
-    "llama"
+    "strata3"
     "login"
     "mcp"
     "monster"

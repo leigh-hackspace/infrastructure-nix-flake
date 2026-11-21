@@ -1,3 +1,4 @@
+# PARKED — 2026-11-21 (0a9e065) — no doc; the reason is this: machines/services3/strata.nix replaced it. Strata cannot share a GPU with llama.cpp, and the GTX 1080 Ti is now Strata's (upstream's CUDA 12 engine, sm_61). The module is kept, not deleted, because its measurements and its llama.cpp packaging are the only record of how this card behaved before 2026-11-21 — re-verify with: `ls /srv/models/Ternary-Bonsai-2-9B-Q2_0.gguf && curl -fsS http://10.3.2.213:8080/health` (Strata answering on the same port means llama.cpp must stay parked; the model files are still on the box).
 # llama.cpp (Vulkan) serving **Ternary-Bonsai-2-9B-Q2_0** and its vision projector on the
 # GTX 1080 Ti, and the network's third inference endpoint.
 #

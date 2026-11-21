@@ -18,9 +18,11 @@
 #
 # **Never here:** a credential. `apiKey` is a placeholder whose only job is to make pi
 # list the model, because nothing that authenticates to these endpoints is held by a
-# client: the two Strata engines are behind `strataBearer` on `common/front-door.nix`,
-# which injects `strata_api_key` at the door, and services3's llama.cpp is gated by the
-# LAN ACL. This is not tidiness — the pre-flake `models.json` dialled `10.3.1.21:8080`
+# client: every Strata engine — services2's, aibox's and services3's, which replaced
+# that box's llama.cpp on 2026-11-21 — is behind a `strataBearer` row on
+# `common/front-door.nix`, which injects `strata_api_key` at the door, so no client
+# holds the key. This is not tidiness — the pre-flake `models.json` dialled
+# `10.3.1.21:8080`
 # and `10.3.1.32:8080` directly and so **carried the real `strata_api_key`**, in
 # `~/.pi/agent/models.json`, on four boxes (found 2026-11-14; rotation is the open item
 # in `docs/follow-ups.md`). Every row here is therefore a front-door name or an
@@ -99,22 +101,39 @@ in {
     };
   };
 
-  "llama-services3" = {
-    name = (endpoint "llama-services3").name;
-    baseUrl = (endpoint "llama-services3").baseUrl;
+  "strata-services3" = {
+    name = (endpoint "strata-services3").name;
+    baseUrl = (endpoint "strata-services3").baseUrl;
     note = ''
-      services3's Vulkan llama-server (Ternary-Bonsai-2-9B-Q2_0 + vision,
-      `machines/services3/llama.nix`). Its door row deliberately carries **no**
-      `strataBearer` — that field injects the *Strata* key, and pointing an unrelated
-      engine at the same credential to save adding a field is how secrets acquire an
-      audience (`common/front-door.nix`) — so `apiKey` here is a placeholder and the
-      gate is the LAN ACL.
+      services3's CUDA-12/sm_61 engine, the same Coder IQ1_M pack as
+      `strata-services2` (`machines/services3/strata.nix`). It replaced that box's
+      llama.cpp on 2026-11-21, which is why the provider id moved: the old
+      `llama-services3` row pointed at a Vulkan llama-server that no longer runs.
 
-      No `compat` block, on purpose: pi auto-detects those from the URL, and the
-      guidance is not to enable them because an endpoint advertises OpenAI
-      compatibility. Nobody has measured this one's tool-calling or usage-in-streaming
-      behaviour from pi. `just pi-agent-status` proves it is at least reachable and
-      what it reports as its context.'';
+      Expect the lowest rates of the three Strata engines and the slowest first
+      token — an 11 GB Pascal card holding a little of a 23 GiB expert arena, with
+      the rest in RAM and on the NVMe. It exists because the box is here and the
+      card would otherwise be idle; it is not the endpoint to pick when a session
+      needs to be quick. Same API and same key contract as the other two (the door
+      injects `strata_api_key`, so `apiKey` here is a placeholder).'';
+    compat = {
+      supportsStore = false;
+      supportsDeveloperRole = false;
+      supportsReasoningEffort = false;
+      supportsUsageInStreaming = true;
+      supportsStrictMode = false;
+      maxTokensField = "max_tokens";
+      thinkingFormat = "qwen-chat-template";
+    };
+    thinkingLevelMap = {
+      off = "off";
+      minimal = null;
+      low = "low";
+      medium = "medium";
+      high = "high";
+      xhigh = null;
+      max = null;
+    };
   };
 
   "strata-zen3" = {

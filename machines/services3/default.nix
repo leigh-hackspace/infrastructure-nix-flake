@@ -8,11 +8,16 @@
 }: {
   networking.hostName = "services3";
 
-  # The engine: llama.cpp (Vulkan) on the GTX 1080 Ti, serving **Ternary-Bonsai-2-9B-Q2_0
-  # and its vision projector** since 2026-11-12 (LFM3-1.7B before that), reached from
-  # the front door as `llama.int.leighhack.org`.  ./nvidia.nix is what makes the card a
-  # Vulkan device at all, and ./llama.nix carries the sizing, the model path and the
-  # reachability argument.
+  # The engine: **Strata** (CUDA 12.8 / sm_61) serving **Qwen3.8-Flash-Next Coder
+  # IQ1_M** on the GTX 1080 Ti, reached from the front door as
+  # `strata3.int.leighhack.org` since 2026-11-21. ./strata.nix carries the sizing, the
+  # pack paths and the VRAM budget; ./strata-package.nix carries the CUDA-12 build and
+  # why this card cannot use the same toolkit as services2.
+  #
+  # **./llama.nix is PARKED** (its own first line is the notice): Strata replaced it on
+  # 2026-11-21, because one GPU cannot serve two engines and this box's job is now the
+  # 58 GB MoE rather than a 9B dense model. Its measurements are the record of what this
+  # card did before, and un-parking it means un-parking it *instead of* ./strata.nix.
   #
   # This box delegates its builds to aibox like every box that is not the builder
   # (common/build-farm.nix).  Here it matters more than on the others for two reasons:
@@ -29,8 +34,15 @@
     ./configuration.nix
     ./hardware-configuration.nix
     ./networking.nix
+    # ./nvidia.nix is still what makes the card usable at all — for Strata it is the
+    # CUDA driver + libcuda, not a Vulkan ICD, but it is the same `legacy_580` branch
+    # (580 is the last NVIDIA branch that supports Pascal) and the same
+    # `hardware.graphics.enable` that puts /run/opengl-driver/lib on the engine's
+    # library path.
     ./nvidia.nix
-    ./llama.nix
+    # ./llama.nix is PARKED — see the comment above and the file's first line.
+    # ./llama.nix
+    ./strata.nix
     ./users.nix
 
     # Refuse to start llama-server while the loaded NVIDIA kernel module and the driver
@@ -66,4 +78,9 @@
   # ./README.md owns the move.
 
   programs.pi-agent.enable = true;
+
+  # The one service this box runs. Nothing else competes for the card or the RAM:
+  # the three Prometheus exporters are text-collectors on :9100/:9558/:9633, and
+  # `programs.pi-agent` is config plus a timer.
+  services.strata3.enable = true;
 }

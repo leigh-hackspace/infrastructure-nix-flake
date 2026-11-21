@@ -18,22 +18,26 @@
 #
 # **A credential.** Every `baseUrl` here is a front-door `*.int` name whose row
 # carries `strataBearer = true`, so nginx injects the engine key on the LAN and no
-# client holds one (`common/nginx/front-door.nix`, `common/front-door.nix`). The one
-# row that is not gated that way (`llama-services3`) is gated by the LAN ACL instead
-# and is annotated where it is defined.
+# client holds one (`common/nginx/front-door.nix`, `common/front-door.nix`). That has
+# been true of every row since 2026-11-21, when services3's llama.cpp (the last row
+# gated only by the LAN ACL) was replaced by a Strata engine and took the header with
+# it; the LAN ACL still gates every `*.int` name as well.
 #
 # ## `agentOrder`, and why the order is a decision
 #
 # First answer wins, so this is the quality ordering as much as the resilience one.
-# Measured 2026-11-16 with `just slack-agent-probe` and `just slack-agent-ask`:
-# services2 answers the tool-calling benchmark correctly and is the box most likely
-# to be stopped for a build (its RAM *is* the engine), aibox is a bigger general
-# model with twice the context, and services3 is a 9B chat model with a vision
-# modality and no gating key. `zen3` is excluded from the agent because it is
-# off-network and unreachable from several of these boxes by design.
+# Measured 2026-11-16 with `just slack-agent-probe` and `just slack-agent-ask` and
+# re-measured 2026-11-21 when services3 changed engine: services2 answers the
+# tool-calling benchmark correctly and is the box most likely to be stopped for a
+# build (its RAM *is* the engine), aibox is a bigger general model with twice the
+# context, and services3 now serves **the same Coder pack as services2** on an 11 GB
+# Pascal card — same answers, ~18 tok/s decode against services2's ~45, and a first
+# token that can take minutes, so it is the third arm and not the first. `zen3` is
+# excluded from the agent because it is off-network and unreachable from several of
+# these boxes by design.
 let
   # The failover order for chat.
-  agentOrder = ["strata-services2" "strata" "llama-services3"];
+  agentOrder = ["strata-services2" "strata" "strata-services3"];
 
   endpoints = {
     "strata-services2" = {
@@ -57,16 +61,17 @@ let
         availability.'';
     };
 
-    "llama-services3" = {
-      name = "llama.cpp (services3, GTX 1080 Ti)";
+    "strata-services3" = {
+      name = "Strata (services3, GTX 1080 Ti — Pascal, slowest)";
       shortName = "services3 (GTX 1080 Ti)";
-      baseUrl = "https://llama.int.leighhack.org/v1";
+      baseUrl = "https://strata3.int.leighhack.org/v1";
       note = ''
-        `machines/services3/llama.nix`, door row `llama.int.leighhack.org`, which
-        deliberately carries **no** `strataBearer` — that field injects the *Strata*
-        key, and pointing an unrelated engine at the same credential is how secrets
-        acquire an audience. The gate here is the LAN ACL, so an agent dialing it
-        needs no secret either.'';
+        `machines/services3/strata.nix`, door row `strata3.int.leighhack.org`
+        (`strataBearer`, like the other two). The same Coder IQ1_M pack as
+        `strata-services2` on a Pascal card, in place of that box's llama.cpp since
+        2026-11-21 — so it is the same answers, slower, and the row that was
+        `llama-services3` (a Vulkan llama-server that no longer runs, at a name that
+        now 502s) is retired rather than repointed.'';
     };
 
     "strata-zen3" = {
