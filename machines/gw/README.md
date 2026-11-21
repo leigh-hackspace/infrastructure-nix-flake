@@ -304,6 +304,36 @@ bug for 20 minutes, so do not treat "it works now" as proof. Longer term this is
 dedicated RA daemon (radvd) would be immune to; it is listed in `docs/follow-ups.md`
 rather than done here.
 
+**Recurred 2026-11-21, and this time it took the wired LAN for two days without a
+complaint.** `router-lan` lost carrier 14:17:02 and regained it 14:23:34 on 2026-11-19;
+the default routes expired 1200 s later and were never refreshed. It surfaced only as
+"services2 can't ping `2a02:8010:6680:49::50`", and four things came out of that:
+
+* **Nothing off-link works over IPv6 and nothing in-link notices.** services1 and
+  services2 both answered `ip -6 route get <off-net>` with `Network is unreachable`, while
+  `ip -6 addr` still showed their `2001:8b0:1d14:225::/64` and ULA addresses with
+  `valid_lft 84597` — a box that looks IPv6-configured for a full day after losing its
+  gateway. Every `*.int` name answers with `2001:8b0:1d14:225::1`, which is **on-link**, so
+  no in-network client ever needed the missing route; the first victim is always something
+  outside the /64. That is the whole reason this is invisible.
+* **aibox is not a control group.** It had a default route the whole time because its IPv6
+  default is `proto static` in the flake, not `proto ra` — so the one box that "proved
+  IPv6 was fine" was the one box not using the mechanism under test.
+* **tcpdump cannot see this box's RAs.** Measured *after* the repair, with clients
+  demonstrably refreshing: two simultaneous 90 s captures, one on `vlan225` and one on
+  `router-lan`, held 25 ICMPv6 frames and **no type-134 at all** — and before the repair,
+  75 s on each of `vlan225` and `vlan226` held nothing either. So "no RA on the wire" is
+  not evidence of anything here, in either direction.
+* **The gw-side meter that does work is the multicast egress counter.** An unsolicited RA
+  goes to `ff02::1`, so `nstat -az | grep Ip6OutMcastPkts` moves with it: measured
+  118193 → 118193 across 20 s during the fault (zero) and 118193 → 118215 in the four
+  seconds after `systemctl restart dnsmasq`. Read beside it, the journal's cadence is a
+  weak signal — `RTR-ADVERT(vlan225)` appeared at gaps of 35 s, 64 s and 304 s, which is
+  solicited replies, not the `ra-param` 60 s timer; ask for the *rate*, not for lines.
+
+So the check that costs one command and cannot lie: `nstat Ip6OutMcastPkts` twice 30 s
+apart on gw, and `ip -6 route show default` on any `proto ra` client.
+
 ## "Only VLAN 225 has no internet": the tunnel's password, not the firewall
 
 This is the one failure here that looks like a routing or nat bug and is a credential

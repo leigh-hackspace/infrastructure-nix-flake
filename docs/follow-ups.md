@@ -1703,8 +1703,22 @@ thing to do with either is to date it (`journalctl -u … | grep "Failed with re
   default when the 1200 s router lifetime expires, and a host that forwards (services1)
   never takes the RA default at all and so cannot reply to VLANs 226/227. The fix is a
   `systemctl restart dnsmasq` after the flap — there is no config change that restarts
-  the timer. **Open**: a link-flap hook (or moving RAs to radvd, which re-advertises on
-  link-up) so this cannot be missed by whoever is not watching at the time.
+  the timer.
+
+  **Recurred 2026-11-21** off the 2026-11-19 14:17 `router-lan` flap, and it took the
+  **wired** LAN's off-link IPv6 (services1 *and* services2) for two days with no failing
+  unit, no warning and no complaint until somebody tried to ping a host outside the /64 —
+  every in-network `*.int` name is answered on-link, so the missing default route is
+  invisible from inside. The measurements, the two meters that work (`nstat
+  Ip6OutMcastPkts` on gw, `proto ra ... expires` rising on a client) and the one that
+  does not (tcpdump, which never sees this box's RAs even when they arrive) are in the
+  README section. **Open**, unchanged and now twice-happened: a link-flap hook (or
+  radvd, which re-advertises on link-up) so this cannot be missed by whoever is not
+  watching at the time — and a `ra-watch.timer` on gw, in the same shape as
+  `lease-reader-watch.timer` and `front-door-cert-check.service`, failing by name while
+  `Ip6OutMcastPkts` sits still for longer than `ra-param`'s interval. A flap hook alone
+  would not have helped here: the flap was real, the carrier came back, and nothing on
+  this box noticed either.
 
 - **`yunohost.leighhack.org`'s certificate expired 2026-10-21 16:59 UTC** (found the
   same evening, from the browser warning). The DNAT now sends the name to the right
