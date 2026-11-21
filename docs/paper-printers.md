@@ -50,10 +50,25 @@ a dead address; it refuses to evaluate.
   `cups-2.4.19` with `cups-filters-2.0.1`, `libcupsfilters-2.1.1` and
   `ghostscript-with-X-10.08.0` — read off a `dry-build` of the image, not assumed —
   so `everywhere` is the current incantation rather than a legacy one, and nothing
-  here needs a PPD at all.
-- **`restartTriggers` carries the table**, so an edited row re-registers the queues
-  on the next switch. Necessary rather than obvious: this image never reboots
-  itself, so waiting for a reboot to pick up a changed printer is waiting forever.
+  here needs a PPD at all. **The same sentence is why a queue only exists while its
+  printer is awake**: registering it *is* a query to the device, so the pass that runs
+  during boot fails for a printer that is switched off, with `Unable to connect …
+  Host is down`. The retry unit below is what turns that into "one queue missing"
+  instead of "no printers at all".
+- **Registration is a unit of its own (`paper-printers.service`), not `cups.service`'s
+  post-start.** `hardware.printers.ensurePrinters` generates an ExecStartPost for
+  `cups.service` that runs with `set -e`, so one `lpadmin` that cannot register its
+  queue fails the *scheduler* — and systemd's start rate limit then leaves CUPS
+  permanently failed, which a desktop shows as "no printers" rather than "one
+  missing". That is not hypothetical: it is what the first deploy did on 2026-11-21
+  (receipts below). The unit retries each row independently, tolerates a sleeping
+  printer (`lpstat -p` is the "already there" test, so a retry is free), and exits 0
+  once every row has a queue, which leaves it `inactive (dead)` on a healthy boot.
+  Its script carries the device URIs, so an edited row changes the unit and a switch
+  restarts it — the job `restartTriggers` used to do.
+- **`ipp`/`ipps` only.** `lpadmin -v` accepts no other scheme; a row cannot spell
+  `net+ippt` (which this table did until 2026-11-21) because there is no such
+  device-uri scheme and the module's assertion now refuses it.
 
 ## Protocol evidence, measured 2026-11-21 (probes from aibox and services1)
 
@@ -127,6 +142,12 @@ row edit rather than a redesign.
    the desk app. The visible failure this rule exists to prevent is a queue that
    exists, enables, and prints nothing — every check inside CUPS stays green through
    that, as it stayed green through the MQTT name that 404ed (docs/mqtt-int-legacy-answer-2026-11-02.md).
+
+   **`lpstat -p` lists the queues that exist, which is not the same as the rows.**
+   A row whose printer was asleep when the client booted is *not* registered, by
+   design: `-m everywhere` asks the device. So read `journalctl -u paper-printers`
+   next to it — `registered brother` / `toshiba has no queue yet` — before calling a
+   missing queue a fault, and do not "fix" it by creating queues that cannot print.
 3. **Before believing a switch landed:** `readlink -f /run/current-system
    /nix/var/nix/profiles/system-good` (the GOLDEN RULE) and `findmnt -no SOURCE
    /exports/netboot-squashfs` against `nix eval .#nixosConfigurations.pi-room-sys.config.system.build.squashfsStore.outPath --raw`
@@ -134,34 +155,84 @@ row edit rather than a redesign.
    silently boot the previous image, and a printer row that did not cross looks
    like a printer row that failed.
 
-## What the rendered unit actually says
+## What the rendered units actually say
 
 AGENTS.md rule 10 — a changed flag has to be read back from a real build rather than
-trusted from what was typed, and NixOS rewrites quoting. What `cups.service` renders
-as, read off the built `unit-cups.service` and its `cups-post-start` on 2026-11-21:
+trusted from what was typed, and NixOS rewrites quoting. Read off the built toplevel
+(`/nix/store/9p1k4brx…-nixos-system-pxeclient-…`) on 2026-11-21, after the first
+deploy's failure below:
 
 ```
-[Unit]
-After=network.target
-Wants=network.target
-X-Restart-Triggers=/nix/store/<hash>-X-Restart-Triggers-cups   # carries ./printers-data.nix
+# cups.service — no ExecStartPost at all any more
 [Service]
-ExecStartPost=…/cups-post-start
-ExecStartPre=…/cups-pre-start
+ExecStart=…/cups-2.4.19/sbin/cupsd -l
+Type=notify
+
+# paper-printers.service
+[Unit]
+After=cups.service
+PartOf=cups.service
+Requires=cups.service
+StartLimitIntervalSec=0
+[Service]
+ExecStart=…-paper-printers-provision
+Restart=on-failure
+RestartSec=20s
+Type=simple
 [Install]
-WantedBy=multi-user.target            # i.e. startWhenNeeded = false took effect
+WantedBy=multi-user.target
 ```
 
-and in the post-start script:
+and in the provision script, one guarded pair per row:
 
 ```
-lpadmin -p brother -D '…brother…' -E -m everywhere -v net+ippt://10.3.2.30:631/ipp/print
-lpadmin -p toshiba -D '…toshiba…' -E -m everywhere -v ipp://10.3.1.50:631/printers/toshiba
+if lpstat -p brother >/dev/null 2>&1; then :
+elif lpadmin -p brother -D '…brother…' -E -m everywhere \
+     -v ipp://10.3.2.30:631/ipp/print; then
+echo "paper printers: registered brother"
+else … pending="$pending brother"
+fi
 ```
 
-Both facts that matter are visible there: the addresses came out of
-`common/dns-records.nix` (they are not written in the table), and `-E` means the
-queues are enabled rather than merely created.
+Three facts that matter are visible there: the addresses came out of
+`common/dns-records.nix` (they are not written in the table), `-E` means the queues
+are enabled rather than merely created, and **the failure of one row can no longer
+take the scheduler with it** — the guard is per row and the loop, not the scheduler,
+is what retries.
+
+## What the first deploy got wrong (2026-11-21 17:44, measured on a booted client)
+
+The image shipped at 16:35 registered no queues and left CUPS dead, and the desktop
+therefore offered **no printers at all** over both devices. Measured by booting
+`just pxe-client-uefi` on aibox, sshing into the guest (10.3.14.204) and reading:
+
+```
+systemctl is-active cups        -> failed
+lpstat -p -d                    -> lpstat: Scheduler is not running.
+journalctl -u cups              -> cups-post-start[1124]: lpadmin: Bad device-uri scheme "net+ippt".
+                                   cups.service: Failed with result 'exit-code'. … start-limit-hit
+```
+
+Two independent causes, and the shape of the fix follows from both:
+
+- **`net+ippt` is not a device-uri scheme.** `lpadmin -v` takes `ipp`/`ipps`
+  (measured: `ipp://10.3.2.30:631/ipp/print` registers the queue, rc=0, on the same
+  guest). The `net+` spellings the table and its assertions used to allow were a
+  belief, not a measurement, and nothing refused them until a booted client did.
+- **`-m everywhere` queries the device, so a printer that is off cannot be
+  registered.** Provoked deliberately on the same guest: `lpadmin -p toshiba -v
+  ipp://10.3.1.50:631/printers/toshiba -m everywhere` → `lpadmin: Unable to connect
+  to 10.3.1.50:631: Host is down` (the toshiba answered nothing all day — see
+  `just paper-printers`). And because that `lpadmin` ran in `cups.service`'s
+  post-start with `set -e`, it did not merely skip the queue: it failed the
+  scheduler. Order mattered too — the `brother` row failed first, so a broken
+   *scheme* and a sleeping *printer* produced the same symptom.
+
+What that means for a user in the room: with this fix, `brother` gets a queue and
+prints; `toshiba` gets one the first time it is awake while a client is up, and the
+unit says so in the journal. **A powered-off printer has no queue, and that is the
+design** — the alternative (a queue that exists and prints nothing) is the failure
+mode this doc's "proving it" section exists to catch.
 
 ## Cost, measured on the image 2026-11-21
 
@@ -181,3 +252,31 @@ queues are enabled rather than merely created.
 `"stale":null` with `source_age` 17 s — i.e. the lease channel was live, which is
 what makes the lease answers above usable at all (rule 29: a frozen lease table
 otherwise looks like a quiet network).
+
+## The second deploy, 2026-11-21 17:58 (the fix, measured on a booted client)
+
+The fault above was fixed and deployed the same evening: `paper-printers.service`
+replaced CUPS' post-start, `brother`'s scheme became `ipp`, and the assert list lost
+the `net+` spellings. Receipts, both sides:
+
+- **aibox switched clean** at 17:58 (`switch rc=0`, `nixos-confirm` chained in the same
+  transient unit, `readlink -f /run/current-system /nix/var/nix/profiles/system-good`
+  equal, `systemctl --failed` empty), and `/exports/netboot-squashfs` was re-cut from
+  `fmgb2d9vj7dr80dg71754l2fff3z30r8-squashfs` (7,552,843,776 bytes) to
+  `4w4hwmx2j8r7j8b2srcml0k9xi1dlk9a-squashfs` — **7,552,860,160 bytes, +16,384**:
+  the unit's script is 16 KiB against the post-start script it replaced.
+- **A guest booted from it** (`just pxe-client-uefi`, 10.3.14.231) answered
+  `cups -> active`, `paper-printers -> active`, `systemctl --failed` empty, and its
+  journal read `paper printers: brother has no queue yet — its device did not answer`
+  / `… toshiba …` with `still missing brother toshiba — retrying in 20 s`. **No
+  queue, because both printers were switched off or asleep** — measured independently
+  of the client: the router's own neighbour table read `10.3.2.30 dev vlan226
+  INCOMPLETE` and `10.3.1.50 dev vlan225 FAILED` at the same moment, while `brother`
+  had answered `POST :631/ipp/print → 200` from aibox at 17:45. So the scheduler
+  survives, the rows are each attempted, and the queues arrive when the devices do.
+
+**What is still unproven is the same thing as before: a sheet of paper.** The
+registration command itself is proven — on the previous guest
+`lpadmin -p brother -v ipp://10.3.2.30:631/ipp/print -m everywhere -E` returned 0 and
+`lpstat -p` then read `printer brother is idle`
+(`docs/follow-ups.md` carries it as the open item).

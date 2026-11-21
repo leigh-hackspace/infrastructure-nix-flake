@@ -22,7 +22,9 @@
 # `./printers.nix` asserts the two cannot be made to disagree.
 #
 # Every value below is marked with the request that put it there (measured 2026-11-21,
-# full receipts in docs/paper-printers.md) or with the word GUESS.
+# full receipts in docs/paper-printers.md) or with the word GUESS.  The scheme is not
+# a style choice either: `lpadmin -v` accepts `ipp`/`ipps` and nothing else, and
+# `net+ippt` (a spelling this table used to carry) is refused outright.
 let
   RECORDS = import ../../common/dns-records.nix;
 
@@ -33,10 +35,12 @@ let
       # PROVEN IPP-native: `GET :631/ipp/print` answers 405 — the path exists, and
       # POST is the only method it takes — and a 10-byte IPP Get-Printer-Attributes
       # POST to the same path returns 200.  `GET :631/printers/` and `:nic/nicFilter`
-      # are 404, so it is not a share of a CUPS server and it is not DNDM.  `net+ippt`
-      # is CUPS's own name for "an IPP endpoint on the device"; the `net+` half skips
-      # the device-side checks, which is what an IPP endpoint on a WiFi VLAN wants.
-      scheme = "net+ippt";
+      # are 404, so it is not a share of a CUPS server and it is not DNDM.  The scheme
+      # is plain `ipp`, because that is the spelling `lpadmin -v` takes for *any* IPP
+      # endpoint; the `net+ippt` this row used to carry is not a device-uri scheme at
+      # all — `lpadmin` refused it, and that is the fault that stopped every printer
+      # appearing (measured on a booted client 2026-11-21, docs/paper-printers.md).
+      scheme = "ipp";
       port = 631;
       path = "/ipp/print";
 
@@ -55,7 +59,7 @@ let
       # `Server: CUPS/1.5` and `Allow: GET, HEAD, OPTIONS, POST, PUT`, while
       # `/ipp/print` is 404 on both :80 and :631 and `/nic/*` is 404 — and its :80
       # serves TopAccess (`gblTAUrl`, `eFiling`), i.e. a Toshiba e-STUDIO.  So the
-      # endpoint is a CUPS-shaped share, hence the `ipp` scheme rather than `net+ippt`.
+      # endpoint is a CUPS-shaped share, hence the `ipp` scheme with a queue path.
       scheme = "ipp";
       port = 631;
 
@@ -67,6 +71,11 @@ let
       # truth is in some queue that already works — see the open item in
       # docs/follow-ups.md.  Until then this queue exists, enables, and prints
       # nothing, which is the failure mode every check inside CUPS stays green through.
+      #
+      # It also has no queue at all while the device is off, and that is not a bug in
+      # this row: `-m everywhere` asks the device for its attributes when the queue is
+      # registered, so the row is retried until it answers (`Host is down` on
+      # 2026-11-21, docs/paper-printers.md).
       path = "/printers/toshiba";
 
       description = "The network's `toshiba` printer (untagged lease)";

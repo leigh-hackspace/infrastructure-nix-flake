@@ -12,8 +12,8 @@
 # open items. Read that before changing a row: every value there is marked with the
 # measurement that put it there or with the word GUESS.
 #
-# Two things make this worth its own file rather than lines in configuration.nix, and
-# both are the reason the assertions below exist:
+# Three things make this worth its own file rather than lines in configuration.nix, and
+# all three are the reason the assertions below exist:
 #
 # * The address of a printer is common/dns-records.nix's fact, and an image that
 #   spelled its own copy of it would keep building after the record moved — printing
@@ -22,14 +22,28 @@
 #   it; the assertion here is what refuses the image when the record is gone, and
 #   machines/gw/lib/check-network-tables.nix carries the same rule on the eval-only
 #   side, where it prints the record's name on the router.
-# * This image has no disk: root is tmpfs and `/var/lib/cups` — where nixpkgs'
-#   `hardware.printers` module runs the `lpadmin` that makes a queue exist — is
-#   therefore re-provisioned on every boot, and nothing persists across one. That is
-#   why startWhenNeeded is forced off below: left at the module's default, CUPS is
-#   socket-activated, so the queues get registered *when the first connection arrives*
-#   — i.e. inside the first print job rather than before it — and on an image nobody
-#   ever boots twice in a row, "wait for a reboot to pick up a changed printer" is
-#   wait forever. restartTriggers is the other half of the same fact.
+# * This image has no disk: root is tmpfs and `/var/lib/cups` — where `printers.conf`
+#   and the queues themselves live — is therefore re-provisioned on every boot, and
+#   nothing persists across one. That is why startWhenNeeded is forced off below: left
+#   at the module's default, CUPS is socket-activated, so the queues get registered
+#   *when the first connection arrives* — i.e. inside the first print job rather than
+#   before it — and on an image nobody ever boots twice in a row, "wait for a reboot to
+#   pick up a changed printer" is wait forever.
+#
+# * **The queues are registered by a unit of their own, not by `cups.service`'s
+#   post-start, and that is a measured correction (2026-11-21, on a booted client at
+#   10.3.14.204).** `hardware.printers.ensurePrinters` generates an ExecStartPost for
+#   `cups.service` that runs with `set -e`: one `lpadmin` that cannot register its
+#   queue kills the *scheduler*, so the box has no printers at all rather than one
+#   fewer — and systemd's default start rate limit then leaves CUPS permanently
+#   failed. Both halves happened that day, for two different reasons: the `brother`
+#   row carried `net+ippt://`, which CUPS 2.4.19 refuses outright (`lpadmin: Bad
+#   device-uri scheme "net+ippt"`), and `-m everywhere` is *driverless*, i.e. it asks
+#   the device for its attributes at registration, so a printer that is switched off
+#   when the client boots fails the same way (`Unable to connect … Host is down`).
+#   The unit below retries each row independently and leaves the scheduler alone, so
+#   a sleeping printer costs its own queue and nothing else. docs/paper-printers.md
+#   owns the receipts.
 #
 # Every definition below carries its `config.` prefix on purpose: this module's
 # guardrails are the list under `config.assertions`, and nixpkgs' module machinery
@@ -60,6 +74,54 @@
   badRecords = builtins.filter missingRecord queues;
 
   defaults = builtins.filter (n: PRINTERS.${n}.default) queues;
+
+  # One pass over the rows: register every queue that is not registered yet, and say
+  # which ones are still missing.  `lpstat -p` is the "already there" test rather than
+  # a flag file, because the queue table lives on tmpfs and the honest question after a
+  # `cups` restart is what the scheduler holds now.  `-m everywhere` is the driverless
+  # model: it asks the device for its attributes, so it is the step that needs the
+  # printer to be awake, and the reason each row is attempted on its own line.
+  registerRow = n: let
+    row = PRINTERS.${n};
+  in ''
+    if ${pkgs.cups}/bin/lpstat -p ${lib.escapeShellArg n} >/dev/null 2>&1; then
+      :
+    elif ${pkgs.cups}/bin/lpadmin -p ${lib.escapeShellArg n} \
+        -D ${lib.escapeShellArg row.description} -E -m everywhere \
+        -v ${lib.escapeShellArg row.deviceUri}; then
+      echo "paper printers: registered ${n}"
+    else
+      echo "paper printers: ${n} has no queue yet — its device did not answer" >&2
+      pending="''${pending} ${n}"
+    fi
+  '';
+
+  provision = pkgs.writeShellScript "paper-printers-provision" ''
+    set -u
+    # A loop rather than a one-shot: this image registers its queues at every boot, so
+    # the pass that runs before a printer is switched on has to be repeatable.  Exits 0
+    # once every row has a queue, which is what leaves the unit `inactive (dead)` on a
+    # healthy boot instead of running for the life of the client.
+    while :; do
+      pending=""
+      ${lib.concatMapStringsSep "\n" registerRow queues}
+      if [ -z "$pending" ]; then
+        ${
+      lib.optionalString (defaults != []) ''
+        # A default is a decision, not a fact, so the table owns it and `null` — no
+        # default, the app asks — is the legal answer this image gives today:
+        # nothing measured says which of the two printers a Pi Room desk should get
+        # when nobody names one, and picking one on a hunch is a document leaving
+        # for the wrong machine.
+        ${pkgs.cups}/bin/lpadmin -d ${lib.escapeShellArg (builtins.head defaults)} || true
+      ''
+    }
+        exit 0
+      fi
+      echo "paper printers: still missing$pending — retrying in 20 s" >&2
+      sleep 20
+    done
+  '';
 in {
   config.services.printing.enable = true;
 
@@ -69,35 +131,28 @@ in {
   # driver, so `cups-filters` + ghostscript — which the module adds unconditionally —
   # is the whole filter chain this flake can build.
   config.services.printing.startWhenNeeded = false;
-  # The table is a restart trigger, so an edited row re-registers the queues at the
-  # next activation rather than sitting in `printers.conf` under the same name. nixpkgs
-  # already restarts `cups` when `ensurePrintersLoaded` changes, and the rendered unit
-  # proves both halves cross — `X-Restart-Triggers-cups` carries this file's store path
-  # (receipt in docs/paper-printers.md) — so this is a superset of that trigger rather
-  # than the only one: it also fires when only a `description` or `location` changed.
-  config.systemd.services.cups.restartTriggers = [
-    (pkgs.writeText "paper-printers-table" (builtins.toJSON PRINTERS))
-  ];
 
-  config.hardware.printers.ensurePrinters =
-    map (n: {
-      name = n;
-      deviceUri = PRINTERS.${n}.deviceUri;
-      model = "everywhere";
-      description = PRINTERS.${n}.description;
-      location = PRINTERS.${n}.location;
-      ppdOptions = {};
-    })
-    queues;
-
-  # A default is a decision, not a fact, so the table owns it and `null` — no default,
-  # the app asks — is the legal answer this image gives today: nothing measured says
-  # which of the two printers a Pi Room desk should get when nobody names one, and
-  # picking one on a hunch is a document leaving for the wrong machine.
-  config.hardware.printers.ensureDefaultPrinter =
-    if defaults == []
-    then null
-    else builtins.head defaults;
+  # `partOf` as well as `requires`: a `cups` restart has to re-run this, because the
+  # queues it registered are `cups`' own state; `requires` alone would only stop it
+  # when the scheduler stops, which is not the same thing.  The unit's own script
+  # carries the device URIs, so an edited row changes it and a switch restarts it —
+  # which is what the old `restartTriggers` on `cups.service` was for.
+  config.systemd.services.paper-printers = {
+    description = "Register the Pi Room's paper printers with CUPS";
+    after = ["cups.service"];
+    requires = ["cups.service"];
+    partOf = ["cups.service"];
+    wantedBy = ["multi-user.target"];
+    # The retry loop is the script's own, so the unit's start timeout must not end it;
+    # and a printer that is off for a week is not a start failure to rate-limit.
+    startLimitIntervalSec = 0;
+    serviceConfig = {
+      Type = "simple";
+      ExecStart = provision;
+      Restart = "on-failure";
+      RestartSec = "20s";
+    };
+  };
 
   config.assertions = [
     {
@@ -156,22 +211,19 @@ in {
     {
       # `everywhere` only ever talks IPP, so a row cannot claim a scheme that is not
       # IPP: a `smb:` or `usb:` row would be a different transport with no driver, and
-      # would build, boot and print nothing.  The four spellings are CUPS's own —
-      # `ipp` for a queue inside a CUPS-shaped server, `ippt` for an endpoint on the
-      # device, each with a `net+` form that skips the device-side checks.
+      # would build, boot and print nothing.  The two spellings are the ones
+      # `lpadmin -v` accepts: `ipp` and `ipps`.  There is no `net+ipp`/`net+ippt` —
+      # measured 2026-11-21, `net+ippt://10.3.2.30:631/ipp/print` was refused with
+      # `lpadmin: Bad device-uri scheme "net+ippt"`, and because the queue registration
+      # ran inside `cups.service`'s post-start with `set -e` that one row took the whole
+      # scheduler down (docs/paper-printers.md).
       assertion =
-        builtins.all
-        (n:
-          builtins.elem PRINTERS.${n}.scheme [
-            "ipp"
-            "ippt"
-            "net+ipp"
-            "net+ippt"
-          ])
-        queues;
+        builtins.all (n: builtins.elem PRINTERS.${n}.scheme ["ipp" "ipps"]) queues;
       message = ''
-        a row of ./printers-data.nix is not IPP, and `model = everywhere` can only
-        drive IPP: ${builtins.toJSON (map (n: PRINTERS.${n}.scheme) queues)}'';
+        a row of ./printers-data.nix is not an IPP scheme `lpadmin -v` accepts (ipp,
+        ipps), and `model = everywhere` can only drive IPP: ${
+          builtins.toJSON (map (n: PRINTERS.${n}.scheme) queues)
+        }'';
     }
     {
       # `everywhere` needs an IPP endpoint *and* a queue name in the path for a CUPS

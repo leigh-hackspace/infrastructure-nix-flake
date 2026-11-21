@@ -712,8 +712,8 @@ paper-printers:
     echo "== the rows $(printf '%s\n' "$rows" | wc -l), read out of the table itself"
     printf '%s\n' "$rows" | while IFS=$'\t' read -r queue record uri dflt; do
         [ -n "$queue" ] || continue
-        # The scheme is CUPS's vocabulary (`net+ippt`, `ipp`); curl only speaks http,
-        # and the fact being asked is about the endpoint behind the scheme.
+        # The scheme is CUPS's vocabulary (`ipp`, `ipps`); curl only speaks http, and
+        # the fact being asked is about the endpoint behind the scheme.
         url="http://${uri#*://}"
         host="${url#http://}"; host="${host%%/*}"
 
@@ -758,15 +758,19 @@ paper-printers:
         printf '         GET %s | OPTIONS %s | IPP POST %s %s\n' "$get" "$opt" "$post"
         printf '         server says: %s\n' "${srv:-nothing}"
         printf '         verdict: %s\n' "$verdict"
+        # What the row claims that this probe can still decide: the path it dials is the
+        # path that answers (by construction — the probe dials the row's own URI), and
+        # the scheme is one `lpadmin -v` accepts.  It used to also check that an
+        # IPP-native endpoint was spelled `net+ippt`, which was wrong in both halves:
+        # `net+ippt` is not a device-uri scheme (CUPS 2.4.19 refuses it with `lpadmin:
+        # Bad device-uri scheme`, and that one row took the whole scheduler down on a
+        # booted client, 2026-11-21 — docs/paper-printers.md).
         printf '         matches the row? '
         case "$verdict" in
-            IPP-native*)
-                case "$uri" in *ippt*) echo "yes — row is IPP-native like the endpoint" ;;
-                *) echo "NO — endpoint is IPP-native, row says a CUPS share: fix ./printers-data.nix's scheme" ;;
-                esac ;;
-            CUPS-shaped*)
-                case "$uri" in *ippt*) echo "NO — endpoint is a CUPS share, row says IPP-native: fix the scheme" ;;
-                *) echo "yes on the shape; the queue name is still the row's assertion to settle" ;;
+            IPP-native*|CUPS-shaped*)
+                case "$uri" in
+                    ipp://*|ipps://*) echo "yes — the path this row dials is the endpoint, and the scheme is one lpadmin accepts" ;;
+                    *) echo "NO — the endpoint answers, but this scheme is not one lpadmin accepts: fix ./printers-data.nix's scheme" ;;
                 esac ;;
             *) echo "cannot be decided from here — see docs/paper-printers.md's open items" ;;
         esac

@@ -1989,6 +1989,22 @@ thing to do with either is to date it (`journalctl -u … | grep "Failed with re
   and nothing answering on 2026-11-21, the same day `10.3.1.11` and `10.3.1.21` were dark
   too. Until it is settled, the row's queue exists, enables, and prints nothing.
 
+- **The first deploy registered no queues at all, and the fix is a unit of its own (fixed
+  2026-11-21, kept here because the symptom is what a user reports).** A Pi Room user who
+  booted the image got **no printers in the dialog over either device**. Measured on a
+  guest booted from that image (10.3.14.204): `cups.service` was `failed` with
+  `start-limit-hit`, `lpstat: Scheduler is not running`, and the journal's first cause was
+  `cups-post-start[1124]: lpadmin: Bad device-uri scheme "net+ippt"` — the `brother` row
+  spelled a scheme `lpadmin -v` has never accepted. Because `hardware.printers`'
+  post-start runs `set -e` under `cups.service`, that one row failed the scheduler and the
+  second row was never attempted; the second row would have failed too, for a different
+  reason, since `-m everywhere` asks the device and the `toshiba` answered `Host is down`
+  all day. Both are now impossible: the scheme is `ipp` (measured working on the same
+  guest, rc=0) and registration moved to `paper-printers.service`, which retries each row
+  and never fails CUPS. **What remains by design:** a printer that is asleep when the
+  client boots has no queue until it answers (`journalctl -u paper-printers` says which),
+  and the test print above is still the outstanding proof.
+
 - **Whether driverless `model = everywhere` rasterises a page from these two is
   unmeasured.** The Brother's IPP reply announces 327 bytes of attributes and sends 72,
   and neither device has a vendor PPD in nixpkgs (Brother's `beh` PPDs and Toshiba's

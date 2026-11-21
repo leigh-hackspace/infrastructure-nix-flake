@@ -268,19 +268,25 @@ and `printers-data.nix` are the plumbing: CUPS on the image, one queue per paper
 IPv4 read out of that record rather than repeated here, and `model = "everywhere"` (driverless
 IPP) because the vendor PPDs are not in nixpkgs. **`docs/paper-printers.md` owns the protocol
 receipts, the one row that is a guess, the cost this adds to the squashfs (unmeasured), and
-what a test print has to answer.** Two rules this file would otherwise miss:
+what a test print has to answer.** Three rules this file would otherwise miss:
 
-* This image has no disk, so `/var/lib/cups` — where nixpkgs' `hardware.printers` module
-  runs its `lpadmin` registration — is re-made every boot and nothing persists across one.
-  That is why `startWhenNeeded` is forced off (socket-activated CUPS would register the
-  queues *inside* the first job) and why `restartTriggers` carries the table (an edited row
-  has to re-register on the next switch, because this image does not reboot itself).
+* This image has no disk, so `/var/lib/cups` — where the queues live — is re-made every
+  boot and nothing persists across one. That is why `startWhenNeeded` is forced off
+  (socket-activated CUPS would register the queues *inside* the first job).
+* **The queues are registered by `paper-printers.service`, not by CUPS' post-start**, and
+  the difference is a measured fault rather than taste: nixpkgs' `hardware.printers`
+  generates an ExecStartPost running `set -e`, so one row that cannot register its queue
+  — a scheme `lpadmin -v` refuses, or a printer that is switched off, since `-m
+  everywhere` asks the device — fails the **scheduler** and the desktop offers no printers
+  at all. The unit retries each row, tolerates a sleeping printer and leaves CUPS alone;
+  `docs/paper-printers.md` has the receipts from the booted client that found it.
 * A queue that exists and prints nothing keeps every CUPS check green, exactly as the MQTT
   name that 404ed kept every HTTP sensor counting (docs/mqtt-int-legacy-answer-2026-11-02.md).
   `just paper-printers` proves the endpoint exists; the proof that counts is a sheet of paper
   out of the machine, run **inside a booted client** — `just pxe-client-uefi`, then ssh into
   the guest from aibox, the same "the booted guest is not a black box" rule this README's
-  authentication testing uses.
+  authentication testing uses. Read `lpstat -p` **and** `journalctl -u paper-printers`
+  together: a printer that was asleep at boot has no queue, by design.
 
 ## Files
 
@@ -291,7 +297,7 @@ what a test print has to answer.** Two rules this file would otherwise miss:
 | `make-squashfs.nix` | builds the store image (`squashfsStore`) aibox exports; `zstd -Xcompression-level 10` |
 | `leigh-logo.png` | served as `/boot/logo.png` and pulled by the iPXE menu |
 | `halloween/` | the SDDM greeter theme (login screen + the idle screensaver): `default.nix` is the package and generates every sound and image, `theme/` is the QML.  See the section above |
-| `printers.nix` | MODULE — the two paper printers: CUPS on the image, one queue each, address read from `common/dns-records.nix`. See the section above; `docs/paper-printers.md` owns the evidence |
+| `printers.nix` | MODULE — the two paper printers: CUPS on the image, one queue each registered by `paper-printers.service`, address read from `common/dns-records.nix`. See the section above; `docs/paper-printers.md` owns the evidence |
 | `printers-data.nix` | DATA — the table that module is written from: how each device is dialled, each value marked with the measurement that put it there or with the word GUESS |
 | `ssh_host_ed25519_key` | **a private key, in the open.**  See below |
 
