@@ -258,6 +258,30 @@ now adds the default route explicitly, with the gateway read from `common/vlans.
 **When the netboot breaks while the server looks healthy, read `ip -6 route show default`
 on aibox first.**
 
+## The paper printers (added 2026-11-21)
+
+The room's PCs run LibreOffice, Chrome and the office suite, and until 2026-11-21
+**nothing on this image could print at all** — `services.printing` was absent from the
+whole flake, so a Pi Room user with a document had no queue to print it into. `printers.nix`
+and `printers-data.nix` are the plumbing: CUPS on the image, one queue per paper printer
+(`brother` and `toshiba`, the two records `common/dns-records.nix` reserves for them), the
+IPv4 read out of that record rather than repeated here, and `model = "everywhere"` (driverless
+IPP) because the vendor PPDs are not in nixpkgs. **`docs/paper-printers.md` owns the protocol
+receipts, the one row that is a guess, the cost this adds to the squashfs (unmeasured), and
+what a test print has to answer.** Two rules this file would otherwise miss:
+
+* This image has no disk, so `/var/lib/cups` — where nixpkgs' `hardware.printers` module
+  runs its `lpadmin` registration — is re-made every boot and nothing persists across one.
+  That is why `startWhenNeeded` is forced off (socket-activated CUPS would register the
+  queues *inside* the first job) and why `restartTriggers` carries the table (an edited row
+  has to re-register on the next switch, because this image does not reboot itself).
+* A queue that exists and prints nothing keeps every CUPS check green, exactly as the MQTT
+  name that 404ed kept every HTTP sensor counting (docs/mqtt-int-legacy-answer-2026-11-02.md).
+  `just paper-printers` proves the endpoint exists; the proof that counts is a sheet of paper
+  out of the machine, run **inside a booted client** — `just pxe-client-uefi`, then ssh into
+  the guest from aibox, the same "the booted guest is not a black box" rule this README's
+  authentication testing uses.
+
 ## Files
 
 | File | What it is |
@@ -267,6 +291,8 @@ on aibox first.**
 | `make-squashfs.nix` | builds the store image (`squashfsStore`) aibox exports; `zstd -Xcompression-level 10` |
 | `leigh-logo.png` | served as `/boot/logo.png` and pulled by the iPXE menu |
 | `halloween/` | the SDDM greeter theme (login screen + the idle screensaver): `default.nix` is the package and generates every sound and image, `theme/` is the QML.  See the section above |
+| `printers.nix` | MODULE — the two paper printers: CUPS on the image, one queue each, address read from `common/dns-records.nix`. See the section above; `docs/paper-printers.md` owns the evidence |
+| `printers-data.nix` | DATA — the table that module is written from: how each device is dialled, each value marked with the measurement that put it there or with the word GUESS |
 | `ssh_host_ed25519_key` | **a private key, in the open.**  See below |
 
 ## Two things to know before you touch it
@@ -313,5 +339,11 @@ It is inside aibox's closure already — `${build.squashfsStore}` is an export
 directory and `${build.kernel}/bzImage` is served by nginx — so `just switch` on
 aibox builds it, and `just check-build` covers it without naming it.  To rebuild
 just the image: `nix build .#nixosConfigurations.pi-room-sys.config.system.build.toplevel`.
-After a switch, `just switch-netboot` (on aibox) remounts the export and reboots
-the clients; they are `10.3.14.101`–`10.3.14.110`.
+Measured on 2026-11-21, when the paper printers went in: that build finished rc=0
+having built 479 derivations, and the closure of the toplevel it wrote is 20.2 GiB
+over 2,389 paths (`nix path-info -h --closure-size`) — that is the number behind
+"the only cost worth counting", and the receipt, the caveat that aibox has not
+switched since so no squashfs has been re-cut, and the printers' own share of the
+20.2 GiB are `docs/paper-printers.md`.  After a switch, `just switch-netboot` (on
+aibox) remounts the export and reboots the clients; they are
+`10.3.14.101`–`10.3.14.110`.

@@ -31,6 +31,12 @@ let
   INT = import ../../../common/int-dns.nix;
   TABLES = import ./network-tables.nix;
 
+  # The Pi Room image's two PAPER printers (machines/pi-room-sys/printers-data.nix —
+  # not the 3D print servers, which are docs/printer-servers.md's).  A row does not
+  # write an address, it names a record in common/dns-records.nix and the address is
+  # read out of it, so the only drift left is the record being renamed or deleted.
+  PRINTERS = import ../../../machines/pi-room-sys/printers-data.nix;
+
   # The connection table's "ours", derived the way ../network-status.nix derives
   # it, so the assertions below are about the same list the router is handed.
   localPrefixes = TABLES.localPrefixes VLANS;
@@ -171,6 +177,9 @@ let
     builtins.attrValues
     (builtins.mapAttrs (name: r: r // {inherit name;}) RECORDS);
   macs = builtins.concatLists (map (r: r.macs) recordValues);
+  # A row's record name, with a row that has none reading as the empty string rather
+  # than dying in `hasAttr` — a malformed row must name itself, not kill the check.
+  rowRecord = n: PRINTERS.${n}.record or "";
 in
   # --- the VLAN table --------------------------------------------------------
   # VLAN ids are unique: two VLANs with one id are one VLAN wearing two blocks,
@@ -363,6 +372,25 @@ in
         })
         macs))))
     ''duplicate MAC across records: ${builtins.toJSON macs}''
+  );
+  # --- a machine's printer rows against the records table ---------------------
+  # The Pi Room image's paper-printer queues, against the records they dial.  Why an
+  # assertion at all: a queue dialling an address nothing answers builds, boots and
+  # then fails the next time somebody tries to print, which is hours from the table
+  # edit that caused it and nowhere a rendered file shows — the same shape as every
+  # other finding here.  `machines/pi-room-sys/printers.nix` asserts the same rule as a
+  # module so switching that image refuses, but `just check` cannot finish its flake
+  # step on the router, so this is the half that prints the record's name everywhere.
+  assert (
+    need
+    (
+      builtins.all
+      (n: rowRecord n != "" && builtins.hasAttr (rowRecord n) RECORDS)
+      (builtins.attrNames PRINTERS)
+    )
+    ''a paper-printer row naming a record common/dns-records.nix does not answer: ${
+        builtins.toJSON (map (n: "${n} -> ${rowRecord n}") (builtins.filter (n: rowRecord n == "" || !builtins.hasAttr (rowRecord n) RECORDS) (builtins.attrNames PRINTERS)))
+      }''
   );
   # --- the router's reading of the tables ------------------------------------
   # Every address the flake's own machines live on is an address the router

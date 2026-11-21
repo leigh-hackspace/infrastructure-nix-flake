@@ -1975,6 +1975,40 @@ thing to do with either is to date it (`journalctl -u … | grep "Failed with re
   shared by the clone — rotate them if the boxes should not be interchangeable.
   `docs/printer-servers.md`.
 
+## The paper printers, and the Pi Room image that prints to them (opened 2026-11-21, `docs/paper-printers.md` owns the evidence)
+
+- **`toshiba`'s queue name is a guess, and it is the one value in
+  `machines/pi-room-sys/printers-data.nix` that is not measured.** The device answers
+  `OPTIONS :631/printers/` with `Server: CUPS/1.5` — a CUPS-shaped share, so the URI is
+  `ipp://<addr>:631/printers/<name>` — but that server will not enumerate: `GET /printers/`,
+  `/admin/` and `/jobs/` send 0 bytes, POST is refused the same way, and `OPTIONS`
+  returns 200 for **every** name, so there is nothing on the network to read the name
+  from. It is one line in that file, and the source of the truth is someone who already
+  prints to it: `lpstat -p` on `apps1` (10.3.1.30:631's `cupsd`, which Home Assistant's
+  `ipp` "Big Laser Printer" dials) once that box is back on-network — it had **no lease**
+  and nothing answering on 2026-11-21, the same day `10.3.1.11` and `10.3.1.21` were dark
+  too. Until it is settled, the row's queue exists, enables, and prints nothing.
+
+- **Whether driverless `model = everywhere` rasterises a page from these two is
+  unmeasured.** The Brother's IPP reply announces 327 bytes of attributes and sends 72,
+  and neither device has a vendor PPD in nixpkgs (Brother's `beh` PPDs and Toshiba's
+  `estudio*` are not packaged), so `cups-filters` + ghostscript is the whole filter
+  chain this flake can build. The measurement is a sheet of paper from a booted client
+  (`just pxe-client-uefi`, then `lp` inside the guest — `docs/paper-printers.md` has the
+  commands), and if it comes out garbage or not at all, the options are a PPD from
+  outside nixpkgs (a flake-input decision) or dialling `apps1`'s cupsd instead of the
+  devices — a row edit, not a redesign.
+
+- **The image builds, and its closure is measured; the re-cut squashfs is not.** `nix build --no-link '.#nixosConfigurations.pi-room-sys.config.system.build.toplevel'` on aibox finished rc=0 on 2026-11-21 (479 derivations — a fresh build, since the image had not been built in that store since the 2026-11-19 netboot rebuild), and `nix path-info -h --closure-size` on that toplevel answers **20.2 GiB over 2,389 paths**: that is the store the image's `squashfsStore` carries, compresses at zstd level 10 with one thread, and hands out over NFS at boot. The printers' own share of it is `cups-2.4.19`, `cups-filters-2.0.1`, `libcupsfilters-2.1.1` and ghostscript — read off the `dry-build` listing — small against a closure already dominated by libreoffice and `nix-software-center`. What never happened is aibox's switch: `/srv/netboot` holds no media and no `nixos-squashfs*` path is in the store, so the media has not been re-cut and the boot-time cost of an image that carries the printers is still a number to be read (`machines/aibox/README.md`: "time the switch, read the result"), not one to be assumed free. Receipts: `docs/paper-printers.md`.
+
+- **Decide once `apps1` is reachable whether the image should dial the devices or the
+  network's existing print server.** Home Assistant's `ipp` entry dialling `10.3.1.30:631`
+  says the hackspace already has working queues on that box; if those queues *are*
+  these two printers, the Pi Room rows should name that server (shares) rather than the
+  devices' own endpoints, and the two devices stop being four protocol facts to maintain.
+  That also decides what retiring `apps1` does to printing, which nothing in the tree
+  currently says.
+
 ## Authentik
 
 - **`RadiusProvider` / `groups` ScopeMapping tidy.** The `switch-gui` provider's

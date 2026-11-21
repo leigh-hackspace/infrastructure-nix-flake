@@ -79,7 +79,13 @@
     exit 0
   '';
 in {
-  imports = [../../common/auth-posix.nix];
+  # ./printers.nix is the two paper printers the room's PCs print to (CUPS on the image,
+  # one queue each, address read from common/dns-records.nix); docs/paper-printers.md owns
+  # why they are dialled that way.  Nothing on this image could print before it.
+  imports = [
+    ../../common/auth-posix.nix
+    ./printers.nix
+  ];
 
   networking.hostName = "pxeclient";
 
