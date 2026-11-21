@@ -441,6 +441,33 @@ curl -s http://10.3.1.1:8091/api/leases | grep -o '"stale":[^,]*'   # null = liv
 has not), `"unwritten"` means the file is older than two lease lengths; the page
 banners either rather than showing a table of zeroes.
 
+The same silence has a second shape, and it is a **lost grant** rather than a lost file.
+The lease file is `0640 root:root`, so `machines/gw/lease-reader.nix` hands
+`conntrack-readers` read — and dnsmasq takes that group back every time it starts. On
+2026-11-21 a `systemctl restart dnsmasq` (the prescribed repair for the dead-RA-timer
+fault) left it `root:root`: the path unit fired twice, both runs finished while the group
+was still right, the chown landed after them, and its event was merged into a start job
+already in flight, so no third run followed. The page then answered 503 with
+`/var/lib/dnsmasq/dnsmasq.leases: Permission denied (os error 13)` for three and a half
+hours, and `lease-reader-watch` reported that 503 as a "note" because it fetched with
+`curl -f`, which throws away the body naming the fault. Both are fixed in that module
+(the grant also runs as dnsmasq's `ExecStartPost`; the watch fails on any non-200). So:
+**a 503 from `/api/leases` is a permissions fault on that one file, not a broken
+dashboard**, and `sudo chgrp conntrack-readers /var/lib/dnsmasq/dnsmasq.leases; sudo chmod
+0640 /var/lib/dnsmasq/dnsmasq.leases` repairs it in place — never `install`/`mv` (see the
+frozen-inode case above).
+
+Three things now make that fault cost minutes rather than half a day: the grant runs on
+every dnsmasq start **without needing an event**, the 5-minute `lease-reader-watch` reads
+the group and re-grants it itself (then stays red for one interval, because a repair means
+a trigger was missed), and `Router lease table (network-info)` in
+`common/monitoring-endpoints.nix` is a gatus row that goes to Slack — the fleet's
+Prometheus `ServiceFailed` rule still has no receiver, so a red unit on `gw` is **not** an
+alarm on its own. That row is an HTTP check on `/api/leases` **and** requires
+`"stale":null` in the body, so the 2026-10-28 shape (a file nobody is writing, answering
+200 with every row lapsed) pages too. The `curl` above is the same thing the row reads,
+so a `null` there means the alarm is quiet and a 503 means it is not.
+
 This is why `common/hosts.nix` holds **addresses, not names**: every machine in this
 network is a DHCP reservation, and a table that resolved through the resolver it is
 meant to be independent of would not be one.

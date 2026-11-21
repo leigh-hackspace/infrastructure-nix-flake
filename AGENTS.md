@@ -245,9 +245,13 @@ X first", X has already cost someone a day.
    5-minute `lease-reader-watch.timer` that fails when the channel dies; `/api/leases`
    answers `stale` (`crates/network-status/src/leases.rs` is the only definition of it)
    and the page banners it, because a table of zeroes is otherwise indistinguishable from
-   a quiet network. The general form, including the meta-lesson that a doc's "measured on
-   the box" may be quoting your own earlier command: `docs/nix-dev-workflow.md`, "Never
-   replace a file a daemon has open".
+   a quiet network. **The grant can be lost, not just the file**: dnsmasq chowns the lease
+   file `root:root` on every start, so the module also grants as dnsmasq's `ExecStartPost`
+   — on 2026-11-21 a restart's chown had its path-unit event merged into a run already in
+   flight, and the page 503'd for 3.5 h while the watch called it a "note" (`curl -f`
+   discards the 503 body that names the fault). Both are fixed there. The general form,
+   including the meta-lesson that a doc's "measured on the box" may be quoting your own
+   earlier command: `docs/nix-dev-workflow.md`, "Never replace a file a daemon has open".
 30. **Firmware is documented in the firmware's own repository; this repo keeps the pins, the
    verbs and the network.** The C110 as a board — hardware and revisions, what is on the 8 MiB
    flash, flashing from stock, the rescue mechanism, how the image is built, and every

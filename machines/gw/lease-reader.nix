@@ -51,21 +51,37 @@
 #     activation that restarts dnsmasq — which is every DNS-table change, because
 #     the network tables are dnsmasq `restartTriggers`.
 #
-# So the group is applied in three places, each of which is cheap and idempotent
+# So the group is applied in four places, each of which is cheap and idempotent
 # and none of which is a timer running for no reason:
 #
 #   1. a tmpfiles rule, so the file has the group from the moment it is created
-#      (`f`, then `z` — `f` creates, `z` adjusts an existing file, and the order
-#      inside one module's list is preserved);
+#      (`f`, then `z` — `f` creates and does not truncate, `z` adjusts an existing
+#      file, and the order inside one module's list is preserved);
 #   2. `lease-reader.service`, a oneshot that says nothing and does nothing when
 #      the group is already right — started by `lease-reader.path`, which watches
-#      `/var/lib/dnsmasq` for an entry being created, removed or replaced.  That
-#      is exactly the case that would lose the group: an in-place rewrite keeps the
-#      inode, and with it the group and the mode, which is what the live file shows
-#      (measured 2026-10-28 on the box: overwritten as `root:root 600`, back to
-#      `root:conntrack-readers 640` within a second, and the content byte-identical);
+#      `/var/lib/dnsmasq` for an entry being created, removed or replaced **or
+#      chowned** (an inotify attribute event on a child does reach a watch on its
+#      directory).  An in-place rewrite keeps the inode, and with it the group and
+#      the mode, which is what the live file shows (measured 2026-10-28 on the box:
+#      overwritten as `root:root 600`, back to `root:conntrack-readers 640` within a
+#      second, and the content byte-identical) — but dnsmasq's own start *is* an
+#      attribute change on that inode, and it does fire this;
 #   3. an `ExecStartPre=+` on network-status, so a start never races the path unit
-#      and the first `/api/leases` after a boot is not a 503.
+#      and the first `/api/leases` after a boot is not a 503;
+#   4. an `ExecStartPost=+-` on **dnsmasq**, because a path unit's trigger is an
+#      event and an event can be lost.  Measured 2026-11-21: `systemctl restart
+#      dnsmasq` at 11:31:08 (the prescribed repair for the dead-RA-timer fault,
+#      `machines/gw/README.md`) fired the path unit twice, both runs finished while
+#      the group was still right, dnsmasq's chown landed after them, and its own
+#      event was merged into a start job that was already in flight — so no third
+#      run followed and the file was `root:root 0640` again.  The page then answered
+#      503 with `/var/lib/dnsmasq/dnsmasq.leases: Permission denied (os error 13)`
+#      for three and a half hours.  A `chgrp root` on the same box afterwards, with
+#      no run in flight, was repaired inside a second — which is what makes the
+#      first case a lost event rather than a broken watch.  Running the same
+#      idempotent grant once dnsmasq has started asks for no event at all; `+-`
+#      because a chgrp that fails must not fail the daemon that answers DNS and DHCP
+#      for the building (the watch below is the alarm for that).
 #
 # The path unit is the one that differs from ./conntrack-reader.nix, and the
 # difference is the point: `/proc/net/nf_conntrack` only loses its group when
@@ -133,10 +149,27 @@
 #
 # It does not make the file readable by anyone else, it does not copy it
 # somewhere world-readable, and it does not give the service `CAP_DAC_OVERRIDE`.
-# The watch neither restarts anything nor writes the lease file: it is a witness,
-# not an actor.  An unreadable file is reported by `/api/leases` as an error naming
-# the OS's own reason, never as an empty table — because "no DHCP clients" is a
-# conclusion an operator would act on, and it would be wrong.
+# The watch **restarts nothing** — that is the line, because this is the box that
+# answers DNS and DHCP for the building and no timer is allowed to interrupt them
+# — and it never writes the lease file's *contents*; what it does do is re-grant
+# the file's group when it finds that lost, because a permission is a fact it can
+# read and assert where an inotify event may simply never arrive (2026-11-21 in
+# this file's header).  An unreadable file is reported by `/api/leases` as an error
+# naming the OS's own reason, never as an empty table — because "no DHCP clients" is
+# a conclusion an operator would act on, and it would be wrong.
+#
+# ## The alarm that reaches a person is not on this box
+#
+# A failed unit is only visible to someone running `systemctl --failed`, and this
+# fleet's Prometheus `ServiceFailed` rule has **no receiver** (`machines/services1/
+# services/observability.nix`: "No alertmanager is wired up yet").  That is why the
+# same condition is also a gatus endpoint — `Router lease table (network-info)` in
+# `common/monitoring-endpoints.nix`, which goes to Slack like every other check on
+# the board — and why it is an HTTP check on `/api/leases` rather than on the page:
+# a dashboard can answer 200 while the file it reads is unreadable.  That row also
+# requires `"stale":null` in the body, because the other way this channel dies (the
+# file replaced under dnsmasq's descriptor, 2026-10-28) answers **200** and only the
+# verdict says so.
 {
   config,
   lib,
@@ -181,10 +214,14 @@
     ${pkgs.coreutils}/bin/chgrp ${group} "$f"
     ${pkgs.coreutils}/bin/chmod 0640 "$f"
   '';
-  # The channel, checked.  Two halves, deliberately of different severity, and
-  # both are things the re-grant script above cannot see because it only ever asks
-  # "is the group right" — to which a frozen file answers yes.
+  # The channel, checked — and, in the one case it can fix, repaired.  Three steps,
+  # deliberately of different severity:
   #
+  #   0. the grant, **read rather than waited for**.  Its trigger is an inotify event
+  #      and an event can be lost (the 2026-11-21 restart in this file's header), so
+  #      the state it maintains is also asserted here.  A lost event then costs the
+  #      page at most this timer's interval instead of three and a half hours, and
+  #      the check still fails — it repaired something the event-driven path missed;
   #   1. the dashboard's own verdict, taken from `/api/leases` so that this file
   #      holds no second definition of "stale" to drift from the one the page
   #      banners on (`crates/network-status/src/leases.rs::stale`);
@@ -195,25 +232,51 @@
     lease=${leaseFile}
     fail() { echo "lease channel: $*" >&2; exit 1; }
 
-    [ -r "$lease" ] || fail "${leaseFile} cannot be opened at all"
+    [ -e "$lease" ] || fail "${leaseFile} does not exist at all — dnsmasq creates it when it starts, so this is dnsmasq's fault rather than a permissions one"
+
+    # 0. Re-grant, and say so.  Idempotent, silent when the group is already right,
+    #    and it touches nothing but the file's group and mode — the same chgrp
+    #    `lease-reader.service` performs at boot and dnsmasq's `ExecStartPost`
+    #    performs after every start.  This is not the "witness, not an actor" rule
+    #    above being broken: that rule is about never *restarting* dnsmasq from a
+    #    timer, and this restarts nothing.  The check still exits non-zero when it
+    #    had to repair, because a repair means the trigger that should have done it
+    #    was missed — a red unit (or the gatus row beside this in
+    #    `common/monitoring-endpoints.nix`) is how that stays visible.
+    repaired=""
+    if [ "$(${pkgs.coreutils}/bin/stat -c '%G %a' "$lease")" != "${group} 640" ]; then
+      repaired=$(${pkgs.coreutils}/bin/stat -c '%U:%G %a' "$lease")
+      ${pkgs.coreutils}/bin/chgrp ${group} "$lease"
+      ${pkgs.coreutils}/bin/chmod 0640 "$lease"
+      echo "lease channel: ${leaseFile} was $repaired — re-granted ${group} 0640 (the grant's trigger was missed; machines/gw/lease-reader.nix)" >&2
+    fi
 
     # 1. What the page believes.  Not run when the dashboard is not up: its
     #    absence is a different fault with its own signal, and failing here too
     #    would be two alarms for one cause.
     if ${pkgs.systemd}/bin/systemctl is-active --quiet network-status; then
-      body=$(${pkgs.curl}/bin/curl -fsS -m 5 ${apiEndpoint}/api/leases 2>/dev/null || true)
-      if [ -z "$body" ]; then
-        echo "lease channel: note — ${apiEndpoint}/api/leases gave nothing (see journalctl -u network-status)" >&2
-      else
-        case "$body" in
-          *'"stale":null'*) : ;;
-          *)
-            verdict=$(printf '%s' "$body" | ${pkgs.gnused}/bin/sed -n 's/.*"stale":\("[a-z-]*"\).*/\1/p')
-            [ -n "$verdict" ] || verdict='(no verdict in the response)'
-            fail "the dashboard's own verdict on ${leaseFile} is $verdict — ${apiEndpoint}/api/leases"
-            ;;
-        esac
-      fi
+      # No `curl -f` here, deliberately: `-f` throws the *body* away along with the
+      # status, and an unreadable lease file is a 503 whose body is the sentence
+      # that names the fault (`{"error":"…: Permission denied (os error 13)"}`).
+      # Until 2026-11-21 this step used `-f`, so a broken channel arrived here as an
+      # empty string and was reported as a "note" — the page answered 503 for three
+      # and a half hours while this timer said nothing about it.
+      body=$(${pkgs.coreutils}/bin/mktemp)
+      trap 'rm -f "$body"' EXIT
+      code=$(${pkgs.curl}/bin/curl -sS -m 5 -o "$body" -w '%{http_code}' ${apiEndpoint}/api/leases 2>/dev/null || true)
+      case "$code" in
+        200) : ;;
+        "") fail "network-status is up but ${apiEndpoint}/api/leases did not answer at all" ;;
+        *) fail "network-status cannot read the lease file — HTTP $code from ${apiEndpoint}/api/leases: $(${pkgs.coreutils}/bin/head -c 300 "$body")" ;;
+      esac
+      case "$(cat "$body")" in
+        *'"stale":null'*) : ;;
+        *)
+          verdict=$(${pkgs.gnused}/bin/sed -n 's/.*"stale":\("[a-z-]*"\).*/\1/p' "$body")
+          [ -n "$verdict" ] || verdict='(no verdict in the response)'
+          fail "the dashboard's own verdict on ${leaseFile} is $verdict — ${apiEndpoint}/api/leases"
+          ;;
+      esac
     fi
 
     # 2. The mechanism.  dnsmasq keeps this fd open for its whole life and
@@ -235,6 +298,10 @@
       done
     done
     [ "$held" = 1 ] || echo "lease channel: note — no dnsmasq fd on $lease" >&2
+
+    # Last, so everything above has still been checked: the repair is a failure to
+    # report, not a reason to skip the rest.
+    [ -z "$repaired" ] || fail "${leaseFile} was $repaired and this check re-granted ${group} 0640 — the page answered 503 until now. Nothing else is wrong; the event-driven grant was missed (machines/gw/lease-reader.nix, 2026-11-21)."
   '';
 in {
   assertions = [
@@ -268,6 +335,14 @@ in {
     # No `wantedBy`: the path unit starts it, and the ExecStartPre below runs the
     # same script.  A service that is also wanted by multi-user.target would be a
     # second thing that can fail a switch for no extra benefit.
+    #
+    # Waits for dnsmasq, because the event that triggered it is usually dnsmasq's
+    # own start: an in-place rewrite of the lease file does not touch the group, and
+    # the chown does — so a run that starts *before* the daemon is up is a run that
+    # reads a group nobody will break for another few milliseconds (the 2026-11-21
+    # loss in this file's header).  Ordering it after the daemon means a
+    # path-triggered run cannot finish before the chown it exists to undo.
+    after = ["dnsmasq.service"];
     serviceConfig = {
       Type = "oneshot";
       ExecStart = "+${grant}";
@@ -292,6 +367,15 @@ in {
   # lease table while it waits for the path unit.
   systemd.services.network-status.serviceConfig.ExecStartPre = lib.mkBefore [
     "+${grant}"
+  ];
+
+  # And after every dnsmasq start, which is the one thing that takes the group back.
+  # `-` because a chgrp that fails must not fail the daemon answering DNS and DHCP
+  # for the building; `lease-reader-watch` is the alarm for that, and it is red
+  # within five minutes.  This is the half that does not depend on an inotify event
+  # surviving — see this file's header for the restart that lost one.
+  systemd.services.dnsmasq.serviceConfig.ExecStartPost = lib.mkAfter [
+    "+-${grant}"
   ];
 
   systemd.services.lease-reader-watch = {

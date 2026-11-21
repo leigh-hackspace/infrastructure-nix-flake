@@ -657,6 +657,27 @@ thing holding the truth.
   it does, and the *actual* mechanism — dnsmasq chowns the file every time it starts —
   is what the unit is really for. Re-measure a load-bearing premise instead of
   inheriting it, and write down the command, not just the conclusion.
+- **A guard that waits for an event can lose the event, and then it is a guard that
+  has never run.** `lease-reader.path` watches `/var/lib/dnsmasq` so a chown of the
+  lease file re-grants the dashboard's group; on 2026-11-21 a `systemctl restart
+  dnsmasq` fired it twice, both runs finished while the group was still right, the
+  chown landed after them, and the event it produced was merged into a start job
+  already in flight — so nothing ran again, and the page answered
+  `Permission denied (os error 13)` for three and a half hours. The repair was not a
+  better trigger but a **second mechanism that needs no event**: the same idempotent
+  grant now also runs as dnsmasq's `ExecStartPost`, and the path unit stays for the
+  `install`-replacement case. When a check depends on a notification, ask what happens
+  to the state if the notification is dropped, and give it a path that does not — and
+  make the 5-minute check of that state **repair it and still fail**, so a lost event
+  costs one interval of a broken page instead of an unbounded outage.
+
+- **`curl -f` in a watch turns the diagnosis into silence.** `lease-reader-watch`
+  fetches `/api/leases` to ask the dashboard whether the lease channel is alive, and it
+  used `-f`: that discards the **body** along with the failing status, and the body was
+  the one sentence naming the fault (`{"error":"…: Permission denied (os error 13)"}`).
+  So a 503 arrived as an empty string, was reported as a "note", and the timer stayed
+  green through the whole outage above. Fetch with `-w '%{http_code}'` and keep the
+  body; treat any non-200 from a unit you can see is active as the failure it is.
 
 ## One sample per side cannot attribute anything
 

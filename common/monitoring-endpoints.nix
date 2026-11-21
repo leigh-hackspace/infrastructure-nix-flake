@@ -103,6 +103,12 @@
     group ? null,
     alert ? slackAlert,
     insecure ? false,
+    # Extra checks on the response, appended after `status` and before the
+    # response-time ceiling.  Added for the lease table, which is the one endpoint
+    # where a **200 is not enough**: `/api/leases` answers 200 with
+    # `"stale":"all-expired"` when dnsmasq's file has been replaced under it and
+    # nobody is writing the path any more (`docs/router-and-dns.md`, 2026-10-28).
+    extraConditions ? [],
   }:
     (lib.optionalAttrs (group != null) {inherit group;})
     // {
@@ -110,10 +116,10 @@
       method = "GET";
       interval = "60s";
       timeout = "10s";
-      conditions = [
-        status
-        "[RESPONSE_TIME] < 5000"
-      ];
+      conditions =
+        [status]
+        ++ extraConditions
+        ++ ["[RESPONSE_TIME] < 5000"];
       alerts = [alert];
     }
     // (lib.optionalAttrs insecure {
@@ -183,6 +189,43 @@
       name = "Router";
       url = HOSTS.router;
       group = "Infrastructure";
+    })
+
+    # The router's DHCP lease table, because the page can be broken while every name
+    # on the board is green: `network-status` answers 503 on `/api/leases` with the
+    # file's own errno when it cannot read `/var/lib/dnsmasq/dnsmasq.leases`, and that
+    # is a **permission on one file**, invisible to a check of the vhost or of the
+    # process.  Measured 2026-11-21: a `systemctl restart dnsmasq` chowned the file
+    # `root:root`, the re-grant's inotify trigger was missed, and the page was 503
+    # for 3 h 30 min — the box's own `lease-reader-watch` was red the whole time and
+    # nothing told anyone, because Prometheus's `ServiceFailed` rule has no receiver
+    # (`machines/services1/services/observability.nix`).  So this row is the receiver
+    # for that one fault, over the channel that already exists.
+    #
+    # failure-threshold 6 (~6 min at 60 s) on purpose: `machines/gw/lease-reader.nix`
+    # now re-grants the group from its own 5-minute check, so a single lost event
+    # heals by itself and must not page — what pages is a channel still broken after
+    # that, which is the case nobody can fix without being told.
+    #
+    # The second condition is the other half, and the reason this is not just an HTTP
+    # check: a **200 with a dead writer** is the 2026-10-28 shape (the file replaced
+    # under dnsmasq's open descriptor, every row lapsed, the page plausible). `stale`
+    # is `network-status`'s own verdict on that (`crates/network-status/src/leases.rs`
+    # is its only definition) and `null` is the healthy value; `pat()` is gatus's
+    # pattern function (`[BODY] == pat(*…*)`, `config/endpoint`'s `pat(` prefix).
+    (mkHttp {
+      name = "Router lease table (network-info)";
+      url = "http://${HOSTS.router}:8091/api/leases";
+      group = "Infrastructure";
+      extraConditions = [
+        ''[BODY] == pat(*"stale":null*)''
+      ];
+      alert =
+        slackAlert
+        // {
+          failure-threshold = 6;
+          success-threshold = 2;
+        };
     })
     (mkPing {
       name = "NAS2";
