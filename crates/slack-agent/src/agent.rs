@@ -20,7 +20,7 @@
 //!   error, because a model handed an unexplained failure tends to answer from
 //!   memory instead.
 
-use crate::engine::{assistant_message, tool_result, Engines};
+use crate::engine::{assistant_message, tool_result, Engines, Turn};
 use crate::prompt::system_prompt;
 use common_json::{self as json, Json};
 use common_mcp::{Client, Tool};
@@ -60,8 +60,28 @@ pub const MAX_SPEECH_TOKENS: u32 = 320;
 /// too, but a test has to be run; this has to be compiled (`docs/voice-assistant-2026-11-16.md`).
 const _: () = assert!(MAX_SPEECH_TOKENS < MAX_ANSWER_TOKENS);
 
+/// What a streaming answer hands its listener, one piece at a time.
+///
+/// Two cases and not one, because the loop cannot know in advance whether a round that starts
+/// with words will end as an answer or as a tool call.  A listener that renders or speaks text as
+/// it arrives therefore *must* be able to be told to take it back, or the failure mode is the
+/// assistant saying the same clause twice in a room full of people.
+#[derive(Debug, Clone)]
+pub enum Piece {
+    Text(String),
+    /// Discard everything shown so far for this turn: the round that produced it did not answer.
+    Reset,
+}
+
 pub struct Agent {
     engines: Engines,
+    /// How long a streaming answer may stay silent before this harness calls it broken.
+    ///
+    /// Not the request timeout: a stream that is *alive* can take minutes, and the whole point of
+    /// streaming is to be able to say so.  What is worth a deadline is silence, and the measured
+    /// engines send an SSE keep-alive comment about every 10 s, so 45 s of nothing is a dead
+    /// upstream rather than a thinking model (`docs/slack-agent-2026-11-16.md` §16).
+    stream_idle: std::time::Duration,
     /// MCP servers, in the order given. A tool is looked up across all of them,
     /// first match wins, so two servers cannot quietly offer the same name.
     servers: Vec<(String, Client)>,
@@ -113,6 +133,9 @@ impl Agent {
     /// why `slack-agent tools` doubles as the health check. The warnings are
     /// returned rather than printed so both callers (CLI and unit) put them where
     /// they belong: stderr for a human, the journal for a service.
+    /// Silence tolerance for a streaming answer; see [`Agent::stream_idle`].
+    pub const STREAM_IDLE: std::time::Duration = std::time::Duration::from_secs(45);
+
     pub fn new(engines: Engines, mcp_urls: &[String]) -> (Agent, Vec<String>) {
         let mut servers = Vec::new();
         let mut tools = Vec::new();
@@ -142,6 +165,7 @@ impl Agent {
         (
             Agent {
                 engines,
+                stream_idle: Self::STREAM_IDLE,
                 servers,
                 tools,
                 owners,
@@ -188,6 +212,93 @@ impl Agent {
         max_tokens: u32,
         mut on_event: impl FnMut(&str),
     ) -> Result<Answer, String> {
+        self.run(transcript, question, max_tokens, &mut on_event, None)
+    }
+
+    /// [`ask_budget`] with the answer's **text handed out as it is decoded**.
+    ///
+    /// The loop is identical — same rounds, same tool budget, same grounding rule — and the
+    /// only difference is that the closing round's tokens arrive while they are still being
+    /// produced. They arrive as [`Piece`]s rather than strings because of one thing the loop
+    /// cannot know in advance: a round that starts with words can still turn out to be a tool
+    /// call, and a listener that has already shown or spoken those words must be told to throw
+    /// them away. That is `Piece::Reset`, and it is the reason this is not just `&mut dyn
+    /// FnMut(&str)`.
+    pub fn ask_budget_stream(
+        &mut self,
+        transcript: &mut Vec<Json>,
+        question: &str,
+        max_tokens: u32,
+        mut on_event: impl FnMut(&str),
+        mut on_piece: impl FnMut(Piece),
+    ) -> Result<Answer, String> {
+        self.run(transcript, question, max_tokens, &mut on_event, Some(&mut on_piece))
+    }
+
+    /// Send a turn's prompt prefix to the engine so the real turn is cheaper.  See
+    /// [`Engines::prefill`] for what it buys and for the measured `max_tokens: 1` that makes it
+    /// work; the point here is that the **prefix must be the one the real request will send**,
+    /// so this clones the transcript, appends the question and trims it exactly the way a turn
+    /// does. A prefill that does not match is not a warm-up, it is a wasted request.
+    pub fn prefill(
+        &mut self,
+        transcript: &[Json],
+        question: &str,
+    ) -> Result<crate::engine::Prefill, String> {
+        let mut t = transcript.to_vec();
+        t.push(json::object(vec![
+            ("role".to_string(), json::string("user")),
+            ("content".to_string(), json::string(question)),
+        ]));
+        trim(&mut t);
+        let tools = self.openai_tools();
+        self.engines.prefill(&t, &tools)
+    }
+
+    /// One `chat` call, buffered or streamed, with the streaming plumbing in exactly one place.
+    ///
+    /// `showed_text` is reported out through the argument because the caller needs both the
+    /// [`Turn`] and the fact of whether words went out: a tool round that streamed words must be
+    /// unsaid, and a stream that broke after words must not be retried.  Both are decisions the
+    /// loop makes, not this function, so this function only reports.
+    fn one_chat(
+        &mut self,
+        transcript: &[Json],
+        tools: &[Json],
+        budget: u32,
+        stream: &mut Option<&mut dyn FnMut(Piece)>,
+        showed_text: &mut bool,
+    ) -> Result<Turn, crate::engine::StreamFail> {
+        let idle = self.stream_idle;
+        let Some(sink) = stream.as_deref_mut() else {
+            return self
+                .engines
+                .chat(transcript, tools, budget)
+                .map_err(|msg| crate::engine::StreamFail { msg, emitted: false });
+        };
+        match self.engines.chat_stream(
+            transcript,
+            tools,
+            budget,
+            idle,
+            &mut |t: &str| sink(Piece::Text(t.to_string())),
+        ) {
+            Ok((turn, stats)) => {
+                *showed_text = stats.emitted;
+                Ok(turn)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    fn run(
+        &mut self,
+        transcript: &mut Vec<Json>,
+        question: &str,
+        max_tokens: u32,
+        on_event: &mut dyn FnMut(&str),
+        mut stream: Option<&mut dyn FnMut(Piece)>,
+    ) -> Result<Answer, String> {
         let started = Instant::now();
         transcript.push(json::object(vec![
             ("role".to_string(), json::string("user")),
@@ -206,23 +317,35 @@ impl Agent {
 
         loop {
             rounds += 1;
-            let turn = match self
-                .engines
-                .chat(transcript, &tools, budget)
-            {
+            // One chat call, two ways — see `one_chat`. A failure that happened before any
+            // part of the answer reached the listener is retried on the next engine exactly as
+            // it always was; one that happened *after* is not retryable, because the room has
+            // already heard words it would then hear twice.
+            let mut showed_text = false;
+            let turn = match self.one_chat(transcript, &tools, budget, &mut stream, &mut showed_text) {
                 Ok(turn) => turn,
                 Err(first) => {
-                    // One retry, on another engine: `common/pi-endpoints.nix`
-                    // already records that services2 goes down for builds because
-                    // its RAM *is* the engine, and a chat bot should sail through
-                    // that rather than reply "engine failed".
+                    if first.emitted {
+                        if let Some(s) = stream.as_deref_mut() {
+                            s(Piece::Reset);
+                        }
+                        return Err(format!(
+                            "the answer stream broke after parts of it had already been sent: {}",
+                            first.msg
+                        ));
+                    }
                     self.engines.give_up();
-                    on_event(&format!("engine failed: {first} — trying the next one"));
-                    match self.engines.chat(transcript, &tools, budget) {
+                    on_event(&format!("engine failed: {} — trying the next one", first.msg));
+                    match self.one_chat(transcript, &tools, budget, &mut stream, &mut showed_text) {
                         Ok(turn) => turn,
                         Err(second) => {
                             self.engines.give_up();
-                            return Err(format!("every inference endpoint failed: {second}"));
+                            if second.emitted {
+                                if let Some(s) = stream.as_deref_mut() {
+                                    s(Piece::Reset);
+                                }
+                            }
+                            return Err(format!("every inference endpoint failed: {}", second.msg));
                         }
                     }
                 }
@@ -253,6 +376,17 @@ impl Agent {
                     turn.engine
                 ));
                 continue;
+            }
+
+            // A round that streamed words and then asked for tools has to be unsaid: those
+            // words were a plan, not an answer, and a listener that is speaking as it goes has
+            // already started saying them.  Measured on services2 a tool round carries no
+            // `content` deltas at all, so this is rare — but "rare" on a voice path is the same
+            // word as "sometimes", and this is the only place that can know.
+            if showed_text && !turn.tool_calls.is_empty() {
+                if let Some(sink) = stream.as_deref_mut() {
+                    sink(Piece::Reset);
+                }
             }
 
             if turn.tool_calls.is_empty() {
@@ -303,10 +437,16 @@ impl Agent {
                         ),
                     ),
                 ]));
+                // The closing turn **is** the answer, so it streams like one: a room that has
+                // waited through five tool rounds should not also wait for the whole reply.
+                let mut closing_showed = false;
                 let final_turn = self
-                    .engines
-                    .chat(transcript, &[], budget)
-                    .map_err(|e| format!("out of tool budget ({} calls) and the closing turn failed too: {e}", log.len()))?;
+                    .one_chat(transcript, &[], budget, &mut stream, &mut closing_showed)
+                    .map_err(|e| format!(
+                        "out of tool budget ({} calls) and the closing turn failed too: {}",
+                        log.len(),
+                        e.msg
+                    ))?;
                 transcript.push(json::object(vec![
                     ("role".to_string(), json::string("assistant")),
                     ("content".to_string(), json::string(final_turn.text.clone().unwrap_or_default())),

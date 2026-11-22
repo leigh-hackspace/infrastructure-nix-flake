@@ -30,6 +30,13 @@
 //! log is not, and the cap turns "typo in the URL" into an error rather than an
 //! out-of-memory in a unit that other things depend on.
 
+/// Reading a response **incrementally**, for a body that arrives over seconds rather than in
+/// one read.  Its own module because it is a different job from the buffered exchange below —
+/// different timeout semantics (idle, not total), different return type (a live reader, not a
+/// `String`), and it must not be reachable by a caller that just wants an answer: see its
+/// header for why buffering a streaming body is the bug this exists to prevent.
+pub mod stream;
+
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
@@ -80,13 +87,13 @@ impl Response {
 }
 
 /// An `http://host[:port]` origin plus a path.
-struct Target {
-    host: String,
-    port: u16,
-    path: String,
+pub(crate) struct Target {
+    pub(crate) host: String,
+    pub(crate) port: u16,
+    pub(crate) path: String,
 }
 
-fn parse_url(url: &str) -> Result<Target, String> {
+pub(crate) fn parse_url(url: &str) -> Result<Target, String> {
     let rest = match url.strip_prefix("http://") {
         Some(r) => r,
         None => {

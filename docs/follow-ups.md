@@ -3323,6 +3323,39 @@ outer shell, or drop the `grep -v` filter and let `--message-format=short` do th
 then verify it can both fail and pass: `just clippy` on a tree with an introduced
 `let _ = 1u8 as usize;`-style lint must exit non-zero.
 
+## `cargo test --workspace --offline` cannot resolve on aibox (measured 2026-11-22)
+
+`just test` — and any `cargo test --workspace --offline` in the dev shell — dies before
+compiling:
+
+```
+error: failed to download `allocator-api2 v0.2.21`
+Caused by: attempting to make an HTTP request, but --offline was specified
+```
+
+`allocator-api2` is a dependency of `hashbrown`, so this is the **workspace's** dep graph
+(one crate in it wants a hashbrown build with the `allocator-api2` feature), not anything
+`crates/voice-assistant` or `crates/slack-agent` pulls. **Verified against clean HEAD** in a
+throwaway `git worktree` with `CARGO_TARGET_DIR` pointed outside the tree: identical failure,
+so it is not this month's change and no reverted flag caused it.
+
+**Blocks:** `just test` on aibox, and therefore the "run the whole suite before a deploy"
+habit, which is why `docs/work-log-2026-11.md` records per-crate runs instead.
+
+**Workaround (what was actually used 2026-11-22):** per-crate, which resolves a smaller
+graph and is fully offline — `cargo test --offline -p common-web -p common-http -p
+slack-agent -p voice-assistant`. Note `just test` also runs
+`bash common/shared-rs-links.sh` first, which the per-crate form does not need here only
+because the symlinks already exist.
+
+**To do:** either warm the cargo store for the full graph once (an online `cargo fetch` in
+the workspace, or let `check-build` populate it via crane's vendored deps — note the two
+caches are *not* the same thing, so this may mean building `cargoDeps` for the offending
+crate), or make `just test` say so out loud instead of exiting 101 with a download error
+that reads like a broken tree. The second is a `justfile` change and the first is an
+hour's work; the failure mode of doing neither is that the workspace-wide gate quietly
+stops being run.
+
 ## Strata's engine corrupts its own store path, which is why aibox's substitution has kept failing (diagnosed 2026-11-14, while deploying `pi-agent`)
 
 `just check-build` dies on the aibox toplevel while **substituting the engine**:
@@ -3805,14 +3838,14 @@ directory.
    number someone has watched, not a threshold invented now; `probe_false_positives` in
    `/status.json` counts it and is deliberately not asserted. This is the gate before the
    speaker.
-4. **Two cheap latency wins, both measured as real costs.** A *resident* piper (the
-   per-request process spends ~2.4 s of its 2.5 s starting) and a smaller whisper model on
-   aibox (2.7 s per 3 s clip on CPU `medium`; note `--device 1` no longer exists in
+4. **A smaller whisper model on aibox.** 2.7 s per 3 s clip on CPU `medium`; `--device 1` no longer exists in
    whisper.cpp 1.9.5 — the `machines/aibox/whisper.nix` header still says the unit cannot
    restart, which is stale: the service is up and running on CPU, and that comment needs
-   re-reading against the current pin). And a **barge-in** design if the speaker ever turns
-   on: no AEC exists, so it is server-side against the playback clock, for which
-   `audio_ms`/`played_at` are already recorded.
+   re-reading against the current pin). The **resident piper** half of this was built on
+   2026-11-22 (`tts.rs`'s `Synthesiser`, `--output-dir` mode with a counted cold fallback)
+   and is undeployed — see the streaming section at the end of this file. A **barge-in**
+   design is still open if the speaker ever turns on: no AEC exists, so it is server-side
+   against the playback clock, for which `audio_ms`/`played_at` are already recorded.
 5. **`cam8`'s RTSP credentials are the firmware defaults** (`thingino:thingino`), plaintext
    in `/srv/frigate/config/config.yaml` — off-flake runtime state with no flake owner.
    Pre-existing for the video stream, but an always-on microphone raises the price; a
@@ -4020,3 +4053,50 @@ and the answer key on this box and reads both lines back.
   nothing until), one arm at a time (that doc's noise floor is real: a control pass once read
   807 tok/s, so under 10 % is nothing), and gate quality on pi's usage rather than on
   `strata-answer-score.py` — nine greedy items cannot see KL 0.006.
+
+## The streaming voice turn (built 2026-11-22): shipped in the tree, unmeasured on the network
+
+`docs/voice-assistant-2026-11-16.md` §"Streaming end to end" and
+`crates/voice-assistant/README.md` §"The turn is a pipeline" own what was built and how it
+fails: rolling ASR (`asr.rs`), the engine prefill (`POST /v1/ask/prefill`, and the device-facing
+`POST /v1/warm`), the streamed answer (`POST /v1/ask/stream` → `/v1/turn`), the sentence
+splitter (`sentence.rs`), the resident piper (`tts.rs`) and the SSE plumbing in both directions
+(`common-rs/web/src/stream.rs`, `common-rs/http/src/stream.rs`). The overlap is **tested and
+falsifiable** (`turn::tests::the_first_audio_arrives_while_the_model_is_still_answering`,
+verified to fail when the voice is slowed past the model). What is not done is everything that
+needs a running box.
+
+1. **Deploy it, then read one number.** `just check-build services1 && just switch` (on
+   services1) — the build is the gate that catches the crane side of ten new source files — and
+   then `just voice-turn "is the space open"` and `turns.last_first_audio_ms` in
+   `https://voice.int.leighhack.org/status.json`. **Nothing in the streaming claim has been read
+   off a deployed box**; every "expected" figure in the docs is arithmetic on the buffered
+   measurements. If first audio is *not* well under the ~13 s the buffered path cost, the
+   suspect in order is: the engine's prompt cache never hit (`turns.warm` says `cached 0/…`),
+   the piper fell back to cold (`voice.last_fallback` names why), or the door buffered the
+   stream despite `X-Accel-Buffering: no`.
+2. **The browser page still calls `/v1/ask`.** `whisper.int`'s Assistant card would show the
+   transcript growing and start playing mid-answer — the fastest path in the system, since its
+   client-side wake means the question is already text (`{"text": …}`, no whisper at all). The
+   blocker is mechanical, not architectural: `crates/whisper-ws/web/app` is a Vite/Solid build
+   whose npm deps are not in the offline cache, so the edit needs the build to be reachable, and
+   `build.rs`/`gen_assets.sh` mean an unbuilt `dist/` silently serves the *old* bundle
+   (`AGENTS.md` rule 19). Contract: `docs/esp32-voice-satellites.md` §2.2b.
+3. **The satellite's live path has never run on the camera.** `satellite.rs` now feeds the
+   rolling ASR from `Gate::take_open_samples` and fires a warm-up on the first partial, and that
+   whole path is unit-tested against fake HTTP servers only. The first time it runs against a
+   real whisper it will produce a number nobody has seen: `asr_tail_ms` per window in
+   `satellite-status.json`. Read it once before believing rolling transcription helps on a
+   device whose audio arrives over Wi-Fi in bursts, and watch `warms` — a warm-up fired on a
+   *noise* partial is a wasted engine request, which is harmless but not free.
+4. **Concurrency is now the only wall.** One warm piper behind a mutex, and
+   `slack-agent listen` still 429s a second caller (`crates/slack-agent/src/listen.rs`).
+   Streaming makes a turn feel faster; it does not make the assistant multi-way. Before more
+   than a couple of satellites exist, someone has to choose the queue policy (last one wins,
+   first one wins, or say "one at a time" out loud) — `docs/esp32-voice-satellites.md` §2.2.
+5. **`turns` counters and the warm-up receipt are new `status.json` fields, and nothing
+   monitors them.** `common/monitoring-endpoints.nix`/gatus watch endpoints, not numbers inside
+   JSON. A `voice_turn_first_audio_seconds` gauge from the gateway's own `/metrics` would be the
+   honest version of "is the assistant getting slower", and would have caught the `cached 0`
+   failure mode that the round-trip test caught only because someone wrote a test for a field
+   nothing read.

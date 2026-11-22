@@ -45,6 +45,22 @@ pub struct Candidate {
     pub label: String,
 }
 
+// The streaming half lives in `stream.rs`, and its types are re-exported here rather than moved at
+// every caller: `agent.rs` and `listen.rs` name them, and `engine::` is how this crate's callers
+// have always spelled "the thing that talks to the engine".
+pub use crate::stream::StreamFail;
+
+/// What [`Engines::prefill`] reports.
+#[derive(Debug)]
+pub struct Prefill {
+    pub engine: String,
+    pub prompt_tokens: u64,
+    /// What the engine says it reused.  `0` is a real answer and the reason this struct exists:
+    /// it is the difference between a warm-up that saved seconds and one that cost a request.
+    pub cached_tokens: u64,
+    pub millis: u128,
+}
+
 /// What a candidate turned out to be serving.
 #[derive(Debug, Clone)]
 pub struct Engine {
@@ -291,16 +307,26 @@ impl Engines {
     /// `messages` and `tools` are already-built JSON, because the transcript is
     /// JSON-shaped from the start and rebuilding it through a typed model here
     /// would only add a second representation to keep in sync with the server's.
-    pub fn chat(&mut self, messages: &[Json], tools: &[Json], max_tokens: u32) -> Result<Turn, String> {
-        let engine = self.engine()?;
-        let url = format!("{}/chat/completions", engine.base);
+    /// The body of a chat request, shared by [`chat`][Self::chat] and
+    /// [`chat_stream`][Self::chat_stream] so the two cannot drift: one flag apart is the
+    /// difference between an answer and a turn that starts arriving, and a field list written
+    /// twice is a field list that gets updated once.
+    pub(crate) fn chat_body(&self, engine: &Engine, messages: &[Json], tools: &[Json], max_tokens: u32, stream: bool) -> String {
         let mut body = vec![
             ("model".to_string(), json::string(engine.model.clone())),
             ("messages".to_string(), Json::Arr(messages.to_vec())),
             ("max_tokens".to_string(), json::number_from_int(max_tokens as u64)),
             ("temperature".to_string(), json::number_from_f64(0.2)),
-            ("stream".to_string(), json::boolean(false)),
+            ("stream".to_string(), json::boolean(stream)),
         ];
+        if stream {
+            // These engines only report `usage` on a stream if it is asked for, and the turn's
+            // receipts (`prompt_tokens`, `completion_tokens`) are what `listen` publishes.
+            body.push((
+                "stream_options".to_string(),
+                json::object(vec![("include_usage".to_string(), json::boolean(true))]),
+            ));
+        }
         // The one spelling this engine honours, measured: nested in `chat_template_kwargs`.
         // Top-level `enable_thinking` is accepted and ignored, which is the kind of silence
         // that turns a config option into a rumour.
@@ -321,7 +347,13 @@ impl Engines {
             // against other harnesses for this class of backend.
             body.push(("tool_choice".to_string(), json::string("auto")));
         }
-        let payload = json::emit(&json::object(body), 0);
+        json::emit(&json::object(body), 0)
+    }
+
+    pub fn chat(&mut self, messages: &[Json], tools: &[Json], max_tokens: u32) -> Result<Turn, String> {
+        let engine = self.engine()?;
+        let url = format!("{}/chat/completions", engine.base);
+        let payload = self.chat_body(&engine, messages, tools, max_tokens, false);
         let started = Instant::now();
         let resp = self
             .client
@@ -394,6 +426,70 @@ impl Engines {
         }
         Ok(turn)
     }
+
+    /// Send a turn's **prompt prefix** to an engine and ask for one token, for the sole purpose
+    /// of making the real request cheaper.
+    ///
+    /// ## What this is for
+    ///
+    /// These engines cache prompt prefixes across requests, and the prefix that costs time is
+    /// the one every turn shares: the system prompt plus the tool schemas, which is a couple of
+    /// thousand tokens the voice path would otherwise pay for *after* the person had finished
+    /// speaking. So the voice gateway fires this as soon as it has a first partial transcript,
+    /// and the real request then prefills only the new tail.
+    ///
+    /// ## `max_tokens: 1`, and not 0 — measured, not guessed
+    ///
+    /// `max_tokens: 0` is the honest-looking spelling of "prefill only, generate nothing", and
+    /// these engines **ignore it**: measured on services2, a `max_tokens: 0` request answered
+    /// `"One, two, three."` with `completion_tokens: 7`. One token is the smallest thing the
+    /// server will actually stop at, and the second request in that same probe came back in
+    /// **0.1 s against 138 s** with `prompt_tokens_details.cached_tokens` non-zero — which is
+    /// the whole claim, measured on the wire rather than asserted from llama.cpp folklore.
+    ///
+    /// ## What this must never do
+    ///
+    /// Touch the transcript. It is not a turn, its one token is not an answer, and nothing here
+    /// keeps it: the value is entirely inside the engine's cache, and the caller that wants the
+    /// answer asks again with the real question.
+    pub fn prefill(&mut self, messages: &[Json], tools: &[Json]) -> Result<Prefill, String> {
+        let engine = self.engine()?;
+        let url = format!("{}/chat/completions", engine.base);
+        let payload = self.chat_body(&engine, messages, tools, 1, false);
+        let started = Instant::now();
+        let resp = self
+            .client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .body(payload)
+            .send()
+            .map_err(|e| format!("{}: prefill: {e}", engine.label))?;
+        let status = resp.status();
+        let body = resp
+            .text()
+            .map_err(|e| format!("{}: reading prefill reply: {e}", engine.label))?;
+        if !status.is_success() {
+            return Err(format!(
+                "{}: prefill answered {status}: {:.200}",
+                engine.label,
+                body.lines().next().unwrap_or("")
+            ));
+        }
+        let doc = json::parse(&body).unwrap_or(json::null());
+        let usage = doc.get("usage");
+        Ok(Prefill {
+            engine: engine.label.clone(),
+            prompt_tokens: usage
+                .and_then(|u| u.get("prompt_tokens"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0),
+            cached_tokens: usage
+                .and_then(|u| u.at(&["prompt_tokens_details", "cached_tokens"]))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0),
+            millis: started.elapsed().as_millis(),
+        })
+    }
 }
 
 /// Append the assistant's turn to the transcript in the shape the next request
@@ -449,6 +545,9 @@ pub fn tool_result(call_id: &str, text: &str) -> Json {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::stream::tests::engines_at;
+    use std::io::Write;
+    use std::thread;
 
     #[test]
     fn the_default_fleet_parses_into_three_named_candidates() {
@@ -520,5 +619,94 @@ mod tests {
             .expect("a reply");
         assert_eq!(turn.finish, "tool_calls", "measured behaviour: {turn:?}");
         assert_eq!(turn.tool_calls.len(), 1);
+    }
+
+    /// A stand-in engine that answers a chat request with raw SSE bytes, so the wire framing is
+    /// what is under test rather than a convenient restatement of the parser.
+    #[test]
+    fn the_prefill_request_asks_for_one_token_and_reports_what_was_reused() {
+        // `cached_tokens` is the whole point of the warm-up, and it is read out of
+        // `usage.prompt_tokens_details` — the spelling these engines use (measured on
+        // services2, where a repeat of one prompt came back `cached_tokens: 9` in 0.1 s against
+        // 138 s for the cold one).
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        thread::spawn(move || {
+            use std::io::Read;
+            // Two requests on one client: discovery, then the warm-up itself.
+            for stream in l.incoming() {
+                let Ok(mut s) = stream else { continue };
+                let mut all: Vec<u8> = Vec::new();
+                let mut buf = [0u8; 1024];
+                let mut head = None;
+                let mut want = 0usize;
+                while let Ok(n) = s.read(&mut buf) {
+                    if n == 0 {
+                        break;
+                    }
+                    all.extend_from_slice(&buf[..n]);
+                    if head.is_none() {
+                        head = all.windows(4).position(|w| w == b"\r\n\r\n").map(|p| p + 4);
+                        if let Some(h) = head {
+                            want = String::from_utf8_lossy(&all[..h])
+                                .lines()
+                                .find(|line| line.to_ascii_lowercase().starts_with("content-length:"))
+                                .and_then(|line| line.split(':').next_back())
+                                .and_then(|v| v.trim().parse().ok())
+                                .unwrap_or(0);
+                        }
+                    }
+                    if let Some(h) = head {
+                        if all.len() >= h + want {
+                            break;
+                        }
+                    }
+                }
+                let text = String::from_utf8_lossy(&all).into_owned();
+                if text.starts_with("GET") {
+                    let models = "{\"data\":[{\"id\":\"fake-model\"}]}";
+                    let _ = s.write_all(
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{models}",
+                            models.len()
+                        )
+                        .as_bytes(),
+                    );
+                    let _ = s.flush();
+                    continue;
+                }
+                let _ = tx.send(text);
+                let body = "{\"choices\":[{\"message\":{\"content\":\".\"},\"finish_reason\":\"length\"}],\
+                              \"usage\":{\"prompt_tokens\":2010,\"completion_tokens\":1,\
+                              \"prompt_tokens_details\":{\"cached_tokens\":1984}}}";
+                let out = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = s.write_all(out.as_bytes());
+                let _ = s.flush();
+            }
+        });
+        let p = engines_at(&format!("http://127.0.0.1:{port}/v1"))
+            .prefill(
+                &[json::object(vec![
+                    ("role".to_string(), json::string("user")),
+                    ("content".to_string(), json::string("is it open")),
+                ])],
+                &[],
+            )
+            .unwrap();
+        assert_eq!((p.prompt_tokens, p.cached_tokens), (2010, 1984));
+        let sent = rx.recv().unwrap();
+        // `max_tokens: 1`, and not 0: measured, these engines **ignore** `max_tokens: 0` and
+        // answer the question (`"One, two, three."`, 7 completion tokens), so a "prefill only"
+        // request written the honest-looking way is a normal, longer, generation.
+        assert!(sent.contains("\"max_tokens\":1"), "must ask for one token:\n{sent}");
+        assert!(sent.contains("\"stream\":false"), "a prefill is not a stream:\n{sent}");
+        assert!(
+            sent.contains("is it open"),
+            "the question must be inside the prefix it warms:\n{sent}"
+        );
     }
 }

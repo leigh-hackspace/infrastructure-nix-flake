@@ -648,3 +648,62 @@ failed-list on `gw` is not proof the UPS is alive.
 * `gw` and `services2` still have no GitHub credential of their own — `just repo-status`
   says `NO-CREDENTIAL` for exactly those two, and this run moved commits to them with a
   one-commit bundle over the LAN rather than by copying a key onto a bench box.
+
+## 2026-11-22, later again — the voice turn, streamed: the parts were measured honestly and the sum was a choice
+
+Asked to make `voice.int.leighhack.org` fast. Every number in
+`docs/voice-assistant-2026-11-16.md` was already honest — 2.7 s whisper, 7.7 s model,
+2.5 s piper — and the ~13 s end to end was those numbers **added**, because the code ran
+them in series: transcribe the window, then ask, then synthesise, then play. Nothing in
+the tree was slow; the sequence was.
+
+What shipped, in the order that made it testable: SSE both directions
+(`common-rs/web/src/stream.rs`, `common-rs/http/src/stream.rs`), a streamed engine call and
+a prefill in `slack-agent` (`/v1/ask/stream`, `/v1/ask/prefill`), and in
+`crates/voice-assistant` a rolling ASR (`asr.rs`), the speakable-unit splitter
+(`sentence.rs`), the pipeline (`turn.rs`, two threads and two channels), the wire contract
+(`events.rs`), its HTTP surface (`turn_routes.rs`) and the satellite's client of the
+gateway (`gateway.rs`). The full picture and the traps are in
+`crates/voice-assistant/README.md`; the open items are in `docs/follow-ups.md`.
+
+### What the measurements said, including one of them being about my own test
+
+* **A timing test that cannot fail is a timing test that lies.** The first version of
+  `the_first_audio_arrives_while_the_model_is_still_answering` asserted that audio preceded
+  the `answer` event — and passed, for a pipeline that buffered everything, because
+  `Out::Answer` is *emitted only after the voice queue has drained*. The assertion has to be
+  against the **last token**. It was then verified to fail: piper slowed from 300 ms to
+  900 ms a sentence put first audio at 910 ms against a last token at 800 ms.
+* **The fixture was lying twice.** Its `sleep` was written with `awk`, which the sandbox has
+  no copy of, so every simulated latency had been silently a no-op; and it answered an SSE
+  body with `Content-Length: 0`, which a reader correctly treats as "no body" — so the tests
+  reported `slack-agent closed the stream without an answer` and the fake looked broken
+  rather than the framing. Both fixed (Rust-formatted `sleep 0.300`, chunked framing like the
+  real gateway), and only then did the assertion start meaning something.
+* **The round-trip test earned its keep immediately.** `done`'s `prompt_tokens` was being
+  read back from a key nothing ever wrote, so the warm-up's cache-hit figure would have
+  arrived as `0` forever, in a status file, on a box nobody was watching. Rule 31's shape,
+  one level down: a number that cannot be wrong is a number nobody trusts.
+* **`cargo test --workspace --offline` does not resolve on aibox** (`hashbrown` →
+  `allocator-api2` is not in the local cargo store, so the download is refused). Verified
+  against clean HEAD in a throwaway worktree — pre-existing, not this change. Filed in
+  `docs/follow-ups.md`. Per-crate tests (`cargo test -p <name>`) are the workaround and are
+  what ran here: `common-web`, `common-http`, `slack-agent`, `voice-assistant`, 104 tests
+  in the last of those.
+* **A test fixture that writes an executable and then execs it is a race.**
+  `Text file busy (os error 26)` appeared once, in a run with the new pipeline tests adding
+  load; `fs::write` + `exec` is the window. `testkit::write_exec` writes beside and renames,
+  which closes it structurally rather than by retrying.
+* **Two justfile lessons, one of them mine.** A recipe body line at column 0 ends the recipe
+  and gets parsed as *just* syntax (the error is a token error in the middle of an embedded
+  python), so embedded scripts carry the recipe's indent and just strips it. And a doubled
+  brace in a recipe *comment* is still an interpolation: the recipe stopped parsing in a
+  comment. Both are in the new `voice-turn` recipe's comments now, where the next person
+  will not have to rediscover them.
+* **Rule 26 bit four files at once** (1000-line ceiling): `slack-agent/engine.rs`,
+  `voice-assistant/{api,satellite,turn}.rs` all went over as the streaming code landed. They
+  are now `engine.rs` + `stream.rs`, `api.rs` + `turn_routes.rs`, `satellite.rs` +
+  `gateway.rs`, `turn.rs` + `events.rs` — split by *job*, each new file opening with why the
+  job is separate. `common/check-platform-boundary.nix`'s `CORE` list grew to cover
+  `turn.rs`, `turn_routes.rs`, `events.rs`, `asr.rs`, `sentence.rs` and `gateway.rs`, so the
+  device boundary is asserted over the new core rather than assumed.

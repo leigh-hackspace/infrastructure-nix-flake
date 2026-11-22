@@ -222,6 +222,8 @@ pub struct Gate {
     envelope: VecDeque<f64>,
     pre_roll: VecDeque<i16>,
     open: Option<Opening>,
+    /// How much of the open window [`Gate::take_open_samples`] has already handed out.
+    reported: usize,
     run: usize,
     silence_frames: usize,
     pub windows: usize,
@@ -274,6 +276,7 @@ impl Gate {
             envelope: VecDeque::with_capacity(14),
             pre_roll: VecDeque::with_capacity((cfg.pre_roll_secs * 1000.0 / FRAME_MS as f64) as usize + 1),
             open: None,
+            reported: 0,
             run: 0,
             silence_frames: 0,
             windows: 0,
@@ -342,13 +345,42 @@ impl Gate {
         (self.floor_dbfs() + self.cfg.margin_db).max(self.cfg.min_open_dbfs)
     }
 
-    /// Whether a window is being collected right now.  Read by the tests and by
-    /// `gate-check`; the live path reports the same thing through the satellite's status
-    /// file, so nothing on the hot path needs it — hence `cfg(test)` rather than a
-    /// dead-code allowance.
-    #[cfg(test)]
+    /// Whether a window is being collected right now.
+    ///
+    /// The live path needs this, and has for a while: the satellite transcribes **while the
+    /// window is open** (`asr.rs`), which means it has to know when it is. It used to be
+    /// `cfg(test)`, which is the kind of thing that reads as tidiness until the first
+    /// non-test caller.
     pub fn is_open(&self) -> bool {
         self.open.is_some()
+    }
+
+    /// The samples of the open window that nobody has taken yet.
+    ///
+    /// Draining from a cursor rather than handing out the whole window, because the caller is a
+    /// rolling transcriber that must be fed each sample **exactly once**: feeding the whole
+    /// window every chunk would re-transcribe it, grow the transcript with duplicates, and pay
+    /// whisper for the same second of audio over and over. The cursor resets when the window
+    /// closes and when a new one opens, so a window's audio is never partly the last one's.
+    pub fn take_open_samples(&mut self) -> Vec<i16> {
+        let Some(open) = self.open.as_mut() else {
+            self.reported = 0;
+            return Vec::new();
+        };
+        if self.reported > open.samples.len() {
+            self.reported = 0;
+        }
+        let fresh = open.samples[self.reported..].to_vec();
+        self.reported = open.samples.len();
+        fresh
+    }
+
+    /// The window the gate is holding right now, without taking it. `None` when it is closed.
+    pub fn open_secs(&self) -> f64 {
+        self.open
+            .as_ref()
+            .map(|o| o.samples.len() as f64 / SAMPLE_RATE as f64)
+            .unwrap_or(0.0)
     }
 
     /// Feed PCM.  Returns the window each time one completes.
@@ -721,6 +753,63 @@ mod tests {
         let mut quiet = Gate::new(Config::default());
         feed(&mut quiet, &vec![0i16; 16_000]);
         assert!(quiet.flush().is_none());
+    }
+
+    /// The accessor rolling transcription is built on, tested on its own because its failure is
+    /// invisible: feed the same sample twice and the transcript fills with duplicates and whisper
+    /// is paid twice per second; skip a sample and the first syllable of a word is simply gone.
+    #[test]
+    fn an_open_window_hands_out_each_sample_exactly_once() {
+        let mut gate = Gate::new(Config::default());
+        // The same shape as every other test here: a second of room to set the floor, speech,
+        // then a pause long enough to close the window.
+        let mut pcm = tone(1.0, 100.0, 0.02, false);
+        pcm.extend(speech_like(1.6, 0.9));
+        pcm.extend(vec![0i16; 16_000]);
+        // What a rolling transcriber would have seen, in the order it saw it.
+        let mut heard: Vec<i16> = Vec::new();
+        let mut closed: Vec<Window> = Vec::new();
+        let mut peak_open_secs = 0.0f64;
+        for chunk in pcm.chunks(FRAME_SAMPLES * 2) {
+            closed.extend(gate.push(chunk));
+            if gate.is_open() {
+                let fresh = gate.take_open_samples();
+                heard.extend(&fresh);
+                peak_open_secs = peak_open_secs.max(gate.open_secs());
+            }
+        }
+        let window = closed
+            .pop()
+            .or_else(|| gate.flush())
+            .expect("room, speech and a pause never opened the gate");
+        assert!(
+            !heard.is_empty(),
+            "the gate opened but handed out nothing to transcribe"
+        );
+        assert_eq!(
+            heard.as_slice(),
+            &window.samples[..heard.len()],
+            "the caller's samples are not a prefix of the window: it re-heard some or lost some"
+        );
+        assert!(
+            heard.len() < window.samples.len(),
+            "the caller already holds the whole window, so the frames that closed it are              nobody's to read — and the caller would silently lose them"
+        );
+        assert!(peak_open_secs > 1.0, "open_secs peaked at {peak_open_secs}");
+
+        // A fresh gate starts its own count from zero: the cursor is per window, so a second
+        // speaker's first sample is not silently dropped because the room already talked.
+        let mut again = Gate::new(Config::default());
+        let mut second = Vec::new();
+        let mut pcm = vec![0i16; 16_000];
+        pcm.extend(speech_like(1.0, 0.9));
+        for chunk in pcm.chunks(FRAME_SAMPLES * 2) {
+            again.push(chunk);
+            if again.is_open() {
+                second.extend(again.take_open_samples());
+            }
+        }
+        assert!(!second.is_empty(), "the second window handed out nothing");
     }
 
     #[test]

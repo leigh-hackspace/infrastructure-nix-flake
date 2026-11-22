@@ -151,6 +151,63 @@ POST /v1/ask   {"text":"is the space open","voice":true}
   announce "one at a time"?). Do not silently retry forever: a room that keeps asking is a
   room that is not getting answers.
 
+### 2.2b Turn — one request, everything as it happens (`POST /v1/turn`)
+
+`/v1/ask` gives you the answer when it is finished. `/v1/turn` gives you the answer **as a
+server-sent event stream** and started speaking it while the model was still producing it.
+If you are writing a new endpoint, build against this one; the buffered routes stay for the
+page and for `just voice-ask`, but a device that wants to feel quick has one good shape.
+
+```text
+POST /v1/turn   {"text":"is the space open"}            already transcribed: no whisper
+                {"audio":"<base64 WAV, 16k mono PCM16>"} or send the audio, gateway transcribes
+                {"voice":false}                          Slack's prompt and budget, not the spoken one
+     → HTTP/1.1 200 OK
+        Content-Type: text/event-stream · Cache-Control: no-store
+        X-Accel-Buffering: no · Transfer-Encoding: chunked
+
+        event: asr      data: {"asr":"is the sp","done":false}     (only if audio was sent)
+        event: log      data: {"line":"2 tools: space_status, …"}
+        event: token    data: {"t":"The space is open."}
+        event: reset    data: {}                                   discard the text you showed
+        event: audio    data: {"seq":0,"rate":16000,"pcm16":"<base64 raw PCM16, little endian>"}
+        event: warn     data: {"warn":"no audio: piper died"}
+        event: answer   data: {"answer":"…","engine":"…","rounds":1,"tools":[…]}
+        event: done     data: {…every timing, incl. first_audio_ms…}
+        event: error    data: {"error":"…"}
+```
+
+Read `crates/voice-assistant/src/events.rs` as the definition — `Out::to_json` and
+`Out::from_json` are the only copy of this format, and `turn::Out` is what the repo's own
+satellite parses, so drift between server and client is a compile error rather than a
+Saturday. Four things worth knowing before you write the parser:
+
+- **`audio` is raw PCM16 at 16 kHz, base64'd** — *not* a WAV per chunk. There is one 44-byte
+  header's worth of information in the stream and it is `"rate"`. Concatenate in `seq` order,
+  starting at 0.
+- **`done` or `error` is always the last event**, and exactly one of them arrives, unless
+  the caller hung up first — in which case nothing more is written and the turn stops buying
+  GPU time for nobody. A device that assumes it will always see `done` is a device that
+  hangs when a browser tab closes.
+- **`reset` means take back what you displayed.** A model round that looked like an answer
+  turned out to be a tool call. Sentences already handed to the speaker cannot be unspoken;
+  `reset` is what they were *not* spoken from, so the room is never told half a lie.
+- **`warn` is not an error.** A unit that synthesised to nothing was skipped rather than
+  played as a click, an idle engine was retried: the turn continued, and you should show it.
+
+`POST /v1/warm {"text":"is the spa"}` is the companion, and the reason a device can use the
+stream shape from **inside** an utterance: fire it once on your first partial transcript,
+and the engine spends its prompt-prefill time while the person is still talking. It never
+generates an answer, its reply is the engine's own receipt (`cached_tokens`), and **it is
+allowed to fail silently** — a warm-up that can delay or break the turn it was meant to
+speed up is a bug. The camera satellite does exactly this (`crates/voice-assistant/src/gateway.rs`).
+
+Everything else in §2.2 still applies: `voice` defaults to true, the half-duplex rule is
+unchanged (`done`'s `audio_secs` is what to hold the microphone off for), and
+**`slack-agent listen` still answers one turn at a time** — streaming makes a turn feel
+faster, it does not make the assistant multi-way, so a second concurrent `/v1/turn` is
+still refused with the same busy path.
+
 ### 2.3 Transcribe / speak
 
 ```text
@@ -425,13 +482,17 @@ cheapest way to unblock it: `just` recipes aside, `voice-wake bench` needs a dir
   `ffmpeg`. A dumb device either uses `/v1/wake/*` (§2.1) or POSTs whole utterances to
   `/v1/transcribe`. If you want the other shape, it is new server code, and the first question
   is what it costs per concurrent stream.
-- **No streaming TTS.** One whole base64 WAV per turn. ~2.5 s of synthesis is per-request
-  process startup dominating (`crates/voice-assistant/src/tts.rs` reloads the voice each time), which is the biggest
-  remaining latency on an otherwise-fast answer; the fix is written down in
-  `docs/follow-ups.md` (a warm synthesizer, or `wyoming-piper` on loopback behind the
-  gateway). A device with a buffer can hide part of this today: start playback as soon as
-  enough bytes have arrived *if* you can compute the WAV length honestly, and never pretend
-  the rest is coming.
+- **No streaming *URL*.** Streaming itself landed on 2026-11-22: `/v1/turn` (§2.2b) sends
+  PCM as it is synthesised, sentence by sentence, through a **resident** piper, so the old
+  "~2.5 s of process startup per sentence" is gone from that path. What does not exist is a
+  URI a device can pull — there is no `tcp://`/websocket/hls endpoint and nothing here will
+  ever reconnect to a device to fetch its stream. So the device still has to be the one that
+  opens the connection and reads events, and a device that cannot hold a socket open still
+  has `/v1/ask` and one whole base64 WAV per turn.
+- **`/v1/ask` and `/v1/tts` are still buffered, on purpose.** They are the shapes the page
+  and `just voice-ask` use, they answer with one object, and nothing about `/v1/turn` makes
+  them wrong. Do not "unify" them: a caller that wants a turn switches on event names, and a
+  caller that wants a WAV asks once and plays it.
 - **No device fleet management.** No config channel, no OTA path, no per-device version
   reporting, no MQTT contract for satellites (there is an MQTT broker — `mqtt.int`, see
   `docs/mqtt-int-legacy-answer-2026-11-02.md` for how that name resolves and why it must not
@@ -480,7 +541,9 @@ cheapest way to unblock it: `just` recipes aside, `voice-wake bench` needs a dir
    person saying it mid-sentence. Isolated-phrase recall is not a result; the only isolated
    figure in this repo's own history is a *warning* — piper speaking "hey jarvis" scored 0.063
    on the server's engine and 0.000 on openWakeWord's.
-5. On detection, send the flagged window to `/v1/transcribe`, then `/v1/ask` with
+5. On detection, send the flagged window to `/v1/turn` (§2.2b) — one request, and the
+   answer arrives as text and audio while the model is still working. The older two-step
+   shape, `/v1/transcribe` then `/v1/ask` with
    `"voice":true`; decode base64 to the DAC; hold the mic off for `audio_secs` plus a guard;
    count what it would have heard and thrown away.
 6. Then the interesting experiment nobody can do on `cam8`: turn on the AFE's AEC with a

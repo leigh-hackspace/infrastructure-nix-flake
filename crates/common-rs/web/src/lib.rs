@@ -34,6 +34,16 @@
 //!
 //! No dependencies, matching the house style of the crates that use it.
 
+/// Responses written **as their body is produced** — chunked and server-sent events.
+///
+/// Kept in its own module because it is a different job from the four-argument
+/// buffered response above (it owns a live socket rather than a `Vec<u8>`), and the
+/// header-framing rules for a streaming body are not the same as `write_response`'s:
+/// `AGENTS.md` rule 26 splits by job, and `Reply` and a stream must not be merged into
+/// one type that can be either.
+pub mod stream;
+pub use stream::{Chunked, Sse, StreamReply};
+
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -160,7 +170,8 @@ pub fn read_request(stream: &mut TcpStream) -> Option<Request> {
 
 /// Reason phrase for a status code.  Every code these servers actually send is
 /// listed; anything else falls back to "OK" rather than emitting an empty
-/// reason (which is what the per-server tables did for unlisted codes).
+/// reason (which is what the per-server tables did for unlisted codes).  [`stream`]
+/// uses this same table, so a streamed 429 and a buffered one cannot disagree.
 pub fn reason_phrase(status: u16) -> &'static str {
     match status {
         200 => "OK",

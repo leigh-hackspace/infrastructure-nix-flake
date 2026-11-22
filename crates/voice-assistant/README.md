@@ -54,6 +54,7 @@ about the boundary. `docs/esp32-voice-satellites.md` is the contract for the nex
 | `ask "…"` | text in, answer + spoken text + speech WAV out. No microphone involved. |
 | `tts "…" -o out.wav` | piper directly. `--say` is not implemented: this writes a file, it does not play one. |
 | `gate-check <file.wav>` | the speech gate alone, frame by frame, with a `--calibrate` pass that prints a `--gate-base` worth starting from. For when the gate is wrong and you need to know *which* side. |
+| `just voice-turn "…"` | not a verb of this binary: the gateway's `POST /v1/turn` from a shell, **streamed** — every event with the millisecond it arrived, a VERDICT line about whether audio began before the answer ended, and the speech written to `/tmp/voice-turn.wav`. This is the verb that measures the section below. |
 
 ## The gate, and why energy alone could not be trusted here
 
@@ -203,14 +204,103 @@ lowered below the speech budget is the guard against the version where the voice
 silently inherits Slack's verbosity. `spoken.rs::from_answer` is the backstop for when
 the model ignores its prompt anyway, because it has.
 
+## The turn is a pipeline: four stages, two threads, one clock that matters
+
+The numbers above are honest and their **sum is a lie**, because they were measured one
+after another and the old code ran them one after another: 2.7 s whisper → 7.7 s model →
+2.5 s piper = ~13 s of a room standing still. Each stage was finished before the next
+started, and every one of those waits is a choice.
+
+So `turn.rs::run` overlaps them, and the only number a person in the room experiences is
+**the first sample of audio**:
+
+```text
+  audio in ─▶ rolling ASR ─▶ engine warm-up ─▶ model stream ─▶ sentence splitter ─▶ piper ─▶ pcm out
+                 │                │                │                  │                      │
+                 └────────────────┴────────────────┴──────────────────┴──────────────────────┴─▶ events
+```
+
+- **`asr.rs`** transcribes an open window *as it fills*, in slices with overlap, and joins
+  the seams. What the speaker waits for at the end is one slice (the tail), not the length
+  of their sentence. `Rolling`'s seam-deduplication exists because whisper will happily
+  transcribe "the space is" / "is open" as "the space is" / "is open" — or as "the space is
+  the space is open", and both spellings are wrong in different ways.
+- **`gateway.rs`** (satellite side) and the side thread in `run` fire a **prefill**:
+  a `max_tokens: 1` chat call with the real prompt prefix, so the engine is holding this
+  conversation before the real request arrives. `max_tokens: 0` is ignored by these
+  engines (measured; see `crates/slack-agent/src/engine.rs`), so it is `1` and the one
+  token is thrown away. `usage.prompt_tokens_details.cached_tokens` is the receipt that
+  says whether it worked, and `status.json` publishes it.
+- **`agent.rs::ask_stream`** reads the model's SSE and hands over each `partial` as it
+  lands. The tool-call fragments that arrive keyed by `index` are reassembled in
+  `slack-agent`, not here.
+- **`sentence.rs`** decides what is speakable yet. Its rules are the ones a listener would
+  notice: `12.2` and `e.g.` and `J. R. Smith` are not sentence ends; a completed unit
+  shorter than a breath waits for company; a run-on answer with no full stop is cut at a
+  clause boundary near its limit rather than never. **A full stop at the very end of what
+  has arrived so far is not a sentence end** — the next token decides whether it was `e.g.`
+  or the end of the answer, which is why the splitter holds it for one character.
+- **`tts.rs`** speaks each sentence through a **warm** piper (`--output-dir` mode: one
+  process, one WAV per line, the path announced on stderr), and falls back to a cold
+  one-shot piper if the resident one dies — with the fallback *named in the timings*,
+  because 2.4 s of silent startup per sentence would otherwise look like a slow model.
+
+Two threads, and no more: the turn's thread drives ASR and the model socket and is the
+**only** writer to the response; the voice thread owns the piper process. They talk over
+two `mpsc` channels, which is what keeps the splitter and the process single-threaded —
+each holds state that sharing would corrupt (a half-assembled sentence, a live child).
+After **every** model event the voice queue is drained, and that one line is the entire
+mechanism by which audio reaches the room while the model is still answering.
+
+`Out` (`events.rs`) **is** the wire contract: `asr`, `log`, `token`, `reset`, `audio`,
+`warn`, `answer`, `done`, `error`, defined once with `to_json`/`from_json` beside it, so
+the gateway, the satellite and the page cannot have three ideas about what `audio` means.
+`from_json` ignores events it does not recognise, so an old satellite on a new gateway
+keeps playing audio instead of failing to parse the turn. `turn_routes.rs` is the HTTP
+surface (`POST /v1/turn`, `POST /v1/warm`): `web::Sse` writes one event per flush, sets
+`TCP_NODELAY` and `X-Accel-Buffering: no` — without that last header the front door sits
+on the whole answer and the pipeline's entire point arrives as one slow 200.
+
+**The client leaving is a normal ending.** `emit` returns `false` and everything upstream
+stops — no more whisper slices, no more model tokens, no more sentences to piper. A turn
+cancelled by a closed socket must not be logged as an error, or a page someone navigated
+away from reads as an outage.
+
+### What is measured, and what is not
+
+`turn::tests::the_first_audio_arrives_while_the_model_is_still_answering` is the test to
+read before changing any of this. The fixture answers a partial every 400 ms (a decode at
+the measured 14–39 tok/s) and piper takes 300 ms a sentence; the assertion is that the
+first audio is earlier than the **last token**. It was verified to fail — piper slowed to
+900 ms, first audio 910 ms against a last token at 800 ms — which is the only reason a
+timing test is worth having. The assertion is *not* against the `answer` event:
+`Out::Answer` is emitted only after the voice queue has drained, so a test aimed at it
+would pass for a pipeline that buffered everything. `just voice-turn "is the space open"`
+prints the same timeline against the live gateway, with a VERDICT line.
+
+**Not yet measured: any of it on the network.** The 13 s figure at the top of this file is
+the buffered path's, and the numbers above are a *budget*, not a result. What the room
+actually waits for now is `first_audio_ms` in `status.json`'s `turns` object, and the
+honest statement is that it has never been read off a deployed box.
+
 ## piper is a process, and that is the cost
 
 `/run/current-system/sw/bin/piper` does not exist: piper is a Python wheel, so the unit
 points `--piper-bin` at `${pkgs.piper-tts}/bin/piper`, a real binary in the store. It
 starts the interpreter and loads the ONNX model **per request** (~2.4 s of the 2.5 s
-above is startup). A resident piper behind a socket is the obvious improvement; the
-reason it is not here yet is that a voice assistant that answers in 11 s instead of 9
-is not the thing being tested.
+above is startup), which is why a sentence-at-a-time voice would have been *slower*
+without this section: five sentences at 2.4 s of startup each is 12 s of Python
+interpreter for a two-second answer.
+
+So `Synthesiser` keeps one **resident** piper in `--output-dir` mode — one process, one
+WAV per line, the path announced on stderr, read and deleted — and falls back to the
+one-shot call when the resident process dies, counting the fallback in `TtsStats` and
+publishing `warm: true|false` in `status.json`. Two things this buys and one it does not:
+the 2.4 s is paid once per gateway, per voice; a sentence's audio lands ~0.1–0.3 s behind
+the text (a 60 MB ONNX model on a box that also runs postgres); and `warm` in the status
+file is a **live** question — "is the process up right now" — with the counters beside it
+as the history, because "will the next answer be quick" and "has this been working" are
+different questions and operators ask both.
 
 Voices are data: nixpkgs packages the engine and **no voices**, so the deployment pins
 the model + its `.onnx.json` in a `linkFarm` (`machines/services1/services/voice-assistant.nix`).
@@ -243,3 +333,20 @@ corrupts every 4th byte of a WAV, and the first symptom is a click in the answer
 `wav`'s `fmt` offset (`0:16` vs `0:12` is "the file is 44 bytes shorter than it is").
 Plus the two rules that are really policy: `serve` refuses non-loopback binds, and the
 spoken token budget never exceeds the Slack one.
+
+The streaming turn added four more, and they are the ones to read first if you are about
+to touch the pipeline, because each pins a claim that a plausible refactor breaks:
+
+| Test | The claim |
+| --- | --- |
+| `turn::tests::the_first_audio_arrives_while_the_model_is_still_answering` | audio begins **before the last token**. Verified to fail when piper is slowed past the model (910 ms against 800 ms) — see the section above. |
+| `turn::tests::the_room_pays_for_the_last_slice_not_the_whole_transcription` | `asr_tail_ms` is much less than `asr_ms`, which is the whole case for slicing audio at all. |
+| `turn::tests::a_caller_that_hangs_up_ends_the_turn_without_an_error` | a closed socket is a clean ending, not a fault. |
+| `events::tests::every_event_round_trips_through_the_wire_format` | every variant survives `to_json`→`from_json`. It has already earned its keep: the first version of this line silently read a `prompt_tokens` key that nothing wrote, so the cache hit rate arrived as zero forever. |
+
+They run against fixtures in `testkit.rs` — a fake piper (both `--output-raw` and
+`--output-dir`), a fake `slack-agent` that replays a scripted SSE body with sleeps, a fake
+whisper. The sleeps are the point: a fixture that answered instantly would let an ordering
+test pass for the wrong reason, and every timing assertion would be theatre. `testkit`
+speaks only the wire, never the internals, for the same reason `just` recipes curl through
+the front door instead of calling functions.

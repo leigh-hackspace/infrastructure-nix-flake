@@ -42,7 +42,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use common_json::Json;
 use common_web::{self as web, Reply, Request};
 
-use crate::{agent, b64, spoken, stt, tts, wake, wav};
+use crate::{agent, b64, spoken, stt, tts, turn, wake, wav};
 
 pub const DEFAULT_LISTEN: &str = "127.0.0.1:8193";
 
@@ -98,6 +98,18 @@ pub struct Options {
     /// shared copy of the rule for every other caller, and `wake::strip` is the only
     /// implementation of it.
     pub wake_words: Vec<String>,
+    /// Fire the engine warm-up (`slack-agent`'s `/v1/ask/prefill`) as soon as a turn has a
+    /// question, so the real request prefills only its tail.  `--no-warm` turns it off;
+    /// `/status.json` reports what the engines have said they reused, because a warm-up that
+    /// never hits a cache is a cost and the only way to know is to look.
+    pub warm: bool,
+    /// Rolling-ASR slice length, seconds. The latency dial for a spoken question: the shorter it
+    /// is, the less of it is left to transcribe when someone stops talking — and the more whisper
+    /// calls the same sentence costs.
+    pub asr_slice_secs: f64,
+    /// Where the resident piper's per-sentence WAVs are written (and removed from). Inside the
+    /// unit's state directory, because it is scratch that must not outlive a sentence.
+    pub work_dir: PathBuf,
     /// Keep the question text in `/status.json`.  On by default, because
     /// `whisper-ws` already publishes its last 20 transcriptions and this service is
     /// no more sensitive than that; `--no-record-questions` is the answer for a room
@@ -105,17 +117,49 @@ pub struct Options {
     pub record_questions: bool,
 }
 
-struct Ctx {
-    opts: Options,
-    stt: stt::Client,
-    agent: agent::Client,
-    piper: tts::Piper,
-    started: Instant,
-    counters: Mutex<Counters>,
+pub(crate) struct Ctx {
+    pub(crate) opts: Options,
+    pub(crate) stt: stt::Client,
+    pub(crate) agent: agent::Client,
+    /// The voice, behind a lock: a streamed turn hands sentences to it from its own thread, and
+    /// one piper process speaking two answers at once is not a thing worth debugging.
+    pub(crate) tts: turn::Voice,
+    pub(crate) started: Instant,
+    pub(crate) counters: Mutex<Counters>,
+    /// The turn counters the streamed route adds, kept off `Counters` because they are timings
+    /// rather than a history and a reader wants the latest, not the last twenty.
+    pub(crate) turns: Mutex<TurnStats>,
+}
+
+/// What the last streamed turn cost, and whether the warm-up earned anything.
+#[derive(Default, Clone)]
+pub struct TurnStats {
+    pub turns: u64,
+    pub last_total_ms: u128,
+    pub last_first_audio_ms: u128,
+    pub last_asr_tail_ms: u128,
+    pub warm_ok: u64,
+    pub warm_cached_tokens: u64,
+    pub warm_prompt_tokens: u64,
+    pub last_warm: String,
 }
 
 impl Ctx {
-    fn note(&self, route: &str, detail: &str, secs: f64, ok: bool, note: &str) {
+    /// The voice's name and rate, from whichever piper is up.
+    pub(crate) fn voice(&self) -> tts::Voice {
+        self.tts.lock().unwrap_or_else(|p| p.into_inner()).voice()
+    }
+
+    /// The origin policy, in one place: every route answers CORS with the same list, and a route
+    /// that streams has to check it **before** it writes an event, not after.
+    pub(crate) fn allows_origin(&self, origin: &str) -> bool {
+        self.opts
+            .allow_origins
+            .iter()
+            .any(|a| a.eq_ignore_ascii_case(origin))
+    }
+
+    pub(crate) fn note(&self, route: &str, detail: &str, secs: f64, ok: bool, note: &str) {
         let mut c = self.counters.lock().unwrap_or_else(|p| p.into_inner());
         c.requests += 1;
         match route {
@@ -168,21 +212,40 @@ pub fn serve(opts: Options) -> Result<(), String> {
     }
     let stt = stt::Client::new(&opts.whisper_url, opts.whisper_language.clone());
     let agent = agent::Client::new(&opts.agent_url);
-    let piper = tts::Piper::new(&opts.piper_bin, &opts.piper_model, opts.length_scale);
-    let voice = piper.voice();
+    let tts_dir = opts.work_dir.clone();
+    let synthesiser = tts::Synthesiser::new(
+        &opts.piper_bin,
+        &opts.piper_model,
+        opts.length_scale,
+        &tts_dir,
+    );
     std::fs::create_dir_all(&opts.out_dir)
         .map_err(|e| format!("cannot create {}: {e}", opts.out_dir.display()))?;
+    std::fs::create_dir_all(&opts.work_dir)
+        .map_err(|e| format!("cannot create {}: {e}", opts.work_dir.display()))?;
+    // Start the voice process now rather than on the first answer: the cost of loading it is the
+    // whole reason a warm one exists, and paying it inside a person's first question is the
+    // same 2.4 s, merely in a worse place.
+    let warm = Mutex::new(synthesiser);
+    let voice = warm.lock().unwrap_or_else(|p| p.into_inner()).voice();
+    let started_up = if warm.lock().unwrap_or_else(|p| p.into_inner()).warm() {
+        "warm"
+    } else {
+        "cold (one-shot piper: see the warnings above)"
+    };
     let ctx = Arc::new(Ctx {
         opts,
         stt,
         agent,
-        piper,
+        tts: warm,
         started: Instant::now(),
         counters: Mutex::new(Counters::default()),
+        turns: Mutex::new(TurnStats::default()),
     });
     let listener = TcpListener::bind(&ctx.opts.listen).map_err(|e| format!("bind: {e}"))?;
     println!(
-        "voice-assistant serving {} — whisper={} agent={} voice={} ({} Hz), max {} chars, origins {:?}",
+        "voice-assistant serving {} — whisper={} agent={} voice={} ({} Hz, {started_up}), \
+         max {} chars, origins {:?}",
         ctx.opts.listen,
         ctx.opts.whisper_url,
         ctx.opts.agent_url,
@@ -213,6 +276,16 @@ fn handle(mut stream: TcpStream, ctx: &Arc<Ctx>) -> std::io::Result<()> {
     let Some(req) = web::read_request(&mut stream) else {
         return Ok(()); // hung up, or oversized: nothing to answer
     };
+    // The routes that answer **as they work** take the socket, so this router never has to model a
+    // response with no body yet. They live in `turn_routes.rs`, beside the SSE plumbing they exist
+    // to serve, and they apply the same origin rule as below — before a single event is written,
+    // since a preflight never reaches them (`route` answers OPTIONS).
+    if req.method == "POST" && req.path() == "/v1/turn" {
+        return crate::turn_routes::turn_route(req, stream, ctx);
+    }
+    if req.method == "POST" && req.path() == "/v1/warm" {
+        return crate::turn_routes::warm_route(&req, &mut stream, ctx);
+    }
     let reply = route(&req, ctx);
     let reply = with_cors(reply, &req, ctx);
     reply.send(&mut stream)
@@ -224,11 +297,7 @@ fn with_cors(reply: Reply, req: &Request, ctx: &Arc<Ctx>) -> Reply {
     if origin.is_empty() {
         return reply;
     }
-    let allowed = ctx
-        .opts
-        .allow_origins
-        .iter()
-        .any(|a| a.eq_ignore_ascii_case(origin));
+    let allowed = ctx.allows_origin(origin);
     if !allowed {
         // No headers at all: the browser blocks it, and the reason shows up in the
         // page's console rather than us having to invent an error body.
@@ -288,7 +357,7 @@ fn route(req: &Request, ctx: &Arc<Ctx>) -> Reply {
         ("POST", "/v1/tts") => tts_route(req, ctx),
         ("POST", "/v1/ask") => ask(req, ctx),
         ("GET", "/v1/voice") => {
-            let v = ctx.piper.voice();
+            let v = ctx.voice();
             Reply::json(
                 200,
                 &format!(
@@ -390,9 +459,10 @@ fn tts_route(req: &Request, ctx: &Arc<Ctx>) -> Reply {
             }
         }
     };
-    match ctx.piper.synth(&speak) {
+    let spoken_now = ctx.tts.lock().unwrap_or_else(|p| p.into_inner()).say(&speak);
+    match spoken_now {
         Ok(speech) => {
-            let pcm = wav::resample(&speech.pcm, speech.voice.sample_rate, wav::SAMPLE_RATE);
+            let pcm = tts::pcm_at_16k(&speech);
             let body = wav::mono16(&pcm, wav::SAMPLE_RATE);
             ctx.note("/v1/tts", &speak, speech.wall.as_secs_f64(), true, "");
             save(ctx, "tts", &body);
@@ -436,9 +506,9 @@ fn ask(req: &Request, ctx: &Arc<Ctx>) -> Reply {
     let mut audio = String::new();
     let mut audio_secs = 0.0f64;
     match speak.as_deref() {
-        Some(text) => match ctx.piper.synth(text) {
+        Some(text) => match ctx.tts.lock().unwrap_or_else(|p| p.into_inner()).say(text) {
             Ok(speech) => {
-                let pcm = wav::resample(&speech.pcm, speech.voice.sample_rate, wav::SAMPLE_RATE);
+                let pcm = tts::pcm_at_16k(&speech);
                 let body = wav::mono16(&pcm, wav::SAMPLE_RATE);
                 audio_secs = speech.secs;
                 audio = b64::encode(&body);
@@ -488,7 +558,7 @@ fn ask(req: &Request, ctx: &Arc<Ctx>) -> Reply {
 }
 
 fn status_json(ctx: &Arc<Ctx>) -> Reply {
-    let voice = ctx.piper.voice();
+    let voice = ctx.voice();
     let c = ctx.counters.lock().unwrap_or_else(|p| p.into_inner());
     let recent: Vec<String> = c
         .recent
@@ -520,6 +590,14 @@ fn status_json(ctx: &Arc<Ctx>) -> Reply {
         .iter()
         .map(|o| common_json::quoted(o))
         .collect();
+    let t = ctx.turns.lock().unwrap_or_else(|p| p.into_inner()).clone();
+    let (voice_warm, v) = {
+        let g = ctx.tts.lock().unwrap_or_else(|p| p.into_inner());
+        // `warm` here is the *live* question — is the voice process up right now — and the
+        // counters beside it are the history. Both are needed: the first answers "will the next
+        // answer be quick", the second answers "has this been working".
+        (g.warm_live(), g.stats.clone())
+    };
     Reply::json(
         200,
         &format!(
@@ -527,7 +605,11 @@ fn status_json(ctx: &Arc<Ctx>) -> Reply {
              \"voice\":{{\"name\":{},\"sample_rate\":{}}},\"speak_rate_hz\":{},\
              \"max_speech_chars\":{},\"allow_origins\":[{}],\"record_questions\":{},\
              \"requests\":{},\"transcribes\":{},\"asks\":{},\"tts\":{},\"errors\":{},\
-             \"last_error\":{},\"recent\":[{}],\"satellite\":{}}}",
+             \"last_error\":{},\"recent\":[{}],\"turns\":{{\"total\":{},\"last_total_ms\":{},\
+             \"last_first_audio_ms\":{},\"last_asr_tail_ms\":{},\"warm_ok\":{},\
+             \"warm_cached_tokens\":{},\"warm_prompt_tokens\":{},\"last_warm\":{}}},\
+             \"voice\":{{\"warm\":{},\"warm_sentences\":{},\"cold_sentences\":{},\"restarts\":{},\
+             \"last_ms\":{},\"last_fallback\":{}}},\"satellite\":{}}}",
             ctx.started.elapsed().as_secs_f64(),
             common_json::quoted(&ctx.opts.listen),
             common_json::quoted(&ctx.opts.whisper_url),
@@ -545,6 +627,20 @@ fn status_json(ctx: &Arc<Ctx>) -> Reply {
             c.errors,
             common_json::quoted(&c.last_error),
             recent.join(","),
+            t.turns,
+            t.last_total_ms,
+            t.last_first_audio_ms,
+            t.last_asr_tail_ms,
+            t.warm_ok,
+            t.warm_cached_tokens,
+            t.warm_prompt_tokens,
+            common_json::quoted(&t.last_warm),
+            voice_warm,
+            v.warm,
+            v.cold,
+            v.restarts,
+            v.last_ms,
+            common_json::quoted(&v.last_fallback),
             satellite,
         ),
     )
@@ -721,6 +817,9 @@ mod tests {
             allow_origins: vec![],
             satellite_status: None,
             out_dir: "/tmp/voice-refused-test".into(),
+            work_dir: "/tmp/voice-refused-test/tts".into(),
+            warm: true,
+            asr_slice_secs: 1.2,
             wake_words: vec!["hey jarvis".to_string()],
             record_questions: true,
         };

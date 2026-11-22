@@ -31,10 +31,10 @@
 
 use std::io::Write;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use crate::sink::{Capabilities, Played, Sink};
+use crate::sink::{Capabilities, Played, Sink, SinkStream};
 use crate::wav;
 
 pub struct RacSsh {
@@ -107,6 +107,85 @@ impl Sink for RacSsh {
         // here — which is the *only* reason the core's half-duplex guard has ever been
         // trustworthy, and why `Played` reports seconds rather than success.
         let slack = (secs - started.elapsed().as_secs_f64()).max(0.0);
+        std::thread::sleep(Duration::from_secs_f64(slack));
+        Ok(Played { secs })
+    }
+
+    /// The device's audio client reads **stdin**, so the pipe is the streaming path and there is
+    /// nothing to invent: `rac play -` starts playing as soon as samples arrive, which is exactly
+    /// what a turn that produces audio while the model still has sentences left needs.
+    fn streams(&self) -> bool {
+        true
+    }
+
+    fn play_stream(&mut self) -> Result<Box<dyn SinkStream>, String> {
+        let mut child = Command::new("ssh")
+            .arg("-i")
+            .arg(&self.key)
+            .arg("-o")
+            .arg("BatchMode=yes")
+            .arg("-o")
+            .arg(format!("ConnectTimeout={}", self.timeout.as_secs().max(1)))
+            .arg("-o")
+            .arg("StrictHostKeyChecking=accept-new")
+            .arg(format!("{}@{}", self.user, self.host))
+            .arg(format!("rac play - -r {}", wav::SAMPLE_RATE))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("spawn ssh: {e}"))?;
+        let stdin = child.stdin.take().ok_or("ssh: no stdin")?;
+        Ok(Box::new(RacPipe {
+            child: Some(child),
+            stdin: Some(stdin),
+            samples: 0,
+            started: Instant::now(),
+        }))
+    }
+}
+
+struct RacPipe {
+    child: Option<Child>,
+    /// `Option` so `finish` can *close* it: `rac play` ends its track at EOF on this pipe, and a
+    /// pipe held open by a `&mut` borrow never reaches EOF.
+    stdin: Option<std::process::ChildStdin>,
+    samples: usize,
+    started: Instant,
+}
+
+impl SinkStream for RacPipe {
+    fn chunk(&mut self, pcm: &[i16]) -> Result<(), String> {
+        self.samples += pcm.len();
+        let bytes: Vec<u8> = pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
+        let stdin = self
+            .stdin
+            .as_mut()
+            .ok_or_else(|| "rac play: the pcm pipe is already closed".to_string())?;
+        stdin
+            .write_all(&bytes)
+            .and_then(|()| stdin.flush())
+            .map_err(|e| format!("send pcm to rac: {e} (the device may have hung up)"))
+    }
+
+    fn finish(mut self: Box<Self>) -> Result<Played, String> {
+        let secs = self.samples as f64 / wav::SAMPLE_RATE as f64;
+        // Dropping the owned pipe is what sends EOF; without it the device waits for audio that
+        // is never coming and `finish` would block in `wait` forever.
+        drop(self.stdin.take());
+        let status = self
+            .child
+            .take()
+            .and_then(|mut c| c.wait().ok())
+            .ok_or_else(|| "rac play: no child to wait for".to_string())?;
+        if !status.success() {
+            return Err(format!(
+                "rac play exited {status} (is the device's audio daemon up? `rac status` says)"
+            ));
+        }
+        // Same arithmetic as the buffered path, for the same reason: ssh returns when the bytes
+        // are gone, and `Played::secs` is what the half-duplex guard is measured against.
+        let slack = (secs - self.started.elapsed().as_secs_f64()).max(0.0);
         std::thread::sleep(Duration::from_secs_f64(slack));
         Ok(Played { secs })
     }

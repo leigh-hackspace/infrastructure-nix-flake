@@ -786,3 +786,40 @@ The recognizer errs toward silence by design: past tense, a noun that is not the
 all the model. Its filler list deliberately contains **no room names**: the space API owns
 that table, and `AGENTS.md` rule 31 is a whole paragraph about what a second copy of a list
 becomes.
+
+## 17. Streaming and the warm-up, for the voice path (built 2026-11-22)
+
+The voice assistant stopped adding its stages up (`docs/voice-assistant-2026-11-16.md`
+§"Streaming end to end"), and that required this bot to answer **in pieces** rather than as
+one object. Two endpoints on `slack-agent listen` and one new file:
+
+| | |
+| --- | --- |
+| `POST /v1/ask/stream` | SSE: `start` (with the tool list), `log` (a tool call, an engine retry — the line a person reads while an answer takes ten seconds), `partial` (text), `reset`, then `answer` **or** `error`. Same turn as `POST /v1/ask`: `ask_budget_stream` drives the tool rounds, the budget and the grounding rules in `agent.rs`, so there is one answering path with two transports, not two answers that can disagree. |
+| `POST /v1/ask/prefill` | one chat completion with the real prompt prefix and **`max_tokens: 1`**; replies with the engine's receipt (`prompt_tokens`, `cached_tokens`, `millis`) and never with an answer. |
+| `crates/slack-agent/src/stream.rs` | the engine's SSE, split out of `engine.rs` (both files are ~700/470 lines — rule 26): deltas forwarded as they arrive, tool-call fragments reassembled **by `index`**, keep-alive comments skipped, malformed `data:` lines counted, and the two timing figures. `engine.rs` re-exports `StreamFail`, so callers kept spelling it `engine::StreamFail`. |
+
+Four measurements that are the reason the code is shaped like this:
+
+- **`max_tokens: 0` is accepted and ignored.** The obvious way to ask these engines to
+  prefill without answering returns a normal completion that prefilled nothing. So the
+  warm-up asks for **one** token and throws it away, and `cached_tokens` is published per
+  voice turn in the gateway's `status.json` — because a warm-up whose effect cannot be read
+  from a socket is a warm-up nobody keeps. The prefill **never touches the transcript**: it
+  is not a turn, and the value is entirely inside the engine's cache.
+- **A usage chunk has no `choices`.** A parser that indexes `choices[0]` unconditionally ends
+  a *successful* streamed turn with an error. Measured on the wire, pinned by a test.
+- **Tool calls arrive fragmented by `index`**: `id`/`name` in the first fragment, `arguments`
+  in pieces after. Assembled into exactly the buffered path's `ToolCall`, so `assistant_message`
+  closes the round with no idea which transport produced it.
+- **A stream that breaks is not one failure but two.** `StreamFail::emitted` says whether any
+  of the answer has already been handed to the caller. If it has, the caller is showing the
+  room words that a quiet retry would produce twice — and no retry logic inside this crate can
+  undo that. `agent.rs` uses it to decide, and `StreamStats.emitted` is the only place that
+  knows.
+
+Keep-alives matter here specifically: the bot's thread sits **inside** the engine's stream
+while the model thinks and cannot also write to the voice gateway's socket, so the idle
+ceiling on that hop is deliberately longer than the bot's own turn budget — a short one
+reports a dead assistant for a slow one, which is the worst false positive this path can
+produce (§13 has the decode rates: 14–39 tok/s).

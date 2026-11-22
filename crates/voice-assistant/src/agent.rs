@@ -33,6 +33,43 @@ pub struct Client {
     pub timeout: Duration,
 }
 
+/// The error a streaming ask reports when the **caller** stopped listening. Not a failure to
+/// report to anyone: the turn was cancelled because nobody was left to hear it, which is the
+/// correct outcome and must not be counted as an engine error.
+pub const CLIENT_GONE: &str = "caller hung up";
+
+/// One event of a streamed turn, as the bot sends it.
+#[derive(Debug, Clone)]
+pub enum Event {
+    /// The turn opened. `tools` is what the bot has, for a status line.
+    Start { tools: Vec<String> },
+    /// A line of plumbing: a tool call, an engine retry. Worth showing; never spoken.
+    Log(String),
+    /// Part of the answer's text.
+    Partial(String),
+    /// Take back everything shown: the round that produced it became a tool call.
+    Reset,
+}
+
+/// What a warm-up achieved, in the engine's own numbers.
+#[derive(Debug, Clone, Default)]
+pub struct Prefill {
+    pub ok: bool,
+    pub engine: String,
+    pub prompt_tokens: u64,
+    pub cached_tokens: u64,
+    pub millis: u64,
+    pub skipped: String,
+}
+
+fn str_list(value: &common_json::Json, key: &str) -> Vec<String> {
+    value
+        .get(key)
+        .and_then(common_json::Json::as_array)
+        .map(|a| a.iter().filter_map(common_json::Json::as_str).map(str::to_string).collect())
+        .unwrap_or_default()
+}
+
 #[derive(Debug, Default)]
 pub struct Answer {
     pub text: String,
@@ -53,6 +90,172 @@ impl Client {
             // first to give up should be the one that knows why.
             timeout: Duration::from_secs(150),
         }
+    }
+
+    /// Ask, and take the answer **as it is produced**.
+    ///
+    /// `on_event` sees every part as it arrives: the transcript-free `start`, the plumbing
+    /// `log` lines (which are what a person reads when an answer takes ten seconds), each
+    /// `partial` of text, `reset` when a round that looked like an answer turned out to be a
+    /// tool call, and at most one `answer` or `error`.
+    ///
+    /// The idle ceiling is deliberately *longer* than the bot's own turn budget. This socket
+    /// carries no keep-alive while the model thinks — the bot's thread is inside the engine's
+    /// stream and cannot also write to ours — so a short ceiling would report a dead assistant
+    /// for a slow one, which is the worst possible false positive: it is indistinguishable from
+    /// the real thing for whoever is standing in the room.
+    pub fn ask_stream(
+        &self,
+        question: &str,
+        voice: bool,
+        on_event: &mut dyn FnMut(Event) -> bool,
+    ) -> Result<Answer, String> {
+        if question.trim().is_empty() {
+            return Err("no question to ask".to_string());
+        }
+        let body = format!(
+            "{{\"text\":{},\"voice\":{}}}",
+            common_json::quoted(question),
+            if voice { "true" } else { "false" }
+        );
+        let mut stream = common_http::stream::request_stream(
+            "POST",
+            &format!("{}/v1/ask/stream", self.url),
+            Some(body.as_bytes()),
+            "application/json",
+            &[],
+            self.timeout,
+        )
+        .map_err(|e| format!("slack-agent: {e}"))?;
+        if !stream.ok() {
+            let why = stream.read_rest(400);
+            let text = if why.trim().is_empty() {
+                format!("HTTP {}", stream.status)
+            } else {
+                match common_json::parse(&why)
+                    .ok()
+                    .and_then(|v| v.get("error").and_then(common_json::Json::as_str).map(str::to_string))
+                {
+                    Some(e) => e,
+                    None => why.lines().next().unwrap_or("").to_string(),
+                }
+            };
+            if stream.status == 429 {
+                return Err("slack-agent is busy (its ask endpoint takes one turn at a time)".into());
+            }
+            return Err(format!("slack-agent: {text}"));
+        }
+        let mut answer: Option<Answer> = None;
+        let mut error: Option<String> = None;
+        loop {
+            let ev = match stream.read_event() {
+                Ok(Some(e)) => e,
+                Ok(None) => break,
+                Err(e) => return Err(format!("slack-agent: {e}")),
+            };
+            let value = common_json::parse(&ev.data).unwrap_or(common_json::Json::Null);
+            let text = |k: &str| {
+                value
+                    .get(k)
+                    .and_then(common_json::Json::as_str)
+                    .unwrap_or("")
+                    .to_string()
+            };
+            let keep = match ev.name.as_str() {
+                "start" => on_event(Event::Start { tools: str_list(&value, "tools") }),
+                "log" => on_event(Event::Log(text("line"))),
+                "partial" => on_event(Event::Partial(text("t"))),
+                "reset" => on_event(Event::Reset),
+                "error" => {
+                    error = Some(text("error"));
+                    true
+                }
+                "answer" => {
+                    answer = Some(Answer {
+                        text: text("answer"),
+                        engine: text("engine"),
+                        rounds: value
+                            .get("rounds")
+                            .and_then(common_json::Json::as_f64)
+                            .map(|n| n as u64)
+                            .unwrap_or(0),
+                        tools: str_list(&value, "tools"),
+                        secs: value
+                            .get("secs")
+                            .and_then(common_json::Json::as_f64)
+                            .unwrap_or(0.0),
+                        warnings: str_list(&value, "warnings"),
+                    });
+                    true
+                }
+                _ => true,
+            };
+            if !keep {
+                return Err(CLIENT_GONE.to_string());
+            }
+        }
+        if let Some(a) = answer {
+            return Ok(a);
+        }
+        Err(error.unwrap_or_else(|| "slack-agent closed the stream without an answer".into()))
+    }
+
+    /// Warm the engine with this question's prompt prefix. Best-effort by construction: the
+    /// caller fires it from a side thread and ignores every outcome except "tell the room what
+    /// happened", because a warm-up that delays the real turn would be a bug, not an optimisation.
+    pub fn prefill(&self, question: &str, voice: bool) -> Result<Prefill, String> {
+        let body = format!(
+            "{{\"text\":{},\"voice\":{}}}",
+            common_json::quoted(question),
+            if voice { "true" } else { "false" }
+        );
+        let reply = common_http::request(
+            "POST",
+            &format!("{}/v1/ask/prefill", self.url),
+            Some(&body),
+            &[],
+            Duration::from_secs(30),
+        )
+        .map_err(|e| format!("slack-agent: {e}"))?;
+        let value = common_json::parse(&reply.body)
+            .map_err(|e| format!("slack-agent prefill replied non-JSON ({e})"))?;
+        if !reply.ok() {
+            return Err(format!(
+                "slack-agent prefill: {}",
+                value
+                    .get("error")
+                    .and_then(common_json::Json::as_str)
+                    .unwrap_or("unknown")
+            ));
+        }
+        Ok(Prefill {
+            ok: value.get("ok").and_then(common_json::Json::as_bool).unwrap_or(false),
+            engine: value
+                .get("engine")
+                .and_then(common_json::Json::as_str)
+                .unwrap_or("")
+                .to_string(),
+            prompt_tokens: value
+                .get("prompt_tokens")
+                .and_then(common_json::Json::as_f64)
+                .map(|n| n as u64)
+                .unwrap_or(0),
+            cached_tokens: value
+                .get("cached_tokens")
+                .and_then(common_json::Json::as_f64)
+                .map(|n| n as u64)
+                .unwrap_or(0),
+            millis: value
+                .get("millis")
+                .and_then(common_json::Json::as_f64)
+                .map(|n| n as u64)
+                .unwrap_or(0),
+            skipped: value
+                .get("skipped")
+                .and_then(common_json::Json::as_str)
+                .unwrap_or("")
+                .to_string(),
+        })
     }
 
     pub fn ask(&self, question: &str, voice: bool) -> Result<Answer, String> {

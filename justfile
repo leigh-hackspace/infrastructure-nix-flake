@@ -1436,6 +1436,103 @@ voice-ask question:
     for w in a.get("warnings") or []: print("WARN: " + w)
     '
 
+# One question, answered **as a stream**: every event printed with the moment it arrived, so the
+# claim of the streaming pipeline is measurable from a shell rather than argued from the code.
+# The number to look at is `first audio` against `last token`: audio before the last token means
+# the room heard the answer while the model was still producing it, which is the whole change.
+# Writes the audio to /tmp/voice-turn.wav and plays nothing.
+voice-turn question:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # The question is prose, so it goes through a heredoc into a python that encodes it, exactly
+    # as `voice-ask` does. It lands in a variable rather than straight into the pipeline because
+    # the pipeline's last stage is the timed reader, and bash wants a heredoc's body on the lines
+    # after the logical line that opens it.
+    body=$(cat <<'VO_TURN_Q' | python3 -c 'import json,sys; sys.stdout.write(json.dumps(dict(text=sys.stdin.read().strip(), voice=True)))'
+    {{question}}
+    VO_TURN_Q
+    )
+    # Every line of the reader below is indented with the recipe, and just strips that indent
+    # before handing the script to bash — a python at column zero here would end the recipe body
+    # and be parsed as just syntax, which is a confusing way to discover it.
+    if ! printf '%s' "$body" | curl -fsS -N -m 180 -X POST \
+            -H 'content-type: application/json' -H 'accept: text/event-stream' \
+            --data-binary @- https://voice.int.leighhack.org/v1/turn \
+        | python3 -c '
+    import base64, json, sys, time, wave
+    t0 = time.monotonic()
+    first, raw = dict(), b""
+    name, data = None, []
+    answer, engine = "", "-"
+    def emit(ms, what, line):
+        if what not in first:
+            first[what] = ms
+        print("  %7.0f ms  %-8s %s" % (ms, what, line[:78]))
+    for line in sys.stdin:
+        line = line.rstrip("\r\n")
+        if line:
+            if line.startswith("event:"):
+                name = line[6:].strip()
+            elif line.startswith("data:"):
+                data.append(line[5:].strip())
+            continue
+        if name is None:
+            continue
+        blob = "\n".join(data)
+        data = []
+        v = json.loads(blob) if blob else dict()
+        ms = (time.monotonic() - t0) * 1000.0
+        if name == "token":
+            emit(ms, name, repr(v.get("t", "")))
+        elif name == "audio":
+            raw += base64.b64decode(v.get("pcm16", ""))
+            emit(ms, name, "%.1f kB of pcm at %s Hz" % (len(v.get("pcm16", "")) / 1024.0, v.get("rate")))
+        elif name == "log":
+            emit(ms, name, str(v.get("line", "")))
+        elif name == "asr":
+            emit(ms, name, "%s%s" % (v.get("asr", ""), "" if v.get("done") else " (still listening)"))
+        elif name == "warn":
+            emit(ms, name, str(v.get("warn", "")))
+        elif name == "answer":
+            answer, engine = v.get("answer", ""), v.get("engine", "-")
+            emit(ms, name, answer)
+        elif name == "reset":
+            emit(ms, name, "the text so far became a tool call")
+        elif name == "done":
+            emit(ms, name, "first audio %s ms · %s sentence(s) · %s ms total"
+                 % (v.get("first_audio_ms"), v.get("sentences"), v.get("total_ms")))
+        elif name == "error":
+            emit(ms, name, str(v.get("error", "")))
+        else:
+            emit(ms, name, blob)
+        if name in ("done", "error"):
+            break
+    def show(what):
+        return ("%.0f ms" % first[what]) if what in first else "never"
+    print("answer:      %s" % (answer or "(none)"))
+    print("engine:      %s" % engine)
+    print("first asr:   %-9s first token: %s" % (show("asr"), show("token")))
+    print("first audio: %-9s first answer:%s" % (show("audio"), show("answer")))
+    if "audio" in first and "answer" in first and first["audio"] < first["answer"]:
+        print("VERDICT:     the room began hearing the answer %.0f ms before it was complete"
+              % (first["answer"] - first["audio"]))
+    elif "audio" in first:
+        print("VERDICT:     audio came only after the whole answer — that is the buffered path")
+    if raw:
+        w = wave.open("/tmp/voice-turn.wav", "wb")
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(16000)
+        w.writeframes(raw)
+        w.close()
+        print("wrote:       /tmp/voice-turn.wav (%.1f s) — nothing has played" % (len(raw) / 2.0 / 16000.0))
+    '; then
+        echo
+        echo "The stream failed. A 404 means this box is not running the generation that serves" >&2
+        echo "/v1/turn yet: just switch on services1, or just deploy services1 from here." >&2
+        exit 1
+    fi
+
 # Text-only: synthesise speech to a WAV and say nothing.  This is the half that is safe to
 # run while nobody has confirmed what a C110 speaker sounds like across a working room.
 voice-say text:

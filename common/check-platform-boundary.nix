@@ -40,8 +40,23 @@
 let
   root = ../.;
 
+  # The files the streaming turn added are in here because they *are* the turn logic now:
+  # `turn.rs` is the pipeline, `turn_routes.rs` is its HTTP surface, `events.rs` is the wire
+  # contract, `asr.rs` slices the audio, `sentence.rs` decides what is speakable and `gateway.rs`
+  # is the satellite's client of the gateway. A device fact would be equally at home in none of
+  # them, which is what makes the check worth extending as the crate grows.
+  #
+  # `tts.rs` and `testkit.rs` are the two deliberate exclusions — one spawns the voice engine (the
+  # exception asserted at the bottom of this file), the other is `#[cfg(test)]` and exists to stand
+  # in for the processes the drivers own.
   CORE = [
     "crates/voice-assistant/src/api.rs"
+    "crates/voice-assistant/src/turn.rs"
+    "crates/voice-assistant/src/turn_routes.rs"
+    "crates/voice-assistant/src/events.rs"
+    "crates/voice-assistant/src/asr.rs"
+    "crates/voice-assistant/src/gateway.rs"
+    "crates/voice-assistant/src/sentence.rs"
     "crates/voice-assistant/src/satellite.rs"
     "crates/voice-assistant/src/gate.rs"
     "crates/voice-assistant/src/wav.rs"

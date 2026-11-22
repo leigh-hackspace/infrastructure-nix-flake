@@ -218,8 +218,17 @@
       (toString cfg.lengthScale)
       "--allow-origin"
       (lib.concatStringsSep "," cfg.allowOrigins)
+      # The rolling-transcription slice, in seconds. The binary's default is the same number on
+      # purpose — this line exists so the value is visible in the rendered unit (rule 10) rather
+      # than discovered in a Rust default, and so the dial can be moved per box without a rebuild.
+      "--asr-slice-secs"
+      (toString cfg.asrSliceSecs)
     ]
     ++ lib.optional (!cfg.recordQuestions) "--no-record-questions"
+    # The name says *engine* deliberately: this is the prefill of the prompt prefix into the
+    # inference server, not the warm piper, which is started unconditionally by `serve` and stays
+    # up whatever this says.
+    ++ lib.optional (!cfg.warmEngine) "--no-engine-warm"
     # The engine is a proxy target, not a second origin: the page keeps exactly one address
     # to talk to, and the engine keeps its loopback-only rule.
     ++ lib.optionals cfg.wake.enable [
@@ -238,7 +247,13 @@
       cfg.source
       "--speaker"
       cfg.speaker
+      # The satellite transcribes an open window while the speaker is still talking, so the same
+      # dial belongs here as on the gateway; `--no-engine-warm` likewise means the satellite does
+      # not fire a prefill from the middle of an utterance.
+      "--asr-slice-secs"
+      (toString cfg.asrSliceSecs)
     ]
+    ++ lib.optional (!cfg.warmEngine) "--no-engine-warm"
     ++ lib.optionals (cfg.speaker == "ssh") [
       "--speaker-host"
       cfg.speakerHost
@@ -295,6 +310,31 @@ in {
       type = lib.types.str;
       default = "en";
       description = "''auto'' lets whisper decide; a name saves it guessing on a short window.";
+    };
+
+    asrSliceSecs = lib.mkOption {
+      type = lib.types.float;
+      default = 1.2;
+      description = ''
+        Seconds of audio per rolling-transcription slice, on the gateway and on the satellite.
+        Shorter means less left to transcribe when someone stops talking — and one more whisper
+        call per sentence, against a whisper that is already about real-time on aibox's CPU. The
+        number is measured rather than chosen: 1.2 s is roughly one clause, and the slices
+        overlap so a word cut in half is still heard whole (`crates/voice-assistant/src/asr.rs`).
+      '';
+    };
+
+    warmEngine = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = ''
+        Fire a `max_tokens: 1` prefill of the question's prompt prefix at the inference engine as
+        soon as there is a first partial transcript, so the engine is warm with this conversation
+        before the real request arrives. Costs one extra request per utterance and buys the
+        prompt-prefill seconds back — see `docs/voice-assistant-2026-11-16.md` and
+        `crates/slack-agent/src/engine.rs` for why `max_tokens: 1` and not `0`. Off is the
+        previous behaviour. Does **not** affect the warm piper, which `serve` always starts.
+      '';
     };
 
     lengthScale = lib.mkOption {

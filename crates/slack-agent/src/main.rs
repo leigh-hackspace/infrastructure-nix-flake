@@ -35,6 +35,7 @@
 
 mod agent;
 mod engine;
+mod stream;
 mod fastpath;
 mod prompt;
 mod slack;

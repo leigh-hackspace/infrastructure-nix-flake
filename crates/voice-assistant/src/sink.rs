@@ -71,4 +71,38 @@ pub trait Sink: Send {
     /// — out of the speaker, so that the caller's half-duplex guard is measured rather than
     /// assumed.
     fn play(&mut self, pcm: &[i16]) -> Result<Played, String>;
+
+    /// Whether this sink accepts a turn **as it is produced** ([`SinkStream`]).
+    ///
+    /// Asked of the sink rather than assumed by the caller, because the answer is a property of
+    /// the device: a speaker on the far side of a shell pipe can start playing on the first
+    /// buffer it is given, and a sink that must assemble a whole file cannot. A sink that answers
+    /// `false` gets the buffered path, which is correct and slower, and the core must not have to
+    /// know which is which.
+    fn streams(&self) -> bool {
+        false
+    }
+
+    /// Begin a streamed answer. Only called when [`Sink::streams`] said yes.
+    fn play_stream(&mut self) -> Result<Box<dyn SinkStream>, String> {
+        Err(format!("{} does not stream", self.label()))
+    }
+}
+
+/// One streamed answer, in order.
+///
+/// The contract is a file being written by one end and played by the other: [`chunk`] is called
+/// as the voice produces samples, and [`finish`] means "that was the last sentence" and returns
+/// what the buffered [`Sink::play`] returns — **how long the room actually heard**, which is what
+/// the half-duplex guard is built on. Which of the two shapes a given adapter is — a device that
+/// consumes samples as they arrive and so measures its own playing time, or a file that only knows
+/// when the last byte landed — is the adapter's business, and `src/drivers/` is where that is
+/// written down.
+pub trait SinkStream {
+    /// Hand over the next samples. Returns as soon as they are the sink's problem, which is the
+    /// entire point: the turn keeps generating while these are playing.
+    fn chunk(&mut self, pcm: &[i16]) -> Result<(), String>;
+
+    /// The last sentence is in. Report the playing time.
+    fn finish(self: Box<Self>) -> Result<Played, String>;
 }

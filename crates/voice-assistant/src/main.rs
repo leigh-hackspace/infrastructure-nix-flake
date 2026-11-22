@@ -24,14 +24,22 @@
 //!   loud feature on a ceiling mount in a room with people in it.
 
 mod agent;
+mod asr;
 mod api;
 mod b64;
 mod gate;
+mod gateway;
 mod drivers;
+mod events;
 mod satellite;
+mod sentence;
 mod sink;
+#[cfg(test)]
+mod testkit;
 mod source;
 mod spoken;
+mod turn;
+mod turn_routes;
 mod stt;
 mod tts;
 mod wake;
@@ -124,6 +132,9 @@ fn serve_options(a: &[String]) -> api::Options {
         .collect(),
         satellite_status: Some(PathBuf::from(format!("{state}/satellite-status.json"))),
         out_dir: PathBuf::from(format!("{state}/answers")),
+        work_dir: PathBuf::from(format!("{state}/tts")),
+        warm: !a.iter().any(|s| s == "--no-engine-warm"),
+        asr_slice_secs: number(a, "--asr-slice-secs", "VOICE_ASR_SLICE_SECS", 1.2),
         wake_words: wake_list(a),
         record_questions: !a.iter().any(|s| s == "--no-record-questions"),
     }
@@ -347,6 +358,8 @@ fn satellite_options(a: &[String], probe_only: bool) -> satellite::Options {
         follow_up: Duration::from_secs_f64(number(a, "--follow-up-secs", "VOICE_FOLLOW_UP_SECS", 6.0)),
         guard: Duration::from_secs_f64(number(a, "--guard-secs", "VOICE_GUARD_SECS", 1.2)),
         max_play_secs: number(a, "--max-play-secs", "VOICE_MAX_PLAY_SECS", 45.0),
+        warm: !a.iter().any(|s| s == "--no-engine-warm"),
+        asr_slice_secs: number(a, "--asr-slice-secs", "VOICE_ASR_SLICE_SECS", 1.2),
     }
 }
 

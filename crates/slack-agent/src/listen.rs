@@ -44,6 +44,23 @@
 //! instead of a silent timeout.  Slack's socket is unaffected — it has its own
 //! ordering, which is the whole reason the two are separate units.
 //!
+//! ## Streaming: `/v1/ask/stream`, and why a turn has to be written as it happens
+//!
+//! `POST /v1/ask` can only answer once. A voice turn cannot wait for that: measured decode is
+//! 14–39 tok/s (`docs/slack-agent-2026-11-16.md`), so the difference between a whole answer and
+//! its first sentence is 2–4 seconds of a room standing still — and the first sentence is all a
+//! speaker needs to *start*. So `/v1/ask/stream` runs the same loop and writes it out as
+//! server-sent events (`common_web::stream`): `start`, `log`, `partial`, `reset`, `answer`,
+//! `error`. `/v1/ask` stays exactly as it is, because a caller that wants one JSON object should
+//! not have to parse a stream.
+//!
+//! `POST /v1/ask/prefill` is the other half: a turn's prompt prefix (system prompt + tool
+//! schemas + the question as far as it is known) sent to the engine for **one token**, so the
+//! real turn prefills only its tail. It is deliberately not a turn: it takes no transcript, keeps
+//! no history, and refuses politely when a turn is in flight rather than queueing behind one.
+//! Whether it pays is measurable from this socket's own counters (`prefills`,
+//! `prefill_cached_tokens`).
+//!
 //! ## Loopback, and who reaches it
 //!
 //! `--listen` off loopback is refused, like `hackspace-mcp`: no authentication is the
@@ -128,6 +145,16 @@ struct Stats {
     /// when it is 100 % of a quiet hour, the model was never needed for that hour at all.
     quick: AtomicU64,
     last_turn_ms: AtomicU64,
+    /// Warm-up requests accepted, and the tokens the engine reported as **reused** for them.
+    /// Both counters exist so the question "does prefilling pay here" is answered by this
+    /// socket rather than argued: `prefills` climbing while `prefill_cached_tokens` stays at 0
+    /// is a feature costing a request and buying nothing.
+    prefills: AtomicU64,
+    prefill_prompt_tokens: AtomicU64,
+    prefill_cached_tokens: AtomicU64,
+    last_prefill_ms: AtomicU64,
+    /// `partial` events written by `/v1/ask/stream` — the stream's own liveness counter.
+    parts: AtomicU64,
     last_error: Mutex<String>,
     recent: Mutex<VecDeque<String>>,
 }
@@ -202,6 +229,11 @@ fn handle(mut stream: std::net::TcpStream, ctx: &Arc<Ctx>) -> std::io::Result<()
     let Some(req) = web::read_request(&mut stream) else {
         return Ok(());
     };
+    // The two routes that answer *as they work* must own the socket, so they are matched before
+    // the buffered router — which is the only reason `route` gets to keep returning a `Reply`.
+    if req.method == "POST" && matches!(req.path(), "/v1/ask/stream" | "/v1/ask/prefill") {
+        return streaming(req, stream, ctx);
+    }
     route(&req, ctx).send(&mut stream)
 }
 
@@ -236,23 +268,9 @@ fn route(req: &Request, ctx: &Arc<Ctx>) -> Reply {
 /// One turn.  The whole body of this function is the reason the voice work needed no
 /// new bot: parse, ask, report.
 fn ask(req: &Request, ctx: &Arc<Ctx>) -> Reply {
-    let body = match json::parse(&req.body_text()) {
+    let (question, kind) = match parse_ask(req) {
         Ok(v) => v,
-        Err(e) => return Reply::json(400, &json::error_object(&format!("body is not JSON: {e}"))),
-    };
-    let question = match body.get("text").and_then(Json::as_str) {
-        Some(t) if !t.trim().is_empty() => t.trim().to_string(),
-        _ => {
-            return Reply::json(
-                400,
-                &json::error_object("expected {\"text\": \"the question\", \"voice\": true|false}"),
-            )
-        }
-    };
-    let kind = if body.get("voice").and_then(Json::as_bool) == Some(false) {
-        Kind::Text
-    } else {
-        Kind::Voice
+        Err(why) => return Reply::json(400, &json::error_object(&why)),
     };
     // **The voice channel is where a fast path is audible.** Slack can tolerate nine seconds,
     // because a person walked away and came back; a room with people standing in front of a
@@ -344,6 +362,240 @@ fn ask(req: &Request, ctx: &Arc<Ctx>) -> Reply {
     )
 }
 
+/// The one body both answer routes accept: the question, and which channel it came in on.
+///
+/// Shared because the two routes must not be able to disagree about what a request means — a
+/// `/v1/ask/stream` that picked a different prompt or budget from `/v1/ask` for the same body
+/// would be the same bug as two system prompts, just harder to see.
+fn parse_ask(req: &Request) -> Result<(String, Kind), String> {
+    let body = json::parse(&req.body_text()).map_err(|e| format!("body is not JSON: {e}"))?;
+    let question = body
+        .get("text")
+        .and_then(Json::as_str)
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+        .ok_or_else(|| "expected {\"text\": \"the question\", \"voice\": true|false}".to_string())?;
+    let kind = if body.get("voice").and_then(Json::as_bool) == Some(false) {
+        Kind::Text
+    } else {
+        Kind::Voice
+    };
+    Ok((question, kind))
+}
+
+/// The two routes that stream.  They take the socket by value because from here on the response
+/// is written over time rather than returned.
+fn streaming(
+    req: Request,
+    mut stream: std::net::TcpStream,
+    ctx: &Arc<Ctx>,
+) -> std::io::Result<()> {
+    if req.path() == "/v1/ask/prefill" {
+        return prefill(&req, &mut stream, ctx);
+    }
+    ask_stream(&req, stream, ctx)
+}
+
+/// `POST /v1/ask/prefill` — warm the engine with a turn's prompt prefix and nothing else.
+fn prefill(req: &Request, stream: &mut std::net::TcpStream, ctx: &Arc<Ctx>) -> std::io::Result<()> {
+    let (question, kind) = match parse_ask(req) {
+        Ok(v) => v,
+        Err(why) => return Reply::json(400, &json::error_object(&why)).send(stream),
+    };
+    // A warm-up never waits behind a live turn: it is an optimisation for the turn that is
+    // coming, and queueing it would delay the one that is running.  `skipped` is a 200 because
+    // the caller asked for a favour, not a guarantee.
+    let mut guard = match ctx.agent.try_lock() {
+        Ok(g) => g,
+        Err(_) => {
+            return Reply::json(
+                200,
+                r#"{"ok":false,"skipped":"a turn is in flight; a warm-up must not delay it"}"#,
+            )
+            .send(stream)
+        }
+    };
+    let transcript = take_transcript(&ctx.sessions, kind, ctx.opts.reset_after);
+    match guard.prefill(&transcript, &question) {
+        Ok(p) => {
+            ctx.stats.prefills.fetch_add(1, Ordering::Relaxed);
+            ctx.stats
+                .prefill_prompt_tokens
+                .fetch_add(p.prompt_tokens, Ordering::Relaxed);
+            ctx.stats
+                .prefill_cached_tokens
+                .fetch_add(p.cached_tokens, Ordering::Relaxed);
+            ctx.stats
+                .last_prefill_ms
+                .store(p.millis as u64, Ordering::Relaxed);
+            eprintln!(
+                "prefill: {} cached {}/{} prompt tokens in {} ms",
+                p.engine, p.cached_tokens, p.prompt_tokens, p.millis
+            );
+            Reply::json(
+                200,
+                &format!(
+                    "{{\"ok\":true,\"engine\":{},\"prompt_tokens\":{},\"cached_tokens\":{},\
+                     \"millis\":{},\"channel\":{}}}",
+                    json::quoted(&p.engine),
+                    p.prompt_tokens,
+                    p.cached_tokens,
+                    p.millis,
+                    json::quoted(kind.as_str()),
+                ),
+            )
+            .send(stream)
+        }
+        Err(e) => {
+            *ctx.stats.last_error.lock().unwrap_or_else(|p| p.into_inner()) = e.clone();
+            Reply::json(502, &json::error_object(&e)).send(stream)
+        }
+    }
+}
+
+/// `POST /v1/ask/stream` — the same turn as [`ask`], written out while it happens.
+///
+/// The event names are the contract (`docs/voice-assistant-2026-11-16.md` keeps the receipts);
+/// the shape of each is deliberately boring JSON, because the caller is a voice pipeline that
+/// has to decide, per event, whether to speak.
+fn ask_stream(
+    req: &Request,
+    mut stream: std::net::TcpStream,
+    ctx: &Arc<Ctx>,
+) -> std::io::Result<()> {
+    let (question, kind) = match parse_ask(req) {
+        Ok(v) => v,
+        Err(why) => return Reply::json(400, &json::error_object(&why)).send(&mut stream),
+    };
+    // RefCell rather than a second `&mut`: the loop's two callbacks (`on_event` for the plumbing
+    // lines, `on_piece` for the answer's text) both need the same writer, they are never called
+    // concurrently, and they run on this thread — which is what makes a cell correct and a
+    // Mutex mere ceremony.
+    let sse = std::cell::RefCell::new(web::Sse::open(stream)?);
+    let _ = sse.borrow_mut().event(
+        "start",
+        &format!(
+            "{{\"channel\":{},\"question\":{},\"tools\":{}}}",
+            json::quoted(kind.as_str()),
+            json::quoted(&question),
+            json::emit(&Json::Arr(ctx.tools.iter().map(|t| Json::Str(t.clone())).collect()), 0),
+        ),
+    );
+
+    // The deterministic fast path first, exactly as `ask` runs it: a question the calendar or
+    // the clock can answer should not open a model stream at all, and `first_ms == 0` in the
+    // answer event says honestly that no model was involved.
+    let started = Instant::now();
+    let quick = ctx
+        .agent
+        .try_lock()
+        .ok()
+        .and_then(|mut a| a.quick_answer(&question, |w| eprintln!("warning: {w}")));
+    if let Some(hit) = quick {
+        let ms = started.elapsed().as_millis() as u64;
+        let secs = ms as f64 / 1000.0;
+        ctx.stats.quick.fetch_add(1, Ordering::Relaxed);
+        ctx.stats.turns.fetch_add(1, Ordering::Relaxed);
+        ctx.stats.tool_calls.fetch_add(1, Ordering::Relaxed);
+        ctx.stats.last_turn_ms.store(ms, Ordering::Relaxed);
+        record(ctx, &question, &hit.text, secs);
+        eprintln!("deterministic: {} answered in {ms} ms (no model)", hit.label);
+        let _ = sse.borrow_mut().event(
+            "answer",
+            &format!(
+                "{{\"answer\":{},\"engine\":\"none (fast path)\",\"rounds\":0,\"tools\":[{}],\
+                 \"secs\":{secs:.2},\"millis\":{ms},\"prompt_tokens\":0,\
+                 \"completion_tokens\":0,\"channel\":{},\"first_token_ms\":0,\"parts\":0}}",
+                json::quoted(hit.text.trim()),
+                json::quoted(&hit.label),
+                json::quoted(kind.as_str()),
+            ),
+        );
+        return sse.borrow_mut().finish();
+    }
+
+    let mut guard = match ctx.agent.try_lock() {
+        Ok(agent) => agent,
+        Err(_) => {
+            ctx.stats.errors.fetch_add(1, Ordering::Relaxed);
+            let _ = sse.borrow_mut().event(
+                "error",
+                &json::error_object("another turn is in flight; this endpoint answers one at a time"),
+            );
+            return sse.borrow_mut().finish();
+        }
+    };
+
+    let mut transcript = take_transcript(&ctx.sessions, kind, ctx.opts.reset_after);
+    let mut first_token_ms = 0u64;
+    let mut parts = 0u64;
+    let outcome = guard.ask_budget_stream(
+        &mut transcript,
+        &question,
+        kind.budget(),
+        |event| {
+            eprintln!("   · {event}");
+            let _ = sse.borrow_mut()
+                .event("log", &format!("{{\"line\":{}}}", json::quoted(event)));
+        },
+        |piece| match piece {
+            agent::Piece::Reset => {
+                let _ = sse.borrow_mut().event("reset", "{}");
+            }
+            agent::Piece::Text(t) => {
+                if first_token_ms == 0 {
+                    first_token_ms = started.elapsed().as_millis() as u64;
+                }
+                parts += 1;
+                let _ = sse
+                    .borrow_mut()
+                    .event("partial", &format!("{{\"t\":{}}}", json::quoted(&t)));
+            }
+        },
+    );
+    let answer = match outcome {
+        Ok(a) => a,
+        Err(e) => {
+            ctx.stats.errors.fetch_add(1, Ordering::Relaxed);
+            *ctx.stats.last_error.lock().unwrap_or_else(|p| p.into_inner()) = e.clone();
+            let _ = sse
+                .borrow_mut()
+                .event("error", &json::error_object(&e));
+            return sse.borrow_mut().finish();
+        }
+    };
+    keep_transcript(&ctx.sessions, kind, transcript);
+    let secs = started.elapsed().as_secs_f64();
+    let ms = started.elapsed().as_millis() as u64;
+    ctx.stats.turns.fetch_add(1, Ordering::Relaxed);
+    ctx.stats
+        .tool_calls
+        .fetch_add(answer.tools_used.len() as u64, Ordering::Relaxed);
+    ctx.stats.parts.fetch_add(parts, Ordering::Relaxed);
+    ctx.stats.last_turn_ms.store(ms, Ordering::Relaxed);
+    record(ctx, &question, &answer.text, secs);
+    let tools: Vec<String> = answer.tools_used.iter().map(|t| json::quoted(t)).collect();
+    let _ = sse.borrow_mut().event(
+        "answer",
+        &format!(
+            "{{\"answer\":{},\"engine\":{},\"rounds\":{},\"tools\":[{}],\"secs\":{secs:.2},\
+             \"millis\":{ms},\"prompt_tokens\":{},\"completion_tokens\":{},\"channel\":{},\
+             \"first_token_ms\":{first_token_ms},\"parts\":{parts}}}",
+            json::quoted(answer.text.trim()),
+            json::quoted(&answer.engine),
+            answer.rounds,
+            tools.join(","),
+            answer.prompt_tokens,
+            answer.completion_tokens,
+            json::quoted(kind.as_str()),
+        ),
+    );
+    // Bound in a local so the `RefMut` is dropped before `sse` is; as a bare tail expression
+    // its destructor would run after the `RefCell` it borrows.
+    let ended = sse.borrow_mut().finish();
+    ended
+}
+
 /// The transcript for a channel, fresh if it has expired.  Split out from the socket
 /// code because "when does a conversation start again" is the whole policy, and it is
 /// the part worth a test.
@@ -423,7 +675,9 @@ fn status(ctx: &Arc<Ctx>) -> Reply {
             "{{\"uptime_secs\":{:.0},\"listen\":{},\"turns\":{},\"errors\":{},\
              \"tool_calls\":{},\"last_turn_ms\":{},\"last_error\":{},\"tools\":[{}],\
              \"tool_count\":{},\"sessions\":[{}],\"mcp\":[{}],\"startup_warnings\":[{}],\
-             \"record_questions\":{},\"thinking\":{},\"quick\":{},\"recent\":[{}]}}",
+             \"record_questions\":{},\"thinking\":{},\"quick\":{},\"prefills\":{},\
+             \"prefill_cached_tokens\":{},\"prefill_prompt_tokens\":{},\"last_prefill_ms\":{},\
+             \"parts\":{},\"recent\":[{}]}}",
             ctx.started.elapsed().as_secs_f64(),
             json::quoted(&ctx.opts.listen),
             ctx.stats.turns.load(Ordering::Relaxed),
@@ -444,6 +698,11 @@ fn status(ctx: &Arc<Ctx>) -> Reply {
             ctx.opts.record_questions,
             json::quoted(ctx.opts.thinking.label()),
             ctx.stats.quick.load(Ordering::Relaxed),
+            ctx.stats.prefills.load(Ordering::Relaxed),
+            ctx.stats.prefill_cached_tokens.load(Ordering::Relaxed),
+            ctx.stats.prefill_prompt_tokens.load(Ordering::Relaxed),
+            ctx.stats.last_prefill_ms.load(Ordering::Relaxed),
+            ctx.stats.parts.load(Ordering::Relaxed),
             recent.join(","),
         ),
     )
@@ -469,6 +728,15 @@ fn prometheus(ctx: &Arc<Ctx>) -> String {
          # HELP slack_agent_ask_tools Tools offered by the configured MCP servers.\n\
          # TYPE slack_agent_ask_tools gauge\n\
          slack_agent_ask_tools {}\n\
+         # HELP slack_agent_ask_prefills_total Warm-up requests the engine answered.\n\
+         # TYPE slack_agent_ask_prefills_total counter\n\
+         slack_agent_ask_prefills_total {}\n\
+         # HELP slack_agent_ask_prefill_cached_tokens_total Prompt tokens the engine reported reusing for warm-ups.\n\
+         # TYPE slack_agent_ask_prefill_cached_tokens_total counter\n\
+         slack_agent_ask_prefill_cached_tokens_total {}\n\
+         # HELP slack_agent_ask_parts_total `partial` events streamed by /v1/ask/stream.\n\
+         # TYPE slack_agent_ask_parts_total counter\n\
+         slack_agent_ask_parts_total {}\n\
          # HELP slack_agent_ask_uptime_secs Since the endpoint started.\n\
          # TYPE slack_agent_ask_uptime_secs gauge\n\
          slack_agent_ask_uptime_secs {:.0}\n",
@@ -477,6 +745,9 @@ fn prometheus(ctx: &Arc<Ctx>) -> String {
         ctx.stats.tool_calls.load(Ordering::Relaxed),
         ctx.stats.last_turn_ms.load(Ordering::Relaxed),
         ctx.tools.len(),
+        ctx.stats.prefills.load(Ordering::Relaxed),
+        ctx.stats.prefill_cached_tokens.load(Ordering::Relaxed),
+        ctx.stats.parts.load(Ordering::Relaxed),
         ctx.started.elapsed().as_secs_f64(),
     )
 }
@@ -559,6 +830,74 @@ mod tests {
             voice1.len(),
             "an expired conversation kept its history"
         );
+    }
+
+    /// The streaming route's failure shape, over a real socket: a header event, then an `error`
+    /// event naming why, and a **terminated** body.  A stream that dies with a bare socket close
+    /// is indistinguishable from a network failure at the other end, which is the difference
+    /// between the voice gateway saying "the engine failed" and saying "cannot reach the bot".
+    #[test]
+    fn a_streamed_turn_that_fails_still_ends_its_body_with_a_reason() {
+        let ctx = Arc::new(Ctx {
+            agent: Mutex::new(make_stub_agent()),
+            sessions: Mutex::new(BTreeMap::new()),
+            opts: opts("127.0.0.1:0"),
+            started: Instant::now(),
+            stats: Stats::default(),
+            tools: vec!["space_status".to_string()],
+            startup_warnings: vec![],
+        });
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap();
+        let serve_ctx = Arc::clone(&ctx);
+        thread::spawn(move || {
+            let (s, _) = l.accept().unwrap();
+            let req = web::read_request(&mut s.try_clone().unwrap()).unwrap();
+            ask_stream(&req, s, &serve_ctx).unwrap();
+        });
+        let mut c = std::net::TcpStream::connect(addr).unwrap();
+        use std::io::Write;
+        let body = r#"{"text":"is it open","voice":true}"#;
+        c.write_all(
+            format!(
+                "POST /v1/ask/stream HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n\
+                 Content-Length: {}\r\n\r\n{body}",
+                body.len()
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+        c.flush().unwrap();
+        let mut buf = Vec::new();
+        std::io::Read::read_to_end(&mut c, &mut buf).ok();
+        let text = String::from_utf8_lossy(&buf).into_owned();
+        assert!(text.contains("text/event-stream"), "{text}");
+        assert!(text.contains("X-Accel-Buffering: no"), "nginx must not buffer it: {text}");
+        assert!(text.contains("event: start"), "{text}");
+        assert!(text.contains("event: error"), "no reason given: {text}");
+        // The zero-length chunk must be the very last thing on the wire; trimming would erase
+        // exactly the bytes this asserts about.
+        assert!(text.ends_with("0\r\n\r\n"), "body not terminated: {text:?}");
+    }
+
+    /// Both answer routes must read a body the same way, or a streamed ask and a buffered one
+    /// answer different questions.
+    #[test]
+    fn the_two_answer_routes_parse_one_body_the_same_way() {
+        let body = |raw: &str| {
+            web::Request {
+                method: "POST".into(),
+                raw_path: "/v1/ask".into(),
+                headers: Default::default(),
+                body: raw.as_bytes().to_vec(),
+            }
+        };
+        let (q, kind) = parse_ask(&body(r#"{"text":"  is it cold  "}"#)).unwrap();
+        assert_eq!(q, "is it cold");
+        assert_eq!(kind, Kind::Voice, "a missing flag is the voice default");
+        assert_eq!(parse_ask(&body(r#"{"text":"x","voice":false}"#)).unwrap().1, Kind::Text);
+        assert!(parse_ask(&body(r#"{"text":"   "}"#)).unwrap_err().contains("text"));
+        assert!(parse_ask(&body("not json")).unwrap_err().contains("not JSON"));
     }
 
     #[test]

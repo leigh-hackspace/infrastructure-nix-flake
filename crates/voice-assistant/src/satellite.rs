@@ -44,10 +44,9 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use common_json::Json;
 
-use crate::b64;
 use crate::gate;
+use crate::gateway::{ask_turn, transcribe_slice, transcribe_whole, warm, Live};
 use crate::sink::{Capabilities, Sink};
 use crate::source::SourceFactory;
 use crate::wav;
@@ -92,6 +91,13 @@ pub struct Options {
     /// Refuse to say anything longer than this (the answer budget is enforced in
     /// `spoken.rs`; this is the belt, for a `--max-speech-chars` set far too high).
     pub max_play_secs: f64,
+    /// Transcribe an open window **as it fills** rather than after it closes, and warm the engine
+    /// with the first partial. Off is the old behaviour: one whisper call for the whole window,
+    /// after the speaker has stopped and while they wait.
+    pub warm: bool,
+    /// Seconds of audio per transcription slice. Shorter means less left to transcribe when
+    /// someone stops talking, and more whisper calls per sentence.
+    pub asr_slice_secs: f64,
 }
 
 /// The half-duplex rule, as one piece of arithmetic a room's behaviour depends on.
@@ -210,6 +216,16 @@ pub struct Stats {
     pub speech_frames: usize,
     /// Transcripts that came back with words in them (vs a `(soft music)` description).
     pub transcripts: usize,
+    /// Transcription slices the rolling path sent (0 = it never opened, or is switched off).
+    pub asr_slices: usize,
+    /// The last slice's wall clock: what the satellite is still waiting for when someone stops
+    /// talking. With `asr_slices`, this is the whole case for rolling transcription in one pair
+    /// of numbers.
+    pub asr_tail_ms: u128,
+    /// Milliseconds from the end of an utterance to the first audio of the answer, last turn.
+    pub first_audio_ms: u128,
+    /// Warm-up requests this satellite fired.
+    pub warms: usize,
 }
 
 impl Default for Stats {
@@ -233,6 +249,10 @@ impl Default for Stats {
             threshold_dbfs: 0.0,
             speech_frames: 0,
             transcripts: 0,
+            asr_slices: 0,
+            asr_tail_ms: 0,
+            first_audio_ms: 0,
+            warms: 0,
         }
     }
 }
@@ -339,6 +359,8 @@ fn one_stream(
     // Seconds of capture still to be thrown away: the half-duplex rule, applied to
     // the audio that was already sitting in the pipe while the answer played.
     let mut drop_secs = 0.0f64;
+    // The window being transcribed right now, if any, and if rolling transcription is on.
+    let mut live: Option<Live> = None;
     // The whole capture, for `probe --out` on a run where the gate never opened.  Bounded
     // by `capture_secs` (or 30 s, when that is unbounded) so a probe cannot eat the disk.
     let cap_samples = ((if opts.capture_secs > 0.0 { opts.capture_secs } else { 30.0 }).max(5.0)
@@ -355,7 +377,8 @@ fn one_stream(
             if let Some(window) = gate.flush() {
                 let secs = window.samples.len() as f64 / wav::SAMPLE_RATE as f64;
                 eprintln!("window {secs:.1} s — the stream ended mid-word, sending it anyway");
-                handle_window(opts, session, stats, started, window);
+                let live = live.take();
+                handle_window(opts, session, stats, started, window, live);
             }
             return Ok(false);
         }
@@ -367,7 +390,8 @@ fn one_stream(
             if let Some(window) = gate.flush() {
                 let secs = window.samples.len() as f64 / wav::SAMPLE_RATE as f64;
                 eprintln!("window {secs:.1} s — the probe ran out, sending it anyway");
-                handle_window(opts, session, stats, started, window);
+                let live = live.take();
+                handle_window(opts, session, stats, started, window, live);
             }
             if let Some(path) = &opts.out_file {
                 if stats.windows == 0 {
@@ -414,15 +438,75 @@ fn one_stream(
                     stats.peak_dbfs = window.peak_dbfs;
                 }
                 eprintln!(
-                    "window {secs:.1} s peak {:.0} dBFS floor {:.0} dBFS after {:.1} s quiet{}",
+                    "window {secs:.1} s peak {:.0} dBFS floor {:.0} dBFS after {:.1} s quiet{}{}",
                     window.peak_dbfs,
                     gate.floor_dbfs(),
                     window.started_after_silence_secs,
-                    if window.flushed { " (input ended)" } else { "" }
+                    if window.flushed { " (input ended)" } else { "" },
+                    match &live {
+                        Some(l) if l.fed > 0 => format!(", {:.1} s transcribed live", l.fed as f64 / wav::SAMPLE_RATE as f64),
+                        _ => String::new(),
+                    }
                 );
-                drop_secs += handle_window(opts, session, stats, started, window);
+                let taken = live.take();
+                drop_secs += handle_window(opts, session, stats, started, window, taken);
                 stats.floor_dbfs = gate.floor_dbfs();
                 stats.threshold_dbfs = gate.threshold_dbfs();
+            }
+            // Transcribe the open window as it fills. After `push`, so the samples this chunk
+            // added are in the gate's account of the window, and drained through the gate rather
+            // than measured here: it is the gate that knows where the window is.
+            if opts.asr_slice_secs > 0.0 && gate.is_open() {
+                let fresh = gate.take_open_samples();
+                if !fresh.is_empty() {
+                    let live = live.get_or_insert_with(|| Live {
+                        rolling: crate::asr::Rolling::new(
+                            opts.asr_slice_secs,
+                            crate::asr::DEFAULT_OVERLAP_SECS,
+                            {
+                                let gateway = opts.gateway.clone();
+                                move |samples| transcribe_slice(&gateway, samples)
+                            },
+                        ),
+                        fed: 0,
+                        warmed: false,
+                    });
+                    live.fed += fresh.len();
+                    match live.rolling.push(&fresh) {
+                        Ok(Some(text)) => {
+                            stats.asr_slices = live.rolling.stats.calls;
+                            stats.asr_tail_ms = live.rolling.stats.last_ms;
+                            eprintln!(
+                                "partial {text:?} — {:.1} of {:.1} s spoken, slice {} in {} ms",
+                                live.fed as f64 / wav::SAMPLE_RATE as f64,
+                                gate.open_secs(),
+                                live.rolling.stats.calls,
+                                live.rolling.stats.last_ms
+                            );
+                            // The warm-up fires once, on the *first* partial: its whole purpose is
+                            // to spend the engine's prompt-prefill time during the seconds the
+                            // speaker still has left.
+                            if opts.warm && !live.warmed && !text.trim().is_empty() {
+                                live.warmed = true;
+                                stats.warms += 1;
+                                // The *whole* partial, not just this slice's words: the warm-up is
+                                // buying the prefix's prefill, and a prefix is only a prefix.
+                                stats.last_transcript = live.rolling.text().to_string();
+                                warm(&opts.gateway, live.rolling.text());
+                            }
+                        }
+                        Ok(None) => {}
+                        Err(e) => {
+                            stats.last_error = format!("live slice: {e}");
+                            eprintln!("live transcription failed ({e}); the window will be sent whole");
+                            *live = Live {
+                                rolling: crate::asr::Rolling::new(0.0, 0.0, |_| Ok(String::new())),
+                                fed: live.fed,
+                                warmed: true,
+                            };
+                        }
+                    }
+                }
             }
         }
         // Every chunk, not every five seconds: these three numbers are the whole answer
@@ -476,6 +560,7 @@ fn handle_window(
     stats: &mut Stats,
     started: Instant,
     window: gate::Window,
+    mut live: Option<Live>,
 ) -> f64 {
     let pcm = window.samples;
     let body = wav::mono16(&pcm, wav::SAMPLE_RATE);
@@ -484,43 +569,44 @@ fn handle_window(
             eprintln!("cannot write {}: {e}", path.display());
         }
     }
-    let reply = common_http::request_bytes(
-        "POST",
-        &format!("{}/v1/transcribe", opts.gateway),
-        Some(&body),
-        "audio/wav",
-        &[],
-        Duration::from_secs(60),
-    );
     stats.windows += 1;
-    let reply = match reply {
-        Ok(r) if r.ok() => r,
-        Ok(r) => {
-            stats.ignored += 1;
-            stats.last_error = format!("transcribe: {}", r.describe());
-            eprintln!("transcribe failed: {}", stats.last_error);
-            return 0.0;
+    // The transcript, from wherever it can come from. Live first: it exists already, and asking
+    // whisper the same question twice would give two answers and throw the better one away.
+    let (text, described) = match live.as_mut() {
+        Some(l) if l.rolling.stats.calls > 0 => {
+            // The frames that closed the window left the gate inside `Window`, so this is the
+            // only place they can still be heard: feed what was never sent, then finish.
+            let rest = l.fed.min(pcm.len());
+            if rest < pcm.len() {
+                let tail = &pcm[rest..];
+                l.fed = pcm.len();
+                if let Err(e) = l.rolling.push(tail) {
+                    eprintln!("last live slice failed: {e}");
+                }
+            }
+            match l.rolling.finish() {
+                Ok(t) => {
+                    stats.asr_slices = l.rolling.stats.calls;
+                    stats.asr_tail_ms = l.rolling.stats.last_ms;
+                    let t = t.trim().to_string();
+                    let described = crate::stt::looks_like_description(&t);
+                    (t, described)
+                }
+                Err(e) => {
+                    stats.last_error = format!("live transcription: {e}");
+                    eprintln!("{e} — falling back to the whole window");
+                    match transcribe_whole(opts, &body) {
+                        Some(v) => v,
+                        None => return 0.0,
+                    }
+                }
+            }
         }
-        Err(e) => {
-            stats.ignored += 1;
-            stats.last_error = format!("transcribe: {e}");
-            eprintln!("{e}");
-            return 0.0;
-        }
+        _ => match transcribe_whole(opts, &body) {
+            Some(v) => v,
+            None => return 0.0,
+        },
     };
-    let value = match common_json::parse(&reply.body) {
-        Ok(v) => v,
-        Err(e) => {
-            stats.last_error = format!("transcribe body: {e}");
-            return 0.0;
-        }
-    };
-    let text = value
-        .get("text")
-        .and_then(Json::as_str)
-        .unwrap_or("")
-        .to_string();
-    let described = !matches!(value.get("speech").and_then(Json::as_bool), Some(true));
     stats.last_transcript = text.clone();
     // Counted here rather than by the decision below, because the probe's whole purpose
     // is the ratio: how many windows came back as *words* at all, before anyone asked
@@ -549,50 +635,25 @@ fn handle_window(
                 eprintln!("probe-only: would ask {question:?}");
                 return 0.0;
             }
-            let answer = match ask(opts, &question) {
-                Ok(a) => a,
-                Err(e) => {
-                    stats.last_error = e.clone();
-                    eprintln!("ask failed: {e}");
-                    return 0.0;
-                }
-            };
-            stats.answers += 1;
-            eprintln!("answered ({}): {}", answer.engine, answer.text);
-            let Some(audio) = answer.audio else {
-                eprintln!("no audio in the answer: {:?}", answer.warnings);
-                return 0.0;
-            };
-            if answer.audio_secs > opts.max_play_secs {
-                eprintln!(
-                    "not speaking: {:.0} s is over the --max-play-secs of {:.0} s",
-                    answer.audio_secs, opts.max_play_secs
-                );
-                return 0.0;
-            }
-            let decoded = match wav::parse(&audio) {
-                Ok(w) => w.mono(),
-                Err(e) => {
-                    stats.last_error = format!("answer audio: {e}");
-                    return 0.0;
-                }
-            };
-            let cap = opts.sink.capabilities();
-            match opts.sink.play(&decoded) {
+            // The turn, streamed: the answer's first sentence reaches the speaker while the
+            // model is still on its second, and the sink starts playing on the first buffer it is
+            // given rather than when the answer is finished.
+            match ask_turn(opts, &question, stats) {
                 Ok(played) => {
+                    stats.answers += 1;
+                    let cap = opts.sink.capabilities();
                     if cap.audible {
                         stats.spoken += 1;
                     } else {
                         stats.unplayed += 1;
                     }
-                    // The half-duplex rule, asked of the sink that just spoke rather than assumed
-                    // from a device: this says how many seconds of what we hear next are our own
-                    // voice.
                     capture_to_discard(played.secs, &cap, opts.guard.as_secs_f64())
                 }
                 Err(e) => {
                     stats.last_error = e.clone();
-                    eprintln!("play failed: {e}");
+                    if e != crate::turn::NO_AUDIO {
+                        eprintln!("turn failed: {e}");
+                    }
                     0.0
                 }
             }
@@ -600,60 +661,6 @@ fn handle_window(
     };
     write_status(opts, stats, started);
     dropped
-}
-
-struct Answered {
-    text: String,
-    engine: String,
-    audio: Option<Vec<u8>>,
-    audio_secs: f64,
-    warnings: Vec<String>,
-}
-
-fn ask(opts: &Options, question: &str) -> Result<Answered, String> {
-    let body = format!(
-        "{{\"text\":{},\"voice\":true}}",
-        common_json::quoted(question)
-    );
-    let reply = common_http::request_bytes(
-        "POST",
-        &format!("{}/v1/ask", opts.gateway),
-        Some(body.as_bytes()),
-        "application/json",
-        &[],
-        Duration::from_secs(180),
-    )
-    .map_err(|e| format!("gateway: {e}"))?;
-    if !reply.ok() {
-        return Err(format!("gateway: {}", reply.describe()));
-    }
-    let v = common_json::parse(&reply.body).map_err(|e| format!("gateway body: {e}"))?;
-    Ok(Answered {
-        text: v
-            .get("answer")
-            .and_then(Json::as_str)
-            .unwrap_or("")
-            .to_string(),
-        engine: v
-            .get("engine")
-            .and_then(Json::as_str)
-            .unwrap_or("(unknown)")
-            .to_string(),
-        audio: v
-            .get("audio")
-            .and_then(Json::as_str)
-            .map(b64::decode)
-            .and_then(Result::ok),
-        audio_secs: v
-            .get("audio_secs")
-            .and_then(Json::as_f64)
-            .unwrap_or(0.0),
-        warnings: v
-            .get("warnings")
-            .and_then(Json::as_array)
-            .map(|a| a.iter().filter_map(Json::as_str).map(|s| s.to_string()).collect())
-            .unwrap_or_default(),
-    })
 }
 
 /// How many seconds of capture to throw away, and why the reader never stops reading.
@@ -669,7 +676,8 @@ fn write_status(opts: &Options, stats: &Stats, started: Instant) {
          \"probe_only\":{},\"windows\":{},\"ignored\":{},\"asked\":{},\"answers\":{},\
          \"spoken\":{},\"unplayed\":{},\"ingest_restarts\":{},\"floor_dbfs\":{:.1},\
          \"threshold_dbfs\":{:.1},\"peak_dbfs\":{:.1},\"speech_frames\":{},\
-         \"captured_secs\":{:.0},\"last_transcript\":{},\"last_action\":{},\"last_error\":{}}}",
+         \"captured_secs\":{:.0},\"last_transcript\":{},\"last_action\":{},\"asr_slices\":{},\
+         \"asr_tail_ms\":{},\"first_audio_ms\":{},\"warms\":{},\"last_error\":{}}}",
         started.elapsed().as_secs_f64(),
         common_json::quoted(&opts.source_label),
         opts.wake_words
@@ -700,6 +708,10 @@ fn write_status(opts: &Options, stats: &Stats, started: Instant) {
         stats.captured_secs,
         common_json::quoted(&stats.last_transcript),
         common_json::quoted(&stats.last_action),
+        stats.asr_slices,
+        stats.asr_tail_ms,
+        stats.first_audio_ms,
+        stats.warms,
         common_json::quoted(&stats.last_error),
     );
     let tmp = opts.status_path.with_extension("json.tmp");

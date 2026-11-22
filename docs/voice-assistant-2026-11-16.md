@@ -458,3 +458,71 @@ Frigate's `min_area` floor was. Until that measurement exists, an always-on dete
 where people are working is a feature someone will mute — and the one measured result that
 warns loudest is that piper's isolated "hey jarvis" scores **0.063** while the same phrase
 inside a sentence scores **0.62**.
+
+## Streaming end to end (2026-11-22): the sum of the parts was the wrong number
+
+Everything above measures the stages **one at a time**, and the deployed pipeline added them
+up: transcribe the whole window, then ask, then synthesise the whole answer, then play.
+~13 s, every number honest, the total still a choice nobody had made deliberately.
+
+This section records the change to **overlap** them. The mechanism is
+`crates/voice-assistant/README.md` ("The turn is a pipeline") — read that for the threads,
+the channels and the two rules the pipeline enforces. What belongs here is the *why*, the
+measured part, and the part that is still only a budget.
+
+### What moved, in one line each
+
+| | |
+| --- | --- |
+| `common-rs/web/src/stream.rs` | `Sse`/`Chunked`: flush per event, `TCP_NODELAY`, `Cache-Control: no-store`, `X-Accel-Buffering: no`. Its tests prove an event reaches the client **before** the next one is written — which is the property every later claim depends on, and which nginx would silently remove. |
+| `common-rs/http/src/stream.rs` | the client half: `request_stream`/`read_event`, chunked + content-length + EOF-delimited bodies, SSE events reassembled across read boundaries, and an idle timeout that distinguishes *silence* from *the end of the stream*. |
+| `slack-agent/src/stream.rs` | the engine half: SSE deltas forwarded as they arrive, tool-call fragments reassembled by `index`, keep-alives skipped, malformed `data:` lines **counted** rather than fatal, and `StreamFail::emitted` — the only way a caller can tell "retry" from "you have already shown the room those words". |
+| `slack-agent/src/{engine,agent,listen}.rs` | `POST /v1/ask/stream` (SSE: `start`/`log`/`partial`/`reset`/`answer`/`error`) and `POST /v1/ask/prefill`; `ask_budget_stream` keeps the tool rounds, the budget and the grounding rules of the buffered `ask_budget` rather than forking a second answering path. |
+| `voice-assistant/src/{asr,sentence,turn,events,turn_routes,gateway}.rs` | rolling ASR with overlap and seam dedup, the speakable-unit splitter, the pipeline, the wire contract, its HTTP surface, and the satellite's client of the gateway. |
+| `voice-assistant/src/tts.rs` | a **resident** piper (`--output-dir`, one WAV per sentence, `Wrote <path>` on stderr as the frame boundary), with the cold one-shot call kept as a counted fallback rather than deleted. |
+| `voice-assistant/src/sink.rs`, `drivers/` | `Sink::streams`/`play_stream`: a sink that can start playing on the first buffer, and one that cannot says so. The turn does not guess about a device. |
+
+### Why the warm-up asks for one token, and why that is not a typo
+
+The prefill is a real chat completion with the real prompt prefix and `max_tokens: 1`, and
+the one token is discarded. `max_tokens: 0` — the obvious way to ask a chat API to prefill
+without answering — is **accepted and ignored** by these engines: the request comes back
+having prefilled nothing, and the warm-up silently costs a request and saves nothing.
+`usage.prompt_tokens_details.cached_tokens` is the receipt; it is published per turn in
+`status.json`'s `turns.warm`, because a warm-up whose effect cannot be read from a socket
+is a warm-up nobody will keep.
+
+### What is measured, and what is only a budget
+
+The pipeline's claim is testable and is tested: a fixture model that emits a partial every
+400 ms and a fixture piper at 300 ms a sentence produce audio **before the last token**,
+and the test was verified to fail with the piper slowed past the model (910 ms against
+800 ms). The rolling-ASR test asserts the same shape for whisper: the tail slice is much
+less than the whole transcription.
+
+**None of it has been read off a deployed box yet.** The 13 s at the top of this document
+is the buffered path's, measured 2026-11-16 on the unit's own binaries; what the streaming
+path costs on services1 and aibox is `turns.last_first_audio_ms` in
+`https://voice.int.leighhack.org/status.json`, and `just voice-turn "is the space open"`
+prints the timeline with a VERDICT line. Until someone runs it after a deploy, the
+expectations below are arithmetic, not results:
+
+| the room waits for | buffered | expected, streaming |
+| --- | --- | --- |
+| first audio, one-tool question, 3 s utterance | ~13 s | tail slice (~1.2 s) + model's first sentence + one piper sentence — **single-digit, unconfirmed** |
+| rest of the answer | after the whole answer | while it is still being generated |
+| piper cost per sentence | ~2.5 s (process startup) | the ONNX forward pass, startup paid once |
+
+### Things this deliberately did not do
+
+- **The browser page still calls `/v1/ask`.** `/v1/turn` is ready for it and the contract
+  is `events.rs`, but the page is a Vite/Solid build and changing it is an npm build, not a
+  Rust edit. Open in `docs/follow-ups.md`.
+- **No echo canceller appeared**, so the half-duplex rule is unchanged and barge-in is
+  still blocked on the same thing it was blocked on (§"No echo cancellation").
+- **Nothing new can be spoken to.** The camera's speaker is still off, and a streamed
+  answer does not change the identity problem behind that.
+- **One turn at a time remains true twice over**: the warm piper is behind a mutex, and
+  `slack-agent listen` still 429s a second caller. Streaming makes a turn feel faster; it
+  does not make the assistant a multi-way service, and the first wall a *fleet* of
+  satellites hits is still that 429.
