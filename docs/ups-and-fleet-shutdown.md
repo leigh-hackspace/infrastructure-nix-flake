@@ -344,6 +344,41 @@ Still not verified, and none of it should be trusted until it is:
    measured 860 s of claimed runtime. The one command that would prove it for real
    is a controlled discharge with a sacrificial machine on the UPS (§7.1).
 
+## 7a. 2026-11-22: the read the whole chapter depends on went dark, on the router
+
+Measured after `gw`'s switch-and-reboot of that day (kernel `6.18.56` → `6.18.63`,
+`just pending-reboot` before it, clean after it):
+
+```bash
+sudo systemctl is-failed upsdrv          # failed, and a retry an hour later also fails
+sudo systemctl restart upsdrv; sleep 8   # the retry — not a boot race
+upsc apc                                 # Error: Driver not connected
+sudo lsusb                               # eight devices, none of them a UPS
+sudo grep -vE '^#|^$' /etc/nut/ups.conf  # still names usb 2-1.2, serial 4B1836P34201
+```
+
+`upsdrvctl` says `No matching HID UPS found` (libusb 0.53) while the `busport` the
+`ups.conf` desc was written from is not on the bus at all — the RT5370 Wi-Fi adapter,
+the Realtek gigabit adapter and four hubs are what `gw` has plugged in. So the UPS is
+physically not attached to the box that owns it, and every behaviour this chapter
+proves — `upssched`'s countdown arming, the `ONBATT`/`ONLINE` notices, the watchdog's
+decision, the drill's `--dry-run` shapes — is currently unreachable from a real event.
+The driver being blind is also what makes `ups-notice.service` fail on that boot: it
+reached three recipients over ssh while `gw`'s own network was still coming up
+(`services2: ssh exited 255`, `aibox: Network is unreachable`), exit 30.
+
+Two receipts-shaped consequences. **`systemctl reset-failed` erases the evidence**: a
+sweep on `gw` that day cleared the transient `systemd-run` gate units, and it also
+removed `upsdrv`/`ups-notice` from `systemctl list-units --failed`, so an empty
+failed-list on the router is not proof the UPS is alive — `upsc apc` is. And **the
+flap that made the notice fail is the same flap that makes the notice's own recipient
+list unmeasured**: `just ups-drill-notify` still has to be read as "two hops in one
+boot", not "five".
+
+Nothing here was changed by hand: `machines/gw/ups.nix` still asks for what it asked
+for, and the open item in `docs/follow-ups.md` ("The UPS is not on `gw`'s USB bus")
+records the physical question to ask at the box.
+
 ## 8. Read also
 
 * `machines/gw/ups.nix` — the deployed policy, and the comments on each choice.

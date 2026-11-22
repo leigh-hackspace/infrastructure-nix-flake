@@ -2183,7 +2183,16 @@ thing to do with either is to date it (`journalctl -u … | grep "Failed with re
 
 5. **`machines/aibox/STRATA.md` has no receipt for the engine leg that this switch crossed.** aibox was one of the boxes left behind upstream's 2026-11-21 generations, so its switch moved `strata.service` from `sr4rrkb7…-strata-unstable` to `wd40i8bg…-strata-unstable` on upstream's 0.1.63 pin — a bump whose HIP-side receipts in that file stop at 0.1.59.1. Nothing says the engine misbehaved (zero failed units, unit active), but its answers across the bump are unscored, and that is the same shape as `docs/follow-ups.md`'s strata item on services2: score the answers before believing the bump.
 
-6. **The 2026-11-18 warning baseline is stale at this lock: `nix flake check` printed two warnings on 2026-11-21** — `slack-agent-digest.service is ordered after 'network-online.target' but doesn't depend on it`, and Grafana's plaintext `secret_key` ("passwords will be stored as plaintext in the Nix store"). AGENTS.md's "Nix commands" section says neither reproduced at the 2026-11-18 lock; both reproduce now, on services1's modules, and the deploy's `check-build` run logged exactly these two and nothing else, so the printers add no warning. A baseline is a fact about a lock, so this line is the re-read (AGENTS.md rule 9); the fixes belong in `machines/services1/services/monitoring.nix` (the digest unit's ordering) and in Grafana's `secretKey` provider, not in a per-box recipe.
+6. **The 2026-11-18 warning baseline is stale at this lock: `nix flake check` printed two warnings on 2026-11-21** — `slack-agent-digest.service is ordered after 'network-online.target' but doesn't depend on it`, and Grafana's plaintext `secret_key` ("passwords will be stored as plaintext in the Nix store"). AGENTS.md's "Nix commands" section says neither reproduced at the 2026-11-18 lock; both reproduce now, on services1's modules, and the deploy's `check-build` run logged exactly these two and nothing else, so the printers add no warning. A baseline is a fact about a lock, so this line is the re-read (AGENTS.md rule 9); the fixes belong in `machines/services1/services/monitoring.nix` (the digest unit's ordering) and in Grafana's `secretKey` provider, not in a per-box recipe. **Re-read at the 2026-11-22 lock: four classes, not two.** The
+  five per-machine gates of that day printed, besides those two, `getExe: Package
+  "ups-watchdog-0.1.0" does not have the meta.mainProgram attribute` (three times,
+  while `gw`'s toplevel was evaluated) and the `stdenv.is*` deprecations — the second
+  class AGENTS.md rule 9 names as "open at the 2026-10-14 lock, did not reproduce at
+  2026-11-18" — so it reproduces again now. The `ups-watchdog` half is ours to fix
+  (its package needs `meta.mainProgram = "ups-watchdog"`, and `getExe`'s
+  deprecated-then-broken assumption is what the router's `ups-fleet-shutdown`
+  /`ups-notice` units are currently relying on); the `stdenv.is*` half belongs
+  upstream or behind `packages.strata-cuda`.
 
 - **Decide once `apps1` is reachable whether the image should dial the devices or the
   network's existing print server.** Home Assistant's `ipp` entry dialling `10.3.1.30:631`
@@ -2957,6 +2966,28 @@ the shutdown path has run only as a drill. **None of it has been through a real
 outage**, so the items below are ordered by "what would embarrass us at 04:00", not
 by size.
 
+- **The UPS is not on `gw`'s USB bus as of 2026-11-22, and NUT on the router is
+  therefore blind — measured, not inferred.** After `gw`'s switch-and-reboot of that
+  day (kernel `6.18.56` → `6.18.63`), `upsdrv.service` fails at boot with
+  `No matching HID UPS found` and `upsc apc` answers `Driver not connected`; a retry
+  an hour later fails the same way, so it is not a boot race. `sudo lsusb` on `gw`
+  lists eight devices — the RT5370 Wi-Fi, the Realtek gigabit adapter, two Intel
+  rate-matching hubs, an ATEN and a Genesys hub — and no UPS, while
+  `/etc/nut/ups.conf`'s `apc` row still carries the desc that named it:
+  `APC Back-UPS XS 1400U on usb 2-1.2 (serial 4B1836P34201)`. Everything downstream
+  of the read is dark: `upssched`'s 300 s countdown, the `ONBATT` notices, and
+  `crates/ups-watchdog`'s decision all hang off a driver that has nothing to talk
+  to. Same boot also failed `ups-notice.service` with three recipients unreachable
+  (`services2: ssh exited 255`, `aibox: Network is unreachable`) — the notice unit ran
+  while `gw`'s own network was still flapping, which is a second thing to know about
+  that unit rather than the first. **Blocks:** claiming any power-cut behaviour works
+  today. **Do:** check physically whether the UPS is plugged into `gw` at all (a
+  moved cable, a bench, a dead UPS-side port), and `sudo systemctl restart upsdrv`
+  plus `upsc apc` after whatever is done — re-verify with `sudo lsusb | grep -i`
+  <the UPS vendor id> and `upsc -l`. Note `sudo systemctl reset-failed` was run on
+  `gw` that day to clear transient gate units, which also hides these two units from
+  `systemctl list-units --failed`; `systemctl is-failed upsdrv` and the journal are
+  the truth, not that list.
 - **Does this firmware return its load after dropping it?** (armed 2026-10-28 —
   `allow_killpower = yes` in `machines/gw/ups.nix`, after measuring that without it
   NUT 2.8 silently ignores the shutdown request: `driver.flag.allow_killpower does

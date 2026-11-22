@@ -390,6 +390,50 @@ just check          # nix flake check + the assertion evals + alejandra --check;
 just check-build    # all five machines, nothing activated
 ```
 
+**`check-build all` is the shape that fills one box's `/` and not the shape to use when
+a box is near full.** Measured 2026-11-22 on `services1`, which had 76 G free: the
+`all` gate walked it `/` 76 G → 65 G → 52 G → **18 G** as it went machine to machine —
+every toplevel closure is realised on the box that answers for the gate, so one box
+holds five systems' worth of new store. At 18 G the recipe's own `_disk-headroom`
+refused the next machine. The per-machine shape (`just check-build <m>`, one gate per
+box, each **on the box that will run it**) keeps each closure where it belongs and costs
+nothing extra: that box's switch then re-uses the gate's build instead of realising the
+same paths over the hop again. Finishing the fleet on the second commit of that day was
+done in that shape, five gates, all reading `all requested systems build` before any
+box moved.
+
+**The headroom guard is not per-machine, and one override is not enough to read.**
+`check-build <m>` still pays the recipe's **outer** `_disk-headroom "60"` — the `20` in
+the case branch is *additional*, not instead — so `services3` at 52 G free refused its
+own gate. `INFRA_ALLOW_LOW_DISK=1` is the documented override and the 20 G check still
+runs under it.
+
+**Run the gate in the operator's login shell, detached, and poll the log — a root unit
+is not a gate.** Two failures, both measured that day, both silent-looking:
+
+* `sudo systemd-run --unit=gate-X -- sh -c '… just check-build m …'` dies in 13 ms with
+  `just: command not found` (a unit's PATH has no `/run/current-system/sw/bin`) and
+  `status=127`; and because the wrapper body begins `set +e`, the unit can look like it
+  ran while it built nothing — `journalctl -u gate-X` is the proof, not `systemctl show
+  -p Result`.
+* The same thing run as root against this repo fails at the flake input instead:
+  `opening Git repository …: repository path … is not owned by current user (libgit2
+  error code = 7)` — nix will not fetch a `git+file:` input owned by the operator from
+  uid 0, so **root cannot gate this flake at all**. `nohup /bin/sh <script> &` in the
+  login shell, polled, is the shape; `HOME` is still needed inside it (`warning: $HOME
+  … is not owned by you` is a different, harmless-looking half).
+
+**And the builder can run out of RAM before the box that answers for the gate runs out
+of disk.** `aibox` is where a Strata engine's arena lives, and its own gate had to build
+the Pi Room netboot `squashfs.drv`: `/proc/meminfo` read 2.0 GB available and
+`SwapFree: 173 MB` with `strata-host` at 31.6 GB RSS and `mksquashfs` already at 9.4 GB.
+Stopping `strata` (one unit, `enabled`, still enabled after) gave back 46.6 GB and the
+squashfs half finished; `systemctl start strata` after the gate, and both public engines
+read `/health` 200 again — but they were **dark for the minutes in between**, which is
+what the network's public inference endpoints looked like during that window. `docs/follow-ups.md`
+already carries the "first thing to lose was strata on the old builder" half; what this
+run adds is the number: this is a 59 GB box and the pair that has to fit in it is 41 GB.
+
 **`just check-build` used to be `nixos-rebuild dry-build`, and it never built
 anything.** This box's `nixos-rebuild` is nixos-rebuild-ng, whose man page
 defines `dry-build` as "Show what store paths would be built or downloaded by any

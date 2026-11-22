@@ -553,3 +553,98 @@ answers DNS for the network and is therefore a decision with a time of day, not 
 ten Pi Room clients have the new image exported at them and will take it **on their own next
 boot**; and services3's 18.2-tok/s band in its README is 0.1.59.1's measurement, now a prior
 rather than a number.
+
+## 2026-11-22, later the same day — the fleet on a second commit, a reverted flag, and the gate that had to change shape
+
+Same day as `fe19e16` (the GitHub hop, written up in `docs/nix-dev-workflow.md`), so this
+entry is short and its job is the three things that cost time. The commit landed here is
+**`8cd7594`**: it reverts the `--kv-resident 32768` the morning's read of services3's
+strata log wrote into `machines/services3/strata.nix`, and rewrites the sentences that
+promised it — the box already writes `1690 of the prompt path's 1690 lendable slots
+keep their experts in RAM too`, its tier line ends `(no file reads)`, and the evidence
+for the flag was services2's numbers on the one box whose own log says the thing is
+already paid. `git log -- machines/services3/strata.nix` now reads add-then-delete on one
+day with **no deploy of that box between the two**, so the engine's args — the config
+file's `args` array, which is what `--config <store json>` actually carries — never moved
+and services3's switch of that day did not restart its engine.
+
+### What the gate had to become, and what it cost
+
+`docs/network-upgrade-runbook.md`'s Phase 3 now owns the mechanics (a root unit cannot
+gate this flake — `just` is not in a unit's PATH, and uid 0 will not fetch a `git+file:`
+input the operator owns; the per-machine shape is the shape near full; the outer
+`_disk-headroom "60"` is not per-machine). The numbers, because a runbook that says "is
+near full" without them invites the next reader to try:
+
+* **`services1` went `/` 76 G → 18 G inside one `check-build all`**, then its own guard
+  refused the next machine. The reclaim that got it back was the documented decision —
+  `just check-build-clean` to drop the interrupted gate's roots, `--delete-generations`
+  on 30 system generations, `nix-collect-garbage -d` — **85.5 GiB freed**, and `/` back to
+  75 G. That GC was only safe because the gate's outputs were unrooted and *no* gate for
+  the new commit had run yet; the docs' warning about GC between gate and deploy is what
+  made the order matter rather than the size.
+* **aibox ran out of RAM, not disk**: 59 GB total, `MemAvailable: 2.1 GB`,
+  `SwapFree: 173 MB`, with its `strata-host` at **31.6 GB RSS** and the netboot
+  `squashfs.drv`'s `mksquashfs` at 9.4 GB. Stopping `strata` for the squashfs half and
+  starting it afterwards is the documented "first thing to lose", and this run paid its
+  cost: `strata.int.leighhack.org` was dark for the minutes in between, and read
+  `/health` 200 only after the restart — the honest version of "the builder is the
+  inference box" is that the pair that has to fit is 41 GB.
+
+### What landed, and what was seen on the boxes rather than asserted
+
+Five boxes on `8cd7594`, `dirty=0`, `main...origin/main` on all five (`services3` pushed
+GitHub itself again — the scratch-branch proof of the *write* grant is in
+`machines/services3/README.md` and did not need repeating for this commit; `aibox`'s and
+`gw`'s stale `origin/main` refs were corrected to GitHub's own answer, read from a box
+that has a key, since those two refuse the fetch). `current == system-good` on all five
+after a chained `nixos-confirm`. `just pending-reboot` clean on all five, and both GPU
+boxes' gates agree with their engine (`services2` module 595.112.07, `services3` 580.196.07)
+— no reboot owed there. **`gw` owed one and took it**: kernel `6.18.56` running against a
+generation built for `6.18.63`, so `switch && nixos-confirm` then `reboot`, and after the
+reboot `uname -r` is 6.18.63, `front-door-cert-check.service` reads
+`issuer=C=US, O=Let's Encrypt` (not the minica fallback), and the leases page is a live
+table — `total 58, expired 0, stale: null, source_age 154` — not the frozen-zeroes shape
+`machines/gw/lease-reader.nix` exists to catch.
+
+Through the door after the run, read with `curl`: `id.int` 200 (302 at `/`, authentik
+redirecting), `api.leighhack.org/space.json` 200, `strata` / `strata2` / `strata3`
+`/health` 200, `voice` / `filestore` / `gatus` / `frigate` / `ha` / the three
+`*-status` dashboards 200, `switch.int` 302 (OIDC, so the gate is in front of it), and
+`network-info.int/api/connections` 200. `mqtt.int` answers nothing over HTTP — it is the
+`answeredBy` socket name (`via = "services1"` in `common/int-dns.nix`), and its proof is
+the broker's unit (`podman-mqtt.service` active on services1), not a `curl`; the 000
+there is the expected shape and is why the doc says "ask what dials a name".
+
+`just check-eval` on the router with the new source: printer tables ok, network tables ok,
+doc pointers ok, voice platform boundary ok, source sizes ok, alejandra ok.
+
+### The finding that is not about this change
+
+**The UPS on the router went dark on that reboot and has not come back** —
+`upsdrv.service` fails `No matching HID UPS found` at boot and on a retry an hour later,
+`upsc apc` says `Driver not connected`, and `sudo lsusb` on `gw` lists eight devices,
+none of them a UPS, while `/etc/nut/ups.conf` still names the bus port and serial that
+used to be there. That is the whole power-cut chapter's foundation, so it is written up
+in `docs/ups-and-fleet-shutdown.md` (§7a) and open in `docs/follow-ups.md`, and it is
+aggravating rather than caused: `machines/gw/ups.nix` was not touched here. Two receipts
+came with it: the notice unit also failed that boot with three recipients unreachable
+(the router's own network was flapping), and `sudo systemctl reset-failed` — run to clear
+the transient gate units — erased both from `list-units --failed`, which is why an empty
+failed-list on `gw` is not proof the UPS is alive.
+
+### Left open by this run
+
+* **The docs commit that follows** (this file, the runbook's Phase 3, the UPS chapter, the
+  follow-ups' two items) adds no `.nix` file, so no machine's content moves with it — that
+  is the reason the five boxes were *not* re-switched for it, and `services1` was left
+  running `8cd7594`'s toplevel rather than the docs commit's, which is the half a later
+  reader must not read as drift.
+* **The four evaluation-warning classes at this lock** (`slack-agent-digest`'s ordering,
+  Grafana's plaintext `secret_key`, `ups-watchdog-0.1.0` missing `meta.mainProgram`, and
+  the `stdenv.is*` deprecations) are a re-read of rule 9's baseline in
+  `docs/follow-ups.md`; the `ups-watchdog` half is ours to close and is the half the
+  router's two UPS units are currently trusting `getExe` for.
+* `gw` and `services2` still have no GitHub credential of their own — `just repo-status`
+  says `NO-CREDENTIAL` for exactly those two, and this run moved commits to them with a
+  one-commit bundle over the LAN rather than by copying a key onto a bench box.
