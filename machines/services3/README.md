@@ -252,9 +252,14 @@ flag list now, and `useMtp` only adds `--mtp`.
 
 ### The RAM tier, measured (2026-11-22) — it is already at its ceiling; the card is not
 
-**Not deployed as of this writing**: `--kv-resident 32768` is in `./strata.nix` on 2026-11-22 and
-has not crossed to the box, so nothing in this section about *its effect* is live; what is live is
-the evidence read off the start that was running, quoted below.
+**Nothing crossed on this count, and nothing will until it is measured**: `--kv-resident
+32768` was written into `./strata.nix` on 2026-11-22 and **reverted the same day**, before any
+switch of this box carried it — see `git log -- machines/services3/strata.nix` (one commit adds
+it, the next deletes it, and no deploy of this box sits between them). So nothing in this
+section below is a claim about *its effect*; what is live is the evidence read off the start
+that was running, quoted below. The rule the section ends with is the one that made the revert:
+the box already writes the top rung of its own ladder, so an argument for going further has to
+come from a needle and the answer key, not from the arithmetic in the two lines it quotes.
 
 The engine's own start lines say the RAM half of the tier is done and the VRAM half is not,
 on the live unit (engine 0.1.63, `/var/lib/strata/strata.log`):
@@ -275,15 +280,25 @@ sudo grep -E "lendable slots|resident RAM mode|expert cache auto|expert cache hi
 
 So: **RAM capacity is a closed door** (four slots full, 64 GiB needs two new 16s, and nothing is
 buyable), **the RAM dials are at their best** (N of N, no file reads), and what is left on the
-RAM axis is the *tier* of one thing — the K/V. `./strata.nix` spells `--kv-resident 32768` in
-for that reason: it moves ~1.3–1.7 GiB of int8 K/V off the card into pinned host RAM (which
+RAM axis is the *tier* of one thing — the K/V. **And the one attempt at that tier was
+reverted, so it is not in `./strata.nix`.** What the attempt was and what stopped it:
+`--kv-resident 32768` moves ~1.3–1.7 GiB of int8 K/V off the card into pinned host RAM (which
 this box has 10.8 GiB of, un-fought — services2's bill for the same pair was its last 1.1–1.6 GiB,
 which is why `LowMemory` fires there and `docs/follow-ups.md` keeps that as an observability
-decision rather than a fault), and the slot prize is **derived** from the two lines above
-(~1,988 → ~2,900 at ~1.9 MiB/slot), **not measured** — the measurement is this start's own
-`expert cache auto:` line, then a needle and the answer key, and upstream checks the streamed
-path against the resident one bitwise (`kv_stream_parity`). A context of ≤ 32768 cells is not
-streamed at all, so ordinary turns pay nothing.
+decision rather than a fault), and on services2 the pair bought +13 % prefill at 8k with the
+answer key unchanged (`machines/services2/STRATA.md`, "256K at full precision, at this box's
+speed"). The slot prize here (~1,988 → ~2,900 at ~1.9 MiB/slot) was **derived** from the two
+lines above and never measured, and `docs/follow-ups.md` already records a try of the
+*neighbourhood* of this change **on this box** — `--kv-unloaded 16384 16384 0 0` alone, and that
+with `--kv-resident 16384 0 0` — that left the residency line at `1690 of 1690` unchanged. A
+context of ≤ 32768 cells is not streamed at all, so ordinary turns pay nothing either way.
+So the honest state of this section is: **the RAM tier is at its ceiling, and the card-side
+prize is unmeasured, hence unclaimed**. Anyone who wants it spells it as its own change,
+measures it with a needle and the answer key, and reads BOTH lines back — `sudo grep "lendable
+slots" /var/lib/strata/strata.log | tail -1` must still read N of N and `expert cache auto:` says
+what the cache got — before the sentence goes into a report. `git log -S '"--kv-unloaded"'
+machines/services3/` answers nothing, so that try was made at a console, not by this module:
+this start has never carried `--kv-unloaded`.
 
 One thing the RAM tier is doing that nobody has read: the conversation cache sizes itself from
 free RAM — `conversation cache sized from the free RAM: 3584 MiB for up to 4 parked
@@ -773,14 +788,13 @@ Four facts, in the order that keeps each one's failure mode a different string:
    asks the write grant, so "it authenticated" and "it can push" would not have been
    distinguished. The scratch branch is the cheapest thing that makes them the same failure.
 4. **The host half of that hop is flake config now, and this box is not yet switched onto it.**
-   `common/ssh-known-hosts.nix` grew github.com's three published keys on 2026-11-22, but no
-   deploy of *this box* ran that change (the same flake source also carries the staged
-   `--kv-resident 32768` in `./strata.nix`, which is a deploy decision for whoever measured it:
-   `machines/services3/README.md`'s RAM-tier section and `docs/follow-ups.md`). So today the
-   box's github.com host keys come from its own `~/.ssh/known_hosts` — a hand-made half, the
-   shape a reinstall loses silently, and the reason the table entry is not optional. Re-verify
-   after that deploy with `grep -c github /etc/ssh/ssh_known_hosts` on this box: it goes from
-   `0` to `3`.
+   `common/ssh-known-hosts.nix` grew github.com's three published keys on 2026-11-22, and the
+   fleet deploy of that day is what carries them to this box — they ride the same flake source
+   as everything else in the commit, and nothing engine-shaped rode with them (`./strata.nix`'s
+   args did not move). Before that deploy the box's github.com host keys came from its own
+   `~/.ssh/known_hosts` — a hand-made half, the shape a reinstall loses silently, and the
+   reason the table entry is not optional. Re-verify with
+   `grep -c github /etc/ssh/ssh_known_hosts` on this box: it goes from `0` to `3`.
 
 Two leftovers the assimilation left were fixed in the same breath, both of which lie to `git
 status` rather than to ssh:
@@ -796,8 +810,9 @@ status` rather than to ssh:
 The pull that ran on 2026-11-22 was `--ff-only` from `0bb5495` to `edde14e` on a clean tree
 (`dirty=0`, and `0bb5495` proved an ancestor of `origin/main` first), so **the checkout is now
 ahead of what is deployed on this box**: `git log -1` here is no longer the generation that
-runs (rule 20), and the next `just deploy services3` is what carries it — including that staged
-`./strata.nix` line.
+runs (rule 20), and the next `just deploy services3` is what carries it — the commits it
+carries are **docs and one new ssh-host-keys row**; the engine's args did not move, so this
+switch does not restart strata.
 
 Re-verify, in this order (the first three are the box, the last is services1's, since `gh`
 lives there and the grant is off-box state this flake cannot see):
@@ -824,4 +839,4 @@ gh api repos/leigh-hackspace/infrastructure-nix-flake/keys --jq '.[]|{title,read
 | `/` free space | Model data moved to the NVMe, so `/` only carries the store and the generations; measured 2026-11-21 after the engine's closure, `df -h /` has tens of GiB free and the old generations are still prunable (see above) if a nixpkgs bump needs the room. |
 | Root's ssh identity | `nix copy`/remote-build ssh runs as root out of `HOME=/root`, and the identity it offers comes from a **hand-written `/root/.ssh/config`** (aibox stanza since Sep 2025, services3 added 2026-11-11 — item 5 above). The *host keys* are declarative (rule 25); the identity is not, so `nix copy` to a new box fails with `Too many authentication failures` until a stanza is added by hand or `common/build-farm.nix` grows an identity for the delegating side. **The operator account's half closed 2026-11-15:** `common/build-farm.nix` now carries `programs.ssh.hosts` for the network's own addresses (`IdentityFile ~/.ssh/agent-hop-key`, `IdentitiesOnly yes`, `ConnectTimeout 5`), rendered into `/etc/ssh/ssh_config` — the *system* file, because this nixpkgs has no home-file option in `users.users.<name>` at all (`just check` refuses it; `machines/gw/README.md`'s "authorized keys are a fact about the directory sshd reads" is the same shape). Root is **not** covered by that block: `~` in `IdentityFile` expands to `/root`, where no `agent-hop-key` exists, so root still needs its absolute-path stanza and `sudo env NIX_SSHOPTS='-i /home/leigh-admin/.ssh/agent-hop-key -o IdentitiesOnly=yes' nix copy …` remains the escape hatch. Re-verify the operator half with `ssh -G 10.3.1.20 | grep -E 'identitiesonly|agent-hop'` as `leigh-admin` (two lines once deployed; `ssh -G` also prints ssh's five built-in defaults on an unswitched box, so count them) and by the checkout's own `git remote -v` answering `origin` + `infra`. |
 | Monitoring depth | Scraped **once services1 next switches**: the three scrape rows are in `machines/services1/services/observability.nix`, and a `dry-activate` of that change showed it would stop and restart six of services1's apps (`filestore`, `gocardless-dashboard`, `moonraker-exporter`, `prometheus`, `status-dashboard`, `switch-gui`) — the crates' unit paths move because the flake source moved. That is a services1 deploy decision (`docs/network-upgrade-runbook.md`), not a fee for adding a box, so it was not paid here. Until then the exporters run on this box and nobody reads them. Alerting is the same shape and now possible: `common/monitoring-endpoints.nix` is the gatus half, its guard wants an `https *.int` endpoint, and `strata3.int.leighhack.org` got its `/health` row in the same change as the door row — it goes live with the deferred services1 deploy, not as its own restart of six apps. |
-| GitHub credential | **Closed 2026-11-22 for the *credential* half, open for the *host* half**: the box has its own `~/.ssh/id_ed25519` registered as a repo deploy key with write access (the section above carries the receipts, the grant's rationale, and both re-verify blocks), and pushes and pulls GitHub itself. What is still owed is the `github.com` entry in `common/ssh-known-hosts.nix` — written that day, **not yet deployed to this box**, because it rides the same flake source as the staged `--kv-resident 32768` and the next deploy of this box is that decision. Until it lands, this box's github host keys are a hand-made `~/.ssh/known_hosts`, which no deploy can reproduce. Re-verify with `grep -c github /etc/ssh/ssh_known_hosts` on this box (`0` → `3`). |
+| GitHub credential | **Closed 2026-11-22, both halves**: the box has its own `~/.ssh/id_ed25519` registered as a repo deploy key with write access (the section above carries the receipts, the grant's rationale, and both re-verify blocks), and pushes and pulls GitHub itself; and the `github.com` keys are now the row in `common/ssh-known-hosts.nix` that this box's switch of that day carries (re-verify `grep -c github /etc/ssh/ssh_known_hosts` = `3`; before it the count was `0` and the keys came from a hand-made `~/.ssh/known_hosts`, which a reinstall loses silently). |

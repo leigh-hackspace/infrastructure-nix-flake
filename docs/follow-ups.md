@@ -3912,11 +3912,15 @@ numbers. Nothing is deployed, no unit exists, nothing listens. Open gates, in or
 ## services3's Strata engine (the Pascal box) — measured 2026-11-22, `machines/services3/README.md` owns the table
 
 Read off the live unit on 2026-11-22 (engine 0.1.63): `/proc/meminfo`, `sudo dmidecode -t
-memory`, and four greps of `/var/lib/strata/strata.log`. **The state of `./strata.nix` is
-staged, not deployed**: `--kv-resident 32768` is in the module as of 2026-11-22 and has not
-crossed to the box, so nothing about it is live until it is committed and `just deploy
-services3` runs it (the deploy is the measurement: the start's `expert cache auto:` line says
-what the cache got, and the `lendable slots` line must still read N of N).
+memory`, and four greps of `/var/lib/strata/strata.log`. **Nothing about the K/V tier crossed,
+and nothing here claims it should**: `--kv-resident 32768` was written into the module on
+2026-11-22 and reverted that day — `git log -- machines/services3/strata.nix` shows the two
+commits with no deploy of this box between them, and the args the box runs are unchanged, so
+that switch does not restart the engine. What is live is the evidence the greps gave: this box
+already writes `1690 of the prompt path's 1690 lendable slots keep their experts in RAM too`
+and `… (no file reads)`, which is why the two RAM dials services2 turns are inert here (see
+the bullet below). **Blocks:** the K/V-tier prize stays unclaimed until someone runs a needle
+and the answer key on this box and reads both lines back.
 
 - **Two `MemTotal` readings sit 1 GiB apart and one cannot be true of this stick set** (found
   while answering "how much RAM is there to spend things in"). Today's read is `40999748 kB`
