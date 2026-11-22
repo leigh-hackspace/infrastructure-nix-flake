@@ -19,7 +19,8 @@ write-up is quoted only where it is the *only* record (and then as quoted, not a
 | | |
 | --- | --- |
 | Board / CPU | ASUS Z170 PRO GAMING, i7-6700 (Skylake 4c/8t, `kvm-intel`), **40 GiB RAM** — `MemTotal: 41999736 kB`, measured 2026-11-21. Earlier versions of this file (and of ./hardware-configuration.nix) said 16 GiB, which is how the box arrived and was never re-measured; the difference is what makes the Coder pack fit |
-| GPU | **exactly one, and it is a GTX 1080 Ti (GP102/Pascal) on `01:00.0`** (+ its HDMI audio function `01:00.1`), driven by this flake on `nvidia 580.178.04` — ./nvidia.nix. Re-measured 2026-11-12 because "why is the 1060 missing?" was asked: `lspci -nn -d 10de:` lists those two functions and nothing else, NVML reports `GPU 0` only with `/dev/nvidia0` the sole card node, and `llama-server --list-devices` prints one line. **There is no second GPU in this box.** The network's GTX 1060 lived in **aibox** and was physically removed on 2026-09-02 (its llama.cpp verdicts were negative; the write-up is in git history) |
+| RAM / DIMMs | **40 GiB of a 64 GiB board maximum, on four slots, all four full** — `sudo dmidecode -t memory` 2026-11-22: `Maximum Capacity: 64 GiB`, two `Kingston KHX2400C12D4/4GX` **4 GiB** DDR4-2400 and two `Kingston KTP9W1-MIE` **16 GiB** (all four seated, `MemTotal: 40999748 kB` read today. The Board/CPU row above records `41999736 kB` on 2026-11-21, which is **above** what 40 GiB of DIMMs can report once the kernel and firmware take their reservation, so that older figure is the suspect one — 1 GiB apart, two reads, and the open item says which is which (unless a stick was changed on the bench between the two and nobody wrote it down). So **64 GiB is a purchase, not a rearrangement**: the slots are full and the headroom is two new 16 GiB sticks, with the two 4 GiB ones as what gets thrown away. `dmidecode` is in `common/tools.nix`, so this is one command on any box, not a guess. The sibling box cannot take RAM at all — `machines/services2/STRATA.md` and `docs/follow-ups.md` read its board as *two* slots, both filled with 16 GiB DDR4-3200 (M378A2K43DB1-CVF) at 2933, max 128 GiB, so its own headroom is a 2×32 swap. And its RAM must not be robbed for this one: `setup.py`'s `low_ram_needed` verdict and the KV trade are what make the Coder pack fit there at all | 
+| GPU | **exactly one, and it is a GTX 1080 Ti (GP102/Pascal on `01:00.0`** (+ its HDMI audio function `01:00.1`), driven by this flake on `nvidia 580.178.04` — ./nvidia.nix. Re-measured 2026-11-12 because "why is the 1060 missing?" was asked: `lspci -nn -d 10de:` lists those two functions and nothing else, NVML reports `GPU 0` only with `/dev/nvidia0` the sole card node, and `llama-server --list-devices` prints one line. **There is no second GPU in this box.** The network's GTX 1060 lived in **aibox** and was physically removed on 2026-09-02 (its llama.cpp verdicts were negative; the write-up is in git history) |
 | No iGPU either | `lspci -nn \| grep -ciE 'intel.*(vga\|display\|3d)'` = **0** — the i7-6700's HD Graphics 530 has no display function on this bus (disabled in the firmware), which is why `vulkaninfo` shows the NVIDIA ICD and Mesa's `llvmpipe` and nothing in between. An earlier version of this file and of ./llama.nix asserted the iGPU was a second Vulkan device; it had never been measured |
 | Free slots | DMI slot table: `PCIEX16_1` **In Use**, `PCIEX16_2` **Available**, `PCIEX16_3` **Available** (both reported "Short" — the board's electrically-x4 slots), `PCIEX1_1` Available; and the kernel log has no BAR/MMIO refusal, so nothing is seated-and-refused. A second card could therefore be fitted. What that changes is `vulkanDevice` in ./llama.nix (the index order is ICD load order, **not** PCI order) and, if the intent is one model across two cards, the `--device` list — not the driver, and not this table's VRAM ladder |
 | Disk | `sda` 111.8 GiB: `sda1` 1 GiB vfat (label `BOOT`) + `sda2` 110.8 GiB ext4 (label `ROOT`) — the OS, the store and the generations. `nvme0n1` **476.9 GiB** (SK hynix PC601): one ext4 filesystem labelled `STRATA` since 2026-11-21, mounted at `/srv/strata`, holding the model data. It arrived with a previous owner's two-partition ZFS pool (`dbthr33`) and an 11.9 GB swap partition, neither referenced by this tree nor mountable here (no ZFS), so the whole disk was wiped — ./hardware-configuration.nix carries the decision |
@@ -248,6 +249,53 @@ refusing: `strata generate: … is a native (IQ) pack: it needs --native SHARD1,
 that check, so `--spec` was the only missing piece — it is the verify-window width, and
 it feeds the suffix drafter, which needs no MTP weights. It is in `./strata.nix`'s base
 flag list now, and `useMtp` only adds `--mtp`.
+
+### The RAM tier, measured (2026-11-22) — it is already at its ceiling; the card is not
+
+**Not deployed as of this writing**: `--kv-resident 32768` is in `./strata.nix` on 2026-11-22 and
+has not crossed to the box, so nothing in this section about *its effect* is live; what is live is
+the evidence read off the start that was running, quoted below.
+
+The engine's own start lines say the RAM half of the tier is done and the VRAM half is not,
+on the live unit (engine 0.1.63, `/var/lib/strata/strata.log`):
+
+```bash
+sudo grep -E "lendable slots|resident RAM mode|expert cache auto|expert cache hit" \
+  /var/lib/strata/strata.log | tail -8
+```
+
+| line (2026-11-22) | what it says |
+| --- | --- |
+| `1690 of the prompt path's 1690 lendable slots keep their experts in RAM too` | **N of N** — nothing is read off the NVMe mid-prompt, so `--resident-budget-gib` and `STRATA_RESIDENT_HEADROOM_GIB` are **inert here** and are deliberately not set. services2 needed both because its box is 30.7 GiB and the KV trade had to come *out of* the expert budget — there the same dial is a 2× swing (562/725 → 1210/1204 tok/s at 8k, `machines/services2/STRATA.md`'s four-arm table); here the prompt path is already covered. Read this line after any change to the start, before believing a benchmark (`machines/services2/STRATA.md`'s rule) |
+| `resident RAM mode: 22.83 GiB of experts in RAM (page-locked), 1996 in the GPU cache … (no file reads)` | the full 23.4 GiB arena resident, as `strata.nix`'s header argues; the GPU cache holds 1,996 experts of it |
+| `MemTotal: 40999748 kB`, `MemAvailable: 10824476 kB` (idle) | the box has **10.8 GiB of RAM to spend things in** — the one axis it is not tight on |
+| `expert cache auto: 4.78 GiB free, 700 MiB reserved (+0 MiB for the draft head, +256 MiB …) -> 1549 slots` | what the card had left when the cache was sized — the 128K int8 K/V is still in **VRAM** (`kv_streaming_wanted` keeps it there once the arena is resident, `./strata.nix`) |
+| `decode expert cache hit rate: 68.4 % (112607 hits / 164618 lookups); 54262 more read by the GPU over PCIe … (24.8 % of all 218880 routed)` | a quarter of the experts the decoder wants are fetched **over PCIe**, not held — this is the prize a bigger card cache buys, and it is the same class as the ~13 % decode cost the 128K KV already took above |
+| `verify: capturing the 12-token window (607 MiB of VRAM free)` | the mid-request VRAM floor while `--lookup-max-t 12` runs windows 1,2,3,4,5,6,12 — ~90 MiB above the engine's own 512 MiB paging guard |
+
+So: **RAM capacity is a closed door** (four slots full, 64 GiB needs two new 16s, and nothing is
+buyable), **the RAM dials are at their best** (N of N, no file reads), and what is left on the
+RAM axis is the *tier* of one thing — the K/V. `./strata.nix` spells `--kv-resident 32768` in
+for that reason: it moves ~1.3–1.7 GiB of int8 K/V off the card into pinned host RAM (which
+this box has 10.8 GiB of, un-fought — services2's bill for the same pair was its last 1.1–1.6 GiB,
+which is why `LowMemory` fires there and `docs/follow-ups.md` keeps that as an observability
+decision rather than a fault), and the slot prize is **derived** from the two lines above
+(~1,988 → ~2,900 at ~1.9 MiB/slot), **not measured** — the measurement is this start's own
+`expert cache auto:` line, then a needle and the answer key, and upstream checks the streamed
+path against the resident one bitwise (`kv_stream_parity`). A context of ≤ 32768 cells is not
+streamed at all, so ordinary turns pay nothing.
+
+One thing the RAM tier is doing that nobody has read: the conversation cache sizes itself from
+free RAM — `conversation cache sized from the free RAM: 3584 MiB for up to 4 parked
+conversations` (README said 4096 at the older start, so the number moves with the load) — and it
+**is** parking (`parked=2 bytes=1139510732 evictions=0 snapshot_bytes=884619696`) but **`reused_kv_bytes=0`**
+at every start read so far. ~1 GiB of host RAM is being held for parked conversations and nothing
+has ever been restored from it. What *is* reusing prompts is the other mechanism — `prompt 38569
+tokens = 37990 reused + 579 read in 2022 ms … 4 checkpoints` (`--prompt-cache`). The engine also
+says `conversation cache: no SSD tier: no data folder (--pack is not under <data>/packs;
+--conversation-spill-dir sets one)` — services3 is the only box in the network with an SSD and
+RAM to put that tier on (`machines/services2/STRATA.md`'s answer there was "not with swap"). Open
+item, in `docs/follow-ups.md`; deliberately unchanged this change.
 
 ### One stability fact this box earned the hard way
 
@@ -552,15 +600,16 @@ Bootstrap facts, because the box was not always in the flake:
   declarative in the **system** client config — `common/build-farm.nix`'s
   `programs.ssh.hosts`, rendered into `/etc/ssh/ssh_config` — on every flake machine.
   So this box updates itself with
-  **`git pull infra`** and needs no `GIT_SSH_COMMAND` noise; `git pull` bare still dies
-  before it reaches GitHub — measured on this box after the switch: `Host key
-  verification failed`, because `common/ssh-known-hosts.nix` pins only the network's own
-  addresses and GitHub is not in that table. A box that *has* pinned GitHub by hand (the
-  router has, in its own root `known_hosts`) dies one step later, at
-  `Permission denied (publickey)`. Both strings are the same fact — this box has no GitHub
-  credential of its own, exactly as `gw` has none — and neither is a prompt to fix. A
-  `ahead N` in `git status -sb` there is a stale `origin/main` ref, not an unpushed
-  commit (`docs/network-upgrade-runbook.md`).
+  **`git pull infra`** and needs no `GIT_SSH_COMMAND` noise; that half closed on 2026-11-15
+  and everything quoted above it is what was measured *then*. On 2026-11-22 the *other* half
+  closed too: the box now holds a credential GitHub accepts, so a bare `git pull` here means
+  GitHub and a bare `git push` here lands the commit. Read the two failure strings above as
+  history rather than as the answer — and note that they are still exactly what `gw` and
+  `services2` print, because neither has a credential of its own. The box's own half is the
+  section below, "Getting commits on and off this box", which says what is runtime state on
+  the box and what is flake config, and what is still owed. A `ahead N` in `git status -sb`
+  there **was** a stale `origin/main` ref; after 2026-11-22 it is a live comparison, because
+  `main` now tracks `origin` like it does on every other box in the fleet.
   `just deploy services3` from a box that holds the commit remains the way that both
   fetches *and* switches, and it is the one that keeps the GOLDEN RULE's confirm in the
   same shell invocation.
@@ -663,6 +712,106 @@ gw` therefore reproduce what is running. Re-verify with `git -1` on each box (ru
 remember `gw` is the box that has previously run *ahead* of its own line —
 `machines/gw/README.md` owns that recipe.
 
+## Getting commits on and off this box, on its own (2026-11-22)
+
+Until that date this box could *fetch* — `git pull infra` is services1's checkout over the
+LAN hop — but it could not put a commit on GitHub: it held no credential GitHub accepts,
+so anything committed at the bench had to be relayed through services1. It now has its own
+credential and a bare `git pull` / `git push` here mean GitHub, which is what `just deploy
+services3`'s first branch (`git fetch -q origin`) has always assumed was possible: since
+2026-11-22 it answers, from any box, instead of falling through to the peer fetch.
+
+Four facts, in the order that keeps each one's failure mode a different string:
+
+1. **The private key is the box's own and was made on the box** — `ssh-keygen -t ed25519
+   -N '' -f ~/.ssh/id_ed25519 -C services3@leighhack.org`, fingerprint
+   `MD5:80:c7:03:86:d9:b1:ad:89:a1:25:b7:5e:9b:a0:26:8c` (`ssh-keygen -l -E md5 -f
+   ~/.ssh/id_ed25519` re-reads it). The name `id_ed25519` is the whole reason the box needs
+   no ssh config of its own: it is one of the file names ssh tries when nothing is asked for,
+   and `git`'s ssh asks for nothing. It cannot be declarative: this pinned nixpkgs writes no
+   home files (`common/users.nix` names the refusal), and `common/build-farm.nix`'s identity
+   block is keyed to **`common/hosts.nix`'s addresses on purpose**, so it does not reach
+   github.com — a `Host` block that put the *LAN* hop key on the GitHub remote is the
+   documented leak trap (`Permission denied (publickey)`), and a generated file cannot do it
+   by accident because the host is what the block matches on.
+2. **What GitHub was given is a repo-scoped *deploy key* with write access, not a key
+   registered on the account** — and that is a decision, not a habit. `ssh -T git@github.com`
+   on services1 and aibox answers `Hi cjdell!`, i.e. their `id_ed25519` are *account* keys,
+   which reach every repository that account can — including the thingino firmware repo whose
+   history carries the cameras' Wi-Fi PMKs (rule 30, `docs/camera-thingino-build-deploy-2026-10-31.md`
+   §7). A key on a bench box at the edge of a Wi-Fi dongle should not be able to read that.
+   A deploy key pushes and pulls *this* repository and nothing else, so it is the weaker grant
+   with the same effect. It was made with
+   `gh api -X POST repos/leigh-hackspace/infrastructure-nix-flake/keys -f read_only=false -f title=…`
+   run from services1 — the only box with `gh` configured, and its token is on that box's
+   `gh`, in no store path and no flake field (rule 13). The grant's *state* is readable only
+   there — `gh api repos/leigh-hackspace/infrastructure-nix-flake/keys --jq '.[]|{title,read_only,verified,created_at}'`
+   answers exactly one key, `read_only: false`, `verified: true`, created `2026-11-22T14:29Z`
+   (GitHub's own record is the date; the title it shows is a cosmetic label for the box and the
+   day, not an identity). Two API facts worth knowing before trying to tidy that label: **a
+   deploy key cannot be added twice** — the same key material POSTed again is refused with
+   `key is already in use` (422), so a rename is a *delete then recreate*, which is the one
+   window in which this box cannot push at all — and **`PATCH` on the key is refused with 404**
+   by services1's token (scopes `gist, read:org, repo`), so renaming it there is a web-UI
+   decision rather than an API edit. **`read_only=false`
+   is load-bearing**: a read-only deploy key authenticates a `git push` connection and then
+   refuses the write, which reads as a broken remote rather than as the wrong grant.
+3. **Proven in both directions, and back to nothing left behind**, read off the box on
+   2026-11-22 with `SSH_AUTH_SOCK` unset (docs/nix-dev-workflow.md: a dead agent socket makes
+   a hop *hang*, silently):
+
+   ```bash
+   git ls-remote origin HEAD          # edde14e6… — the handshake, and github.com's host key accepted
+   git fetch origin                   # fetched
+   git push origin HEAD:refs/heads/key-check-services3        # PUSHED — the write grant, exercised
+   git push origin --delete key-check-services3               # DELETED
+   git ls-remote origin refs/heads/key-check-services3        # empty: residue=0
+   ```
+
+   The write proof is a scratch branch pushed and deleted in one invocation, and not a push of
+   something GitHub already has: pushing a commit that already exists is a no-op that never
+   asks the write grant, so "it authenticated" and "it can push" would not have been
+   distinguished. The scratch branch is the cheapest thing that makes them the same failure.
+4. **The host half of that hop is flake config now, and this box is not yet switched onto it.**
+   `common/ssh-known-hosts.nix` grew github.com's three published keys on 2026-11-22, but no
+   deploy of *this box* ran that change (the same flake source also carries the staged
+   `--kv-resident 32768` in `./strata.nix`, which is a deploy decision for whoever measured it:
+   `machines/services3/README.md`'s RAM-tier section and `docs/follow-ups.md`). So today the
+   box's github.com host keys come from its own `~/.ssh/known_hosts` — a hand-made half, the
+   shape a reinstall loses silently, and the reason the table entry is not optional. Re-verify
+   after that deploy with `grep -c github /etc/ssh/ssh_known_hosts` on this box: it goes from
+   `0` to `3`.
+
+Two leftovers the assimilation left were fixed in the same breath, both of which lie to `git
+status` rather than to ssh:
+
+* `origin/HEAD` pointed at **`refs/remotes/infra/main`**, which is not a remote branch — it is
+  what `git remote set-head origin --auto` fixed, and it is a fossil of the 2026-11-11 state
+  where this box's only remote *was* the peer under the name `origin`.
+* `main` tracked `infra/main`. It now tracks `origin/main` (`branch.main.remote=origin`,
+  `branch.main.merge=refs/heads/main`), which is what makes a bare `git pull`/`git push` mean
+  GitHub here and makes `git status -sb`'s `ahead N` a live fact instead of the stale-ref trap
+  the runbook warns about.
+
+The pull that ran on 2026-11-22 was `--ff-only` from `0bb5495` to `edde14e` on a clean tree
+(`dirty=0`, and `0bb5495` proved an ancestor of `origin/main` first), so **the checkout is now
+ahead of what is deployed on this box**: `git log -1` here is no longer the generation that
+runs (rule 20), and the next `just deploy services3` is what carries it — including that staged
+`./strata.nix` line.
+
+Re-verify, in this order (the first three are the box, the last is services1's, since `gh`
+lives there and the grant is off-box state this flake cannot see):
+
+```bash
+# on services3 — `just repo-status` from anywhere prints the same answer as origin=reaches
+cd ~/Projects/infrastructure-nix-flake && git status -sb | head -1   # ## main...origin/main
+git ls-remote origin HEAD                                            # a rev, not an error
+git config branch.main.remote                                        # origin
+ssh-keygen -l -E md5 -f ~/.ssh/id_ed25519                            # the fingerprint above
+# on services1 (the only box with gh configured)
+gh api repos/leigh-hackspace/infrastructure-nix-flake/keys --jq '.[]|{title,read_only}'
+```
+
 ## Open items
 
 | | |
@@ -675,3 +824,4 @@ remember `gw` is the box that has previously run *ahead* of its own line —
 | `/` free space | Model data moved to the NVMe, so `/` only carries the store and the generations; measured 2026-11-21 after the engine's closure, `df -h /` has tens of GiB free and the old generations are still prunable (see above) if a nixpkgs bump needs the room. |
 | Root's ssh identity | `nix copy`/remote-build ssh runs as root out of `HOME=/root`, and the identity it offers comes from a **hand-written `/root/.ssh/config`** (aibox stanza since Sep 2025, services3 added 2026-11-11 — item 5 above). The *host keys* are declarative (rule 25); the identity is not, so `nix copy` to a new box fails with `Too many authentication failures` until a stanza is added by hand or `common/build-farm.nix` grows an identity for the delegating side. **The operator account's half closed 2026-11-15:** `common/build-farm.nix` now carries `programs.ssh.hosts` for the network's own addresses (`IdentityFile ~/.ssh/agent-hop-key`, `IdentitiesOnly yes`, `ConnectTimeout 5`), rendered into `/etc/ssh/ssh_config` — the *system* file, because this nixpkgs has no home-file option in `users.users.<name>` at all (`just check` refuses it; `machines/gw/README.md`'s "authorized keys are a fact about the directory sshd reads" is the same shape). Root is **not** covered by that block: `~` in `IdentityFile` expands to `/root`, where no `agent-hop-key` exists, so root still needs its absolute-path stanza and `sudo env NIX_SSHOPTS='-i /home/leigh-admin/.ssh/agent-hop-key -o IdentitiesOnly=yes' nix copy …` remains the escape hatch. Re-verify the operator half with `ssh -G 10.3.1.20 | grep -E 'identitiesonly|agent-hop'` as `leigh-admin` (two lines once deployed; `ssh -G` also prints ssh's five built-in defaults on an unswitched box, so count them) and by the checkout's own `git remote -v` answering `origin` + `infra`. |
 | Monitoring depth | Scraped **once services1 next switches**: the three scrape rows are in `machines/services1/services/observability.nix`, and a `dry-activate` of that change showed it would stop and restart six of services1's apps (`filestore`, `gocardless-dashboard`, `moonraker-exporter`, `prometheus`, `status-dashboard`, `switch-gui`) — the crates' unit paths move because the flake source moved. That is a services1 deploy decision (`docs/network-upgrade-runbook.md`), not a fee for adding a box, so it was not paid here. Until then the exporters run on this box and nobody reads them. Alerting is the same shape and now possible: `common/monitoring-endpoints.nix` is the gatus half, its guard wants an `https *.int` endpoint, and `strata3.int.leighhack.org` got its `/health` row in the same change as the door row — it goes live with the deferred services1 deploy, not as its own restart of six apps. |
+| GitHub credential | **Closed 2026-11-22 for the *credential* half, open for the *host* half**: the box has its own `~/.ssh/id_ed25519` registered as a repo deploy key with write access (the section above carries the receipts, the grant's rationale, and both re-verify blocks), and pushes and pulls GitHub itself. What is still owed is the `github.com` entry in `common/ssh-known-hosts.nix` — written that day, **not yet deployed to this box**, because it rides the same flake source as the staged `--kv-resident 32768` and the next deploy of this box is that decision. Until it lands, this box's github host keys are a hand-made `~/.ssh/known_hosts`, which no deploy can reproduce. Re-verify with `grep -c github /etc/ssh/ssh_known_hosts` on this box (`0` → `3`). |

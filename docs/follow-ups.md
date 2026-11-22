@@ -1137,10 +1137,44 @@ that is closed gets absorbed into the live docs and deleted, and git history hol
 - **services2 cannot hop out.** `machines/services2/README.md` used to claim the
   shared machine-hop key was installed there; it is not. Only `authorized_keys` is
   (by `common/users.nix`), so you can hop *in* to 10.3.1.21 but it cannot ssh to
-  services1, and it has no GitHub key of its own. Fetch there with `ssh -A` (agent
+  services1, and it has no GitHub credential of its own. Fetch there with `ssh -A` (agent
   forwarding — `AGENTS.md`, "SSH between machines") rather than copying a private
   key around. Install `~/.ssh/agent-hop-key` deliberately if it should hop out;
-  never make it a side effect of a deploy.
+  never make it a side effect of a deploy. **(corrected 2026-11-22:** the first half of this
+  item is stale — `machines/services2/README.md` verified on 2026-10-15 that the hop key **is**
+  installed there and hops out, and `just repo-status` confirms it today; what is still true is
+  the credential half, i.e. the bullet below**)
+
+- **Two boxes still have no credential GitHub accepts, and the shape that gives a box one is
+  now written down** (done for services3 on 2026-11-22, the first box that ever pushed by
+  itself). Measured that day off all five boxes: `gw`'s and `services2`'s `git ls-remote origin
+  HEAD` die at GitHub's own refusal — `Please make sure you have the correct access rights`,
+  `Permission denied (publickey)` — because their `~/.ssh` holds only the hop key, while
+  services1, aibox and services3 answer with a rev. The two halves of that hop and the map of
+  which box reaches what are in `docs/nix-dev-workflow.md` ("2026-11-22: GitHub joined that
+  table, and the credential half became per box") and, per box, `machines/services3/README.md`
+  ("Getting commits on and off this box"). **Blocks:** nothing — pushing through services1 works
+  and is what those two boxes do today, and `machines/services2/README.md` owns the relay dance
+  and its two traps. **To do,** on whichever of the two next wants its own: `ssh-keygen -t ed25519
+  -N '' -f ~/.ssh/id_ed25519` **on that box** (the name is what makes it work with no ssh config,
+  since that is one of the file names ssh tries unprompted), then register the public half with
+  `gh api -X POST repos/leigh-hackspace/infrastructure-nix-flake/keys -f read_only=false` from
+  services1 — **a repo-scoped deploy key, not a key on the account**: `ssh -T git@github.com` on
+  services1 and aibox answers `Hi cjdell!`, so an account key bolted to a box can read every
+  private repo that account can, including the thingino firmware repo whose history carries the
+  cameras' Wi-Fi PMKs (rule 30), and a deploy key can push and pull this repository and nothing
+  else. `read_only=false` is load-bearing: a read-only deploy key *authenticates* a `git push`
+  and then refuses the write, which reads as a broken remote rather than as the wrong grant. Then
+  land the flake half — `common/ssh-known-hosts.nix` grew github.com's three published keys on
+  2026-11-22 and is deployed on nothing yet, so a box's github host keys are still whichever
+  `~/.ssh/known_hosts` someone ssh'ed from by hand, which no deploy can reproduce and a reinstall
+  loses. Re-verify per box: `git ls-remote origin HEAD` answers a rev, `git status -sb | head -1`
+  reads `## main...origin/main` (not `...infra/main` — see the `origin/HEAD` trap in
+  `docs/network-upgrade-runbook.md`), `grep -c github /etc/ssh/ssh_known_hosts` goes `0` → `3`,
+  `ssh-keygen -l -E md5 -f ~/.ssh/id_ed25519` matches the fingerprint that box's README records,
+  and `gh api repos/leigh-hackspace/infrastructure-nix-flake/keys --jq '.[]|{title,read_only}'`
+  on services1 (the grant is off-box state this flake cannot see, and `gh` is configured only
+  there).
 
 - **`machines/pi-room-sys/ssh_host_ed25519_key` is a private host key in plain
   git** (moved in with the tree on 2026-10-15; it was committed in
@@ -3872,3 +3906,82 @@ numbers. Nothing is deployed, no unit exists, nothing listens. Open gates, in or
    options are `nixpkgs#sherpa-onnx` (ships `sherpa-onnx-keyword-spotter`, takes a plain
    keywords file, no training, English model available) and `rustpotter` (trains locally from
    recordings). Nice-to-have; parked until the gates above say the first phrase works here.
+
+---
+
+## services3's Strata engine (the Pascal box) — measured 2026-11-22, `machines/services3/README.md` owns the table
+
+Read off the live unit on 2026-11-22 (engine 0.1.63): `/proc/meminfo`, `sudo dmidecode -t
+memory`, and four greps of `/var/lib/strata/strata.log`. **The state of `./strata.nix` is
+staged, not deployed**: `--kv-resident 32768` is in the module as of 2026-11-22 and has not
+crossed to the box, so nothing about it is live until it is committed and `just deploy
+services3` runs it (the deploy is the measurement: the start's `expert cache auto:` line says
+what the cache got, and the `lendable slots` line must still read N of N).
+
+- **Two `MemTotal` readings sit 1 GiB apart and one cannot be true of this stick set** (found
+  while answering "how much RAM is there to spend things in"). Today's read is `40999748 kB`
+  (39.1 GiB) against `dmidecode -t memory`'s **2×4 GiB Kingston KHX2400C12D4/4GX + 2×16 GiB
+  KTP9W1-MIE, four slots, all four full, `Maximum Capacity: 64 GiB`**. `machines/services3/README.md`'s
+  Board/CPU row records `MemTotal: 41999736 kB` (40.05 GiB) on 2026-11-21 — which is *above* what
+  40 GiB of DIMMs can report after reservation, so that figure is the suspect one, unless a stick
+  was changed on the bench between the two reads and nobody wrote it down. **Blocks:** nothing,
+  and no decision. **To do:** re-verify with `sudo dmidecode -t memory` and `grep MemTotal
+  /proc/meminfo` on services3, and if the stick set ever differs from the row, say which change
+  moved it in `machines/services3/README.md`. `dmidecode` is in `common/tools.nix`, so the
+  question is one command on any box, never a recollection. **Why it matters here:** 40 GiB →
+  64 GiB is a **purchase** of two 16s with the two 4s thrown away, not a rearrangement into free
+  slots, and services2's board is *two* slots already holding 2×16 (`machines/services2/STRATA.md`)
+  — so with no new RAM buyable, the RAM *capacity* axis is closed on both boxes, and its only
+  remaining shape is which tier each thing lives in.
+
+- **The RAM *dials* on services3 are at their ceiling, so two of services2's levers are inert
+  there** (measured 2026-11-22: `1690 of the prompt path's 1690 lendable slots keep their
+  experts in RAM too`, and the tier line ends `… (no file reads)`, `22.83 GiB` of arena page-locked,
+  `MemAvailable` 10.8 GiB idle). `--resident-budget-gib` and `STRATA_RESIDENT_HEADROOM_GIB` are
+  **not set on services3 on purpose** — they trade file-read cost for headroom, and there are no
+  file reads to trade. services2 needed both because its box is 30.7 GiB and the KV budget came
+  *out of* the expert budget; the same dial there is a 2× prefill swing (562/725 → 1210/1204 tok/s
+  at 8k). Do not copy services2's env line to this box "for parity"; the engine's own line is the
+  proof, and the general rule is that a flag whose evidence is another box's numbers does not
+  transfer (`docs/services.md`). **Blocks:** nothing. **To do:** nothing until the gate line stops
+  reading N of N, which is the day they become real.
+
+- **The conversation cache on services3 parks and never restores: `reused_kv_bytes = 0`**
+  (measured 2026-11-22, `/var/lib/strata/strata.log`: `conversation cache sized from the free RAM:
+  3584 MiB for up to 4 parked conversations` — README's 4096 MiB was the older start, so the number
+  moves with the load — and `conversation cache: parked 4089 tokens in 240.1 ms; parked=2
+  bytes=1139510732 evictions=0 snapshot_bytes=884619696 reused_kv_bytes=0`, at every start read).
+  So ~1.09 GiB of host RAM is held for parked conversations and nothing has ever been read back
+  from it, while the *other* mechanism does its job: `prompt 38569 tokens = 37990 reused + 579 read
+  in 2022 ms … 4 checkpoints` is `--prompt-cache`. Same shape as services2's open item on prefix
+  reuse existing on some path and not the one clients use (`docs/follow-ups.md`, "Unexplained, and
+  it bounds what aibox's conversation-cache numbers mean") — **the two are probably one bug and
+  should be read together before either is "fixed"**, and the fix is one line: `--pack` is not
+  under `<data>/packs`, so the engine also prints `conversation cache: no SSD tier: no data folder
+  (--conversation-spill-dir sets one)`. services3 is the only box in the network with both an
+  SSD for that tier and 10.8 GiB of RAM to hold the bytes in; services2's answer there was "not
+  with swap" (`machines/services2/STRATA.md`). **Blocks:** nothing. **To do:** read the reuse/restore
+  path in `serve/server.py` and `include/strata/core/conversation_buffer.hpp` against the
+  metrics card (`serve/server.py:834`), then decide between the spill dir, `--conversation-cache-mib
+  0` (services2's choice, on principle: its RAM), and leaving it. Do not conclude "dead weight,
+  delete it" from one start's counters — 2 parked conversations at a 4-chunk cadence is a small
+  sample, and `parked=2 evictions=0` is as easily a cold cache as a broken restore.
+
+- **`STRATA_PF_FUSED` / `STRATA_PF_SMALL` / the layer-major prefill walk: the engine says this
+  very card is in the regime where the by-hand path wins, and nothing has been tried here**
+  (measured 2026-11-22: `small expert cache: the default prompt path would read in chunks of 7936
+  tokens (under 8192), so prompts are read the way that suits a card with little memory and, from
+  two chunks, the layer-major walk (chunk 7936 tokens); STRATA_PF_SMALL=0 keeps the default path,
+  STRATA_PF_FUSED / STRATA_PREFILL_LAYER_MAJOR set by hand win`). services2 deployed
+  `STRATA_PF_FUSED=1` on 2026-11-14 on answer-key evidence (`machines/services2/STRATA-TUNE-2026-11-14.md`,
+  8/8 before and after, revert one line + `just switch`). **Do not assume it is available on
+  Pascal**: the *fused int8* prompt kernels are sm_80-gated and this card cannot have them
+  (`docs/work-log-2026-11.md`), so whether the knob is honoured here at all is a measurement —
+  the house example of a flag that is accepted and half-honoured is llama.cpp's flash-attention
+  line on this same box (`machines/services3/README.md`, "both wordings this box prints").
+  **Blocks:** nothing. **To do:** measure both arms as `env.*` keys in `./strata.nix` — they are
+  read at start, no rebuild — with the harness at `machines/services2/strata-tune/` pointed at
+  `/srv/strata` and `strata3.int` first (`follow-ups.md`'s note above is that its numbers mean
+  nothing until), one arm at a time (that doc's noise floor is real: a control pass once read
+  807 tok/s, so under 10 % is nothing), and gate quality on pi's usage rather than on
+  `strata-answer-score.py` — nine greedy items cannot see KL 0.006.

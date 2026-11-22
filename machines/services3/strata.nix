@@ -151,6 +151,38 @@
       (toString context)
       "--kv"
       "int8"
+      # **The KV's tier: host RAM, not the card — the one lever this box has and
+      # services2 did not have to spend.** The card is where this box is tight and
+      # the engine says so at start (read the live log, 2026-11-22, engine 0.1.63,
+      # `/var/lib/strata/strata.log`): `expert cache auto: 4.78 GiB free, 700 MiB
+      # reserved (+0 MiB for the draft head, +256 MiB for what is allocated after
+      # the cache) -> 1549 slots`, `expert cache 1996 slots, 3.84 GiB of VRAM`, a
+      # mid-request floor of **607 MiB of VRAM free** while the `--lookup-max-t 12`
+      # spec windows are captured (the engine's own guard warns below 512 MiB), and
+      # `decode expert cache hit rate: 68.4 % (112607 hits / 164618 lookups); 54262
+      # more read by the GPU over PCIe … (24.8 % of all 218880 routed)` — a quarter
+      # of the experts the decoder wants are fetched over PCIe instead of held. The
+      # 128K int8 K/V is what ate those slots (`README.md`: 4,105 slots at 32K, 1,988
+      # at 128K, and ~13 % of decode). Streaming it — 32768 cells per QSA layer stay
+      # on the card, the rest live in pinned host RAM — returns ~1.3-1.7 GiB of VRAM
+      # to the cache and pays ~1.5 GiB of host RAM, which is the axis this box is NOT
+      # short of: 40 GiB total, 22.83 GiB of arena page-locked, **10.8 GiB idle-free**
+      # (services2's bill for the same pair was its last 1.1-1.6 GiB, which is why its
+      # `LowMemory` alert fires there — see `docs/follow-ups.md`). The slot prize is
+      # DERIVED from those two lines (~1,988 -> ~2,900 at ~1.9 MiB/slot), not measured:
+      # the measurement is this start's own `expert cache auto:` line, then a needle and
+      # the answer key. Upstream checks the streamed path against the resident one
+      # bitwise (`kv_stream_parity`), and services2 deployed the pair on 2026-11-18 at
+      # +13 % on an 8k prompt with the answer key unchanged (`machines/services2/STRATA.md`, "256K at full precision, at this box's speed"). A context of <= 32768 cells is
+      # not streamed at all, so ordinary turns pay nothing. Revert: delete the pair.
+      # Read BOTH lines back after any change to this start, before believing any
+      # number here — `sudo grep "lendable slots" /var/lib/strata/strata.log | tail -1`
+      # must still read N of N (it does now: `1690 of the prompt path's 1690 lendable
+      # slots keep their experts in RAM too`, and the tier line says `no file reads`, so
+      # `--resident-budget-gib` and `STRATA_RESIDENT_HEADROOM_GIB` are inert here and
+      # are deliberately not set), and `expert cache auto:` says what the cache got.
+      "--kv-resident"
+      "32768"
       # Low-RAM mode: the arena (23.4 GiB) is larger than this card, so the
       # experts the GPU cache does not hold are copied into RAM once
       # (--resident-experts) instead of being read back through the file cache

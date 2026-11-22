@@ -157,8 +157,19 @@ done
   2026-11-15); a checkout with only a LAN remote under the name `origin` is a
   box assimilated from elsewhere and its bare `git pull` means a peer fetch. A
   box whose `stanza` reads `0` has not been switched since `common/build-farm.nix`
-  grew the block (the deployed block makes that count `1`);
-  (`machines/services3/README.md` owns that box's repair).
+  grew the block (the deployed block makes that count `1`). The remotes are one half and
+  the **credential** is the other, and `git ls-remote origin HEAD` is the question that
+  tells them apart: since 2026-11-22 `common/ssh-known-hosts.nix` carries github.com's
+  published keys, so a bare pull on a flake box now fails at the credential (`Permission
+  denied (publickey)`, or GitHub's own `Please make sure you have the correct access
+  rights`) and `Host key verification failed` means that box has not been switched onto the
+  entry yet rather than that the network is down. The third shape is invisible to both
+  halves and lies to `git status` instead of to ssh: an assimilated box's `origin/HEAD` can
+  point at a **peer** ref — `refs/remotes/infra/main`, which is not a remote branch — and its
+  `main` can track `infra` forever, so the box's `ahead N` is a stale LAN ref even when
+  GitHub was reached. `git remote set-head origin --auto` plus pointing `branch.main.remote`
+  at `origin` is that repair, and `machines/services3/README.md` owns it, its credential half,
+  and what is still owed there.
 
 And a **baseline of what is already red**, because the monitor's own list contains
 checks that have never passed and you will otherwise spend the run blaming
@@ -280,10 +291,16 @@ Do this before anything is built. A build of the wrong tree is a wasted build,
 and a switch of the wrong tree is a wrong network.
 
 1. **Land the local work.** `git add` the new files (rule 5 — untracked files are
-   invisible to the flake), `just check`, then commit and push. If you are on a
-   box with no GitHub key of its own (services2), push through services1 with
-   agent forwarding — the exact incantation and its two traps are in
-   `machines/services2/README.md`. Guard the push so it can only fast-forward:
+   invisible to the flake), `just check`, then commit and push. Which boxes can push
+   themselves is a fact about their `~/.ssh` and not about the flake, so ask rather than
+   remember: **`just repo-status`** prints, per box, its head, its remotes, and whether
+   `git ls-remote origin HEAD` answers. As of 2026-11-22 that is services1, aibox and
+   services3 (yes — `machines/services3/README.md` is the worked example of a box that got
+   one: its own `id_ed25519` registered as a **repo-scoped deploy key** with write access,
+   which is the weaker grant than the other two's account keys and why that matters here),
+   and `gw` and `services2` (no — they need the relay dance, whose exact incantation and two
+   traps live in `machines/services2/README.md`). Guard the push so it can only ever
+   fast-forward:
 
    ```bash
    git merge-base --is-ancestor "$(git ls-remote origin refs/heads/main | cut -f1)" HEAD && git push origin HEAD:main

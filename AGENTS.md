@@ -317,6 +317,45 @@ X first", X has already cost someone a day.
    `ssh -G 10.3.1.20 | grep -E 'identitiesonly|agent-hop'` (two lines once deployed, six
    on an unswitched box — `ssh -G` prints ssh's five built-in defaults too).
 
+33. **A box puts a commit on GitHub only if it holds a credential of its own, and that
+    credential is per box, off-flake, and narrower than the fleet's hop key.** Rules 25 and
+    32 are the two halves of the *LAN* hop; the GitHub hop has the same two halves and neither
+    is solved by them. The **host** half became one table on 2026-11-22: `common/ssh-known-hosts.nix`
+    carries github.com's three *published* keys (`api.github.com/meta`'s `ssh_keys`, cross-checked
+    byte for byte against a scan across the network, and `just github-host-keys` re-prints both
+    lists and their agreement), so `Host key verification failed` on a flake box now means "not
+    switched onto the entry yet", not "the repo is gone" — the older symptom sat *before* GitHub
+    was ever asked, and its only cure until then was whichever hand-made `~/.ssh/known_hosts`
+    someone had ssh'ed from, which a deploy cannot reproduce and a reinstall loses silently.
+    The **credential** half cannot be declarative and that is not a style choice: this pinned
+    nixpkgs writes no home files, and `common/build-farm.nix`'s identity block is keyed to
+    `common/hosts.nix`'s addresses **on purpose** — a `Host` block naming the hop key is the
+    documented leak that puts the LAN key on the GitHub remote (`Permission denied (publickey)`).
+    So it is the same shape as the hop key's: a per-box `~/.ssh/id_ed25519` made **on that box**
+    (that name is one of the files ssh tries with no config at all, which is why no box needs an
+    ssh stanza for github), whose public half GitHub is given **as a repo-scoped deploy key with
+    `read_only=false`**, from services1 — the only box with `gh` configured, whose token sits on
+    that box's `gh`, in no store path and no flake field (rule 13). **A deploy key rather than an
+    account key is a decision, not a habit**: `ssh -T git@github.com` on services1 and aibox
+    answers `Hi cjdell!`, so a key registered that way on a bench box can read every private repo
+    that account can — including the thingino firmware repo whose history carries the cameras'
+    Wi-Fi PMKs (rule 30). `read_only=false` is load-bearing: a read-only deploy key *authenticates*
+    a `git push` and then refuses the write, which reads as a broken remote rather than as the wrong
+    grant. services3 took one on 2026-11-22 and now pulls and pushes GitHub itself — its receipts,
+    its push proof (a scratch branch pushed and deleted in one invocation, because pushing a commit
+    GitHub already has never asks the write grant), and the two `origin/HEAD`/tracking leftovers
+    that lie to `git status` instead of to ssh, are in `machines/services3/README.md` ("Getting
+    commits on and off this box"); `gw` and `services2` still have none and relay through services1.
+    **Ask, don't remember: `just repo-status`** prints per box whether `git ls-remote origin HEAD`
+    answers. Re-verify with `just repo-status`, `grep -c github /etc/ssh/ssh_known_hosts` on the
+    box (`0` → `3` once it is switched onto the entry), `git status -sb | head -1` (must read
+    `main...origin/main`, not `...infra/main`), `ssh-keygen -l -E md5 -f ~/.ssh/id_ed25519` against
+    the fingerprint that box's README records, and
+    `gh api repos/leigh-hackspace/infrastructure-nix-flake/keys --jq '.[]|{title,read_only}'` on
+    services1 — the grant is off-box state this flake cannot see. Mechanism, the per-box map, and
+    the two refusal strings that mean different halves: `docs/nix-dev-workflow.md`
+    ("2026-11-22: GitHub joined that table, and the credential half became per box").
+
 ---
 
 ## Layout
@@ -937,7 +976,10 @@ there is declarative. **Root SSH is keyed here** (unlike the flake machines):
   from services1 (agent forwarding — the key must be *in* the agent, `ssh-add ~/.ssh/id_ed25519`;
   check `ssh-add -l` before suspecting the forwarding). Do not copy a private key onto a box
   as a side effect of a deploy.
-- **Git from a box with no key of its own: use agent forwarding.**
+- **Git from a box with no credential of its own: use agent forwarding.** Which boxes are
+  in that class is not a memory fact — `just repo-status` answers it per box; as of 2026-11-22
+  services1, aibox and **services3** reach GitHub on their own (rule 33) and `gw` and
+  `services2` do not.
 
   ```bash
   ssh -A -i ~/.ssh/agent-hop-key leigh-admin@10.3.1.21 \
@@ -948,7 +990,9 @@ there is declarative. **Root SSH is keyed here** (unlike the flake machines):
   the agent** (`ssh-add ~/.ssh/id_ed25519` first — check `ssh-add -l` before suspecting the
   forwarding, because a forwarded key GitHub rejects is indistinguishable from no key), and
   **the connection must pass `-A`**. `ssh -T git@github.com` from the remote is the
-  one-line test; a `git bundle` from services1 is the fallback.
+  one-line test; a `git bundle` from services1 is the fallback. Do not reach for either when
+  the box has its own deploy key: a `git push origin main` typed **there** is what lands it,
+  and an exported `GIT_SSH_COMMAND` is the leak that puts the hop key on the GitHub remote.
 - Gotcha: on aibox, `/etc/hosts` maps `aibox` to `127.0.0.2` (self reference), so use the
   IPs rather than hostnames.
 - **A LAN ssh that prints nothing at all and only dies on your timeout is usually a dead

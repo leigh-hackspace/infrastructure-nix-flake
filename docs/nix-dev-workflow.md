@@ -1079,10 +1079,13 @@ What this changes, in one line per habit: a LAN `git pull`/`git fetch`/`nix copy
 `git pull` on a box with no GitHub credential still dies **before** GitHub — measured on
 services3 after the switch: `Host key
 verification failed`, because `common/ssh-known-hosts.nix` pins the network's own
-addresses and GitHub is not in that table. A box that has pinned GitHub by hand (the
+addresses and GitHub was not in that table. A box that has pinned GitHub by hand (the
 router's root `known_hosts` has) reaches the next line and dies at `Permission denied
 (publickey)`. Both are the same fact — the box has no GitHub credential of its own — and
-neither is a prompt to fix. `gw`'s bare `git pull` has always been one of the two. Root's half is **not** fixed by the tilde form — `~` expands to
+neither is a prompt to fix. `gw`'s bare `git pull` has always been one of the two.
+**That reading expired 2026-11-22**, when the table grew github.com's published keys and
+services3 grew a credential of its own; the addendum below says what is and is not true now,
+and the two strings quoted above are still exactly what `gw` and `services2` print. Root's half is **not** fixed by the tilde form — `~` expands to
 `/root`, and `/root/.ssh/agent-hop-key` does not exist — so the hand-written
 `/root/.ssh/config` stanzas (aibox's since Sep 2025, services3's added 2026-11-11, both
 naming the **absolute** `/home/leigh-admin/.ssh/agent-hop-key`) stay the only thing that
@@ -1110,6 +1113,75 @@ There is nothing to `cat` in `~/.ssh`: the identity lives in the system file, an
 `~/.ssh/config` on a flake machine is now by definition a hand-made leftover — the
 mutable-file shape this repo's own audit named, and the thing a deploy can no longer
 reproduce.
+
+### 2026-11-22: GitHub joined that table, and the *credential* half became per box
+
+The sentence above — "a bare `git pull` on a box with no GitHub credential still dies before
+GitHub" — is a fact about a box that has **one identity and no way to hold another**. Both
+halves of it moved on 2026-11-22, and this section is what makes the old reading and the new
+state hard to confuse, because the two failure strings are the same and mean different things
+depending which half is missing.
+
+**The host half became network-wide.** `common/ssh-known-hosts.nix` is a *store-pinned* table
+(rule 25) and had exactly one answer for every ssh on every box: the network's own addresses.
+github.com was accepted by nothing declarative, so whichever `~/.ssh/known_hosts` someone had
+ssh'ed from by hand was the only thing that ever said yes — and `Host key verification failed`
+came *before* GitHub was asked, which is why it reads as "the repo is gone" rather than as "this
+box has never trusted the host". GitHub **publishes** its host keys (`api.github.com/meta`'s
+`ssh_keys`), so the entry is not a scan's output: on 2026-11-22 the three published keys and an
+`ssh-keyscan github.com` run from services1 across the network agreed byte for byte — the same
+cross-check the file applies to a scanned *machine* key, from the other side — and all three
+types are pinned, because GitHub presents whichever of them it negotiates and a table holding
+one of them refuses the moment it presents another. `just github-host-keys` is the verb that
+prints both lists and the verdict on their agreement.
+
+**The credential half became per box, and it cannot be declarative.** A push needs an identity
+ssh *offers* to github.com, and the only declarative place for an identity is the system
+`ssh_config`, which is keyed to `common/hosts.nix`'s addresses on purpose (a `Host` block naming
+the hop key is the documented leak trap that puts the LAN key on the GitHub remote). So the
+answer is the same shape as the hop key's: **a per-box `~/.ssh/id_ed25519`, installed on the
+box, whose public half GitHub was given** — `id_ed25519` because it is one of the names ssh
+tries with no config at all, which is the whole reason no box needs an `ssh_config` stanza for
+GitHub. `machines/services3/README.md` owns that box's procedure and receipts, and the one
+decision in it that is not a habit: **the public half was registered as a repo-scoped deploy
+key with write access, not as a key on the account.** `ssh -T git@github.com` on services1 and
+aibox answers `Hi cjdell!`, i.e. theirs are *account* keys, which can read every private
+repository that account can — including the thingino firmware repo whose history carries the
+cameras' Wi-Fi PMKs (rule 30). A key bolted to a bench box whose only uplink is a Wi-Fi dongle
+should not be able to do that, and a deploy key can push and pull this repository and nothing
+else. `read_only=false` is load-bearing: a read-only deploy key *authenticates* a push and then
+refuses the write, which reads as a broken remote rather than as the wrong grant.
+
+So the map today, read off all five boxes with `just repo-status` (which is exactly that
+question, per box, and unsets `SSH_AUTH_SOCK` for the reason of the section below):
+
+| box | reaches GitHub | how |
+| --- | --- | --- |
+| services1 | yes | its own `id_ed25519`, an **account** key (`cjdell`) |
+| aibox | yes | its own `id_ed25519`, an **account** key (`cjdell`) |
+| services3 | yes (2026-11-22) | its own `id_ed25519`, a **deploy key**, write access |
+| services2 | no | no credential; the relay dance in `machines/services2/README.md` still applies |
+| gw | no | no credential — and it must not build, and does not need one to deploy itself |
+
+Two things that look the same and are not: a box with the *host* half missing dies with
+`Host key verification failed` and GitHub is never contacted; a box with only the *credential*
+missing dies at `Please make sure you have the correct access rights` / `Permission denied
+(publickey)`, which is GitHub's own refusal. Since 2026-11-22 every flake box is in the second
+class, because the first is now the same answer everywhere. And a box that reaches GitHub
+answers `git ls-remote origin HEAD` with a rev, which is what makes its `ahead N` in `git
+status -sb` a live fact rather than the stale-ref trap the runbook names.
+
+**Re-verify** after any deploy of any flake box, in this order:
+
+```bash
+just repo-status                                 # every box: head, remotes, reaches/NO-CREDENTIAL
+grep -c github /etc/ssh/ssh_known_hosts           # 3 once this box is switched onto the entry
+just github-host-keys                             # scanned vs published, and their agreement
+# on services3, the box whose grant is the new one:
+ssh-keygen -l -E md5 -f ~/.ssh/id_ed25519          # the box's own key fingerprint
+# on services1, the only box with gh configured (the grant is off-box state this flake cannot see)
+gh api repos/leigh-hackspace/infrastructure-nix-flake/keys --jq '.[]|{title,read_only}'
+```
 
 ### …and the third shape of it: a **stale** `SSH_AUTH_SOCK` makes a LAN hop *hang*
 

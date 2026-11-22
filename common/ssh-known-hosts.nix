@@ -1,5 +1,6 @@
-# DATA — attrset of the network's own machines' *host* keys, pinned; read by
-# `import` from `./build-farm.nix` and handed to `programs.ssh.knownHosts`.
+# DATA — attrset of the *host* keys a box must have pinned before any ssh it runs can
+# succeed: the network's own machines, plus GitHub.  Read by `import` from
+# `./build-farm.nix` and handed to `programs.ssh.knownHosts`.
 #
 # Why a table of host keys is in the flake at all: the remote-build hop is run by
 # the **nix daemon**, i.e. as *root*, whose HOME is `/root`.  The operator's
@@ -24,6 +25,22 @@
 # the same reason.  Regenerate with
 # `just known-hosts`, paste, deploy; keep all two key types per machine (a box
 # offering only one still has to be recognised by the type it presents).
+#
+# GitHub is in this table for the same reason, and the reason it *had* to be is the
+# reason it was missing until 2026-11-23: a box's own bare `git pull origin` died at
+# `Host key verification failed` before it ever asked GitHub, because the only thing
+# that had ever accepted github.com was whichever `~/.ssh/known_hosts` someone had
+# ssh'ed from by hand — the mutable half this file exists to replace, and one a
+# reinstall loses silently.  Pinning github.com makes the *host* half of that hop
+# identical on every box, so the only remaining failure is the *identity* half, which
+# is per box by construction: a box reaches GitHub only if it holds a credential of
+# its own (`machines/services3/README.md` is the worked example — a per-box `~/.ssh/id_ed25519`
+# registered as a repo-scoped deploy key — and `docs/follow-ups.md` keeps the boxes that
+# still have none).  Regenerate with `just github-host-keys`, which prints the scanned
+# lines and GitHub's own published list, and paste only where the two agree (the
+# cross-check this file's services3 entry applies to a scanned *machine* key, from the
+# other side).  Only `github.com` is here: nix's `github:` flake inputs and `gh api`
+# go over HTTPS (curl, not ssh), and nothing on this network ssh'es to `api.github.com`.
 let
   HOSTS = import ./hosts.nix;
 in {
@@ -73,5 +90,24 @@ in {
   "aibox-ed25519" = {
     hostNames = [HOSTS.aibox];
     publicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINqBPb161BuBRJTd5QvrIAdOEEvbPHmTpVmtUv592DHA";
+  };
+  # GitHub's own keys, not scanned-only: each was read off `api.github.com/meta`'s
+  # `ssh_keys` on 2026-11-23 and cross-checked, byte for byte, against `ssh-keyscan
+  # github.com` run from services1 over the network — the mirror of the rule the
+  # services3 entry above applies to a scanned machine key, which is that a host key
+  # copied out of a scan alone is exactly what this table exists to avoid.  Three types,
+  # not two: GitHub presents whichever of its three it negotiates, and an ssh that has
+  # one of them pinned is refused the moment it presents another.
+  "github-com-ed25519" = {
+    hostNames = ["github.com"];
+    publicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
+  };
+  "github-com-ecdsa-p256" = {
+    hostNames = ["github.com"];
+    publicKey = "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBEmKSENjQEezOmxkZMy7opKgwFB9nkt5YRrYMjNuG5N87uRgg6CLrbo5wAdT/y6v0mKV0U2w0WZ2YB/++Tpockg=";
+  };
+  "github-com-rsa" = {
+    hostNames = ["github.com"];
+    publicKey = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCj7ndNxQowgcQnjshcLrqPEiiphnt+VTTvDP6mHBL9j1aNUkY4Ue1gvwnGLVlOhGeYrnZaMgRK6+PKCUXaDbC7qtbW8gIkhL7aGCsOr/C56SJMy/BCZfxd1nWzAOxSDPgVsmerOBYfNqltV9/hWCqBywINIR+5dIg6JTJ72pcEpEjcYgXkE2YEFXV1JHnsKgbLWNlhScqb2UmyRkQyytRLtL+38TGxkxCflmO+5Z8CSSNY7GidjMIZ7Q4zMjA2n1nGrlTDkzwDCsw+wqFPGQA179cnfGWOWRVruj16z6XyvxvjJwbz0wQZ75XK5tKSb7FNyeIEs4TT4jk+S4dhPeAUC5y+bDYirYgM4GC7uEnztnZyaVWQ7B381AK4Qdrwt51ZqExKbQpTUNn+EjqoTwvqNj4kqx5QUCI0ThS/YkOxJCXmPUWZbhjpCg56i+2aB6CmK2JGhn57K5mj0MNdBXA4/WnwH6XoPWJzK5Nyu2zB3nAZp+S5hpQs+p1vN1/wsjk=";
   };
 }
