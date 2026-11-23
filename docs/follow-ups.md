@@ -4133,3 +4133,38 @@ needs a running box.
    honest version of "is the assistant getting slower", and would have caught the `cached 0`
    failure mode that the round-trip test caught only because someone wrote a test for a field
    nothing read.
+
+---
+
+## The space calendar (services1) — opened 2026-11-23, `docs/space-calendar.md` owns it
+
+- **HA's long-lived token went into a transcript on 2026-11-23** while reading
+  `/var/lib/hackspace-api/env` (the credential the Space API needs), and is therefore
+  burned. What happened: the intent was "does this file have the key, without printing
+  the key", and the idiom written for it — `sed 's/^HOMEASSISTANT_TOKEN=/*/p'` — masks
+  only the **name**: the whole token body follows the mask and lands in the transcript.
+  A long-lived Home Assistant credential is a write-capable one over HA's own API, so
+  it is not "a token that only reads the space status". Blocking: the rotation itself,
+  not any discovery. Rotate by minting a new HA long-lived token and rewriting that
+  `0600` root file **in one action** host-to-host (`docs/space-calendar.md` step 5, and
+  the same reason `machines/services1/services/hackspace-api.nix`'s header gives for the
+  file existing at all: the unit refuses to start without it). Ask a *question* of the
+  file rather than printing it (`grep -c '^HOMEASSISTANT_TOKEN='`, or
+  `${#HA_TOKEN}` after taking it into a variable). Re-verify with:
+  `/api/` on `127.0.0.1:8123` with the new token → `200`, and
+  `curl -fsS http://127.0.0.1:8081/space.json` → still `api: "0.13"` with its seven
+  temperatures, because a broken rewrite fails the Space API silently as a feed with
+  missing sensors rather than a crash.
+
+- **Nothing found can change an existing calendar row on this build** (measured 2026-11-23,
+  `get_services_for_target` on `calendar.public_events` offers exactly
+  `calendar.get_events` and `calendar.create_event`). `local_calendar`'s entity declares
+  `CREATE_EVENT | DELETE_EVENT | UPDATE_EVENT`, but only the two above are registered
+  **services**, and the Assist/dashboard routes that reach the entity methods
+  (`/api/assist/debug/*`) answer `404: Not Found` on the pinned `2026.11.0` core. So
+  "move this event to another date" currently means adding a second event and leaving the
+  old row, or editing the file and restarting HA — which the same doc says not to do.
+  Blocked on: the pin, not on us — `HA_IMAGE` in
+  `machines/services1/services/home-assistant.nix` only moves when someone bumps it
+  deliberately. **Probe `get_services_for_target` again after any bump before inheriting
+  this sentence.**

@@ -42,6 +42,7 @@ Every address is in `common/hosts.nix`.
 | Frigate (NVR) | `machines/services1/services/frigate.nix` (podman; the **camera config is off-flake**, `/srv/frigate/config/config.yaml`) | services1:5000 insecure, :8971 secure, :1984 go2rtc, :8554-5 | `docs/frigate-false-positives-2026-11-12.md` (detection quality, detectors, and why there is no GPU offload) |
 | strata | `machines/*/strata.nix` (services3 also `strata-package.nix`, CUDA 12.8 / sm_61) | services2:8080 → `strata.int.leighhack.org` (LAN, key injected) and `strata.leighhack.org` (public, API key); aibox:8080 → `strata2.int.leighhack.org`; services3:8080 → `strata3.int.leighhack.org` (both LAN, key injected) | `machines/aibox/STRATA.md`, `machines/services2/STRATA.md`, `machines/services3/README.md` |
 | Home Assistant | `machines/services1/services/home-assistant.nix` (podman, **host network**, image **pinned**; state is `/srv/homeassistant`, which the flake only mounts) | `127.0.0.1:8123` here → `ha.int.leighhack.org` via the door; `10.3.1.30:8123` is a logging forwarder, not the app | `docs/home-assistant-on-services1-2026-11-16.md` (the move, the client map, the Zigbee-radio trap, `just ha-legacy-watch`) |
+| The space calendar (Home Assistant `local_calendar`) | `/srv/homeassistant/.storage/local_calendar.*.ics` — **runtime state the flake only mounts**; read by the Space API's `/events` and `/events.ics`, and by `hackspace-mcp`'s `space_events` | the three entities below; nothing serves it directly | `docs/space-calendar.md` (adding an event, and why the file is not where you write one) |
 | Space API (the hackspace's public status feed) | `machines/services1/services/hackspace-api.nix` (podman; **its credential is runtime state at `/var/lib/hackspace-api/env`, deliberately not sops** — read the module header before changing that) | `127.0.0.1:8081` here → `api.int.leighhack.org` / `api.leighhack.org` (public, `acl = "none"`) | `docs/home-assistant-on-services1-2026-11-16.md` (what it is, the 40 h of external pollers, why the env file is not in the store) |
 | ups-watchdog | `crates/ups-watchdog/` | no port: it is a oneshot, and it calls out (ssh `wall`, ssh `poweroff`) | `docs/ups-and-fleet-shutdown.md`, `machines/gw/ups.nix` |
 
@@ -756,6 +757,28 @@ without unplugging anything (`just ups-status`, `just ups-notice-test`,
 `just ups-drill`), and §7 is what has never been exercised on a live battery —
 including whether this firmware implements `shutdown.return`, which is the thing
 that decides whether the network comes back by itself.
+
+## The space calendar — Home Assistant's `local_calendar`, and where an event has to be written
+
+The hackspace's calendar is not a service of its own, it is **three Home Assistant
+entities**, and everything else in the chain is a reader of them (measured on `services1`
+2026-11-23): `core.config_entries` carries three `local_calendar` entries —
+`calendar.public_events` (storage key `leigh_hackspace_events`),
+`calendar.member_events`, `calendar.fabrication_bookings` — each backed by
+`/srv/homeassistant/.storage/local_calendar.<storage-key>.ics`. The public one is what
+the world sees: `hackspace-api` asks HA for `/api/calendars/{entity_id}` **by entity id**
+(`hackspaceapi/models/config.py`'s `hackspace_public_calendar` /
+`hackspace_member_calendar`), and that is what publishes `/events?calendar=public|members`,
+`/events.ics` (448 subscribers, `docs/home-assistant-on-services1-2026-11-16.md`), the
+deterministic `space_events` "what's on" and the Monday 09:00 digest.
+
+**The procedure, the hazards and the receipts are `docs/space-calendar.md`** — the
+runbook for adding (or trying to change) an event. Two sentences of it are worth here,
+for a reader who is *not* changing an event but is about to read or move these files:
+the `.ics` HA parses at setup is not a file anything re-reads while HA runs, so a
+hand edit is invisible to every reader below until HA next starts; and any HA-side edit
+rewrites **the whole** file, so HA owns those bytes and a hand-written row is erasable
+by the next edit. Both are measured, with numbers, there.
 
 ## `crates/hackspace-mcp/` + `crates/slack-agent/` — the hackspace Slack bot
 
