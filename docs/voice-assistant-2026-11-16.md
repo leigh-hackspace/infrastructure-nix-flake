@@ -500,18 +500,32 @@ and the test was verified to fail with the piper slowed past the model (910 ms a
 800 ms). The rolling-ASR test asserts the same shape for whisper: the tail slice is much
 less than the whole transcription.
 
-**None of it has been read off a deployed box yet.** The 13 s at the top of this document
-is the buffered path's, measured 2026-11-16 on the unit's own binaries; what the streaming
-path costs on services1 and aibox is `turns.last_first_audio_ms` in
-`https://voice.int.leighhack.org/status.json`, and `just voice-turn "is the space open"`
-prints the timeline with a VERDICT line. Until someone runs it after a deploy, the
-expectations below are arithmetic, not results:
+**Deployed and read on 2026-11-22, on services1.** Two bugs surfaced in the first ten minutes
+(both above: a warm-up that refused its own turn, and a fast path that answered in silence),
+and after them this is what the box reports for a two-tool model question asked as text —
+`just voice-turn "what is the temperature in the workshop and is anyone likely around?"`:
 
-| the room waits for | buffered | expected, streaming |
+| | buffered (measured 2026-11-16) | streamed (measured 2026-11-22, same box) |
 | --- | --- | --- |
-| first audio, one-tool question, 3 s utterance | ~13 s | tail slice (~1.2 s) + model's first sentence + one piper sentence — **single-digit, unconfirmed** |
-| rest of the answer | after the whole answer | while it is still being generated |
-| piper cost per sentence | ~2.5 s (process startup) | the ONNX forward pass, startup paid once |
+| first token | — (nothing leaves until the end) | 10 534 ms |
+| **first audio** | ~15.8 s (13.3 s model + 2.5 s piper) | **11 317 ms** |
+| answer complete | 13.3 s | 13 320 ms |
+| speech generated | one block at the end | 19.7 s in 14 chunks — `VERDICT: … 1 999 ms before it was complete` |
+| piper, per sentence | ~2 500 ms (2.4 s of it interpreter startup) | **178 ms**, `warm_sentences: 4, cold_sentences: 0, restarts: 0` |
+
+*(What was here before the deploy was arithmetic on the buffered numbers, and it was
+optimistic — which is what arithmetic is for: it said where to look, and the two things that
+turned out broken were not in it.)*
+
+So: **~4.5 s off the time a person waits to start hearing**, and the rest of the answer is
+generated while the first sentence is being said. The `voice` object in `status.json` is what
+proves the resident piper is the bigger half — 4 sentences warm, 0 cold, no restarts — and
+`turns.last_first_audio_ms` is the single number to compare when anything downstream moves.
+
+The remaining unread figure is the **audio** path: `asr_tail_ms` was 0 in the turns above
+because they arrived as text. What a real `cam8` window costs with rolling transcription is
+still an assumption until someone speaks to the satellite and reads it back
+(`satellite-status.json`, and `/v1/turn`'s `asr_tail_ms`).
 
 ### The first deploy found the second bug the fixtures could not see
 

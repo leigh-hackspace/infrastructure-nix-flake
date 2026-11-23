@@ -4066,16 +4066,18 @@ falsifiable** (`turn::tests::the_first_audio_arrives_while_the_model_is_still_an
 verified to fail when the voice is slowed past the model). What is not done is everything that
 needs a running box.
 
-1. **Read the number now that it is deployed.** The tree is live on services1: the streaming
-   routes answer, and the gateway, satellite and bot units restarted clean. What has **not**
-   been read is `turns.last_first_audio_ms` from
-   `https://voice.int.leighhack.org/status.json` after a *model* question — `just voice-turn
-   "is the space open"` currently hits the deterministic path (`engine: none (fast path)`),
-   which checks the SSE plumbing end to end but not the overlap. Ask something the recogniser
-   refuses (`just voice-turn "what should I know about the space today?"`) and compare
-   `first_audio_ms` against the ~13 s the buffered path cost. Suspects if it is not well under:
-   piper fell back to cold (`voice.last_fallback` names why), or the door buffered the stream
-   despite `X-Accel-Buffering: no`.
+1. **The first-audio number is read** (2026-11-22, services1): first token 10 534 ms, **first
+   audio 11 317 ms**, answer complete 13 320 ms, and **178 ms a sentence** from the resident
+   piper — the table is in `docs/voice-assistant-2026-11-16.md`. Two bugs turned up in the same
+   ten minutes, both fixed and pinned by tests verified to fail: the warm-up refusing its own
+   turn (1b), and a fast-path answer that streamed no text and therefore spoke nothing
+   (`turn.rs` hands the `answer` text to the same splitter when nothing streamed).
+   **Still unread: `asr_tail_ms` on real audio.** Both measured turns arrived as text, so
+   rolling transcription has run against a fake whisper at 250 ms a slice and never against
+   aibox's real one. Someone has to speak to `cam8` and read `asr_tail_ms` out of `/v1/turn`'s
+   `done` event or `satellite-status.json`: the audio half of this rests on the assumption that
+   a slice of a bursty Wi-Fi window is short enough to matter, and that is a number, not a
+   design.
 1b. **The warm-up is off by default, with receipts.** Deployed switched-on, it logged
    `prefill: services2 (RTX 3060) cached 0/4079 prompt tokens in 4629 ms` and then failed the
    very turn it was warming (`another turn is in flight`), because `/v1/ask/prefill` and

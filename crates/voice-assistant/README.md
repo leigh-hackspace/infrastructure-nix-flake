@@ -328,11 +328,16 @@ timing test is worth having. The assertion is *not* against the `answer` event:
 would pass for a pipeline that buffered everything. `just voice-turn "is the space open"`
 prints the same timeline against the live gateway, with a VERDICT line.
 
-**Not yet measured: any of it on the network.** The 13 s figure at the top of this file is
-the buffered path's, and the numbers above are a *budget*, not a result. What the room
-actually waits for now is `first_audio_ms` in `status.json`'s `turns` object, and the
-honest statement is that it has never been read off a deployed box.
-
+**Measured on the box now** (services1, 2026-11-22, a two-tool question asked as text): first
+token 10 534 ms, **first audio 11 317 ms**, answer complete 13 320 ms — the room starts hearing
+~2 s before the answer is finished and ~4.5 s earlier than the buffered path's ~15.8 s, with
+19.7 s of speech delivered in 14 chunks. Per sentence the resident piper took **178 ms**
+(`voice: warm_sentences 4, cold_sentences 0, restarts: 0`) against the ~2 500 ms a one-shot
+piper costs. The full table, and the two bugs the first ten minutes of that deploy found, are
+in `docs/voice-assistant-2026-11-16.md` §"Streaming end to end". **Still unread:
+`asr_tail_ms` for real camera audio** — the turns above arrived as text, so rolling
+transcription has been tested against a fake whisper at 250 ms a slice and never against the
+box that runs it.
 ## piper is a process, and that is the cost
 
 `/run/current-system/sw/bin/piper` does not exist: piper is a Python wheel, so the unit
