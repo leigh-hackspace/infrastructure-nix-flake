@@ -9,8 +9,9 @@ infrastructure.
 crates/        every Rust crate; one cargo workspace (crates/Cargo.toml)
   common-rs/     the shared in-tree crates (json, oidc, web, pg, service, …)
   <program>/     one directory per service or tool; its Dioxus SPA in frontend/
-                 (six are not workspace members: the five SPAs' `frontend/`s,
-                 which are wasm, and `whisper-ws/`, which is packaged on its own)
+                 (eight are not workspace members: the five SPAs' `frontend/`s,
+                 `whisper-ws/`, `voice-wake/` and `common-rs/ui/` — the reasons are at
+                 the top of `crates/Cargo.toml`)
 common/        Nix modules shared by every machine (crane helpers, hosts, nginx)
                (every file in here starts by saying what kind of file it is:
                 `MODULE` a NixOS module · `DATA` a plain table read by `import`
@@ -22,6 +23,10 @@ machines/      one directory per machine; services/ one file per service
                runs on no box of its own, and `gw/` **is** the network's router —
                live at 10.3.1.1 since 2026-10-21, machines/gw/README.md)
 secrets/       sops-encrypted
+just/          the recipes, one file per job, imported by the root `justfile`
+               (AGENTS.md rule 26: the single justfile was 2338 lines and rule 26's own
+                guard could not see it — `git ls-files` was given extensions, and a bare
+                justfile has none. It scans `justfile` and `just/*.just` now.)
 docs/          reference docs (services, builds, DNS, switches, backups) plus the
                write-ups, post-mortems and audits the backstory points to
 ```

@@ -162,9 +162,10 @@ printed on success). `--target-host` targets a remote host without deploying, e.
 `leigh-admin` — root is not keyed — with its passwordless sudo), but local `build`
 is enough to validate config.
 
-`just check` = `nix flake check --no-build` + the three assertion evals
+`just check` = `nix flake check --no-build` + the four assertion evals
 (`common/check-printer-states.nix`, `machines/gw/lib/check-network-tables.nix`,
-`common/check-doc-pointers.nix`) + `alejandra --check` over every tracked `.nix`; on `gw`
+`common/check-doc-pointers.nix`, `common/check-platform-boundary.nix`) + `just
+check-source-size` + `alejandra --check` over every tracked `.nix`; on `gw`
 the flake step is skipped out loud and `just check-eval` is the gate (AGENTS.md rule 22).
 `just check-build` = `nix build` of the five deployable machines' system toplevels
 (compiles everything, activates nothing, GC-roots each output under
@@ -1034,8 +1035,9 @@ Read on the box that day (`ssh` from services3, all four lines of state):
 
 So the fleet had three different shapes of the same missing fact, and one of them is a
 lie: services1 and aibox keep hand-written `/root/.ssh/config` stanzas (aibox's since
-Sep 2025, services3's added 2026-11-11) that name an identity for *root* only, `justfile:150`
-passes `GIT_SSH_COMMAND` inline per call, and the operator account had nothing at all.
+Sep 2025, services3's added 2026-11-11) that name an identity for *root* only, the `deploy`
+recipe in `just/deploy.just` passes `GIT_SSH_COMMAND` inline per call, and the operator
+account had nothing at all.
 
 The fix, in the tree: `common/build-farm.nix` — the module that already owns the
 *host* half of this hop (`programs.ssh.knownHosts`) — now also owns the identity half,
@@ -1058,8 +1060,9 @@ user's home, which is what makes one line correct on six boxes without naming on
 What each of the three options is for, and why nothing else is in the stanza:
 
 - **`IdentitiesOnly yes`** is the documented fix for `Too many authentication failures`
-  (`justfile:148`): a box that offers every identity it has is refused *before* the right
-  one is tried. Offering exactly one is what makes a LAN hop answer at all.
+  (`just/deploy.just`, in the `deploy` recipe): a box that offers every identity it has is
+  refused *before* the right one is tried. Offering exactly one is what makes a LAN hop
+  answer at all.
 - **`ConnectTimeout 5`** so a hop to a box that is not answering fails inside a tool call
   rather than hanging it (rule 11: bound every wait).
 - **deliberately *not* `PasswordAuthentication no`.** services3's owner account keeps a

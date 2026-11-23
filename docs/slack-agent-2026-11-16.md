@@ -321,7 +321,7 @@ Files, in the order a reviewer would read them:
   `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `HA_TOKEN`), `0440`, `group = secrets`, member of the
   two service accounts.
 - `machines/services1/configuration.nix` — the import.
-- `justfile` — the verbs in §9.
+- `just/slack.just` — the verbs in §9.
 - `docs/services.md` — a section per service; the AGENTS.md row already points at this doc.
 
 **No `common/front-door.nix` row, no `common/int-dns.nix` row** — and that absence is a

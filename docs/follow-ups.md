@@ -579,7 +579,7 @@ that is closed gets absorbed into the live docs and deleted, and git history hol
   nightly units in this file (a `--no-block` `systemd-run` or a oneshot + timer, and a
   failure that is visible without reading a log). Re-verify the gap with:
   `just network-status-test` on services1 or aibox, and
-  `grep -n "network-status-test\|switch-gui-test\|filestore-test" justfile`.
+  `grep -n "network-status-test\|switch-gui-test\|filestore-test" just/tests.just`.
 
 
 ## Strata (services2, and aibox's engine since 2026-10-28)
@@ -2535,7 +2535,7 @@ that **need an owner or a decision** rather than another measurement.
   its own RTSP `DESCRIBE` client (the `401 / realm WallyWorld` receipts in that
   doc are the evidence the feed is gated), the write path must be
   md5-then-replace-then-restart, and `just check`/`just check-build` must stay
-  gw-safe via `_build-host-guard` (the justfile recipe, `hostname`-based) —
+  gw-safe via `_build-host-guard` (the recipe in `just/deploy.just`, `hostname`-based) —
   nothing about these devices is a nix build, so the crate stays off the deploy
   sets. **Blocks:** nothing.
 - **~~OpenIPC's current `ssc337` builds have dropped the C110's WiFi driver, and `cam8` is off

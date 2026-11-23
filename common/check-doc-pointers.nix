@@ -1,8 +1,8 @@
 # CHECK — plain-eval assertion file: `nix eval --impure --raw -f` prints ok or throws; run by `just check` and by flake.nix's `checks`.
 #
-# Assertions over the *documentation*: the three files that tell a reader what to do —
-# AGENTS.md, README.md, the justfile — and the recipe names, repo paths and doc links
-# they promise.
+# Assertions over the *documentation*: the files that tell a reader what to do — AGENTS.md,
+# README.md, and the justfile plus the `just/` modules it imports — and the recipe names,
+# repo paths and doc links they promise.
 #
 #   nix eval --impure --raw -f common/check-doc-pointers.nix
 #
@@ -26,7 +26,9 @@
 #
 # WHAT IT CHECKS, and the receipt behind each rule:
 #
-#   1. every `` `just <name>` `` in the instruction files is a recipe in the justfile.
+#   1. every `` `just <name>` `` in the instruction files is a recipe in the justfile **or in
+#      one of the `just/` files it imports**.  A recipe defined in a module is as real as one
+#      at the top, so the recipe list reads all of them.
 #      `just dns-sync-sync` sat in AGENTS.md rule 14 for months after the recipe was
 #      deleted on 2026-10-22, and rule 14 is the half of the file an agent obeys without
 #      reading the rest of it. **The backticks are the syntax, and every line of the three
@@ -52,11 +54,14 @@
 let
   root = ../.;
 
-  instructionFiles = [
-    "AGENTS.md"
-    "README.md"
-    "justfile"
-  ];
+  instructionFiles = ["AGENTS.md" "README.md"] ++ justFiles;
+
+  # The justfile is the file `just` searches for, and it imports one file per job out of
+  # `just/`.  A recipe defined in a module is as real as one defined at the top, so the
+  # recipe list has to read all of them — otherwise every `just <name>` in the instructions
+  # that lives in a module is a finding.
+  justDir = builtins.readDir ../just;
+  justFiles = ["justfile"] ++ map (f: "just/${f}") (builtins.filter (f: justDir.${f} or null == "regular") (builtins.attrNames justDir));
 
   read = f: builtins.readFile (root + "/${f}");
 
@@ -142,7 +147,7 @@ let
   # names too; harmless, since an extra name can only accept a mention, never invent one.
   recipeOf = line: builtins.match "([A-Za-z_][A-Za-z0-9_-]*)([^:]*):(.*)" line;
 
-  definedNames = uniq (matched (map recipeOf (linesOf (read "justfile"))));
+  definedNames = uniq (matched (builtins.concatLists (map (f: map recipeOf (linesOf (read f))) justFiles)));
 
   linesOf = s: builtins.filter builtins.isString (builtins.split "\n" (s + "\n"));
 
@@ -168,7 +173,7 @@ let
         l = builtins.head ls;
         rest = builtins.tail ls;
         bad = builtins.filter (t: !known t) (tokensIn l);
-        mine = map (t: "${f}:${toString n}: no recipe `just ${t}` in the justfile") (
+        mine = map (t: "${f}:${toString n}: no recipe `just ${t}` in the justfile or its `just/` imports") (
           if historical l
           then []
           else bad
@@ -206,6 +211,7 @@ let
       ".service"
       ".ignore"
       ".txt"
+      ".just"
     ];
     # A run of path characters at the start of whatever followed the directory, with
     # trailing punctuation off the end: prose writes `common/hosts.nix.` and a greedy
