@@ -707,3 +707,58 @@ gateway (`gateway.rs`). The full picture and the traps are in
   job is separate. `common/check-platform-boundary.nix`'s `CORE` list grew to cover
   `turn.rs`, `turn_routes.rs`, `events.rs`, `asr.rs`, `sentence.rs` and `gateway.rs`, so the
   device boundary is asserted over the new core rather than assumed.
+
+## 2026-11-23 — the door entry package's network request, answered where it was being asked
+
+The item that has made a gate run on the wrong box for a year: `just check-build` on aibox
+stops on `has '__noChroot' set, but that's not allowed when 'sandbox' is 'true'`, and it says
+nothing about the change in front of you. It was left open in `docs/follow-ups.md` with three
+options and none taken. Read end to end on 2026-11-23, then taken.
+
+* **The refusal, reproduced where it is legal.** On `services1`, which carries
+  `sandbox = relaxed`, forcing the flag for one run:
+  `nix build --no-link --rebuild --option sandbox true ".#nixosConfigurations.services1.pkgs.door-entry-management-system"`
+  — `derivation '…-door-entry-management-system-1.1.9.drv' has '__noChroot' set, …`.
+  With `--option sandbox relaxed` the same command builds, and `--rebuild` then prints
+  `may not be deterministic: output … differs`: the *other* half of the item, still open.
+* **Three fetches, not one.** The `installPhase` reaches the network in `deno i` (the npm/jsr
+  closure), in `deno compile` (which downloads its own runtime,
+  `https://dl.deno.land/release/v2.9.8/denort-x86_64-unknown-linux-gnu.zip`, with
+  `--cached-only` still in force), and inside the sass/esbuild half of `deno task build`
+  (`baseline-browser-mapping` data). Run offline — `sudo unshare -n`, against a tree whose
+  `node_modules` had been pre-installed and a cold deno cache — every phase that touches a
+  jsr dep fails first with `JSR package version manifest for '@hectorm/otpauth@9.5.0' …
+  Specifier not found in cache … --cached-only is specified`, so jsr deps need the **cache**,
+  not just `node_modules`; and the flag the 2026-10-25 plan named, `deno install --frozen`,
+  does not exist in the deployed deno (2.9.8). That is why the vendoring option does not fit
+  today: a vendored closure would pin a deno-version-specific cache, i.e. a hand re-pin at
+  every nixpkgs bump, inside the monthly runbook, for a package that cannot be built
+  reproducibly in the first place. The package is 490 M of two self-contained binaries
+  (405 M backend, 106 M frontend, read out of the live store path), which is also what every
+  rebuild of this box pays and what restarts both door units.
+* **A probe, so the question is askable.** `just noChroot` (the fourth probe in
+  `just/build.just`) walks a machine's closure and names the derivations that set the flag.
+  Read on 2026-11-23: one in `services1`'s 8,886 (the door entry one), **one in aibox's own
+  18,547** — `llama-cpp-vulkan-0.0.0.drv`, a nixpkgs package that asks the same way, and
+  which that strict daemon has only ever answered by *substitution*; none in `services2`'s
+  8,027 or `gw`'s 5,540; `services3` is Wi-Fi-only and was unreachable that day. The 2026-10-25
+  read quoted in the module comments (one in 7,547, none in 7,840) is still true of `services1`
+  and is now false of the builder.
+* **The aibox read is the finding that changed the shape.** `sandbox = true` on the network's
+  builder was already only true because the cache covered the one derivation in its own closure
+  that cannot be built under it; and aibox is asked for *services1's* closure, whose asking
+  derivation is the door entry one. So the exemption went where it is being asked twice over,
+  rather than staying a fact about one box: `machines/aibox/configuration.nix` now carries
+  `nix.settings.sandbox = "relaxed"` with the measurements, the counts and the cost.
+* **What that costs, said in the same place as the setting:** a non-hermetic package now
+  compiles with network on the box that compiles everything else, and its output path moves on
+  every build. The alternative — leaving the builder strict — costs every gate that asks
+  the builder for `services1`'s closure, which is what the 2026-11-22 run did with a whole
+  gate's worth of time.
+
+Landed on `aibox` (`nix.conf` line 13 reads `sandbox = relaxed` after the switch, read back
+rather than inferred), and the proof of the fix is the command the item named, run *there*:
+`nix build --no-link --rebuild ".#nixosConfigurations.services1.pkgs.door-entry-management-system"`,
+which no longer refuses. Still open, upstream's half: the package's non-reproducibility, and
+the fix that would remove the request itself — in the app's own flake, where `just noChroot`
+is what says it worked.

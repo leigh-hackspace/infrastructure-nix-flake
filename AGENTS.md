@@ -706,9 +706,11 @@ live in **`common/nixbld.nix`**; the 2026-10-11 post-mortem is in git history.
   `builders-use-substitutes = true` (off by default in nix, so until then the *delegating*
   box substituted every input and uploaded the closure over the hop with aibox's job slots
   idle — the shape of "the build farm is slow"), and `sandbox = "relaxed"` on **services1
-  only**, for the one package whose build wants the network; the one-line recipe that says
-  whether a box needs it is in `machines/services1/configuration.nix`, and `sandbox` is not
-  a sops setting (`extra-sandbox-paths` is). Detail: `docs/nix-dev-workflow.md`,
+  and on the builder** (aibox took it on 2026-11-23 — `machines/aibox/configuration.nix` — because it
+  is asked to build *services1's* closure, and its own closure contains a second derivation that
+  asks; `llama-cpp-vulkan` there is only ever substituted while the daemon is strict), for the
+  packages whose build wants the network; `just noChroot` answers whether a box still needs it,
+  and `sandbox` is not a sops setting (`extra-sandbox-paths` is). Detail: `docs/nix-dev-workflow.md`,
   "Remote building".
 - `network-status.service` no longer runs as `User=leigh-admin`: it moved to gw on
   2026-10-21 and runs as its own `network-status` system account reading local `/proc`
@@ -1071,9 +1073,11 @@ there is declarative. **Root SSH is keyed here** (unlike the flake machines):
   `root:secrets`; it is **any code that runs during a build, on any machine that takes a
   build**: the age key sits at `0440 root:nixbld`, `/var/lib/sops-nix` is in
   `extra-sandbox-paths`, and all three delegate builds to aibox, which holds the same key.
-  (`sandbox` is **not** part of this: services1 runs `relaxed` for one package whose build
-  wants the network — `door-entry-management-system`'s `deno i` — and services2 is on the
-  default again, measured rather than mirrored.) Those tmpfiles rules are a
+  (`sandbox` is **not** part of this: services1 and the builder run `relaxed`, which grants
+  network only to a derivation that *asks* — `door-entry-management-system`, whose `deno i`
+  resolves its dependencies from the registry and whose `deno compile` downloads its own runtime
+  — while services2 and gw are on the default, measured by `just noChroot` rather than
+  mirrored.) Those tmpfiles rules are a
   **repair, not an install** — a `z` rule does nothing when the path is absent (verified
   against an `f` rule on gw), so `just install-sops-key` is the mechanism and skipping it
   fails much later as a sops error inside an unrelated build. And each name is its own

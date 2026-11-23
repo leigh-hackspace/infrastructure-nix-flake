@@ -244,48 +244,62 @@ that is closed gets absorbed into the live docs and deleted, and git history hol
   derivation in a module, which is the same sentence `common/crane.nix` was written to
   obey.
 
-- **The door entry package cannot be built by the builder, and it is not reproducible**
-  (measured 2026-10-22 while proving `inputs.door-entry-management-system`'s new
-  `nixpkgs.follows` edge; **both facts are older than that change** — the same
-  attributes are on the pre-change drv in services1's store and the post-change one on
-  aibox, because they come from the package, not from nixpkgs).
-  `door-entry-management-system` sets **`__noChroot`**, so aibox's daemon — whose
-  `sandbox` is `true` — refuses the derivation outright:
-  `error: derivation '…-door-entry-management-system-1.1.9.drv' has '__noChroot' set,
-  but that's not allowed when 'sandbox' is 'true'`. services1 runs
-  `nix.settings.sandbox = "relaxed"` (`machines/services1/configuration.nix`) and so
-  builds it locally, which is why it has always worked and why `just check-build` **on
-  aibox** stops on it: that failure is this item, not your change. Reproduce it with
-  `nix build --no-link ".#nixosConfigurations.services1.pkgs.door-entry-management-system"`
-  (it needs no system build) and prove it builds with `--option sandbox relaxed` — that
-  succeeded in 37 s at the current lock. Second fact: `--rebuild` on the already-valid
-  drv prints `may not be deterministic: output … differs`, so this package's output path
-  moves every time it is built and "identical drvPath / identical output" is not a proof
-  that includes it. Two options, neither taken here: find the non-determinism upstream
-  and fix it, or stop `just check-build` from promising more on aibox than aibox can
-  build (and say so in the recipe's own comment).
+- **The door entry package asks the build for the network, for three reasons, and its
+  output path moves every time it is built** (measured 2026-10-22 and 2026-10-25, and
+  re-measured end to end 2026-11-23 under the `deno` that is deployed now, 2.9.8).
+  `door-entry-management-system` sets **`__noChroot`**, and nix refuses such a derivation
+  outright on a daemon whose `sandbox` is `true`:
+  `derivation '…-door-entry-management-system-1.1.9.drv' has '__noChroot' set, but
+  that's not allowed when 'sandbox' is 'true'`.  Reproduce it with
+  `nix build --no-link --rebuild --option sandbox true ".#nixosConfigurations.services1.pkgs.door-entry-management-system"`
+  (no system build needed); the same command with `--option sandbox relaxed` builds it.
+  **Taken 2026-11-23:** the builder now carries the exemption it was being asked for —
+  `machines/aibox/configuration.nix` sets `nix.settings.sandbox = "relaxed"` beside services1's,
+  with the measurements and the cost.  That is what `just check-build` run on aibox, and any
+  delegated rebuild of services1's closure, needed: the 2026-11-22 upgrade run lost the whole
+  compile gate to this refusal and had to move it to services1 ("the gate refused to run where
+  the runbook says to run it", docs/work-log-2026-11.md).
 
-  **Why it sets `__noChroot`, found 2026-10-25 — and it is the same fact as the
-  non-determinism.** Its `installPhase` is `deno i` followed by two `deno cache` calls
-  before the two `deno compile`s: it resolves its dependencies **from the network during the
-  build**. `__noChroot` is how a package asks for network access, `sandbox = "relaxed"` is
-  the only way a box may grant it, and a build that fetches from the registry on every run is
-  why the output path moves on `--rebuild`. So there is a third option, and it fixes both
-  halves at once: **vendor the deno dependencies** into a fixed-output derivation and build
-  with `deno install --frozen --cached-only`, i.e. the same shape as every other nix package
-  with a lock file. The input already carries `deno.lock`, so the lock exists; what is
-  missing is a `denoDeps` fetch (a provenance hashing `deno.lock` plus a fixed-output
-  `deno fetch`) and a `--frozen --cached-only` install phase. That is a patch to a *third-party*
-  flake input, so it belongs there (or as an `overrideAttrs` here with a stated reason) — and
-  it cannot be tried on aibox until it has, because aibox is the box that refuses it.
-  **The consequence to keep in mind:** services1's `nix.settings.sandbox = "relaxed"` is
-  this one package's, not a property of the box — measured, one `__noChroot` derivation in
-  services1's 7,547-derivation build closure and none in services2's 7,840 (2026-10-25,
-  recipe in `machines/services1/configuration.nix`). services2 has therefore gone back to
-  the default `true`: it had been carrying the same relaxation "so the first service that
-  needs a build-time secret does not have to remember to turn it on", which sops does not
-  need in the first place (`extra-sandbox-paths` puts `/var/lib/sops-nix` inside the
-  sandbox).
+  **Three fetches, not one, and that is why vendoring does not fit the deno we run.** The
+  whole `installPhase` reaches the network in three places, measured 2026-11-23 in a tree
+  whose `node_modules` were pre-installed and then re-run under `sudo unshare -n` (no network):
+  (1) `deno i` resolves the npm/jsr closure from the registry — this is what the package
+  asks for and what it says it asks for; (2) `deno compile` downloads **its own runtime**,
+  `https://dl.deno.land/release/v2.9.8/denort-x86_64-unknown-linux-gnu.zip`, even with
+  `--cached-only`; (3) the sass/esbuild half of `deno task build` pulls
+  `baseline-browser-mapping` data.  Offline, with only a cold deno cache and vendored
+  `node_modules`, every phase that touches jsr fails first with
+  `JSR package version manifest for '@hectorm/otpauth@9.5.0' failed to load: Specifier not
+  found in cache: "https://jsr.io/@hectorm/otpauth/9.5.0_meta.json", --cached-only is
+  specified`, so jsr deps need the **cache**, not just `node_modules`, and `deno install
+  --frozen` — the flag 2026-10-25's plan named — no longer exists in 2.9.8.  A
+  vendored closure would therefore have to pin a deno-version-specific cache (the denort zip
+  and the toolchain data move with deno's version), i.e. a hand re-pin at every nixpkgs bump,
+  inside the monthly upgrade runbook, for a package that cannot be built reproducibly in the
+  first place (below).  That is a change to the app's own flake (`github:leigh-hackspace/door-entry-system`,
+  `management-system/`); when it lands there, `__noChroot` drops out of the closure by itself
+  and `just noChroot` is the thing that says so.
+
+  **What is still open: the package is not reproducible**, and the relaxation does not fix
+  that half.  `--rebuild` on the already-valid drv prints
+  `may not be deterministic: output … differs` (reproduced 2026-11-23), so the output
+  path moves on every build, "identical drvPath / identical output" is not a proof that
+  includes it, and every rebuild of services1 re-compiles 490 M of two self-contained
+  `deno compile` binaries (405 M backend, 106 M frontend, read out of the live store path
+  2026-11-23) and restarts both door units.  A pinned fixed-output derivation is the other
+  shape that would make the path stable, and it is the same problem: the binaries move with
+  deno's version, so the pin would be re-pinned on every bump.
+
+  **The consequence to keep in mind:** `nix.settings.sandbox = "relaxed"` is this
+  derivation's, not a box's, and `just noChroot` names it per box (re-read 2026-11-23: one in
+  services1's 8,886 derivations — the door entry one; one in aibox's own 18,547,
+  `llama-cpp-vulkan-0.0.0.drv`, which a strict daemon has only ever answered there by
+  substitution; none in services2's 8,027 or gw's 5,540; services3 is Wi-Fi-only and was
+  unreachable that day).  The older 2026-10-25 read was one in 7,547 and none in 7,840, which
+  is why services2 went back to the default `true` (its own closure asks for nothing; the
+  recipe is in `machines/services1/configuration.nix`, and services1 still needs the setting
+  because nothing else builds this derivation — measured the same day, the drv is absent
+  from every other reachable box).
 
 - **gw now delegates its builds to aibox and has no local fallback (added
   2026-10-21, deployed to gw the same evening).** Until today gw was the one machine

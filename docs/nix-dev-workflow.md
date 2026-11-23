@@ -723,21 +723,38 @@ git status --short           # untracked files are EXCLUDED from the flake!
 nix flake metadata           # locked inputs / rev
 ```
 
-**`just check-build` cannot finish on aibox, and it is the sandbox, not your change.** The
-recipe builds all four toplevels, services1's first, and services1's
-`door-entry-management-system` carries `__noChroot` (its `deno i` wants the network) — that
-package is the whole reason `sandbox = "relaxed"` exists on services1 and nowhere else
-(`AGENTS.md`, "Remote building is on"), so on aibox, which keeps `sandbox = true`, the build
-is refused: `derivation '…-door-entry-management-system-…drv' has '__noChroot' set, but
-that's not allowed when 'sandbox' is 'true'`. Seen 2026-10-28 after this box's store had been
-garbage-collected down 118 GB, which is when it starts to bite: with a warm store the package
-*substitutes* and `__noChroot` is never exercised, so the failure looks new and is not. It
-also bounds what a run here is worth: every machine is still **evaluated** before anything
-builds, so services1's and gw's module assertions (`machines/services1/int-dns.nix`,
-`machines/gw/int-dns.nix`, the network-tables guard) really are checked, and only the
-compiles behind that one derivation are not. For a compile gate use `nixos-rebuild build
---flake .#<machine>` for the machine you changed plus `nixos-rebuild dry-build --flake .#gw`
-for the router, and run `just check-build` on a box that can build what it is asked to.
+**One derivation in the fleet asks the build for the network, and a box that will not
+grant it stops the compile gate there — that is the item, not your change.**
+`door-entry-management-system` sets **`__noChroot`** — it resolves its deno
+dependencies from the registry inside its `installPhase`, and its `deno compile` downloads
+its own runtime — and nix refuses such a derivation outright on a daemon whose
+`sandbox` is `true`:
+
+    error: derivation '…-door-entry-management-system-1.1.9.drv' has '__noChroot' set,
+           but that's not allowed when 'sandbox' is 'true'
+
+Reproduce it without building any system:
+`nix build --no-link --rebuild --option sandbox true ".#nixosConfigurations.services1.pkgs.door-entry-management-system"`.
+It bites only when the store has to answer that drv rather than *substitute* it: seen
+2026-10-28 on aibox after its store had been garbage-collected down 118 GB, and it looked
+new both times because with a warm store the package substitutes and the flag is never
+exercised. **Since 2026-11-23 aibox carries `nix.settings.sandbox = "relaxed"`**
+(`machines/aibox/configuration.nix`, whose header owns the measurements and the cost), so
+the gate run on the builder answers, and services1 keeps its own copy for its own switch.
+`relaxed` is `true` plus network for a derivation that *asks*, so nothing that does not ask
+is any less hermetic than it was; `just noChroot` names what asks, on the box you are on,
+and is the probe that makes "which box can build what" a question instead of an hour lost
+to a refused derivation (the 2026-11-22 upgrade run lost the gate to exactly this:
+docs/work-log-2026-11.md, "the gate refused to run where the runbook says to run it").
+What that relaxation does **not** fix is the package's other half — it is not
+reproducible, so `--rebuild` prints `may not be deterministic: output … differs`,
+the output path moves on every build, and a rebuild re-compiles 490 M of `deno`
+self-contained binaries and restarts both door units (`docs/follow-ups.md` owns why).
+
+It still bounds what a run on the *builder* is worth for everything else: every machine is
+evaluated before anything builds, so services1's and gw's module assertions
+(`machines/services1/int-dns.nix`, `machines/gw/int-dns.nix`, the network-tables guard)
+really are checked wherever the gate runs.
 
 And do not chase the refused leg by running the recipe on some *other* box: it builds the
 tree it is run from, and every box's checkout is its own (measured 2026-10-31: services1

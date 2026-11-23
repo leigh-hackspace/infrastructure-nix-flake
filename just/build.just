@@ -116,6 +116,57 @@ pending-reboot machine="":
             "leigh-admin@$addr" bash -s
     fi
 
+# Which derivation in a machine's build closure asks nix for the network, and what that
+# does to a gate run on a box that will not grant it.  Read-only; a report, not a gate
+# (exit 0 either way).
+#
+# A derivation that sets `__noChroot` is the one thing that makes a build **box-dependent**:
+# nix refuses it outright on a daemon whose `sandbox` is `true` — `has '__noChroot' set,
+# but that's not allowed when 'sandbox' is 'true'` — so a gate run on such a box stops at
+# that derivation and says nothing about the change in front of you.  That is what happened
+# on 2026-11-22, when the compile gate had to move from aibox to services1 (docs/work-log-2026-11.md,
+# docs/nix-dev-workflow.md).  `nix.settings.sandbox = "relaxed"` is what grants it, per box,
+# and `machines/aibox/configuration.nix` and `machines/services1/configuration.nix` say who
+# carries it and why.  This names it, so "which box can build what" is a question you can
+# ask instead of one you learn by losing an hour to a refused derivation — and it is the
+# re-verification those two module comments ask for, wrapped.
+#
+# Cheap: one closure walk and ~7.5k greps, seconds.
+#
+# What asks for the network exemption in this box's (or the named machine's) closure?
+noChroot machine="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    probe='set -u
+        sys=$(nix-store -qd /run/current-system)
+        total=$(nix-store -qR "$sys" 2>/dev/null | grep -c "\.drv$")
+        hits=$(nix-store -qR "$sys" 2>/dev/null | grep "\.drv$" | xargs -r grep -l "__noChroot" /dev/null)
+        echo "closure: $total derivations"
+        if [ -z "$hits" ]; then
+            echo "asks: none"
+            echo "VERDICT: this box builds its whole closure under sandbox = true"
+        else
+            printf "%s\n" "$hits" | sed "s|/nix/store/[^-]*-||"
+            n=$(printf "%s\n" "$hits" | wc -l)
+            echo "VERDICT: $n derivation(s) need sandbox = relaxed; a daemon without it refuses them"
+        fi'
+    if [ -z "{{ machine }}" ] || [ "{{ machine }}" = "$(hostname)" ]; then
+        echo "=== $(hostname)"
+        bash -c "$probe"
+    else
+        case "{{ machine }}" in
+            services1|services2|services3|aibox|gw) ;;
+            *) echo "unknown machine: {{ machine }}" >&2; exit 2 ;;
+        esac
+        case "{{ machine }}" in gw) hkey=router ;; *) hkey="{{ machine }}" ;; esac
+        addr=$(nix eval --impure --raw --expr "let h = import ./common/hosts.nix; in h.$hkey")
+        echo "=== {{ machine }} ($addr)"
+        # Over stdin, not as ssh arguments: ssh word-splits its command arguments, which
+        # runs `bash -c set` instead of the probe (same reason as just pending-reboot).
+        printf "%s\n" "$probe" | ssh -i "$HOME/.ssh/agent-hop-key" -o BatchMode=yes -o ConnectTimeout=5 \
+            "leigh-admin@$addr" bash -s
+    fi
+
 # Deploy-readiness: build every machine's system derivation without touching the
 # running system.  `nix flake check` only *evaluates*, so a module that evaluates
 # but fails to build (bad package, bad derivation arg, broken SPA bundle) still

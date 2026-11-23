@@ -402,6 +402,20 @@ same paths over the hop again. Finishing the fleet on the second commit of that 
 done in that shape, five gates, all reading `all requested systems build` before any
 box moved.
 
+**One derivation in the fleet cannot be built on a strict daemon, and the gate that stops
+there says nothing about your change.** `door-entry-management-system` sets **`__noChroot`**
+— its `installPhase` resolves its deno dependencies from the registry and its `deno
+compile` downloads its own runtime — so asking aibox to build *services1's* toplevel used
+to die with `has '__noChroot' set, but that's not allowed when 'sandbox' is 'true'`: that is
+why the 2026-11-22 run moved its gate to services1 (docs/work-log-2026-11.md). aibox now
+carries `nix.settings.sandbox = "relaxed"` (2026-11-23, `machines/aibox/configuration.nix`,
+whose header owns the measurements and what it costs), so the gate answers on the builder too
+— but the per-box shape above is still the one to use: it keeps each closure where it
+belongs, and this package alone is 490 M of rebuilt binaries and a restart of both door units.
+Ask where the exemptions are *before* choosing where to run the gate: `just noChroot` names
+what asks, per box, in seconds (read 2026-11-23: one in services1's 8,886, one in aibox's own
+18,547, none in services2's 8,027 or gw's 5,540; `services3` was unreachable that day).
+
 **The headroom guard is not per-machine, and one override is not enough to read.**
 `check-build <m>` still pays the recipe's **outer** `_disk-headroom "60"` — the `20` in
 the case branch is *additional*, not instead — so `services3` at 52 G free refused its

@@ -64,15 +64,16 @@
   # `relaxed` rather than the default `true` for exactly **one** derivation in this box's
   # build closure: `door-entry-management-system`, whose `installPhase` runs `deno i` and
   # `deno cache` and therefore needs the network, so the package sets `__noChroot` — and nix
-  # refuses a `__noChroot` derivation outright when `sandbox = "true"` (the refusal, and why
-  # the builder cannot take this package, is `docs/follow-ups.md`).  `relaxed` is `true`
-  # plus that one exemption, so this is the narrowest setting that lets the box build its own
-  # system; it is *not* "no sandbox".
+  # refuses a `__noChroot` derivation outright when `sandbox = "true"` (the refusal, what
+  # the builder does about it now, and why vendoring will not close it, is `docs/follow-ups.md`
+  # — `machines/aibox/configuration.nix` carries the same exemption for the other half of the
+  # reason).  `relaxed` is `true` plus that one exemption, so this is the narrowest setting
+  # that lets the box build its own system; it is *not* "no sandbox".
   #
   # It used to say this was for sops' build-time secret decryption, which is not true: that
   # path needs `/var/lib/sops-nix` to be *visible inside* the sandbox, which
   # `common/sops.nix` already arranges with `extra-sandbox-paths` (it shows up in
-  # `nix config show`'s `sandbox-paths` on every box, aibox's strict one included).
+  # `nix config show`'s `sandbox-paths` on every box, the builder's included).
   #
   # The one-line recipe that answers "does this box still need it" — and gives a different
   # answer the day the package stops setting `__noChroot`:
@@ -81,7 +82,8 @@
   #     | xargs -r grep -l __noChroot
   #
   # (measured 2026-10-25: one hit here, none on services2 — which is why services2 is back
-  # on the default; see machines/services2/configuration.nix.)
+  # on the default; see machines/services2/configuration.nix.)  `just noChroot` is that
+  # recipe, wrapped, for the box you are standing on.
   nix.settings.sandbox = "relaxed";
 
   # GPU diagnostics for this box's GPU only (services1 is Intel/i915 — see

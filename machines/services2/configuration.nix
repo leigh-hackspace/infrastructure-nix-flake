@@ -35,9 +35,11 @@
   # when 'sandbox' is 'true'` — put the setting back then, naming that package, rather than
   # in advance.  (Un-parking strata is the likely candidate: re-run the command above.)
   #
-  # Safety margin on "nothing changes": aibox has `sandbox = true` and has been building this
-  # box's entire toplevel all along, so every derivation in the closure above is already
-  # proven to build strict — this only removes the *local fallback*'s exemption.
+  # Safety margin on "nothing changes": aibox has been building this box's entire toplevel
+  # all along, and its own closure carries no `__noChroot` derivation either, so every
+  # derivation in the closure above is already proven not to *ask* for the exemption — this
+  # only removes the *local fallback*'s exemption.  (aibox has carried `relaxed` since 2026-11-23
+  # for services1's one derivation, `machines/aibox/configuration.nix`; nothing here asked.)
 
   # GPU diagnostics for this box's GPU only.  The box is AMD (Ryzen 5700G /
   # Cezanne Radeon iGPU), so it gets the AMD tool rather than services1's
