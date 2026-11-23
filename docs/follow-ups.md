@@ -1306,6 +1306,28 @@ thing to do with either is to date it (`journalctl -u … | grep "Failed with re
 '{print $1,$2}' | uniq -c`) before deciding it is today's fault.
 
 ## DNS / monitoring
+- **`pete-voron.leighhack.org` proxies to `10.3.2.110`, which is inside VLAN 226's *dynamic*
+  pool** (opened 2026-11-23 with the row, `common/front-door.nix`). Everything else the door
+  reaches on CS_VLAN is a `common/dns-records.nix` reservation (`voron` 10.3.2.50,
+  `snapmaker` .56, `cnc-1` .61) precisely so the address cannot be handed to another device;
+  this one was added as an address because that was the address, and dnsmasq may re-lease it.
+  **Blocks:** the device's MAC (or client-id) — read it from the box or from
+  `/var/lib/dnsmasq/dnsmasq.leases` on gw and add the row, the same one fact every other
+  VLAN 226 device is. Re-verify with: `grep -n '10.3.2.110' common/dns-records.nix` (empty
+  today) and `just check-eval` after adding it; do not move the address out of the pool by
+  editing `common/vlans.nix`, which moves every device on the VLAN.
+
+- **`voron.leighhack.org` (10.3.2.50) has no `websockets` on its row, and the sibling added
+  beside it on 2026-11-23 proves what that costs** (`common/front-door.nix`). `pete-voron`
+  shipped without it and a WebSocket to `/websocket` came back
+  `400 Can "Upgrade" only to "WebSocket".` from the device's own aiohttp — a page that
+  renders, a printer that never updates, and nothing in the door's log but a 400 — while
+  `curl --http1.1` straight at the box answered `101` and Moonraker's notifications. Nothing
+  has been measured against `voron` itself, so this is "untested, not absent": the two boxes
+  are the same kind of appliance and one of them is a Mainsail. **Blocks:** a request to
+  `voron` that opens a socket (Mainsail's browser console is enough); if it 400s, add
+  `websockets = true` to that row, which is one line and a gw switch.
+
 - **`just check-build` cannot pass at the current lock, and it is not this repo's build: the
   pinned `strata` input fails its own fetch (2026-11-03)**. `nixos-system-aibox` fails as
   `error: hash mismatch importing path '…-strata-unstable'; specified: sha256:04hc…,

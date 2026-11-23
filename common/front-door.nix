@@ -402,6 +402,27 @@ in {
       bodySize = "1024M";
       timeouts = "3600";
     };
+    # A second Voron box on CS_VLAN, added 2026-11-23 — same shape as `voron` above: a
+    # public name, the gate in front of it, port 80 implied. Two facts to know before
+    # trusting it. **10.3.2.110 is inside VLAN 226's dynamic pool** (`common/vlans.nix`:
+    # 10.3.2.100–253), so this row pins an address dnsmasq may hand to another device on a
+    # future lease; the durable form is a `common/dns-records.nix` row with the device's
+    # MAC, the way `voron` (10.3.2.50) has one.
+    #
+    # `websockets` is not optional here and its absence is not a silent degradation: Mainsail
+    # talks to Moonraker on `/websocket`, and without the upgrade headers the door forwards a
+    # plain GET, the box's own nginx passes an *empty* `Upgrade` upstream, and aiohttp answers
+    # `400 Can "Upgrade" only to "WebSocket".` — a page that renders and a printer that never
+    # updates, with nothing in the door's log but a 400. Measured both ways on 2026-11-23:
+    # `curl --http1.1` straight at 10.3.2.110 gives 101 and Moonraker's notifications, the same
+    # request through the door gave the 400 until this line was added. (`voron` above predates
+    # that measurement and has no `websockets`, so the same fault is untested, not absent —
+    # `docs/follow-ups.md`.)
+    "pete-voron.leighhack.org" = {
+      upstream = "http://10.3.2.110";
+      sso = true;
+      websockets = true;
+    };
     "frigate.leighhack.org" = {
       upstream = "http://${hosts.services1}:5000";
       sso = true;
