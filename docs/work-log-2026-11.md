@@ -751,14 +751,33 @@ options and none taken. Read end to end on 2026-11-23, then taken.
   rather than staying a fact about one box: `machines/aibox/configuration.nix` now carries
   `nix.settings.sandbox = "relaxed"` with the measurements, the counts and the cost.
 * **What that costs, said in the same place as the setting:** a non-hermetic package now
-  compiles with network on the box that compiles everything else, and its output path moves on
-  every build. The alternative — leaving the builder strict — costs every gate that asks
+  compiles with network on the box that compiles everything else, and its build is not
+  reproducible, so nothing about it may be argued from a drvPath. The alternative — leaving the builder strict — costs every gate that asks
   the builder for `services1`'s closure, which is what the 2026-11-22 run did with a whole
   gate's worth of time.
 
-Landed on `aibox` (`nix.conf` line 13 reads `sandbox = relaxed` after the switch, read back
-rather than inferred), and the proof of the fix is the command the item named, run *there*:
-`nix build --no-link --rebuild ".#nixosConfigurations.services1.pkgs.door-entry-management-system"`,
-which no longer refuses. Still open, upstream's half: the package's non-reproducibility, and
-the fix that would remove the request itself — in the app's own flake, where `just noChroot`
-is what says it worked.
+**Landed, and read back rather than inferred.** `just deploy aibox` — the only
+configuration that moved — took `aibox` from `894af0b` to `83b5ba3`, built 1,233
+derivations and copied 2,095 paths (the long pole is the Pi Room image's desktop closure,
+which aibox's nightly GC collects and this switch put back: the follow-up that says aibox
+switches rebuild browsers), restarted `nix-daemon.service` and the netboot squashfs
+mount, and finished with `Confirming generation /run/current-system as good` in the same
+shell invocation as the switch (rule: the GOLDEN RULE — chained, never piped). After it:
+`readlink -f /run/current-system /nix/var/nix/profiles/system-good` equal, `systemctl
+--failed` empty, running kernel `7.3.4` against the generation's `7.3.4` so nothing is
+pending on the builder, and `/etc/nix/nix.conf` line 13 `sandbox = relaxed` with
+`sandbox-fallback = false` still on the line under it.
+
+**The proof, run where it belongs.** On aibox, after the switch, with nothing forced:
+
+    nix build --no-link --print-out-paths ".#nixosConfigurations.services1.pkgs.door-entry-management-system"
+
+`this derivation will be built: /nix/store/yhf7283q27…-door-entry-management-system-1.1.9.drv`
+— the *same* drv path services1 has — building it takes 2–3 minutes and answers
+`/nix/store/zrmk5wv61mgkcmr1mp5iqrb4sii0zvnx-door-entry-management-system-1.1.9`: the same
+output path the doors units on services1 run today. So the builder answers the request it was
+being handed, and 490 M of app binaries becomes a copy over the hop rather than a compile on
+every box that has to have it. What the receipt deliberately does **not** claim is that the
+app did not move: with a build this network cannot reproduce, one store path on two boxes is
+not the same bytes — which is the half that stays open, in `docs/follow-ups.md`, upstream's
+half, in the app's own flake, where `just noChroot` is what says when it lands.

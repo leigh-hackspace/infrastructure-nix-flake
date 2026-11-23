@@ -747,8 +747,9 @@ and is the probe that makes "which box can build what" a question instead of an 
 to a refused derivation (the 2026-11-22 upgrade run lost the gate to exactly this:
 docs/work-log-2026-11.md, "the gate refused to run where the runbook says to run it").
 What that relaxation does **not** fix is the package's other half — it is not
-reproducible, so `--rebuild` prints `may not be deterministic: output … differs`,
-the output path moves on every build, and a rebuild re-compiles 490 M of `deno`
+reproducible: `--rebuild` on the already-valid drv prints `may not be deterministic: output
+… differs`, so "identical drvPath / identical output" is not a proof that includes this
+package, and a rebuild that is not a substitution re-compiles 490 M of `deno`
 self-contained binaries and restarts both door units (`docs/follow-ups.md` owns why).
 
 It still bounds what a run on the *builder* is worth for everything else: every machine is

@@ -48,8 +48,8 @@
   # cover what cannot be built under it.
   #
   # What it costs, said out loud rather than buried: a non-hermetic package now compiles
-  # with the network on the box that compiles everything else, and its output path moves on
-  # every build.  Leaving this box strict costs every gate that asks the builder for
+  # with the network on the box that compiles everything else, and its build is not
+  # reproducible (the same section's `--rebuild` line says so).  Leaving this box strict costs every gate that asks the builder for
   # services1's closure.  The hermetic answer is upstream's and does not fit today: measured
   # 2026-11-23 under the current `deno` (2.9.8), `deno compile` downloads its own runtime
   # (`https://dl.deno.land/release/v2.9.8/denort-x86_64-unknown-linux-gnu.zip`), the jsr

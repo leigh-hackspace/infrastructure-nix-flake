@@ -245,20 +245,30 @@ that is closed gets absorbed into the live docs and deleted, and git history hol
   obey.
 
 - **The door entry package asks the build for the network, for three reasons, and its
-  output path moves every time it is built** (measured 2026-10-22 and 2026-10-25, and
-  re-measured end to end 2026-11-23 under the `deno` that is deployed now, 2.9.8).
+  build is not reproducible** (measured 2026-10-22 and 2026-10-25, and re-measured end to
+  end 2026-11-23 under the `deno` that is deployed now, 2.9.8).
   `door-entry-management-system` sets **`__noChroot`**, and nix refuses such a derivation
   outright on a daemon whose `sandbox` is `true`:
   `derivation '…-door-entry-management-system-1.1.9.drv' has '__noChroot' set, but
   that's not allowed when 'sandbox' is 'true'`.  Reproduce it with
   `nix build --no-link --rebuild --option sandbox true ".#nixosConfigurations.services1.pkgs.door-entry-management-system"`
   (no system build needed); the same command with `--option sandbox relaxed` builds it.
-  **Taken 2026-11-23:** the builder now carries the exemption it was being asked for —
-  `machines/aibox/configuration.nix` sets `nix.settings.sandbox = "relaxed"` beside services1's,
-  with the measurements and the cost.  That is what `just check-build` run on aibox, and any
-  delegated rebuild of services1's closure, needed: the 2026-11-22 upgrade run lost the whole
-  compile gate to this refusal and had to move it to services1 ("the gate refused to run where
-  the runbook says to run it", docs/work-log-2026-11.md).
+  **Taken 2026-11-23, and verified on the box that was refusing:** aibox now sets
+  `nix.settings.sandbox = "relaxed"` (`machines/aibox/configuration.nix`), which is what
+  `just check-build` run on aibox — and any rebuild of services1's closure that has to
+  compile rather than substitute — needed: the 2026-11-22 upgrade run lost the whole
+  compile gate to this refusal and had to move the gate to services1 ("the gate refused to
+  run where the runbook says to run it", docs/work-log-2026-11.md). Verified on the box
+  after the switch, with nothing forced: the item's command — `building '…yhf7283…
+  door-entry-management-system-1.1.9.drv'` — the *same* drv services1 holds — compiles
+  in 2 minutes and answers `/nix/store/zrmk5wv6…`: the same output path the door units run
+  today, so those 490 M of app binaries are now a copy over the hop instead of a compile per
+  box. `/etc/nix/nix.conf` was read back after the switch (rule 10): line 13 `sandbox =
+  relaxed`, `sandbox-fallback = false` unchanged under it. What "same output path" does **not**
+  buy is the half still open below — with a build this network cannot reproduce, two boxes
+  answering one store path are not guaranteed the same bytes, so the receipt names paths and
+  claims nothing about the app. Leaving the builder strict instead costs every gate that asks
+  it for services1's closure, which is what that 2026-11-22 run spent a whole gate on.
 
   **Three fetches, not one, and that is why vendoring does not fit the deno we run.** The
   whole `installPhase` reaches the network in three places, measured 2026-11-23 in a tree
