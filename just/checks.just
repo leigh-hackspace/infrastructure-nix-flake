@@ -79,10 +79,155 @@ check-eval:
     # AGENTS.md rule 26.  Eval-only — one `wc -l` over the tracked tree — so it is in
     # this half rather than left for `check`, which the router cannot finish: a file
     # is not allowed to grow past 1000 lines on the way past the router.
+    # The grep drop-in: what `grep` is on this box's PATH against the gnugrep in the
+    # closure, over the invocations the justfile and the guards actually run (common/tools.nix
+    # supplies it as a symlink named `grep`, and ugrep's compat mode is keyed to argv[0]).
+    # Greps and one `nix-store` query: eval-safe, so it belongs in this half and runs on
+    # `gw` too — the box whose `grep -rl '^# PARKED' machines/` is the list of what is not
+    # running (AGENTS.md rule 23).
+    echo "=== grep drop-in (gnugrep <-> the grep on PATH)"
+    just grep-compat
     echo "=== source file sizes (AGENTS.md rule 26)"
     just check-source-size
     echo "=== alejandra --check"
     just fmt-check
+
+# The parity gate for `grep` itself (common/tools.nix installs ugrep under that NAME).
+# One rule: **whatever this box's PATH calls `grep` today must agree with the gnugrep
+# in the same closure on every invocation this repo runs**, because the swap is
+# invisible: agents, this justfile and the guards all call `grep` and none of them ask
+# which one they got, so the real grep is read out of the closure by absolute store
+# path - after the swap, the word `grep` in a script *is* the thing under test.
+# Differences are whitelisted by CLASS rather than by line, and the per-class counts
+# are asserted below: a case that starts differing outside the classes is a finding,
+# and a class that stops differing makes docs/grep-dropin.md a lie.  Both fail rather
+# than quietly re-tune a list someone forgets; the classes and the receipts behind each
+# are in that doc.  Greps and one `nix-store` query, so this belongs in the eval-only
+# half and runs on `gw` too, whose `grep -rl '^# PARKED' machines/` is the list of what
+# is not running (AGENTS.md rule 23).
+grep-compat:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    sw=$(readlink -f /run/current-system/sw)
+    gnugrep=$(nix-store -q --references "$sw" 2>/dev/null | grep -e 'gnugrep-[0-9]' | grep -v 'info$' | head -1)
+    if [ -z "$gnugrep" ] || [ ! -x "$gnugrep/bin/grep" ]; then
+        echo "no gnugrep in the closure — the gate has nothing to compare against, and silence is not a pass" >&2
+        exit 1
+    fi
+    real="$gnugrep/bin/grep"
+    new=$(command -v grep)
+    [ -n "$new" ] || new="$real"
+    if [ "$(readlink -f "$new")" = "$(readlink -f "$real")" ]; then
+        echo "not deployed on this box: PATH's grep resolves to the same binary as the closure's gnugrep, so a comparison would prove nothing.  For the preview, put a directory holding a \`grep\` symlink to ugrep first on PATH (docs/grep-dropin.md) — that is what the switch will make PATH's grep resolve to."
+        exit 0
+    fi
+    case "$new" in *gnugrep*) engine="gnugrep (drop-in not deployed here)" ;; *) engine="the drop-in ($new)" ;; esac
+    fix=$(mktemp -d)
+    printf '  Endpoint: 7\nEndpoint: 8\nnoise\n' > "$fix/f2"
+    printf 'a+ here\nplain a plus\naaa+\n' > "$fix/f1"
+    printf 'nul\000byte NEEDLE3\nother\n' > "$fix/fbin"
+    # Each line: want:::label:::command:::why, with $E where the engine goes and $fix the
+    # fixture dir — both expanded at eval time, so the same text runs under both engines.
+    # The commands are transcribed from what this repo actually runs: `cam-check`/`cam-set`
+    # read an address out of common/dns-records.nix with -A4 and pipe it to -oE; `cam-fw-verify`
+    # compares grep -c "^mtd" and grep -c ""; the pbx health line counts -cE through a
+    # [[:space:]] class; check-source-size pipes -v ' total$'; AGENTS.md rule 23's list of
+    # what is not running is grep -rl '^# PARKED' machines/; a unit's ExecStart asks
+    # `grep -qi thingino /etc/os-release`.  `ok` must agree byte-for-byte and on exit
+    # status.  The rest are the differences the docs name, and the counts are asserted
+    # below: a case that starts differing that the whitelist does not name is a finding,
+    # and a whitelisted case that stops differing makes the doc a lie — both fail.
+    cases="
+    order:::recursive needles (the shape agents type):::\$E -rn dnsmasq common/:::
+    order:::what is parked (AGENTS.md rule 23):::\$E -rl '^# PARKED' machines/:::
+    order:::path order in a recursive grep:::\$E -rn dnsmasq docs/ common/:::GNU gives readdir order, compat mode sorts by path — same lines, different order
+    first:::head -1 of a multi-file grep:::\$E -rh dnsmasq docs/ common/ | head -1:::a recipe taking head -1 of a multi-file grep names a different file
+    notice:::the binary-file notice:::printf x | \$E -n NEEDLE3 \"$fix/fbin\":::GNU writes it to stderr, ugrep writes \`Binary file … matches\` to stdout
+    rc2:::a directory without -r:::\$E -q nosuchneedle docs/:::GNU errors (rc 2, \`Is a directory\`); compat mode recurses (rc 1)
+    ok:::address window (-A4, cam-check's read):::\$E -A4 '^  cam5 = {' common/dns-records.nix:::
+    ok:::address extraction (-A4 | -oE chain):::\$E -A4 '^  cam5 = {' common/dns-records.nix | \$E -oE '10\\.3\\.[0-9]+\\.[0-9]+' | head -1:::
+    ok:::line count (grep -c \"\", cam-fw-verify):::\$E -c '' just/checks.just:::
+    ok:::POSIX class (-cE, the pbx health line):::\$E -cE '^[[:space:]]+Endpoint:' \"$fix/f2\":::
+    ok:::invert over a pipe (-v, check-source-size):::printf 'a total\\nb\\nc total\\n' | \$E -v ' total$':::
+    ok:::quiet, no match (rc only):::\$E -q nosuchneedle just/checks.just:::
+    ok:::count, no match (stdout + rc 1, the set -e shape):::\$E -c nosuchneedle docs/follow-ups.md:::
+    ok:::BRE stays BRE (grep 'a+' is literal):::\$E -n 'a+' \"$fix/f2\":::compat mode keeps GNU's BRE default: + is not a quantifier
+    ok:::the unit ExecStart shape (-qi on os-release):::\$E -qi thingino /etc/os-release:::
+    "
+    fails=0
+    got_ok=0
+    got_order=0
+    got_notice=0
+    got_rc2=0
+    got_first=0
+    want_first=0
+    want_order=0
+    want_notice=0
+    want_rc2=0
+    while IFS= read -r line; do
+        line=${line#"${line%%[![:space:]]*}"}
+        [ -n "$line" ] || continue
+        want=${line%%::*}
+        rest=${line#*:::}
+        label=${rest%%::*}
+        rest=${rest#*:::}
+        cmd=${rest%%::*}
+        why=${rest#*:::}
+        case "$want" in
+        order) want_order=$((want_order + 1)) ;;
+        notice) want_notice=$((want_notice + 1)) ;;
+        rc2) want_rc2=$((want_rc2 + 1)) ;;
+        first) want_first=$((want_first + 1)) ;;
+        esac
+        rc1=0
+        rc2v=0
+        E="$real"
+        eval "$cmd" > "$fix/o1" 2> "$fix/e1" || rc1=$?
+        E="$new"
+        eval "$cmd" > "$fix/o2" 2> "$fix/e2" || rc2v=$?
+        same=diff
+        if cmp -s "$fix/o1" "$fix/o2" && [ "$rc1" = "$rc2v" ]; then
+            same=same
+        elif cmp -s <(sort "$fix/o1") <(sort "$fix/o2") && [ "$rc1" = "$rc2v" ] && [ -s "$fix/o1" ]; then
+            same=reorder
+        elif [ -n "$why" ]; then
+            same=diff-explained
+        fi
+        case "$want/$same" in
+        ok/same)
+            printf '  ok    %-48s rc=%s\n' "$label" "$rc1"
+            got_ok=$((got_ok + 1))
+            ;;
+        order/reorder)
+            printf '  order %-48s %s\n' "$label" "$why"
+            got_order=$((got_order + 1))
+            ;;
+        first/diff-explained|first/same)
+            printf '  first %-47s the first line of a multi-file grep is a different file (and the exit status a closed pipe reports differs)\n' "$label"
+            got_first=$((got_first + 1))
+            ;;
+        notice/diff-explained)
+            printf '  notice %-47s GNU->stderr, %s->stdout: a `| wc -l` over a NUL-bearing log gains a phantom line\n' "$label" "$engine"
+            got_notice=$((got_notice + 1))
+            ;;
+        rc2/diff-explained)
+            printf '  rc     %-47s GNU[%s] vs %s[%s]: %s\n' "$label" "$rc1" "$engine" "$rc2v" "$why"
+            got_rc2=$((got_rc2 + 1))
+            ;;
+        *)
+            printf '  FAIL  %s — expected %s, got %s\n' "$label" "$want" "$same"
+            printf '        GNU[%s]: %s\n' "$rc1" "$(head -2 "$fix/o1" | tr '\n' ' ')"
+            printf '        NEW[%s]: %s\n' "$rc2v" "$(head -2 "$fix/o2" | tr '\n' ' ')"
+            fails=$((fails + 1))
+            ;;
+        esac
+    done <<< "$cases"
+    rm -rf "$fix"
+    if [ "$fails" != 0 ] || [ "$got_order" != "$want_order" ] || [ "$got_notice" != "$want_notice" ] || [ "$got_rc2" != "$want_rc2" ] || [ "$got_first" != "$want_first" ]; then
+        echo "$fails finding(s); whitelisted differences seen: $got_order order, $got_first first-line, $got_notice notice, $got_rc2 rc — expected $want_order/$want_first/$want_notice/$want_rc2 (docs/grep-dropin.md owns what each one means)" >&2
+        exit 1
+    fi
+    echo "grep parity ok: $engine agrees with gnugrep on $got_ok invocation(s), and the only differences are the $((want_order + want_first + want_notice + want_rc2)) named in docs/grep-dropin.md"
 
 check-source-size:
     #!/usr/bin/env bash

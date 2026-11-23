@@ -5,7 +5,26 @@
   pkgs,
   INFRA,
   ...
-}: {
+}: let
+  # GREP DROP-IN — a grep-compatible, multithreaded `grep` on every box's PATH, and
+  # the name is load-bearing (docs/grep-dropin.md owns the receipts).  ugrep keys its
+  # grep-compatibility mode to **argv[0]**: installed as `bin/grep`, `grep --version`
+  # answers `ugrep 7.8.5 (grep compat)` and GNU's BRE default, hidden-file search and
+  # by-name ordering come back, which is what keeps `grep 'a+'` a literal `a+`.
+  # Why it is a symlink named grep and not an alias: an alias never reaches `bash -c`
+  # — measured — and that is exactly the shell an agent's tool call runs in, while
+  # PATH is inherited; and on this pinned nixpkgs every PATH directory ahead of
+  # /run/current-system/sw/bin is missing, so there is nothing to shadow *into*, and
+  # the closure itself is the only declarative place to change — this pinned nixpkgs
+  # writes no home files (rule 32), so the per-user profile dirs on PATH are empty and
+  # there is nothing earlier than /run/current-system/sw/bin to shadow into.
+  # `just grep-compat` is the gate that proves the swap changes nothing this repo
+  # depends on; it runs from `just check-eval`.
+  grepCompat = pkgs.runCommand "grep-as-ugrep" {} ''
+    mkdir -p $out/bin
+    ln -s ${pkgs.ugrep}/bin/ugrep $out/bin/grep
+  '';
+in {
   environment.systemPackages = with pkgs; [
     # System Tools
     appimage-run
@@ -27,6 +46,11 @@
     redis
     nginx-sso
     nushell
+    # The grep on PATH, and the same engine under its own names for humans: `ugrep`
+    # and `ug` stay available so a person typing `ug` gets the interactive flavour,
+    # while `grep` gets the compat mode keyed to argv[0] (docs/grep-dropin.md).
+    grepCompat
+    ugrep
     # Networking Tools
     openldap
     arp-scan
