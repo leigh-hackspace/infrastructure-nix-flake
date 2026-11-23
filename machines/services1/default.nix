@@ -9,12 +9,15 @@
 }: {
   networking.hostName = "services1"; # Define your hostname.
 
-  # services1 delegates builds to aibox (common/build-farm.nix).  Nix prefers the
-  # external builder and falls back to local when it is unreachable, so a deploy
-  # still works when aibox is down; `just build-remote` is the version that
-  # refuses to fall back.  maxJobs is aibox's core count (Ryzen 5 6600H, 6c/12t).
-  infra.buildFarm.builderHost = (import ../../common/hosts.nix).aibox;
-  infra.buildFarm.maxJobs = 6;
+  # This box builds for itself, and has done since 2026-11-23; before that it delegated
+  # to aibox (the history and the why are in common/nix-gc.nix's header, and what it would
+  # take to want delegation back is in common/ssh-hop.nix's footer).  Nothing about this
+  # box's own arithmetic changed, so the two facts worth carrying are unchanged: it is
+  # 4c/8t with 15 GiB of RAM and the tightest root on the network, so
+  # `just check-build` — five system toplevels, all copied back into *this* store — is a
+  # big ask here, and `just test`/`just clippy`/`just check-build` belong on aibox, the
+  # biggest box.  What delegation was hiding is that a `just switch` here has always
+  # compiled the crates that changed; it just did it somewhere else.
 
   imports = [
     ./sops.nix

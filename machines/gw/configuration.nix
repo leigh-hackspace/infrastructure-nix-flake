@@ -37,11 +37,13 @@
   # **This box deploys itself**, like every other machine in the fleet: `just deploy gw`
   # from anywhere (or `just switch` here) fetches the commit into this checkout, runs
   # `nixos-rebuild switch --flake .#gw` *here* and `sudo nixos-confirm` here, in one shell
-  # invocation.  What makes that possible without compiling anything is ./default.nix's
-  # `infra.buildFarm.builderHost` + `nix.settings.max-jobs = 0`: the crate
-  # ./network-status.nix adds is built on aibox and copied back, and a build aibox cannot
-  # take fails instead of falling back to a local compile.  What a switch here costs is the
-  # **evaluation**, on the box that answers DNS and DHCP for every VLAN.
+  # invocation.  Since 2026-11-23 that also means the closure is **built here**: this box
+  # delegates to nothing, and what keeps a build from hurting the thing that answers DNS
+  # and DHCP for every VLAN is ./default.nix's `nix.settings.max-jobs = 2` plus the capped
+  # `nix-daemon` cgroup, not another box.  So the two costs of a switch here are
+  # **evaluation** and, when a crate or a nixpkgs moved, a bounded compile of
+  # ./network-status.nix and its embedded bundle.  A config-only change still costs
+  # neither more than it used to: substitution is not building.
   #
   # Until 2026-10-25 the routine path was the opposite direction — build on services1, push
   # with `nixos-rebuild --target-host --elevate=sudo`, then `nixos-confirm` over ssh.  That
@@ -49,9 +51,13 @@
   # daemon **trust**, not daemon access (`allowed-users = *` admits the client, but with
   # `require-sigs` on, the daemon refuses a path built elsewhere — `cannot add path '…'
   # because it lacks a signature by a trusted key`, which is what the first deploy after
-  # install did).  Nothing pushes to this box any more, so the line is gone and the grant
-  # comes from `common/build-farm.nix`, which adds `leigh-admin` on any box that has a
-  # builder — this one included.  What it must never be confused with is `nixbld`: this is
+  # install did).  That line is gone, and so is the grant the withdrawn
+  # `common/build-farm.nix` used to add on any box that had a builder: nothing in this tree
+  # puts `leigh-admin` in `trusted-users` any more, so **pushing a closure to this box from
+  # another box fails again** until someone puts it back on purpose
+  # (`common/ssh-hop.nix`'s footer is the list of what the old arrangement took, and this
+  # is item 2).  Nothing in the justfile pushes; `just deploy gw` builds here, which is the
+  # supported path.  What neither old nor new has anything to do with is `nixbld`: this is
   # not build-user membership, and common/nixbld.nix still refuses that.  The checkout,
   # `git` and `just` here stay for reading the tree and for the case where another box is
   # the thing that is broken.

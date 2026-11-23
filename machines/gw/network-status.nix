@@ -31,11 +31,14 @@
 # used to.  `machines/gw/lease-reader.nix` states what handing the lease file's
 # names to that audience means, in the same paragraph that decides it.
 #
-# Consequence for deploying this box: its system now contains a Rust crate, so
-# nothing compiles here.  The crate is built on aibox and copied back — gw holds
-# `max-jobs = 0`, so a switch started on the box delegates and has no local fallback
-# (`machines/gw/default.nix`); `just deploy gw` from anywhere does the same thing over
-# ssh.  Do not build it here (AGENTS.md, "Never build on the router").
+# Consequence for deploying this box: its system contains a Rust crate (and that crate
+# embeds a wasm bundle), so a switch here compiles.  Since 2026-11-23 nothing delegates
+# that compile elsewhere: gw builds for itself, at 2 jobs inside a capped build cgroup, so
+# the cost is minutes of two of this box's 4 threads and a ceiling it cannot exceed
+# (`machines/gw/default.nix`), and `just deploy gw` from anywhere is the same thing over
+# ssh.  The recipes that compile *other* boxes' closures — `just check-build`, the crate
+# suites, `nix develop` — still refuse here (`_build-host-guard`), and `just check-eval`
+# stays the router's gate (AGENTS.md rule 22).
 {
   config,
   lib,

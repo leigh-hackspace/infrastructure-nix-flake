@@ -1,14 +1,18 @@
 # DATA — attrset of the *host* keys a box must have pinned before any ssh it runs can
 # succeed: the network's own machines, plus GitHub.  Read by `import` from
-# `./build-farm.nix` and handed to `programs.ssh.knownHosts`.
+# `./ssh-hop.nix` and handed to `programs.ssh.knownHosts`.
 #
-# Why a table of host keys is in the flake at all: the remote-build hop is run by
-# the **nix daemon**, i.e. as *root*, whose HOME is `/root`.  The operator's
+# Why a table of host keys is in the flake at all: the ssh that most needs it is the ssh a
+# *job* runs — no terminal, no operator `known_hosts`, and on this network root's ssh and
+# the operator's are different files (AGENTS.md rules 25 and 32).  It came in through the
+# remote-build hop, and it outlived that hop: the daemon still runs as root with HOME
+# `/root`, and root's ssh and the operator's are different files here.  The operator's
 # `~leigh-admin/.ssh/known_hosts` — the file that makes a manual
-# `ssh -i ~/.ssh/agent-hop-key 10.3.1.32` work — is invisible to that ssh, so a
-# delegating box whose root shell has never ssh'ed to the builder dies seconds
-# in with `Host key verification failed` / `Failed to find a machine for remote
-# build!` while every manual hop succeeds.  `programs.ssh.knownHosts` writes
+# `ssh -i ~/.ssh/agent-hop-key 10.3.1.32` work — is invisible to a root ssh, so a job whose
+# root shell has never ssh'ed to a peer dies seconds
+# in with `Host key verification failed` while every manual hop succeeds
+# (`Failed to find a machine for remote build!` was the same fault with the builder still
+# in the picture).  `programs.ssh.knownHosts` writes
 # `/etc/ssh/ssh_known_hosts`, which *every* ssh reads through the
 # `GlobalKnownHostsFile` line NixOS puts in `/etc/ssh/ssh_config`, so the hop
 # depends on a store-pinned table rather than on whichever root shells happen to

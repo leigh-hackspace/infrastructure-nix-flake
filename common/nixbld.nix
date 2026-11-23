@@ -13,7 +13,9 @@
 # (src/libutil/unix/processes.cc): every process owned by that UID is destroyed.
 # Not "when a build fails" — `prepareUser()` runs it at the start of every build.
 #
-# So membership is a target, not a grant. On 2026-10-11 `common/build-farm.nix`
+# So membership is a target, not a grant. On 2026-10-11 `common/build-farm.nix` (the
+# file that held the fleet's remote-build config until 2026-11-23; its remaining halves
+# are ./nix-gc.nix and ./ssh-hop.nix)
 # put `leigh-admin` in `nixbld`, `leigh-admin` sorts before `nixbld1` in
 # /etc/group, and every build on services1 and services2 therefore ran as uid 1234
 # and SIGKILLed the admin's whole process set: tmux, the Zed remote server,
@@ -25,7 +27,7 @@
 # `relaxed` — was wrong: nothing there had added itself to the group, which is the only
 # reason it was never affected.
 #
-# Nothing needs the membership, whatever the comment in build-farm.nix used to say:
+# Nothing needs the membership, whatever that file's comment used to say:
 #
 #   * `allowed-users = *` already admits every local user to the daemon, and that
 #     is what accepts the ssh hop on a builder;
@@ -34,7 +36,9 @@
 #     `LocalStore` only when `access(stateDir, R_OK|W_OK)` succeeds) — group
 #     membership buys a client no store access at all;
 #   * what a client actually needs in order to ask for input-addressed builds is
-#     `nix.settings.trusted-users`, which build-farm.nix still sets.
+#     `nix.settings.trusted-users` — which nothing in this tree sets since 2026-11-23,
+#     because it existed only for the delegated hop (./ssh-hop.nix's footer is the list of
+#     what re-enabling that takes, and this is item 2 on it).
 #
 # Two guards, because the mistake produces no error when it is made — only a dead
 # session minutes later — and is easy to make again:

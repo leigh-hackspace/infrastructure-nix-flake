@@ -7,14 +7,19 @@ userspace runtime). Endpoints: `http://10.3.1.32:8080/v1` directly and
 `https://strata2.int.leighhack.org/v1` through the front door on `gw` (one row in
 `common/front-door.nix`; this box has no nginx of its own).
 
-> **Parked 2026-10-17, un-parked 2026-10-28.** It was disabled so this box could be
-> the network's build machine (`common/build-farm.nix`): the IQ2_XS expert arena is
+> **Parked 2026-10-17, un-parked 2026-10-28, and the trade it was parked for is gone: no
+> box delegates its builds anywhere since 2026-11-23.** It was disabled so this box could be
+> the network's build machine: the IQ2_XS expert arena is
 > ~33 GiB of RAM a build needs, and `llama-server` got its `wantedBy` back. It runs
 > again — on the flake's `strata` input instead of its own nine-releases-stale pin,
-> and behind a new name. **The RAM trade is unchanged and still real**: with the
-> engine loaded this box has ~10 GiB left for builds, so `systemctl stop strata`
-> before a nixpkgs bump or anything that links a browser, and `expertCache` in
-> `strata.nix` is the dial if the two must coexist for long. What made this an
+> and behind a new name. **The RAM trade was real until it was fatal**: with the
+> engine loaded this box had ~10 GiB left for the builds of five machines, and that is
+> what killed the engine three times in 2026-11 (the 2026-11-23 section near the end of
+> this file has both receipts, the `/proc/vmstat` totals and the fix). So `systemctl stop strata`
+> before a nixpkgs bump or anything that links a browser is still the advice for *this*
+> box's own builds, but the box's `nix-daemon` is now capped and the engine's pages are
+> protected. `strata.nix`'s `expertCache` stays the dial when a build and the
+> engine must genuinely share a window. What made this an
 > un-parking rather than a rebuild from scratch is that the model data under
 > `/home/leigh-admin/Models` and `/home/leigh-admin/Strata` lives outside the store
 > and the parking never touched it. The numbers below are what it measured, on this
@@ -356,7 +361,9 @@ leftover engine holds the GTT keeps retrying instead of parking in `failed`.
 
 **Watch on recurrence:** the 0.1.40.2 engine now logs the free VRAM before
 each verify-window capture (#1275); if a timeout appears again, capture that
-line, plus `STRATA_VERIFY_TRACE=1` if needed. Memory is the other lever
+line, plus `STRATA_VERIFY_TRACE=1` if needed. **It recurred on 2026-11-23** — as
+the `#29` watchdog rather than a contained `verify: timed out`, and that section is
+below, at "2026-11-23: the watchdog ended the engine". Memory is the other lever
 (#649): at 262144 context the box sits at ~51 GiB used / ~8 GiB available with
 2.6 GiB of swap in use, and the expert cache is the dial to turn down
 (`expertCache = 2048` frees ~2.9 GiB for ~10% decode).
@@ -571,9 +578,11 @@ being a command I would run unsupervised:
   44-55 °C in the same airflow.  Pushing 60-70 W continuously through a small chassis
   without that reading is how you trade a fast endpoint for a dead board - and a hard hang
   here costs a power cycle at the box, because there is no console and no BMC.
-- **It is the builder.** aibox compiles every machine in this flake. A limit that makes the
-  box unstable delays everyone's deploys, and the failure is not auto-rollback-shaped (the
-  box does not boot into anything bad; it just stops).
+- **It builds for itself, and for nobody else since 2026-11-23.** It used to compile every
+  machine in this flake, which meant a limit that made the box unstable delayed everyone's
+  deploys. That risk is now this box's own — and the *other* risk, the engine losing a RAM
+  contest to a build, is what the cap and the reservation exist for. The failure was never
+  auto-rollback-shaped (the box does not boot into anything bad; the endpoint just stops).
 
 If it is ever done, do it as `just switch`-able state (a unit that writes the limits, so
 removal is a switch), one step at a time (45 → 54 → 65 W), with this probe running and
@@ -919,7 +928,7 @@ makes it an experiment rather than a config line.**
   Cost of the pull: 2 min 55 s of download at ~43 MB/s plus a re-extract, 24 GB of
   store for the blob and the runtime on a box that was at 81 % — which is why
   `allowSubstitutes = false` and "build aibox on aibox" are in the header, and why
-  `nix gc` (`--delete-older-than 30d`, `common/build-farm.nix`) will take the 16 GB
+  `nix gc` (`--delete-older-than 30d`, `common/nix-gc.nix`) will take the 16 GB
   back if the service is ever parked again.
 
 ### The endpoint, and why there is no nginx here
@@ -968,7 +977,8 @@ the running service says, which is the part a bump is really judged on:
   `…-rocm10-runtime-10.0.0/lib/libamdhip64.so.7.15.26333-0000000`, where the same binary
   without `lib_dirs` reports runtime `70253211`. Steady-state footprint as before: GTT
   15.10 GiB (`mem_info_gtt_used`, the 262144-context figure in the UMA section) and 52
-  GiB of 59 used, ~6 GiB available — i.e. the build-farm headroom the header warns about,
+  GiB of 59 used, ~6 GiB available — i.e. the headroom the header above this section used to
+  warn about (and which is now why a build here is capped),
   measured.
 - **Decode is not slower on the new engine or the new runtime**: 220 completion tokens in
   18.3 s through `/v1/chat/completions` ≈ **12 tok/s**, at or above the 9.4-9.6 tok/s
@@ -1513,6 +1523,171 @@ and the result is worth writing down as the recipe:
   'w1qfxxfc0wwjzfqivfnqfqjf60dily0h-sops-secret-pg_pass.drv' is not valid`, under `services.outline.databaseUrl`
   on **services1** — and `nix build` of that drv answers "don't know how to build these paths", so it is
   an eval-time secret read to fix over there, not a bump symptom.
+
+## 2026-11-23: the watchdog ended the engine — what it was, what it was not, and what changed
+
+Three engine deaths in three days, **two different classes**, and the fix for the
+dominant one is a memory ceiling rather than an engine bump. This section is the
+receipt; the config half is `machines/aibox/configuration.nix` (the cap) and
+`machines/aibox/strata.nix` (the reservation, the watchdog limit, the trace).
+
+### What died, and how
+
+`strata.service` never failed. In every case the **engine child** (`strata-host`) went and
+the Python serve layer kept serving — `NRestarts=0` on the unit throughout, `/health` 200
+within a second, and the next request pays a ~1-2 min reload of a 33 GiB arena because
+the serve layer restarts the engine **on demand** (`lazy_load` is the only related knob;
+there is no eager-reload-on-child-death in the serve layer, so an abort leaves the next
+caller holding the reload).
+
+* **2026-11-21 17:54, 17:55, 17:57 — kernel OOM, class A.** `Out of memory: Killed process
+  … (strata) total-vm:53964468kB, anon-rss:33760700kB`, twice more with `strata-host`
+  (32.5 GiB, 34.2 GiB), the second time dying inside `kfd_ioctl_alloc_memory_of_gpu` →
+  `amdgpu_bo_create`. The `oom-kill:` line names `task_memcg=/system.slice/strata.service`
+  and the cpuset of the process that *asked* for memory was `netboot-recut.service`:
+  a Pi Room squashfs was being built while the arena was loaded. `systemd-oomd` is enabled
+  and did nothing useful (it sat at `oom_score_adj=-900` while the kernel did the killing).
+  Unit accounting across its stops is the size of the contest: **46.1 G / 41.3 G / 36.6 G
+  memory peaks against 3.7 G / 6.9 G / 7.4 G swap peaks, on an 8.8 GiB swap partition.**
+* **2026-11-23 13:01:31 — the engine's own hang watchdog, class B.** `exit -6`,
+  `no progress for 60 s during a request (mtp draft: waiting for the GPU -1) - stopping
+  the engine so the server starts it again (issue #29)`. In-flight casualty: one
+  ~105 329-token read (99 s) that then froze at **298 decode tokens** for ≥70 s and came
+  back `done: 298 tokens in 216 s (2.6 tok/s) (error)`. No kernel event at all —
+  `journalctl -k` for that window has no ring timeout, no reset, no VM fault, no OOM.
+
+### Reading the stall report, in the three places it misleads
+
+```
+stall report (engine 0.1.63): stage "mtp draft: waiting for the GPU -1" for 62 s;
+  0 layers served since the last finished step
+  verify window: 4 tokens at position 105624, host at layer step 48; the GPU rang 48;
+                 flags: served 48, plan (A) 48, copies (B) 48
+  expert pool threads: w0..w4=sleeping; host idle for 62272 ms
+  VRAM free when this request began: 8344 MiB
+  memory: 33187 MiB resident, 2193 MiB in swap, 844 MiB RAM available; 34189 major faults
+  GPU work paused by the graphics driver: 354270 ms since the engine started, 9599 ms in this request
+strata: released the verify window's GPU waits (#267): the GPU finished in 1078 ms
+```
+
+1. **`-1` is not a GPU index.** `progress_at(...)` prints `Progress::detail`, which is
+   initialised to `-1` (`include/strata/core/progress.hpp`); the stage is
+   `progress_at("mtp draft: waiting for the GPU")` at `src/core/mtp.cpp:1787` and `:1824`,
+   and upstream's comment on the second one is *"a stall here read as 'decode', the verify
+   window before it"*.
+2. **The GPU was not stuck.** Every verify-window flag had completed (served/plan/copies
+   all 48, "the GPU rang 48") and the `#267` exit path — which releases the GPU's spin
+   waits on host flags so no kernel outlives the process — finished it in 1078 ms. The
+   host was spinning on a host-mapped flag (`while (((volatile int32_t*) h_out_)[j] < 0)`,
+   `mtp.cpp:1789`) for something the GPU had already done. `progress.hpp` states the class:
+   *"the engine's host loop and the GPU wait on each other through flags; a protocol bug
+   there does not crash, it spins forever."*
+3. **`0 layers served` does not mean "deadlocked at layer 0".** It means the heartbeat
+   stopped after the last completed window — which is exactly what a lost flag handshake
+   in the *next* stage looks like.
+
+### It is not the R9700's prefill stall — same watchdog, different signature
+
+The off-network R9700 box (gfx1201) reverted 0.2.17/**engine 0.1.63** → 0.2.13.1/engine
+0.1.59.1 on 2026-11-20 over 20 `#29` aborts in a day; its evidence pack is
+`cjdell/nixos-config`, `docs/strata-prefill-stall-2026-11-20.md`. aibox was on that same
+0.1.63 (since `f1c7c1f`, 2026-11-21) and had **one** abort in the whole log since
+2026-10-05 — out of 153 prompt reads >50 K tokens and 127 >100 K in the 20 h of 0.1.63
+before it, ≈0.8 % where that box was failing ~50 % of big reads. And the fields that
+discriminate all disagree:
+
+| | R9700, 2026-11-20 | aibox, 2026-11-23 |
+|---|---|---|
+| stage | `reading the prompt (batched): layer 22 …` — mid-prefill, layers 18-31 | `mtp draft: waiting for the GPU` — mid-decode |
+| GPU | *"the prompt's GPU work was still running"*, sampled `gpu_busy 100 / mem_busy 0 / 60-80 W` | finished; released and done in 1078 ms |
+| VRAM free | **760 MiB** in every stall (`--expert-cache auto`) | **8344 MiB** (`--expert-cache 4096`) |
+| host RAM | 31 GiB available, 0 swap → **ruled out by control run** | **844 MiB available, 2.2 GiB swap, 34 189 major faults** |
+| driver MM pauses | 549 ms lifetime, 19 ms in request | **354 270 ms** lifetime, **9599 ms** in request |
+| drafter | **DFlash2 chosen by hand** (upstream's named gfx1201 trigger) | **MTP** (`Drafting: MTP (the DFlash2 drafter isn't downloaded yet)`) |
+
+So: aibox already sits on two of that box's three "next steps" (MTP; expert cache capped
+with GiB free), its stall is in the drafter handshake rather than the prompt path, and the
+one field where aibox *inverts* the other box's ruled-out list is host RAM. aibox's own
+older write-up above — the 2026-10-06 #267 entry, and upstream **#649**: *"a pinned
+resident budget on a low-RAM box starves the CPU expert pool so it misses the verify
+handshake"* — fits this event better, and it is a mechanism with a lever here.
+
+### The mechanism, measured rather than inferred
+
+Nothing about the card or the runtime moved (ROCm 10 runtime since 2026-10-28,
+`HSA_USERPTR_FOR_PAGED_MEM=0` and `STRATA_HIP_ADAPT_KERNEL_COPY=1` both still set, engine
+0.1.63 for ~20 h). What was different at 13:01 was **memory**. `/proc/vmstat`, since boot
+(23 days):
+
+```
+pgscan_direct   53,942,974     (~206 GiB scanned inside the allocating path: the caller
+                                 stops and moves pages itself)
+pgsteal_direct  10,420,292
+pswpin 46,615,215  pswpout 61,096,721   (~165 GiB in / ~217 GiB out, of 8.8 GiB of swap)
+allocstall_movable 165,554   allocstall_normal 21,971
+pgmajfault 8,992,689          compact_fail 60,088
+```
+
+On this card every "VRAM" allocation is GTT — pages of the same DDR5 as the arena — so
+reclaim *is* GPU work paused, and the engine counts it in its own log: requests here have
+been paused for 24 519 / 24 636 / 51 678 / 63 973 / **133 139 ms** in a single request,
+354 270 ms in one engine run. Against that, the watchdog's limit was **60 s** (the default;
+`STRATA_WATCHDOG_S` was never set here), so the engine was being killed for the box's
+normal behaviour. **That is the single most likely difference between aibox and the R9700's
+stalls: their box had 31 GiB free and 19 ms of pause in the failing request; this one had
+0.8 GiB free and seconds-to-minutes of it.**
+
+Nobody had bounded either side. Live before this change: `strata.service` had
+`MemoryMin=0`, `MemoryHigh/Max=infinity`, `OOMScoreAdjust=0`, and `nix-daemon` was
+uncapped with `max-jobs = auto` = **12 jobs on 6 physical cores** — declared nowhere in
+the tree, only defaulted.
+
+### Deployed 2026-11-23
+
+| knob | value | why that number |
+|---|---|---|
+| `strata.service` `MemoryMin` | **40G** | cgroup protection: reclaim takes everyone else's pages first. Sized to arena+caches (unit peak 39.3 GiB via systemd) with ~19 GiB left for the rest of a 59 GiB box. Protection, **not** a cap — a `MemoryMax` here would OOM the engine itself |
+| `strata.service` `OOMScoreAdjust` | **-700** | if the box does run out, a compiler dies and the endpoint lives; 2026-11-21 had it the other way round, twice |
+| `env.STRATA_WATCHDOG_S` | **180** | legitimate measured pauses (51.7 s, 64.0 s, 133.1 s) exceed the 60 s default; the R9700 has run 180 since 2026-11-20. Cost: a genuinely stuck engine holds the single slot 3 min instead of 1 |
+| `env.STRATA_VERIFY_TRACE` | **1** | armed because this class recurred and the section above says to capture the trace block; it is the only artifact that separates #649 from #29. Costs nothing unless a window times out. `STRATA_KERNEL_AUDIT` stays unset (it adds ~10 graph nodes/layer) |
+| `nix.settings.max-jobs` (aibox) | **4** | was the `auto` = 12 default, declared nowhere; ~2-3 GiB link peak per job |
+| `nix-daemon` `MemoryHigh/Max` | **12G / 18G** | builds are the daemon's children, so that is the cgroup a runaway `rustc` lands in; the number is RAM − the reservation − the apps. **A build that needs more now fails as a build** — which is the old `systemctl stop strata` advice with the failure moved to the cheap side |
+| builder duty | **withdrawn network-wide** | `common/nix-gc.nix`'s header; aibox's 59 GiB is the engine's, and every other box builds for itself (gw bounded too, `machines/gw/default.nix`) |
+
+Not changed, deliberately: `--expert-cache 4096` (the table at the top of this file is why;
+the user asked for the RAM to go to the engine, not to be shrunk), the model and pack,
+`--max-context 262144` (agent traffic arrives at 100 K+), the runtime, and the engine pin —
+**do not read this section as a case for reverting to 0.1.59.1.** aibox had zero hangs on
+0.1.59.1 too, but it came to 0.1.61 for `5be334a` (256 K at full precision via KV in RAM),
+`nix flake update strata` moves all three engines in one switch, and upstream has since
+shipped 0.2.18/0.2.19/0.2.20 (engines 0.1.64/65/66) — all *after* the R9700's stall write-up
+and all shipping `hip-rdna2 (gfx1030–gfx1032)` packages. If the pin is moved, move it
+forward through the bump ritual, not back.
+
+### Still open, and how to tell next time
+
+* **n=1.** One class-B event is not a rate. If it recurs with `MemoryMin` and 180 s in
+  place, the `STRATA_VERIFY_TRACE` block names the answer; if it recurs **without** memory
+  pressure (`free -g` roomy, `pgmajfault` flat, `paused the GPU for` small), then this box
+  does share the R9700's open upstream issue and belongs in that report.
+* **Was the 13:01 request reclaim or a lost wait?** Today's report says `9599 ms in this
+  request` but `0 ms in the last 2 s` — so the long pause had ended before the 62 s stall.
+  Reclaim made the box sick; whether it is what held the flag is unproven. That is exactly
+  what the trace block is for.
+* **Swap is 8.8 GiB on a box that peaks at 7.4 GiB of swap.** If the engine's overflow is
+  routinely hitting swap, `MemoryMin` protects it from reclaim but not from a full swap
+  partition; the honest levers are the arena (`expertCache`, the Coder pack's 23.4 GiB) or
+  more swap/RAM, and the model swap is an answers-change (see "Suggestions" #2).
+* **A dead engine costs the next caller a reload** and nothing reloads it eagerly. If that
+  starts to matter more than the deaths, the fix is a warm-up poke, not a watchdog tweak —
+  and it needs the api key, so it is a secret-handling decision first.
+* **Re-verify after any switch here:**
+  `systemctl show strata -p MemoryMin -p OOMScoreAdjust --value`,
+  `systemctl show nix-daemon -p MemoryHigh -p MemoryMax --value`,
+  `nix config show | grep max-jobs`, and
+  `sudo cat /var/lib/strata/strata.log | grep -cE "paused the GPU for|no progress for"` —
+  the second number is the one that says whether this section was the end of the story or
+  an early chapter.
 
 ## Re-measuring
 

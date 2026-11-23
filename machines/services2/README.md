@@ -16,8 +16,8 @@ The observability stack that used to be here moved to services1 on 2026-10-17:
   while strata is thrashing, and it is the box's only self-measurement.
 - `./strata.nix` + `./strata-package.nix` — the Qwen3.8-Flash-Next **Coder**
   engine on the RTX 3060 (`http://10.3.1.21:8080/v1`), the network's only live
-  Strata instance since aibox's was parked on 2026-10-17 (aibox is the build
-  machine now — `common/build-farm.nix`).  `./nvidia.nix` is the driver for that
+  Strata instance while aibox's was parked on 2026-10-17 (aibox was the build
+  machine then, and took its engine back on 2026-10-28).  `./nvidia.nix` is the driver for that
   card.  The memory sizing and the one-time model prep are in `./STRATA.md`.
 - `common/exporters.nix` — the per-box exporters, scraped by services1's
   Prometheus at fixed IPs (`10.3.1.21:9100`, `:9558`, `:9633`).
@@ -51,14 +51,18 @@ What still works from here, and is the half that keeps being worth having:
 - `services2-status.int.leighhack.org`, this box's own dashboard, which is what
   answers "is services2 down" while the engine is thrashing.
 
-It **was** the network's build machine until 2026-10-17 (`common/build-farm.nix`):
+It **was** the network's build machine until 2026-10-17:
 211 GB of free store against services1's busier root, and no services worth
 protecting from a build.  That role moved to aibox when its strata engine was
 parked — this box's 30 GiB of RAM is the Coder engine's, and a delegated build
 competing with it was the box's worst failure mode (the memory-pressure and OOM
-story above).  Aibox now serves builds; this box is a client with no builder of
-its own, and keeps its 211 GB for its own deployments and the engine's packs.
-`just build-remote` offloads to aibox, not here.
+story above).  Aibox held the role until 2026-11-23, when the same failure mode killed
+its engine twice (`machines/aibox/STRATA.md`), and every box went back to building for
+itself (`common/nix-gc.nix`'s header).  So this box builds locally, bounded by nothing but
+its own arithmetic, and keeps its 211 GB for its own deployments and the engine's packs.
+The one thing that has not changed: despite having the most cores on the network (16), it
+is not where `just check-build` belongs, because that gate is memory-bound and this box's
+measured headroom is ~1.5 GiB.  Type the gate on aibox.
 
 The vhosts no longer depend on this box at all: they are rows in
 `common/front-door.nix`, terminated by `gw` (the network's front door), and they
@@ -161,8 +165,8 @@ This flake evaluates here with no local checkouts of its own: every input is a
 network-wide source, and the two programs it builds live in the tree
 (`crates/whisper-ws/`, `machines/pi-room-sys/`). `nix flake check` / `just check`
 evaluate all six configurations, so they work from this box too — that is the
-change the 2026-10-15 move bought.  It no longer makes this box the network's
-builder (that is aibox since 2026-10-17), but it does mean a check or a build run
+change the 2026-10-15 move bought.  It has not been the network's
+builder since 2026-10-17 (and no box is since 2026-11-23), but it does mean a check or a build run
 here is meaningful rather than a partial answer.
 
 There is no `system-good` generation yet, so `auto-rollback` is inert until the

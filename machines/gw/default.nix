@@ -13,49 +13,54 @@
   # Changing it is a network-wide act, not a rename.
   networking.hostName = "gw";
 
-  # Build on aibox, like services1 does.  This box is the network's router: a
-  # compile here is four `rustc` processes on the machine that answers DNS and DHCP
-  # for every device in the building, which is what happened on 2026-10-21 when a
-  # `just check` (`fmt-check` → `nix develop`) put a wasm-bindgen-cli build on the
-  # gateway.  `common/build-farm.nix` turns this option into `nix.distributedBuilds`
-  # plus `/etc/nix/machines`, and nix 2.34 *prefers* the external builder for every
-  # derivation — including the sops-secret derivations built during evaluation, whose
-  # delegated build is the reason that module also appends `leigh-admin` to
-  # `trusted-users` (already set by hand in ./configuration.nix, where the push path's
-  # need for it is explained; the two lists simply merge).
+  # **This box builds for itself, and is bounded while doing it.** Until 2026-11-23 it
+  # delegated every build to aibox and held `nix.settings.max-jobs = 0`, so that nothing
+  # could ever compile here; that arrangement is withdrawn (common/nix-gc.nix's header is
+  # the why), which leaves the original problem — this is the network's router, and a
+  # compile here is `rustc` on the machine that answers DNS and DHCP for every device in
+  # the building, which is what happened on 2026-10-21 when a `just check`
+  # (`fmt-check` → `nix develop`) put a wasm-bindgen-cli build on the gateway — to be
+  # solved by a **bound** instead of by a builder.
   #
-  # **`nix.settings.max-jobs = 0` is the part that makes the rule mechanical.**  Remote building
-  # prefers the builder and *falls back to local in silence* when no builder can take
-  # the job — so a builder alone still leaves the failure mode, just rarer (aibox
-  # down, aibox out of disk, one unrepresentable derivation).  With the local daemon
-  # holding zero jobs there is nothing to fall back to: the build fails, loudly, and
-  # the router keeps answering DNS. `common/build-farm.nix`'s note on `--max-jobs 0`
-  # says as much ("it removes the local fallback"; with `distributedBuilds` off the
-  # same setting fails with "local builds are disabled").  Substitution is unaffected
-  # — copying a path in is not building one — so a switch on this box (its own, or
-  # `just deploy gw` from elsewhere) and every rollback continue to work with aibox
-  # unreachable.
+  # Two bounds, and they do different jobs:
   #
-  # Garbage collection is the other half of the module and it stays off here: a router
-  # that walks and rewrites its own store on a timer is an unasked-for second opinion
-  # about the rollback profile (`system-good` is its own GC root, so collection is
-  # *probably* safe, which is not the same as a reason to have it on the one box that
-  # must not be busy at 04:00).  The build-user invariant still applies, from
-  # common/base.nix's own import of common/nixbld.nix.
+  # * `nix.settings.max-jobs = 2` on a 4-thread box: a switch here compiles its own
+  #   `network-status` crate and its embedded wasm bundle (common/crane-args.nix), so it
+  #   costs minutes rather than nothing, and it cannot take the last core from dnsmasq.
+  # * `nix-daemon.service` capped at 3 GiB (`MemoryHigh`, throttled) / 4.5 GiB
+  #   (`MemoryMax`, refusing) out of this box's 7 GiB: builds run as children of the
+  #   daemon, so that cgroup is where a runaway `rustc` lands. Without it the OOM killer's
+  #   biggest target on this box is not the build, it is nginx/headscale/dnsmasq under
+  #   load — and aibox's own strata failures (machines/aibox/STRATA.md, 2026-11-23) are
+  #   the measured version of what an uncapped build does to the thing sharing its RAM.
   #
-  # None of this makes building here *correct* — `just switch` here (or `just deploy gw`
-  # from another box) is the way, and `_build-host-guard` still refuses the build-shaped
-  # recipes on this host, because evaluation is still paid on this box and a guard is
-  # cheaper than an explanation afterwards.  What it buys is that the accident — a stray
-  # `nix build`, an agent reaching for `nix develop` — is now aibox's problem and not
-  # the network's.
-  infra.buildFarm.builderHost = (import ../../common/hosts.nix).aibox;
-  infra.buildFarm.gc = false;
+  # What is *not* bounded: substitution. Copying a path in is not building one, so a
+  # switch here, a `just deploy gw` from elsewhere, and every rollback keep working with
+  # no builder anywhere — which is the property the old `max-jobs = 0` was protecting, and
+  # it is still true.
+  #
+  # Garbage collection stays off here: a router that walks and rewrites its own store on a
+  # timer is an unasked-for second opinion about the rollback profile (`system-good` is its
+  # own GC root, so collection is *probably* safe, which is not the same as a reason to
+  # have it on the one box that must not be busy at 04:00). The build-user invariant still
+  # applies, from common/base.nix's own import of common/nixbld.nix.
+  #
+  # Self-building does not make building here *correct*. `just check` still skips its
+  # flake step on gw out loud, and `_build-host-guard` still refuses the build-shaped
+  # recipes on this host: the router's gate is `just check-eval`, and a five-toplevel
+  # `just check-build` or a crate test suite on 7 GiB is not a thing to discover
+  # afterwards. What the two bounds buy is that the accident — a stray `nix build`, an
+  # agent reaching for `nix develop` — is survivable rather than network-wide.
+  infra.nixGc.enable = false;
   # The renamed form of the option: `nix.maxJobs` still works but is a deprecated
-  # alias, and this line is load-bearing — it is what removes the silent local
-  # fallback — so it must not turn into a hard error the day nixpkgs deletes the
-  # alias.  `nix config show` prints the setting as `max-jobs` either way.
-  nix.settings.max-jobs = 0;
+  # alias, so it is spelled the current way; `nix config show` prints it as `max-jobs`
+  # either way. Load-bearing in the opposite direction from before 2026-11-23: it is now
+  # the ceiling on what a build here costs, not the thing that forbids one.
+  nix.settings.max-jobs = 2;
+  systemd.services.nix-daemon.serviceConfig = {
+    MemoryHigh = "3G";
+    MemoryMax = "4500M";
+  };
 
   imports = [
     ./configuration.nix

@@ -326,7 +326,7 @@ Three things make it work, and each was measured rather than assumed:
 
 1. **The tether's lease lands in table 900, not in the main table.** Every DHCP route the
    phone offers is installed with `RouteTable = 900`, so plugging a phone into the build
-   machine does not move the build machine's egress. `ip route show default` on `aibox`
+   machine does not move aibox's egress. `ip route show default` on `aibox`
    must keep saying `via 10.3.1.1 dev vlan225` while the phone is plugged in.
 2. **Only forwarded packets look in table 900** (`IncomingInterface = wan-gw`), so the
    only traffic that ever leaves through the tether is traffic the router handed over.

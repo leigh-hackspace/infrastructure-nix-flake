@@ -513,12 +513,16 @@ switch` here) fetches the commit into this checkout, runs `nixos-rebuild switch 
 (AGENTS.md's GOLDEN RULE — a confirm on another machine confirms nothing, because it
 confirms the local system).
 
-That works because the compiling is not this box's: it delegates to aibox and runs
-`nix.settings.max-jobs = 0` (`./default.nix`), so the Rust crate this box hosts
-(`./network-status.nix`) is built on aibox and the closure is copied back, exactly as it is
-for services1. What this box pays is the **evaluation** — seconds of the network's resolver
-per deploy — which is the honest price of not making another machine the fleet's deploy
-host.
+That works because what it pays is bounded and local: this box builds for itself at
+`nix.settings.max-jobs = 2` inside a `nix-daemon` cgroup capped at 3 GiB throttled /
+4.5 GiB refusing, out of its 7 GiB (`./default.nix`), so the Rust crate this box hosts
+(`./network-status.nix`) and its embedded wasm bundle compile here in minutes when they
+change and in nothing when they do not. It has built for itself since 2026-11-23; before
+that it delegated to aibox and held `max-jobs = 0`, and that arrangement ended because it
+moved the risk onto the box holding the network's engine
+(`machines/aibox/STRATA.md`). What this box still always pays is the **evaluation** —
+seconds of the network's resolver per deploy — which is the honest price of not making
+another machine the fleet's deploy host.
 
 Until 2026-10-25 the routine path was the opposite: `just switch-gw` **from services1**
 rsynced this tree over the checkout (`sync-gw`) and pushed the closure with
@@ -820,14 +824,20 @@ to skip and one reboot away from an unbootable machine:
 
 ## Do not build on this box
 
-This is a router: 4 cores, 8 GB, and the DNS/DHCP answer for every VLAN. It now **delegates
-its builds to aibox** (`infra.buildFarm.builderHost` in `./default.nix`, same as
-services1) and runs its own daemon with **`nix.settings.max-jobs = 0`**, so there is nothing to
-fall back to: a build that aibox cannot take fails instead of quietly compiling here.
-Check it with `nix config show | grep -E 'max-jobs|build-withers'` and `cat
-/etc/nix/machines`. The garbage-collection half of `common/build-farm.nix` is switched
-off for this box (`infra.buildFarm.gc = false`) — a router should not be rewriting its
-own store on a timer, and `system-good` is the rollback profile's own GC root.
+This is a router: 4 cores, 8 GB, and the DNS/DHCP answer for every VLAN. It **builds for
+itself, bounded** (since 2026-11-23 — `./default.nix`): **`nix.settings.max-jobs = 2`** of
+its 4 threads, and `nix-daemon.service` capped at **3 GiB (`MemoryHigh`, throttled) /
+4.5 GiB (`MemoryMax`, refusing)** so that a stray `rustc` can be slowed or stopped but
+cannot take the box. Before that it delegated everything to aibox and held `max-jobs = 0`,
+which was a guarantee rather than a feature: nothing could fall back to compiling here.
+The bound is the same guarantee with a different shape — the router's own switch may
+compile, the fleet's gate may not (`_build-host-guard`).
+Check it with `nix config show | grep max-jobs` and
+`systemctl show nix-daemon -p MemoryHigh -p MemoryMax --value`; `/etc/nix/machines` is
+declaratively empty now. The garbage-collection half of the old build module is still
+switched off for this box (`infra.nixGc.enable = false` in `./default.nix`) — a router
+should not be rewriting its own store on a timer, and `system-good` is the rollback
+profile's own GC root.
 
 That makes the *accident* harmless; it does not make building here correct. Evaluation
 still costs this box CPU, which is why the build-shaped recipes stay guarded and why a
@@ -841,14 +851,15 @@ develop` and put four `rustc` processes on the gateway. Two changes keep them of
 nothing on this box has a reason to enter), and the justfile keeps the recipes apart —
 `just check` and `just fmt` evaluate/format only (`nix flake check --no-build`,
 `nix fmt`), and the build-shaped recipes (`test`, `clippy`, `check-build`,
-`build-frontend`, `filestore-*`, `switch-gui-test`, `build-remote`) refuse here via
-`_build-host-guard`. Run those from aibox or services1.
-`just switch` is not one of them: with the delegate-and-no-fallback settings above it
-compiles nothing here — the box hosts a Rust crate (`./network-status.nix`), that crate is
-built on aibox, and the closure is copied back — so it deploys the box it is run on, which
-is what `just deploy gw` from elsewhere does too. If aibox is genuinely down the switch
-fails instead of quietly compiling here, which is the point. Mechanism and the incident:
-`docs/nix-dev-workflow.md`, "Never build on the router".
+`build-frontend`, `filestore-*`, `switch-gui-test`) refuse here via
+`_build-host-guard`. Run those from aibox.
+`just switch` is not one of them: it deploys the box it is run on, and since 2026-11-23
+that means a **bounded** compile here when a crate or nixpkgs moved — the box hosts a Rust
+crate (`./network-status.nix`), and it is 2 jobs inside a capped cgroup rather than the
+4 unbounded processes of 2026-10-21 — which is also what `just deploy gw` from elsewhere
+does. If the build cannot fit in the cap it fails instead of reaching outside it, which is
+the point. Mechanism and the incident:
+`docs/nix-dev-workflow.md`, "The router builds for itself, bounded".
 
 
 Do not read the Nix to find out what the router will do; read what the Nix produced.

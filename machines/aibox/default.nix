@@ -42,18 +42,18 @@
     flakeInputs.sops-nix.nixosModules.sops
   ];
 
-  # aibox is the network's build machine (common/build-farm.nix): 6c/12t and 59 GiB
-  # of RAM.  It is also, since 2026-10-28, the Strata engine again (./strata.nix),
-  # whose expert arena is ~46 GiB of that - which is the trade that made it the
-  # builder in the first place, taken the other way on purpose.  What it means in
-  # practice: with the engine loaded a build runs in the ~10 GiB left over, so a
-  # big-compile pass (a nixpkgs bump, a rust release build) wants `systemctl stop
-  # strata` first, and `just check-build` here is a build against a loaded arena.
-  # ./STRATA.md has the numbers and `services.strata.expertCache`-sized dials; the
-  # apps below (frigate-monitor, immich, whisper, alexandria) are leaf services that
-  # the front door proxies directly, so a build storm here costs those rather than the
-  # box that runs the rest of the network.
-  infra.buildFarm.serveBuilds = true;
+  # aibox is **not** the network's build machine any more — it was, from 2026-10-17 to
+  # 2026-11-23, and the whole reason it was that box (59 GiB of RAM, 6c/12t) is the reason
+  # it stopped: those 59 GiB are the Strata engine's, whose expert arena alone is 33-39
+  # GiB.  With the arena loaded, delegating a build here meant the engine either paid with
+  # latency (the driver pauses all GPU work while Linux moves memory the GPU uses: 354 s of
+  # it in one engine run) or died (the kernel OOM-killed it twice on 2026-11-21).  Both
+  # halves of that are now settled: nothing delegates here (common/nix-gc.nix's header for
+  # the withdrawal and common/ssh-hop.nix's footer for what re-enabling it would need), and
+  # what this box compiles for itself is bounded in ./configuration.nix and protected in
+  # ./strata.nix.  ./STRATA.md has the numbers, the two death receipts and the dials.
+  # The apps below (frigate-monitor, immich, whisper, alexandria) are leaf services that
+  # the front door proxies directly.
 
   services.strata.enable = true;
 

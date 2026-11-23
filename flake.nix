@@ -206,15 +206,14 @@
       * no `./common/containers.nix` and no `nixos-utils`' containers module: a
         router runs dnsmasq, pppd, openvpn, tailscale, nft and its own small
         dashboard (machines/gw/network-status.nix), and nothing else.
-      * `./common/build-farm.nix` **is** imported, with `gc = false`: gw delegates
-        its builds to aibox (machines/gw/default.nix) so that an accidental
-        `nix build`/`nix develop` cannot compile on the gateway, and the garbage
-        collection half stays off because a router that starts walking and rewriting
-        its own store on a timer is a second opinion about the rollback profile
-        nobody asked for.
-      * `./common/crane-args.nix` is here because that dashboard is a Rust crate; the
-        crate is built on aibox either way — by `just deploy gw`, or by a `just switch`
-        on the box, which is the same thing.
+      * `./common/nix-gc.nix` **is** imported, with `enable = false`: a router that
+        starts walking and rewriting its own store on a timer is a second opinion about
+        the rollback profile nobody asked for. `./common/ssh-hop.nix` is imported too,
+        because the LAN hop (rules 25 and 32) is about `git` and ssh from jobs, not about
+        builders — gw builds for itself now, bounded (machines/gw/default.nix).
+      * `./common/crane-args.nix` is here because that dashboard is a Rust crate, and
+        since 2026-11-23 that crate is compiled **on the router**, bounded to 2 jobs and
+        a capped build cgroup, rather than somewhere else.
 
     Module *order* is merge order, so these lists are behaviour and not formatting:
     each machine's list is in the order the five copies used to spell it out, and the
@@ -226,7 +225,8 @@
       ./common/sops.nix
       ./common/containers.nix
       ./common/crane-args.nix
-      ./common/build-farm.nix
+      ./common/nix-gc.nix
+      ./common/ssh-hop.nix
       ./common/nas.nix
       ./common/tools.nix
       ./common/users.nix
@@ -236,7 +236,8 @@
       ./common/sops.nix
       ./common/users.nix
       ./common/crane-args.nix
-      ./common/build-farm.nix
+      ./common/nix-gc.nix
+      ./common/ssh-hop.nix
     ];
 
     mkSystem = {
@@ -329,8 +330,9 @@
       # CUDA engine — and nothing else, because its 30 GB of RAM is strata's: the
       # observability stack that used to live here (gatus, Prometheus, Grafana)
       # moved to services1 on 2026-10-17.  It was this network's build machine
-      # until 2026-10-17; that is aibox now (common/build-farm.nix), so this box
-      # keeps its RAM for the engine.  It is still measured — by services1's
+      # until 2026-10-17, aibox was it from 2026-10-17 to 2026-11-23, and since then
+      # every box builds for itself (common/nix-gc.nix's header is the why), so this
+      # box keeps its RAM for the engine.  It is still measured — by services1's
       # Prometheus and by gatus from here.  See machines/services2/README.md for
       # what runs and what is left to measure it, and machines/services2/STRATA.md
       # for the engine.
@@ -433,8 +435,8 @@
     # `nix build .#rocm10-runtime` - the ROCm 10.0.0 (TheRock) user runtime aibox's
     # engine can be told to load instead of nixpkgs' ROCm 7.2: an 8 GB image layer
     # from Docker Hub, filtered to `lib/`.  Read the header of
-    # ./machines/aibox/rocm10-runtime.nix — including its size — before building it
-    # anywhere that is not this network's builder.
+    # ./machines/aibox/rocm10-runtime.nix — including its size (24 GB of store for the
+    # blob and the runtime) — before building it anywhere that is not aibox.
     #
     # `nix build .#whisper-ws` - the aibox WebSocket gateway (crates/whisper-ws,
     # built by its own recipe).  It is a package here as well as an overlay entry
@@ -540,8 +542,10 @@
     `just check` → `fmt-check` → `nix develop`, on the box that answers DNS for the
     whole network.
 
-    gw delegating its builds and running `nix.settings.max-jobs = 0` closed that
-    particular accident; the shell stays split because the point was never where the
+    `just check` skipping its build-shaped steps on gw, `_build-host-guard` refusing the
+    others there, and `nix.settings.max-jobs = 2` plus a capped build cgroup closed that
+    accident (machines/gw/default.nix — gw no longer delegates to anything, so the bound
+    is the mechanism).  The shell stays split because the point was never where the
     compile happens, it is that "give me a shell" should not be a build at all.  So:
     `nix develop` for cargo/rustc/clippy/just/alejandra/node, and
     `nix develop .#wasm` — which the SPA recipes in the justfile ask for by name —

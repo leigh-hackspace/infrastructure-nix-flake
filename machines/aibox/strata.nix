@@ -6,9 +6,12 @@
 # Disabled 2026-10-17, re-enabled 2026-10-28 — deliberately not written as a `# PARKED`
 # marker, because this module *is* imported and rule 23 makes that grep the list of what
 # is not running.  It was disabled to make this box the
-# network's builder (`common/build-farm.nix`), because the expert arena is ~33 GiB of
-# RAM a build cannot have; it is back on because the engine is what this box was
-# bought for.  Read ./STRATA.md before changing expertCache, context or the runtime —
+# network's builder, because the expert arena is ~33 GiB of RAM a build cannot have; it
+# is back on because the engine is what this box was bought for, and on 2026-11-23 the
+# builder duty went away altogether (common/nix-gc.nix's header), so the two no longer
+# compete for the same 59 GiB — except when this box builds for itself, which is bounded
+# in ./configuration.nix and protected here by `MemoryMin`/`OOMScoreAdjust` below.  Read
+# ./STRATA.md before changing expertCache, context or the runtime —
 # it is the measurement record, and the two are not independent (the "plateau"
 # section: every cache/placement/draft configuration measured lands at
 # 225-231 ms/window = 9.4-9.6 tok/s, because both halves are compute-bound).
@@ -333,6 +336,31 @@
         # allocations avoids it (measured as the same median upstream).
         HSA_USERPTR_FOR_PAGED_MEM = "0";
 
+        # The watchdog's limit, raised from the 60 s default to 180 s (the same net the
+        # off-network R9700 box has run since 2026-11-20).  Not a tolerance of hangs: on
+        # this card the *legitimate* pause is the length of the default limit.  The engine
+        # counts them per request — "the graphics driver paused the GPU for N ms during
+        # this request while Linux moved memory the GPU uses" — and this box's own log
+        # holds requests paused for 24 519, 24 636, 51 678, 63 973 and 133 139 ms, against
+        # a 60 s limit, with 354 270 ms of such pauses in one engine run.  A request that
+        # was going to finish was therefore being failed by the watchdog, and the
+        # `no progress` abort of 2026-11-23 13:01:31 (./STRATA.md) is one of those: the
+        # GPU had finished what it held (the #267 release path finished it in 1078 ms) and
+        # the host had been waiting on a flag across a reclaim.
+        # Cost of 180: a genuinely stuck engine holds the single serving slot 3 min
+        # instead of 1 before the server restarts it.
+        STRATA_WATCHDOG_S = "180";
+        # Armed deliberately, and this is the reason it was previously "only ever set
+        # while capturing": the #267-class stall came back on 2026-11-23 after a clean
+        # run from 2026-10-07, and ./STRATA.md's own instruction on recurrence was to
+        # capture this trace block.  It is the only artifact that separates the two
+        # candidate causes (#649 memory-starved CPU pool vs a lost GPU wait), and without
+        # it the next reader has one journal line and a 39 GiB process to reason from.
+        # Costs nothing unless a verify window times out.  Drop it when the class is
+        # closed; STRATA_KERNEL_AUDIT is NOT set, because that one adds ~10 nodes per
+        # layer to the captured graph and is a measurement cost, not a passive trace.
+        STRATA_VERIFY_TRACE = "1";
+
         # THE PROMPT PATH'S NUMBERS CHANGE WITH THIS ONE - and on this box it pays 2.21x.
         # The engine printed the tip on every start of this card (`strata prefill: HIP
         # device 0 gfx1030 - tip: STRATA_HIP_PROMPT_F16=1 reads long prompts about 2x
@@ -364,8 +392,8 @@
       #     is harmless (a mismatch is refused with one log line) and useless until a
       #     table is measured for this rocBLAS with tune_rocblas.cpp - which is the
       #     cheapest real prefill lever this box has, against a 45 tok/s ceiling.
-      #   * STRATA_KERNEL_AUDIT / STRATA_VERIFY_TRACE: instrumentation for #879 and
-      #     #267.  The audit adds a node per layer to the captured verify graph
+      #   * STRATA_KERNEL_AUDIT: instrumentation for #879.  The audit adds a node per
+      #     layer to the captured verify graph
       #     (~10/layer, measured cost on the R9700 box), so it is only ever set while
       #     capturing.  STRATA_DEFAULTS=... is likewise a debugging escape hatch.
     }
@@ -453,6 +481,36 @@ in {
         TimeoutStopSec = 120;
         # The resident expert arena is page-locked where it can be.
         LimitMEMLOCK = "infinity";
+        # --- the two lines that make "this box's RAM is strata's" true ------------------
+        # Measured, both failure modes, both on this box, both because nothing bounded
+        # either side of it until 2026-11-23:
+        #   * 2026-11-21 17:54-17:57 — the kernel OOM killer ended `strata` and
+        #     `strata-host` twice (33-34 GiB anon each) while `mksquashfs` from
+        #     netboot-recut.service was running, dying in kfd_ioctl_alloc_memory_of_gpu.
+        #     The OOM killer scores by RSS, and the endpoint is the biggest thing here, so
+        #     an unbounded build kills the service a person is talking to.
+        #   * 2026-11-23 13:01:31 — the engine's own #29 watchdog ended it mid-decode with
+        #     844 MiB RAM available, 2.2 GiB in swap and 34 189 major page faults in the
+        #     process, after 9 599 ms of "the graphics driver paused the GPU … while Linux
+        #     moved memory the GPU uses" in that request.  That pause *is* reclaim, on a
+        #     card whose whole "VRAM" is GTT pages of the same DDR5 as the arena, and
+        #     upstream's #649 is the same mechanism named from the other side: a
+        #     memory-starved box misses the verify handshake.
+        #     /proc/vmstat since boot said the rest: 53.9 M pages scanned in *direct*
+        #     reclaim (~206 GiB), 46.6 M/61.1 M swap-ins/outs, 9.0 M major faults.
+        # So: protect the arena from reclaim, and make the build the thing that dies.
+        # `MemoryMin` is cgroup memory protection — the kernel reclaims from every other
+        # group before it touches this one — and 40 GiB is the arena plus its caches
+        # (measured unit peak 39.3 GiB via systemd, 46.1 GiB on the worst run) sized to
+        # leave the 59 GiB box ~19 GiB for ./configuration.nix's capped build cgroup,
+        # whisper, immich and the page cache.  It is protection, not a cap: the unit stays
+        # unbounded above, because a MemoryMax here would OOM the engine itself.
+        # `OOMScoreAdjust` then makes the ranking explicit: if the box does run out, a
+        # compiler dies and the endpoint lives.  The negative adjustment is not a
+        # privilege claim — leigh-admin has passwordless sudo here anyway — it is the
+        # kernel being told which of two failures is the cheap one.
+        MemoryMin = "40G";
+        OOMScoreAdjust = -700;
         # No core dumps, and this is not hygiene: the engine's hang watchdog
         # (#29/#267) SIGABRTs itself, and on the R9700 box each dump was 32 GB of
         # weights and KV - here it would be more, on the filesystem that holds the

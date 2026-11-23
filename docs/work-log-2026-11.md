@@ -243,7 +243,7 @@ same invocation.**
    runbook's Phase 7 note described the hop dying with `kex_exchange_identification:
    Connection reset by peer` seconds in and needing a hand-written `/root/.ssh/config`. That
    fault is fixed — `common/ssh-known-hosts.nix` is now the pin and
-   `common/build-farm.nix` writes `/etc/ssh/ssh_known_hosts` (rule 25), and this run's
+   `common/ssh-hop.nix` writes `/etc/ssh/ssh_known_hosts` (rule 25), and this run's
    remote builds were clean. The failure mode now is *mid-build* (`builder dies during a
    long crate compile` → `error: cannot build ... on the remote machine`) which is harmless:
    `nix.distributedBuilds` falls back to local and the rebuild continues. So the note about
@@ -781,3 +781,77 @@ every box that has to have it. What the receipt deliberately does **not** claim 
 app did not move: with a build this network cannot reproduce, one store path on two boxes is
 not the same bytes — which is the half that stays open, in `docs/follow-ups.md`, upstream's
 half, in the app's own flake, where `just noChroot` is what says when it lands.
+
+## 2026-11-23, later — strata died three times in three days, and the box that was the fleet's builder is not any more
+
+The entry above ends with aibox answering a request as the network's builder. This one is
+about why that sentence had to go.
+
+### What the endpoint actually did, and what it was not
+
+`strata.service` never failed; the engine child did, three times, in two classes. The full
+receipt is `machines/aibox/STRATA.md`, "2026-11-23: the watchdog ended the engine" — what
+belongs to this log is the shape of the mistake, which was not an engine bug:
+
+* **2026-11-21, ×2** — the kernel OOM killer ended `strata`/`strata-host` (33-34 GiB anon
+  each, dying inside `kfd_ioctl_alloc_memory_of_gpu`) while a Pi Room `mksquashfs` ran.
+* **2026-11-23 13:01:31** — the engine's own #29 watchdog `SIGABRT`'d it mid-decode,
+  with 844 MiB of RAM available, 2.2 GiB in swap and 9 599 ms of *"the graphics driver
+  paused the GPU … while Linux moved memory the GPU uses"* in that request.
+
+The first instinct on the second one, having just read the off-network R9700 box's
+2026-11-20 write-up (`cjdell/nixos-config`, `docs/strata-prefill-stall-2026-11-20.md`),
+was "same thing — that box reverted off this very engine build (0.1.63)". It is not. Same
+watchdog, same build, and every field that discriminates disagrees: their stall is
+mid-prefill at layer ~20 with the GPU spinning at 100 %/`mem_busy 0` and 760 MiB of VRAM
+free and **31 GiB of RAM free**; ours is in the MTP draft handshake with the GPU
+**already finished** (the #267 release path finished it in 1078 ms), 8 344 MiB of VRAM
+free and **0.8 GiB of RAM free**. Two of their three recommended next steps (MTP rather
+than a hand-chosen DFlash2; expert cache capped so the card has headroom) were already
+this box's configuration. Their rate was ~50 % of big prompt reads; ours is 1 abort in
+127 reads over 100 K tokens. **A shared symptom is not a shared cause, and the field their
+control run cleared — host RAM — is the only one this box fails.**
+
+### The premise that had been stale for 26 days
+
+`common/build-farm.nix` justified aibox-as-builder with "no engine holding ~33 GiB of that
+RAM", because strata had been parked to make the builder on 2026-10-17. strata came back on
+2026-10-28 and the sentence was never revisited, so for 26 days the module that decided
+where the fleet compiles described a box that no longer existed — and `/proc/vmstat`
+described the consequence: ~206 GiB of pages scanned in **direct** reclaim, 217 GiB swapped
+out against 8.8 GiB of swap, on a card where every GPU page is a page of the same DDR5 as
+the arena. Nobody had bounded either side: `strata.service` ran `MemoryMin=0`,
+`OOMScoreAdjust=0`, and aibox's `nix.settings.max-jobs` was declared **nowhere**, so it ran
+nix's `auto` = `nproc` = 12 jobs.
+
+### What landed
+
+Nothing delegates: aibox's `serveBuilds` and every client's `builderHost` are gone, the
+module split into `common/nix-gc.nix` (GC, and the header that owns the withdrawal) and
+`common/ssh-hop.nix` (the host-key and identity halves of the LAN hop, which outlive the
+nix hop), and `just build-remote` went with them. In their place, a ceiling where a box
+shares itself with something that must keep answering: aibox at 4 jobs and a 12/18 GiB
+`nix-daemon` cgroup, gw at 2 jobs and 3/4.5 GiB of its 7 GiB (replacing its
+`max-jobs = 0`), and on strata `MemoryMin = 40G` + `OOMScoreAdjust = -700` +
+`STRATA_WATCHDOG_S = 180` + `STRATA_VERIFY_TRACE = 1`. The model, `--expert-cache 4096` and
+the pin are untouched: the free RAM was wanted **by** the engine, not freed from it.
+
+Two things worth keeping from the deploy rather than from the diff:
+
+1. **The order is load-bearing.** `serveBuilds` was only ever the `trusted-users` grant on
+   aibox, so switching aibox first would have left services1, gw and services3 delegating
+   input-addressed derivations to a daemon that now refuses them — the 2026-10-11 failure,
+   manufactured on purpose. Delegating boxes first, aibox last.
+2. **The user's other correction was right too, and the docs had not caught up with it.**
+   `docs/network-upgrade-runbook.md` opened by saying every public request goes through
+   services1's nginx and SSO. Since the 2026-10-24 front-door move that is `gw`; services1
+   is an origin with no certificate and no gate. Fixed there, and the builder-era prose
+   followed through AGENTS.md (rule 22 is now "don't build the *fleet* on the router, and
+   never let a build there be unbounded"), README.md, `docs/services.md`,
+   `docs/nix-dev-workflow.md` (both of its builder sections rewritten), `docs/router-ha.md`
+   and three machine READMEs.
+
+**Still open, from this one:** whether `just check`'s flake step should now run on gw,
+which can build for itself (an item in `docs/follow-ups.md`); whether the router's own
+crate compile belongs on 7 GiB at all; and the shared-store problem, which got more
+expensive today — five stores, no cache, and no box that amortises anything.

@@ -186,10 +186,18 @@ noChroot machine="":
 # /run/current-system, so the autoRollback timer stays unarmed.
 #
 # Slower than `just check` — a nixpkgs bump is hundreds of derivations — so run it
-# before a deploy rather than on every edit, detached, and poll it (rule 11).  The
-# work is delegated to aibox (common/build-farm.nix), which has 59 GiB, 6 cores and
-# no strata engine any more, so poll load/swap there as well as this log: a build
-# storm competes with the apps aibox hosts (frigate, immich, whisper).
+# before a deploy rather than on every edit, detached, and poll it (rule 11).
+#
+# Since 2026-11-23 it compiles on **the box you type it on** — there is no delegated
+# builder any more (common/nix-gc.nix's header) — so where you type it is a decision:
+# aibox, because it has 59 GiB and 12 threads and is the only box that can hold five
+# system closures and keep going; not gw (7 GiB, and `_build-host-guard` refuses it
+# anyway); and not services2 despite its 16 cores, because its 30 GiB is its engine's
+# and its measured headroom is ~1.5 GiB.  On aibox the gate now runs inside the
+# engine's box's bounds — 4 jobs and a 12/18 GiB build cgroup, ./configuration.nix — so
+# a bump against a loaded arena is slower than it was when aibox had 12 unbounded jobs
+# and no engine.  That is the trade that was chosen: the endpoint answers, the build
+# queues.  Poll load and `/ free` as well as this log.
 #
 # Two things it does that a bare `nix build` loop does not, both learned the hard way on
 # 2026-11-15 (docs/work-log-2026-11.md):
@@ -235,19 +243,15 @@ check-build-clean:
     sudo -n rm -rf /nix/var/nix/gcroots/check-build
     echo "dropped /nix/var/nix/gcroots/check-build (the gate's outputs are collectable again)"
 
-# Offload a build to aibox and refuse to fall back (common/build-farm.nix).
-# `nix.distributedBuilds` is true, so nix already prefers the external builder for
-# every build and only comes back local when no builder is available — `just switch`
-# and `just check-build` are therefore already remote, and that is deliberate (a
-# build that falls back is worth more than one that fails because the builder is
-# down).  `--max-jobs 0` is for when you need the opposite guarantee: it removes the
-# local fallback, so the build fails loudly instead of quietly compiling on the box
-# you are standing on.  It is the recipe to reach for when the builder is idle and
-# the local disk is climbing.
-build-remote machine="services1": _build-host-guard
-    #!/usr/bin/env bash
-    set -euo pipefail
-    nixos-rebuild build --flake ".#{{ machine }}" --max-jobs 0
+# --- what used to be here -------------------------------------------------------
+#
+# `build-remote machine=…` ran `nixos-rebuild build --max-jobs 0` to force a build onto
+# aibox and refuse the local fallback.  It went with the rest of the remote-build config
+# on 2026-11-23 (common/nix-gc.nix's header says why, common/ssh-hop.nix's footer says
+# what it would take to want it back — `--max-jobs 0` is item 4 on that list, and it is
+# still the right idiom for "fail loudly rather than compile here").  Nothing to
+# substitute: type `just switch` or `just check-build`, and read `nix config show | grep
+# max-jobs` if you are wondering what a box is allowed to spend on you.
 
 update-pkgs:
     nix flake update nixpkgs

@@ -17,7 +17,8 @@ observability stack that used to live there moved to services1 on 2026-10-17),
 **on the bench, Wi-Fi, and the
 one services box answering on VLAN 226**, which is why its front-door row is the first
 whose upstream is off the wired block: `machines/services3/README.md`),
-`aibox` (10.3.1.32, the network's build machine since 2026-10-17), and `gw`
+`aibox` (10.3.1.32, the Strata HIP engine and 59 GiB of RAM — the network's build machine
+from 2026-10-17 to 2026-11-23), and `gw`
 (10.3.1.1, the router and **front door**: TLS, the certificate, `nginx-sso`,
 `anubis`, `headscale`/`headplane` and every vhost).
 Every address is in `common/hosts.nix`.
@@ -303,9 +304,10 @@ device that address belongs to, until when, and on which VLAN it was handed out.
   the question `returned` already disambiguates for the other reading.
 
 It lives in `machines/gw/network-status.nix`. That does mean the router's system
-contains a Rust crate, but nothing compiles on gw for it: the box delegates to aibox
-with `max-jobs = 0`, so `just deploy gw` (or `just switch` on the box) builds the crate
-on aibox and copies it back — AGENTS.md, "Never build on the router".
+contains a Rust crate, and since 2026-11-23 that crate is compiled **on gw**, bounded:
+`max-jobs = 2` of its 4 threads inside a 3/4.5 GiB cgroup on a 7 GiB box, so a
+`just deploy gw` (or `just switch` on the box) costs that box minutes and the network
+nothing — AGENTS.md rule 22. What still refuses there is the fleet's build gate.
 
 The frontend is a **Dioxus (wasm) SPA** (`frontend/`, dioxus 0.7 + gloo-net + plain
 `canvas` charts, no router/state/chart libraries). Its `dist/` is **git-ignored and built by
@@ -508,10 +510,13 @@ the whole reason `strata-package.nix` exists three times instead of once with
 three engines in the same switch while the *toolkit* stays each box's own choice.
 
 The aibox instance was parked 2026-10-17 when that box became the network's build
-machine (`common/build-farm.nix`) — the IQ2_XS expert arena is ~33 GiB, which is the
+machine — the IQ2_XS expert arena is ~33 GiB, which is the
 memory a build needs — and un-parked 2026-10-28. The trade did not change shape, only
-sign: with the engine loaded aibox has ~10 GiB for builds, so `systemctl stop strata`
-before a nixpkgs bump, and enabling it clears `llama-server`'s `wantedBy`, which 502s
+sign: with the engine loaded aibox has ~10 GiB for builds, so a bump there competed with
+the engine until 2026-11-23 killed it twice (`machines/aibox/STRATA.md`), which is what
+ended the arrangement rather than another `systemctl stop strata` in a runbook: the box
+builds for itself now at 4 jobs inside a capped cgroup and the engine's pages are
+protected. Enabling the engine still clears `llama-server`'s `wantedBy`, which 502s
 the `ai.*` vhosts. Model data is outside the store and was never removed by the
 parking; that is the only reason the un-parking was a config change.
 

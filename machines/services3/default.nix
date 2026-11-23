@@ -19,16 +19,16 @@
   # 58 GB MoE rather than a 9B dense model. Its measurements are the record of what this
   # card did before, and un-parking it means un-parking it *instead of* ./strata.nix.
   #
-  # This box delegates its builds to aibox like every box that is not the builder
-  # (common/build-farm.nix).  Here it matters more than on the others for two reasons:
-  # the box is 8 Skylake cores against aibox's 6c/12t Zen 3+, and its uplink is a
-  # Wi-Fi dongle, so a local compile is work done by the machine that is also carrying
-  # its own ssh — and llama.cpp's Vulkan backend is exactly the kind of compile (SPIR-V
-  # shaders) that would take the afternoon.  Nix prefers the external builder and falls
-  # back to local when aibox is unreachable, which is what keeps a deploy of this box
-  # possible while the dongle is the only path to it.
-  infra.buildFarm.builderHost = (import ../../common/hosts.nix).aibox;
-  infra.buildFarm.maxJobs = 6;
+  # This box builds for itself as of 2026-11-23; before that it delegated to aibox, and
+  # the two facts that made delegation attractive here are still true: the box is 8
+  # Skylake cores, and its uplink is a Wi-Fi dongle, so a local compile is work done by
+  # the machine that is also carrying its own ssh — and a CUDA engine bump (./strata.nix,
+  # `machines/services3/strata-package.nix`) is exactly the kind of compile that would
+  # take the afternoon.  So the honest rule for this box: a bump of the `strata` input
+  # lands here last, in a window, and `nix flake update strata` is a network-wide act
+  # whose cost is now paid per box rather than once on a builder (AGENTS.md, the Strata
+  # row).  What delegation was hiding is that `just switch` here always built the things
+  # that changed; it just did it over the hop.
 
   imports = [
     ./configuration.nix

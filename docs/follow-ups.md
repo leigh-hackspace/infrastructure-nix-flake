@@ -24,7 +24,8 @@ that is closed gets absorbed into the live docs and deleted, and git history hol
   `sudo nixos-rebuild dry-activate --flake .#gw 2>&1 | grep -c getExe`.
 
 - **A registry hiccup while fetching `whisper-ws`'s npm tree fails `just check-build` for
-  the whole fleet — and the reason it had to fetch at all is the builder's GC, not the
+  the whole fleet — and the reason it had to fetch at all is that no box's store is shared
+  with any other, not the
   commit** (hit 2026-11-12, on the aibox toplevel: `whisper-ws-web-0.1.0-npm-deps` failed
   with `couldn't fetch node_modules/@rolldown/binding-win32-arm64-msvc at
   https://registry.npmjs.org/… : [92] Stream error in the HTTP/2 framing layer`, which
@@ -41,19 +42,28 @@ that is closed gets absorbed into the live docs and deleted, and git history hol
   on its own; it is not a subpath of the flake's copied tree), which is exactly the
   narrowing this item proposed to add.
 
-  What does make that fetch re-run: **the output was not in the builder's store**, because
-  outputs `aibox` produced for *other* machines are unreachable there and its GC collects
-  them (measured the same day: 21 150 / 39 848 store paths, 55 GiB and 85 GiB, including
+  What does make that fetch re-run: **the output was not in the store of the box doing the
+  work**. Measured 2026-11-15 on `aibox`, then the network's builder: 21 150 / 39 848 store
+  paths, 55 GiB and 85 GiB, including
   crate outputs other boxes had just been built against — and every one of them was then
-  rebuilt or re-fetched on the next deploy). A fixed-output fetch that has to happen again
-  is a network flake with the fleet's build behind it.
+  rebuilt or re-fetched on the next deploy, because outputs built *for another machine* are
+  unreachable there and its GC collects them. Since 2026-11-23 no box builds for another at
+  all, so that waste is not gone, it is per-box: five stores, five fetches of the same npm
+  tree, five compilations of the same crate set. A fixed-output fetch that has to happen
+  again is a network flake with the fleet's build behind it, and there are now five of those
+  behinds.
 
   **Blocks:** nothing permanently (retry works), but it makes `just check-build` flaky in a
-  way that reads like the deployed change being broken. **To do:** make the useful part of
-  the builder's store reachable rather than trying to narrow sources that are already
-  narrow — see `machines/aibox/deployed-closure-cache.nix` (roots each box's current
-  toplevel, so its dependency closure survives the GC) and finish it by widening that to
-  whatever else the fleet demonstrably rebuilds. Re-verify the claim above (the command
+  way that reads like the deployed change being broken. **To do:** make one store's useful
+  part reachable by the others rather than trying to narrow sources that are already
+  narrow — the shape is a binary cache both sides can read and one box posts to (attic is
+  already cloned, unused, at `~/Projects/attic` on aibox), or a rooted shared store.
+  **Do not go looking for `machines/aibox/deployed-closure-cache.nix`, which an earlier
+  version of this item named as existing: it never has** (`git log --all --` that path is
+  empty), and the reason nobody noticed is the new item at the end of this file — check 2 of
+  `common/check-doc-pointers.nix` reads AGENTS.md, README.md and the justfiles, and not
+  `docs/*.md`. Finish the item by widening whatever root you land on to what the fleet
+  demonstrably rebuilds. Re-verify the claim above (the command
   this item used to suggest, `nix derivation show -R` on the package, returns **nothing**
   here — it exits 1 — so use this instead):
 
@@ -62,12 +72,13 @@ that is closed gets absorbed into the live docs and deleted, and git history hol
   # run it, edit any .md, run it again: the paths must be identical
   ```
 
-- **The builder throws away the fleet's dependency graph, and making it stop is blocked on
-  a declared ssh identity, not on a missing idea** (measured end to end 2026-11-15 while
+- **No box's store holds what another box already built; the fleet recompiles its own
+  dependency graph per deploy, and the fix is still blocked on a declared **root** ssh
+  identity, not on a missing idea** (measured end to end 2026-11-15 while
   fixing it — the fix was designed, tested, and **not shipped** because step 1 is missing).
-  `aibox` compiles for every other box, and the outputs it produces for them are
-  unreachable *on `aibox`*: nothing in its profiles refers to them, so its GC collects the
-  fleet's crate set, engines and npm trees as litter, and the next deploy buys them back
+  Then `aibox` compiled for every other box and the outputs it produced for them were
+  unreachable *on `aibox`*: nothing in its profiles referred to them, so its GC collected the
+  fleet's crate set, engines and npm trees as litter, and the next deploy bought them back
   with compile minutes. That day: three GC passes deleted 21 150 / 2 339 / 39 848 store
   paths (55 / 30 / 85 GiB), after which `services1` rebuilt ~700 derivations it had already
   built hours earlier, `services2` rebuilt the shared cargo workspace and its CUDA engine
@@ -90,7 +101,8 @@ that is closed gets absorbed into the live docs and deleted, and git history hol
   3. **`nix copy` from a client to the builder fails on the documented identity trap** —
      `Too many authentication failures`, the same one the justfile already works around for
      `git fetch` with `IdentitiesOnly=yes`. **The operator-account half of this was answered
-     on 2026-11-15**: `common/build-farm.nix` grew `programs.ssh.hosts` — `IdentityFile ~/.ssh/agent-hop-key`,
+     on 2026-11-15**: `common/build-farm.nix` (since split; that block is now in
+     `common/ssh-hop.nix`) grew `programs.ssh.hosts` — `IdentityFile ~/.ssh/agent-hop-key`,
      `IdentitiesOnly yes`, `ConnectTimeout 5` for the network's own addresses, rendered into
      `/etc/ssh/ssh_config` (`docs/nix-dev-workflow.md`, "The identity half of that hop is not
      the host half, and it was missing everywhere") — and it is the *system* file because this
@@ -100,7 +112,7 @@ that is closed gets absorbed into the live docs and deleted, and git history hol
      where no key is, and `nix copy --to ssh://` cannot pass `-i` at all. So the client→builder
      copy that would make `aibox` a real cache still cannot start. Closing it needs the same
      block with an **absolute** path — already this fleet's practice for root (`mkRemoteBuilder`'s
-     `sshKey`, and the `sudo env NIX_SSHOPTS='-i /home/leigh-admin/.ssh/agent-hop-key …'` hatch
+     `sshKey` is gone with the builder, but the `sudo env NIX_SSHOPTS='-i /home/leigh-admin/.ssh/agent-hop-key …'` hatch
      below) — and was not done quietly, because an absolute path in the *system* file also puts
      `IdentitiesOnly yes` on every user of those addresses at once, the NAS's other accounts
      included, and those have never been checked. That is item 5 of the root-ssh-config list
@@ -112,12 +124,17 @@ that is closed gets absorbed into the live docs and deleted, and git history hol
      so it has the same missing precondition.
 
   **Blocks:** nothing; it is a cost, not a fault — roughly a full engine rebuild per
-  post-GC deploy. **To do, in this order:** (1) declare the ssh identity for machine-to-
-  machine `nix` traffic (the open item above — `IdentitiesOnly` plus `IdentityFile` for
-  `10.3.1.*`, in `common/build-farm.nix` or `common/ssh-known-hosts.nix`'s neighbourhood,
-  and delete the hand-written `/root/.ssh/config` at the same time); (2) have `just deploy
-  <m>` `nix copy --to ssh://aibox` the new toplevel, which is cheap because `aibox` built
-  most of it already and `nix copy` sends only the delta; (3) root it with the one symlink.
+  post-GC deploy, and since 2026-11-23 per *box* rather than per fleet, because the builder
+  that used to amortise it is gone (`common/nix-gc.nix`'s header). **To do, in this order:**
+  (1) declare the ssh identity for machine-to-machine
+  `nix` traffic **as root** — the operator-account half landed on 2026-11-22
+  (`common/ssh-hop.nix`: `IdentitiesOnly` plus `IdentityFile` for `10.3.1.*`, rule 32), so
+  what is left is the absolute-path/root half, in the same file or
+  `common/ssh-known-hosts.nix`'s neighbourhood,
+  and deleting the hand-written `/root/.ssh/config` at the same time; (2) have `just deploy
+  <m>` `nix copy --to ssh://<m>` the new toplevel from the box that built it — which is now
+  the *only* way a box gets someone else's output, since nothing delegates any more, and it
+  is cheap because `nix copy` sends only the delta; (3) root it with the one symlink.
   Verify each step rather than assuming it: `nix copy` from a client must succeed; the
   rooted toplevel must survive `sudo nix-collect-garbage` on `aibox`; and the proof the
   whole thing worked is that the *next* deploy of that box reports fewer built derivations
@@ -172,8 +189,10 @@ that is closed gets absorbed into the live docs and deleted, and git history hol
 - **Evaluation still reads a derivation: finish the crane half of "Evaluation must not
   build"** (found 2026-10-22, on gw, by accident: `just check` began failing with
   `Cannot build '/nix/store/7ac7180r…-Cargo.lock.drv'` — `local builds are disabled
-  (max-jobs = 0)`). **Blocks:** any `just check` on gw, so the router currently has no
-  flake-level gate; nothing else is blocked, because the assertion evals and
+  (max-jobs = 0)`; **gw holds `max-jobs = 2` since 2026-11-23, so that exact refusal is
+  gone and the realisation is now merely possible there — see the item at the end of this
+  file**). **Blocks:** any `just check` on gw, so the router currently has no
+  flake-level gate by choice (rule 22); nothing else is blocked, because the assertion evals and
   `just fmt-check` do not evaluate a machine. **It is not a regression** — the same call
   fails at `f923c6e`, the commit this pass branched from, from a clean `git worktree`. It
   was latent because `…-Cargo.lock` was sitting in gw's store, and it cannot go back: the
@@ -184,7 +203,7 @@ that is closed gets absorbed into the live docs and deleted, and git history hol
   the hop's ssh is the **daemon's** (uid 0, `HOME=/root`), not the operator account's, and
   gw's root had no host key for the builder. `common/ssh-known-hosts.nix` (DATA, the four
   flake machines pinned rsa+ed25519) handed to `programs.ssh.knownHosts` from
-  `common/build-farm.nix` writes `/etc/ssh/ssh_known_hosts`, and a trivial delegated
+  `common/ssh-hop.nix` writes `/etc/ssh/ssh_known_hosts`, and a trivial delegated
   drv built on aibox and copied back. So the `Cargo.lock` read now **resolves** and
   `just check` on gw dies at the **filestore** read — `path
   'xc2p67qsy…-filestore-web-src.drv' is not valid` — the "second read" this item already
@@ -267,7 +286,7 @@ that is closed gets absorbed into the live docs and deleted, and git history hol
   relaxed`, `sandbox-fallback = false` unchanged under it. What "same output path" does **not**
   buy is the half still open below — with a build this network cannot reproduce, two boxes
   answering one store path are not guaranteed the same bytes, so the receipt names paths and
-  claims nothing about the app. Leaving the builder strict instead costs every gate that asks
+  claims nothing about the app. Leaving aibox strict instead costs every gate that asks
   it for services1's closure, which is what that 2026-11-22 run spent a whole gate on.
 
   **Three fetches, not one, and that is why vendoring does not fit the deno we run.** The
@@ -311,38 +330,26 @@ that is closed gets absorbed into the live docs and deleted, and git history hol
   because nothing else builds this derivation — measured the same day, the drv is absent
   from every other reachable box).
 
-- **gw now delegates its builds to aibox and has no local fallback (added
-  2026-10-21, deployed to gw the same evening).** Until today gw was the one machine
-  that imported
-  neither half of `common/build-farm.nix`: `/etc/nix/machines` did not exist, so every
-  build — including the accidental kind an agent reaches for — compiled on the router.
-  `machines/gw/default.nix` now sets `infra.buildFarm.builderHost = HOSTS.aibox` **and
-  `nix.settings.max-jobs = 0`**, and imports the module with `infra.buildFarm.gc = false` (the
-  router delegates; it does not collect garbage on a timer).
-
-  The `maxJobs = 0` is the half that makes the rule mechanical. `nix.distributedBuilds`
-  only makes nix *prefer* the external builder and falls back to local silently — a
-  builder alone leaves the failure mode in place, just rarer. With zero local jobs there
-  is nothing to fall back to, and substitution is unaffected (copying a path in is not
-  building one), so a switch on gw — its own, via `just deploy gw` — and every
-  auto-rollback keep working with aibox unreachable. `_build-host-guard` still refuses the
-  build-shaped recipes on gw: **evaluation is still paid on the box that answers DNS for the
-  network**, and a guard is cheaper than an explanation afterwards.
-
-  Three things to do or decide once it is deployed:
-  1. **Prove the delegation, and prove the failure.** From gw, build something
-     cache.nixos.org does not have (`nix build .#whisper-ws`) and watch aibox's
-     `journalctl -u nix-daemon`; then stop aibox and repeat — it must fail, not compile.
-     Nothing about this change is testable from the config alone.
-  2. **The emergency path is now narrower, and its escape hatch is untested.** If aibox
-     *and* services1 are both down, `nixos-rebuild switch` on gw cannot build. The
-     intended override is a trusted-client `--option max-jobs N` (leigh-admin is in
-     `trusted-users`), but nobody has confirmed the daemon honours it for that setting —
-     find out on a good day, not during an outage.
-  3. Revisit whether the guard should now allow `just switch` on gw. The argument for: it
-     cannot compile anything any more. The argument against: an evaluation storm on the
-     resolver, and `INFRA_ALLOW_BUILD_ON_ROUTER=1` is one environment variable away
-     from whatever the next person needs.
+- **`just check` on gw could now run its flake step; it still does not, and that is a
+  decision someone should take rather than inherit** (opened 2026-11-23, by the change that
+  withdrew the network's builder). The old reason for the skip was hard: gw had
+  `max-jobs = 0`, so `nix flake check --no-build` — which needs one trivial source
+  realisation, because evaluating the machines reads a derivation (`common/crane.nix`, and
+  the two items above) — could only fail there. Now gw builds for itself at 2 jobs inside a
+  3/4.5 GiB cgroup (`machines/gw/default.nix`), so the step *can* run. **For:** the router
+  would then have a flake-level gate of its own, and `just check` would mean the same thing
+  on every box. **Against:** it is one realisation the router did not previously pay, on the
+  box that answers DNS for the network, and `just check-eval` already covers every assertion
+  and the formatter. **Re-verify with:** `sudo nix-collect-garbage --max-age 1d` is *not*
+  the way to test this on the router; use a fresh `git worktree` of the flake source on gw
+  and run `nix flake check --no-build`, and read `nix config show | grep max-jobs` first.
+  The deleted item this one replaces (added 2026-10-21, deployed the same evening,
+  superseded 2026-11-23) is in git history:
+  `git log -L :1:docs/follow-ups.md --grep='gw now delegates'` or
+  `git show 83b5ba3:docs/follow-ups.md`. Its two open questions — prove the delegation and
+  prove the failure, and whether `just switch` should be allowed on gw — were answered the
+  same way: the first by deletion, the second yes, bounded, and measured by reading
+  `systemctl show nix-daemon -p MemoryMax --value` after the switch.
 
 - **`just check` is store-warm, not tree-warm: on a box that has never built
   filestore's SPA source it dies at HEAD** (measured 2026-10-21 on `gw` at
@@ -430,25 +437,26 @@ that is closed gets absorbed into the live docs and deleted, and git history hol
   (`docs/nix-dev-workflow.md`). What is left is a `nix store gc` decision on this
   box, which is a maintenance call rather than a fix: 113 GB used, 93 GB free.
 
-- **aibox is the builder now; prove the hop and watch its disk** (2026-10-17, with
-  the move off services2). Two things are open, neither of them a switch:
+- **aibox's root, and the model data that lives outside the store** (opened 2026-10-17
+  with the move of the builder role off services2; the builder half of this item is
+  **void as of 2026-11-23** — nothing delegates, `nix.distributedBuilds` is nowhere in the
+  tree, and `just build-remote` is deleted, so there is no hop left to prove. What that
+  era settled: the hop's last proof was 2026-10-12, a delegated build and a `--max-jobs 0`
+  build against services2 with no SIGKILL sweep, and the mechanism behind it is
+  `common/nixbld.nix`. The disk half is more live than it was, because every box now grows
+  its own store).
 
-  1. **The delegated build itself.** `common/build-farm.nix`'s hop was last proven
-     against services2 on 2026-10-12 (a delegated build and a `--max-jobs 0` build,
-     no SIGKILL sweep). The key, `sshUser = "leigh-admin"` and the
-     `trusted-users` entry are box-agnostic, and aibox already has
-     `~/.ssh/agent-hop-key`, but run `just build-remote` once from services1 and
-     read the builder name in the log — a silent fallback to local is the failure
-     mode the rule about polling exists for.
-  2. **aibox's root and the parked model data.** aibox measured 82 % full on
+  1. **aibox's root and the model data.** aibox measured 82 % full on
      2026-10-15, while services2 had 211 GB free; the builder is the box that now
      grows `/nix/store`. Strata's data is deliberately outside the store and is
      **not** removed by disabling the service: the IQ2_XS GGUFs under
      `/home/leigh-admin/Models/Qwen3.8-Flash-Next-GSQ-RCO-GGUF` (~68 GB) and the
      pack/MTP under `/home/leigh-admin/Strata`. Deleting them is a manual decision
-     — do not automate it from the flake — but until then the builder's headroom
-     is smaller than the role assumes. `common/build-farm.nix`'s GC policy is what
-     keeps it from being a surprise.
+     — do not automate it from the flake — but until then this box's headroom is
+     smaller than a build wants. `common/nix-gc.nix`'s policy (`--delete-older-than
+     30d`, plus `store-hygiene.nix`'s weekly walk) is what keeps it from being a
+     surprise, and since 2026-11-23 `nix-daemon` is capped at 12/18 GiB
+     (`machines/aibox/configuration.nix`) so a full store cannot take the engine.
 
 - **`packages.strata-cuda` emits four upstream deprecation warnings (open, one
   line).** `checking derivation packages.x86_64-linux.strata-cuda` prints
@@ -1247,9 +1255,11 @@ that is closed gets absorbed into the live docs and deleted, and git history hol
      `/etc/ssh/ssh_known_hosts`). Rule 25 made the *keys* data; the identity is still a file
      on one box, edited at 23:50 by whoever is unlucky next. **Blocks:** nothing — the
      workarounds are known (`Host` stanza, or `sudo env NIX_SSHOPTS='-i … -o
-     IdentitiesOnly=yes' nix copy …`). **To do:** decide it in `common/build-farm.nix` (the
-     delegating side writes root a config naming the builder and the copy targets, or root
-     gets the hop key declaratively), then delete the hand-written file. Re-verify: `sudo ssh
+     IdentitiesOnly=yes' nix copy …`). **To do:** decide it in `common/ssh-hop.nix` (the
+     operator-account block already lives there and is keyed to `common/hosts.nix`; the root
+     half needs an **absolute** `IdentityFile`, which is why it has not been folded in
+     quietly — see item 3 of the shared-store item above), or root
+     gets the hop key declaratively; then delete the hand-written file. Re-verify: `sudo ssh
      -o BatchMode=yes leigh-admin@<a new box> true` on a box whose `/root/.ssh/config` you
      have not touched.
   6. **Disk: 9.7 GiB free** with the engine and driver installed. The recipe is in

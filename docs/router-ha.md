@@ -188,8 +188,9 @@ Worth recording because it is the opposite of what I first assumed while writing
 * **A standby still pays the router's taxes:** the age key at `/var/lib/sops-nix/key.txt`
   before its first evaluation (`just install-sops-key`, `common/sops.nix`), its own
   `hardware-configuration.nix` because the two `links` rules pin `router-lan` /
-  `router-uplink` by MAC and a wrong MAC is a silent no-match, `max-jobs = 0` plus
-  `infra.buildFarm.builderHost`, no GC, and its own `ssh_host_key` and known_hosts rows
+  `router-uplink` by MAC and a wrong MAC is a silent no-match, its own bounded build
+  ceiling (`max-jobs = 2` + a capped `nix-daemon` cgroup, `machines/gw/default.nix`) since
+  a standby has no builder either, no GC, and its own `ssh_host_key` and known_hosts rows
   (`common/ssh-known-hosts.nix`, `just known-hosts`) because `10.3.1.1` would be answered by
   whichever box is holding the address.
 * **Anycast/BGP is not on the table.** It needs an ASN and a provider that will announce

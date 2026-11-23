@@ -48,7 +48,7 @@
 #   deciding all arrive at one sequence. Two ways to power off a router is the
 #   same class of mistake as two DHCP servers.
 # * **No NUT clients on the other boxes.** They are told over ssh, with the same
-#   hop key `common/build-farm.nix` uses for the remote builder. Serving `upsd`
+#   hop key `common/ssh-hop.nix` gives every ssh on the box (rule 32).  Serving `upsd`
 #   to the LAN would mean the fleet's shutdown depends on this box's TCP stack
 #   being healthy at exactly the moment it may not be, and `openFirewall` stays
 #   false for the same reason (`assertions` below refuse a `LISTEN` line).
@@ -375,8 +375,8 @@
   sharedArgs =
     [
       "--identity-file"
-      # The same key `common/build-farm.nix` hands to the nix daemon for the
-      # remote-build hop, and for the same reason: root has it, and the public half
+      # The same key `common/ssh-hop.nix` names in `/etc/ssh/ssh_config` for every
+      # `Host` in `common/hosts.nix`, and for the same reason: root has it, and the public half
       # is authorized for `leigh-admin` on every box (`common/users.nix`).  Passed
       # by path; `ups-watchdog` never opens it, `ssh` does.
       "/home/leigh-admin/.ssh/agent-hop-key"

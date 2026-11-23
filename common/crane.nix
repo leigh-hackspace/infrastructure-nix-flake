@@ -68,8 +68,9 @@
   # (`vendorCargoDeps` does a `pathExists`/`readFile` on it), and `lockFile` returns a
   # derivation, so the read is a build — the failure this repo keeps paying for, and
   # the reason `just check` died on the router on 2026-10-22 with
-  # `Cannot build '…-Cargo.lock.drv'`, on the one box that is right to refuse
-  # (`nix.settings.max-jobs = 0`).  `cargoLockContents` is that same value pre-read, so
+  # `Cannot build '…-Cargo.lock.drv'`, on the one box that was right to refuse anything
+  # at the time (`nix.settings.max-jobs = 0` on gw; since 2026-11-23 gw bounds its builds
+  # instead of forbidding them — machines/gw/default.nix).  `cargoLockContents` is that same value pre-read, so
   # nothing has to realise anything.  Passing both is drv-neutral: `mkCargoDerivation`
   # prefers `cargoLock` when it is present, and `writeText "Cargo.lock" contents` is
   # precisely the path `lockFile` already made.
@@ -332,7 +333,8 @@
   # "laundering the data at evaluation time" — so a derivation-shaped source is **built**
   # by anyone who merely evaluates a machine that installs the binary. Measured 2026-10-25
   # on a fresh flake source with nothing able to build (`--option builders '' --option
-  # max-jobs 0`, which is the state `gw` keeps itself in), where the trace runs from a
+  # max-jobs 0` — the guarantee `gw` used to take from `max-jobs = 0` and now takes from
+  # 2 jobs inside a capped cgroup), where the trace runs from a
   # unit's `ExecStart` straight into a build:
   #
   #     error: path '…-filestore-web-src.drv' is not valid

@@ -101,7 +101,7 @@ Two things bite, and both are load-bearing:
   "Closed 2026-10-25", has the class, the honest detector, and the decision not to buy the
   dependency wiring that would close it. The build-shaped recipes
   (`just check-build`, `just test`, `just clippy`, `just build-frontend`,
-  `just filestore-*`, `just switch-gui-test`, `just network-status-test`, `just build-remote`) refuse to run on
+  `just filestore-*`, `just switch-gui-test`, `just network-status-test`) refuse to run on
   `gw` via `_build-host-guard`. `nix develop` itself now builds nothing — the pinned
   wasm-bindgen-cli that the five Dioxus bundles need lives in `nix develop .#wasm`,
   which is a cargo build on a cold box — so `nix develop` at least is safe on the router.
@@ -145,15 +145,18 @@ Various hackspace services for members. See
 
 Path: `machines/aibox`
 
-Experimental machine with LLMs and Stable Diffusion, and the network's build machine
-since 2026-10-17. Always hosts the netboot server for the Pi Room computers.
+Experimental machine with LLMs and Stable Diffusion. Was the network's build machine
+from 2026-10-17 to 2026-11-23 — it is the 59 GiB box the Strata engine lives on now, and
+that is what the builds were competing with ([STRATA.md](machines/aibox/STRATA.md)).
+Always hosts the netboot server for the Pi Room computers.
 
 ### Services 2
 
 Path: `machines/services2`
 
 Strata's CUDA engine on the RTX 3060, plus its own status dashboard. Its RAM is the
-engine's; it stopped being the network's build machine on 2026-10-17. See
+engine's; it was the network's build machine until 2026-10-17, and every box has built for
+itself since 2026-11-23. See
 [README.md](machines/services2/README.md) and
 [STRATA.md](machines/services2/STRATA.md).
 

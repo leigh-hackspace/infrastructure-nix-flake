@@ -424,7 +424,8 @@ rather than run both forever.
 5. **Writes, ever?** "Turn the heaters on" is the obvious next request and it is the moment
    this doc's §7 has to be re-litigated, not quietly extended.
 6. **Which box.** services1 for the reasons in §5. `apps1` would keep the bot off the flake
-   again (the thing we are fixing); `aibox` is the build machine and the engine host, and
+   again (the thing we are fixing); `aibox` was then the build machine as well as the
+   engine host (it is only the engine host since 2026-11-23), and
    putting the agent next to its own engine buys nothing while costing the "one box dies,
    nothing works" merge.
 

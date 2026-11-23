@@ -52,13 +52,16 @@ services box, `common/exporters.nix` puts `node`/`systemd`/`smartctl` on
 `llama-server` unit that used to be the box's job is gone from the module list and
 `./llama.nix` begins with its PARKED notice.
 
-What the box delegates, and why it matters more here than elsewhere: builds go to
-aibox (`common/build-farm.nix`), because this box is 8 threads of Skylake against
-aibox's 6c/12t Zen 3+ and its uplink is a Wi-Fi dongle — a local compile is work done
-by the machine that is also carrying its own ssh, and a CUDA engine build is exactly
-that kind of compile (nvcc, ~30 minutes of device code). Nix prefers the external
-builder and falls back to local only when aibox is unreachable, which is what keeps a
-deploy of this box possible while the dongle is the only path to it.
+What this box pays for itself now, and why it matters more here than elsewhere: since
+2026-11-23 nothing delegates (`common/nix-gc.nix`'s header), so every build is local —
+8 threads of Skylake, and a Wi-Fi dongle as the only uplink, so a compile is work done by
+the machine that is also carrying its own ssh, and a CUDA engine build is exactly
+that kind of compile (nvcc, ~30 minutes of device code). Before that date the build went
+to aibox and only the delta crossed the dongle; now the whole compile happens here, so
+**budget it**: a `strata` input bump or a nixpkgs bump on this box is a window, not a
+`just switch`, and `systemctl stop strata` first (its ~23 GiB of resident experts is RAM a
+compile wants and nothing caps this box's `nix-daemon`). Substitution is unaffected, so a
+config-only switch still costs what it always did.
 
 ## The two things that make it different from the other services boxes
 
@@ -132,7 +135,8 @@ side-effect of onboarding.
 
 And the old build client (`/etc/nix/machines` → `ssh-ng://root@192.168.49.50`, that
 fleet's builder, unreachable from this network, which is why the box was compiling
-locally at `max-jobs = 1`). `common/build-farm.nix` replaces it with aibox.
+locally at `max-jobs = 1`) — removed, first in favour of aibox and, since 2026-11-23,
+in favour of nothing: the box builds locally and `/etc/nix/machines` is empty.
 
 And it **keeps**, on purpose: the box's own SSH host keys, the `cjdell` account, the
 disk, and the Wi-Fi credential file below.
@@ -612,7 +616,7 @@ Bootstrap facts, because the box was not always in the flake:
   and **no ssh-agent runs on these boxes** — so a `git` ssh that carries no `-i` has
   nothing to offer and walks through to `Password`, on a box whose sshd is
   `prohibit-password`, inside a job with no terminal to answer it. That half is now
-  declarative in the **system** client config — `common/build-farm.nix`'s
+  declarative in the **system** client config — `common/ssh-hop.nix`'s
   `programs.ssh.hosts`, rendered into `/etc/ssh/ssh_config` — on every flake machine.
   So this box updates itself with
   **`git pull infra`** and needs no `GIT_SSH_COMMAND` noise; that half closed on 2026-11-15
@@ -715,7 +719,7 @@ reason — binding the NVIDIA driver, above — and came back on the same genera
    escape hatch worth knowing without touching that file is **`sudo env NIX_SSHOPTS='-i …
    -o IdentitiesOnly=yes' nix copy …`**, because the URL form `?ssh-option=…` is not a thing
    (`warning: unknown setting 'ssh-option'`). The identity half of the **operator** account is
-   declarative now (`common/build-farm.nix`, `programs.ssh.hosts` — see the Bootstrap bullet and
+   declarative now (`common/ssh-hop.nix`, `programs.ssh.hosts` — see the Bootstrap bullet and
    `docs/nix-dev-workflow.md`), so `git pull infra` needs no inline `-i` on a switched box.
    Root's half is still hand-written and is an
    open item below.
@@ -744,7 +748,7 @@ Four facts, in the order that keeps each one's failure mode a different string:
    ~/.ssh/id_ed25519` re-reads it). The name `id_ed25519` is the whole reason the box needs
    no ssh config of its own: it is one of the file names ssh tries when nothing is asked for,
    and `git`'s ssh asks for nothing. It cannot be declarative: this pinned nixpkgs writes no
-   home files (`common/users.nix` names the refusal), and `common/build-farm.nix`'s identity
+   home files (`common/users.nix` names the refusal), and `common/ssh-hop.nix`'s identity
    block is keyed to **`common/hosts.nix`'s addresses on purpose**, so it does not reach
    github.com — a `Host` block that put the *LAN* hop key on the GitHub remote is the
    documented leak trap (`Permission denied (publickey)`), and a generated file cannot do it
@@ -837,6 +841,6 @@ gh api repos/leigh-hackspace/infrastructure-nix-flake/keys --jq '.[]|{title,read
 | Power | Not in `machines/gw/ups.nix`'s `shutdownTargets` (see above), and `crates/ups-watchdog/src/plan.rs`'s order list is the same three. |
 | Wi-Fi PSK | Off-flake (see above). Decide when it is racked: delete it with the dongle's reservation, or make it declarative. |
 | `/` free space | Model data moved to the NVMe, so `/` only carries the store and the generations; measured 2026-11-21 after the engine's closure, `df -h /` has tens of GiB free and the old generations are still prunable (see above) if a nixpkgs bump needs the room. |
-| Root's ssh identity | `nix copy`/remote-build ssh runs as root out of `HOME=/root`, and the identity it offers comes from a **hand-written `/root/.ssh/config`** (aibox stanza since Sep 2025, services3 added 2026-11-11 — item 5 above). The *host keys* are declarative (rule 25); the identity is not, so `nix copy` to a new box fails with `Too many authentication failures` until a stanza is added by hand or `common/build-farm.nix` grows an identity for the delegating side. **The operator account's half closed 2026-11-15:** `common/build-farm.nix` now carries `programs.ssh.hosts` for the network's own addresses (`IdentityFile ~/.ssh/agent-hop-key`, `IdentitiesOnly yes`, `ConnectTimeout 5`), rendered into `/etc/ssh/ssh_config` — the *system* file, because this nixpkgs has no home-file option in `users.users.<name>` at all (`just check` refuses it; `machines/gw/README.md`'s "authorized keys are a fact about the directory sshd reads" is the same shape). Root is **not** covered by that block: `~` in `IdentityFile` expands to `/root`, where no `agent-hop-key` exists, so root still needs its absolute-path stanza and `sudo env NIX_SSHOPTS='-i /home/leigh-admin/.ssh/agent-hop-key -o IdentitiesOnly=yes' nix copy …` remains the escape hatch. Re-verify the operator half with `ssh -G 10.3.1.20 | grep -E 'identitiesonly|agent-hop'` as `leigh-admin` (two lines once deployed; `ssh -G` also prints ssh's five built-in defaults on an unswitched box, so count them) and by the checkout's own `git remote -v` answering `origin` + `infra`. |
+| Root's ssh identity | `nix copy`/remote-build ssh runs as root out of `HOME=/root`, and the identity it offers comes from a **hand-written `/root/.ssh/config`** (aibox stanza since Sep 2025, services3 added 2026-11-11 — item 5 above). The *host keys* are declarative (rule 25); the identity is not, so `nix copy` to a new box fails with `Too many authentication failures` until a stanza is added by hand or `common/ssh-hop.nix` grows an absolute-path identity for the copying side (remote *builds* are gone since 2026-11-23, so root's ssh is now only the copy path). **The operator account's half closed 2026-11-15:** `common/ssh-hop.nix` now carries `programs.ssh.hosts` for the network's own addresses (`IdentityFile ~/.ssh/agent-hop-key`, `IdentitiesOnly yes`, `ConnectTimeout 5`), rendered into `/etc/ssh/ssh_config` — the *system* file, because this nixpkgs has no home-file option in `users.users.<name>` at all (`just check` refuses it; `machines/gw/README.md`'s "authorized keys are a fact about the directory sshd reads" is the same shape). Root is **not** covered by that block: `~` in `IdentityFile` expands to `/root`, where no `agent-hop-key` exists, so root still needs its absolute-path stanza and `sudo env NIX_SSHOPTS='-i /home/leigh-admin/.ssh/agent-hop-key -o IdentitiesOnly=yes' nix copy …` remains the escape hatch. Re-verify the operator half with `ssh -G 10.3.1.20 | grep -E 'identitiesonly|agent-hop'` as `leigh-admin` (two lines once deployed; `ssh -G` also prints ssh's five built-in defaults on an unswitched box, so count them) and by the checkout's own `git remote -v` answering `origin` + `infra`. |
 | Monitoring depth | Scraped **once services1 next switches**: the three scrape rows are in `machines/services1/services/observability.nix`, and a `dry-activate` of that change showed it would stop and restart six of services1's apps (`filestore`, `gocardless-dashboard`, `moonraker-exporter`, `prometheus`, `status-dashboard`, `switch-gui`) — the crates' unit paths move because the flake source moved. That is a services1 deploy decision (`docs/network-upgrade-runbook.md`), not a fee for adding a box, so it was not paid here. Until then the exporters run on this box and nobody reads them. Alerting is the same shape and now possible: `common/monitoring-endpoints.nix` is the gatus half, its guard wants an `https *.int` endpoint, and `strata3.int.leighhack.org` got its `/health` row in the same change as the door row — it goes live with the deferred services1 deploy, not as its own restart of six apps. |
 | GitHub credential | **Closed 2026-11-22, both halves**: the box has its own `~/.ssh/id_ed25519` registered as a repo deploy key with write access (the section above carries the receipts, the grant's rationale, and both re-verify blocks), and pushes and pulls GitHub itself; and the `github.com` keys are now the row in `common/ssh-known-hosts.nix` that this box's switch of that day carries (re-verify `grep -c github /etc/ssh/ssh_known_hosts` = `3`; before it the count was `0` and the keys came from a hand-made `~/.ssh/known_hosts`, which a reinstall loses silently). |

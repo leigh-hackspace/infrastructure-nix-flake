@@ -277,7 +277,8 @@ no swap partition on this NVMe). It is not there for the model: the arena is pag
 it can be (`LimitMEMLOCK = infinity` in `./strata.nix`), so what swaps is the overflow. It is
 there because strata measured **28.3 GiB RSS** against 30 GiB of RAM, which left ~1.5 GiB for
 Prometheus/Grafana/gatus/exporters and for the nix builds this box was the network's build
-machine for until 2026-10-17 (`common/build-farm.nix`, `maxJobs 8` then) — without it the box
+machine for until 2026-10-17 (`maxJobs 8` then; aibox held the role from then until
+2026-11-23 and nothing holds it now) — without it the box
 went unresponsive
 (journald: "Under memory pressure, flushing caches") and a build here was OOM material. If
 `--resident-experts` is ever lowered, or a bigger pack lands here, re-read this table: the
@@ -675,12 +676,16 @@ other box" bullet below.
   table above is unchanged by the bump for the same reason.
 - **How it was built, with the number, because the advice above is not enforced by
   anything.**  `nix build .#strata-cuda` here: **15 derivations, ~30 min, on this box,
-  with the engine live on the same 16 cores** — services2 has no builder
-  (`/etc/nix/nix.conf`: `builders = `), and `common/build-farm.nix` says so in its own
-  header: "services2: neither — served builds until 2026-10-17, now a client with no
-  builder".  So "build it on aibox" is a thing you do on purpose, and
-  `just build-remote machine=services2` would *fail* rather than delegate (it passes
-  `--max-jobs 0`, and there is nothing to delegate to).  The switch itself built 434
+  with the engine live on the same 16 cores** — services2 has not had a builder since
+  2026-10-17 (`/etc/nix/nix.conf` read `builders = ` then too), and since 2026-11-23 no
+  box has: nothing in the tree sets `nix.buildMachines` or `nix.distributedBuilds`, so
+  **every build is local on this box, bounded by nothing** (no `nix-daemon` cap is declared
+  for services2 or services3 — see `common/nix-gc.nix`'s header for who is capped and why).
+  That makes the numbers here the whole cost, and it makes "stop `strata` first" the
+  difference between a slow bump and an OOM: ~23 GiB of Coder arena against 30 GiB of RAM
+  is not a margin a 15-derivation engine build respects.  `just build-remote` is deleted;
+  the idiom it used (`--max-jobs 0`) is now only a way to forbid yourself work.
+  The switch itself built 434
   derivations, because this checkout was 27 commits behind `origin/main` (rule 20 —
   fast-forward it first; the extra 419 were that, not the bump).
 - **Gates**: `just check` was red on arrival, and not from this change —

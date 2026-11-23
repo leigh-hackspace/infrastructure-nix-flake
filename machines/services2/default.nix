@@ -8,11 +8,14 @@
 }: {
   networking.hostName = "services2"; # Define your hostname.
 
-  # services2 no longer serves remote builds (2026-10-17): aibox is the network's
-  # builder now (common/build-farm.nix).  The reason is in this box's STRATA.md —
-  # its 30 GiB of RAM is the Coder engine's, and a delegated build competing with
-  # the engine was the box's worst failure mode.  It still builds locally, and
-  # keeps its 211 GB of free store.
+  # services2 has built only for itself since 2026-10-17, when aibox took the network's
+  # builds; aibox gave that role up on 2026-11-23 (common/nix-gc.nix's header is the why),
+  # so this box is back to being a plain client of nothing.  The reason it stopped is in
+  # this box's STRATA.md and it still holds — its 30 GiB of RAM is the Coder engine's, and
+  # a build competing with the engine was the box's worst failure mode.  That is also why
+  # *this* box, despite having the most cores on the network (16), is not where
+  # `just check-build` belongs: the gate is memory-bound, and the biggest memory on the
+  # network is aibox's.  It keeps its 211 GB of free store.
 
   imports = [
     ./sops.nix

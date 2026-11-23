@@ -90,7 +90,9 @@
   # Prometheus/Grafana/gatus/exporters leaves ~1.5 GiB of headroom.  Without
   # swap the box goes unresponsive under that pressure - journald logs
   # "Under memory pressure, flushing caches" - and a build here (this box was the
-  # network's builder until 2026-10-17, common/build-farm.nix; maxJobs was 8) has
+  # network's builder until 2026-10-17 and aibox held the role until 2026-11-23,
+  # when every box went back to building for itself - common/nix-gc.nix's header;
+  # maxJobs was 8 here) has
   # nowhere to go and gets OOM-killed.  Swap is the safety net: the arena is page-
   # locked where it can (`LimitMEMLOCK = infinity` in ./strata.nix), so what
   # swaps is the overflow, not the model.

@@ -25,32 +25,38 @@ switch:
 
 # --- where builds may run ----------------------------------------------------
 #
-# The router must not compile anything, and since 2026-10-21 it cannot: gw delegates every
-# build to aibox and sets `nix.settings.max-jobs = 0`, which is the half that removes the
-# silent local fallback (common/build-farm.nix documents that `--max-jobs 0` "does not enable
-# delegation, it removes the local fallback").
+# The router may compile, but only for itself, and only a little: since 2026-11-23 gw
+# builds its own closures at `nix.settings.max-jobs = 2` inside a `nix-daemon` cgroup
+# capped at 3 GiB throttled / 4.5 GiB refusing, out of its 7 GiB
+# (`machines/gw/default.nix`).  Before that it delegated everything to aibox and held
+# `max-jobs = 0`, which was the half that removed the silent local fallback rather than
+# the half that enabled delegation.
 #
-# The guard stays anyway, and the reason is not compilation: **evaluation still happens on
-# the box you are standing on**, and a 4-core router is also the network's resolver.
+# The guard stays, and the reason is not the compile alone: **evaluation still happens on
+# the box you are standing on**, and a 4-core router is also the network's resolver.  A
+# five-toplevel `just check-build` or a crate test suite on 7 GiB is the thing being
+# refused, not the router's own switch.
 # `check-eval` and `fmt` are eval/format only and stay allowed there; `check` is allowed too
 # but skips its flake step here, with the reason printed (see that recipe).  Every
 # build-shaped recipe below depends on this guard — `deploy`/`switch` deliberately do not:
-# they are how a machine installs itself, and the build is aibox's either way.  What it replaced — the devShell that *was*
+# they are how a machine installs itself, and the compile it needs is its own, bounded.
+# What it replaced — the devShell that *was*
 # a build, and the split toolchain that closed it — the full allowed/refused table, and what to
 # read if rustc ever appears on the router again: docs/nix-dev-workflow.md,
-# "Never build on the router".
+# "The router builds for itself, bounded".
 #
-# Build on aibox (the network's builder).  If you genuinely need to build on the
-# router, say so explicitly.  Deploying the router is *not* a build on the router and is
-# not guarded: `just switch` here, or `just deploy gw` from anywhere, evaluates on gw and
-# compiles on aibox — which is also what every other box does for itself (`just deploy`).
+# If you genuinely need the router to compile the fleet, say so explicitly.  Deploying the
+# router is *not* a build on the router in this guard's sense and is not guarded: `just
+# switch` here, or `just deploy gw` from anywhere, evaluates and activates on gw and
+# compiles there only if a crate or nixpkgs moved — which is what every other box does for
+# itself.
 _build-host-guard:
     #!/usr/bin/env bash
     set -euo pipefail
     if [ "$(hostname)" = "gw" ] && [ -z "${INFRA_ALLOW_BUILD_ON_ROUTER:-}" ]; then
-        echo "refusing: this is gw, the network's router — builds delegate to aibox and evaluation costs this box." >&2
-        echo "  Run this from aibox or services1 instead (AGENTS.md, 'Don't build on the router')." >&2
-        echo "  Nothing here compiles locally either way: nix.settings.max-jobs is 0, so there is no fallback to fall back to." >&2
+        echo "refusing: this is gw, the network's router — 4 cores, 7 GiB, and it answers DNS." >&2
+        echo "  It builds for itself (max-jobs 2, capped cgroup); it is not the fleet's build host."
+        echo "  Run this from aibox instead (AGENTS.md rule 22)." >&2
         echo "  Override with INFRA_ALLOW_BUILD_ON_ROUTER=1 only if you really mean it." >&2
         exit 1
     fi
@@ -60,21 +66,25 @@ _build-host-guard:
 # `just switch` is this box.  `just deploy <machine>` is any box: it sshs to the target,
 # brings *the target's own checkout* to the commit this box is on, and runs
 # `nixos-rebuild switch` **there** — so the machine that evaluates, activates and confirms is
-# the machine being deployed.  The compilation is still aibox's (the target's daemon delegates
-# to it, `common/build-farm.nix`); the point is that no box is the fleet's deploy host.
+# the machine being deployed.  Since 2026-11-23 the compile is the **target's own** (nothing
+# delegates anywhere; `common/nix-gc.nix`'s header is the withdrawal), and the point is
+# unchanged: no box is the fleet's deploy host.
 #
 # This replaces the pair that made services1 the centre of the fleet: `switch-gw` built *here*
 # and pushed the closure to the router with `--target-host`, and `sync-gw` rsynced this whole
 # working tree over the router's checkout with `--delete`.  Both were written when gw had no
-# builder and no GitHub key.  Neither is true any more: gw delegates to aibox and holds
-# `max-jobs = 0` (2026-10-21), so it builds its own toplevel without compiling anything, and
+# builder and no GitHub key.  Neither is true any more: gw builds its own toplevel (bounded,
+# `machines/gw/default.nix`), it has a GitHub key of its own for fetching the commit
+# (rule 33), and pushing a closure to it would need a daemon-trust grant it no longer has
+# (`machines/gw/configuration.nix`).  So
 # the commit travels as a git fetch from whichever box ran the recipe rather than as an rsync
 # of a working tree — which is also why `sync-gw`'s `.git/config`-eating bug
 # (`docs/follow-ups.md`) is closed by deleting the recipe instead of by another exclusion.
 #
 # What it costs: the target evaluates its own configuration, and the target pays for it.  On
 # gw that is seconds of the network's resolver per deploy, which is the honest price of not
-# making another machine the deploy host; nothing compiles there either way (`max-jobs = 0`).
+# making another machine the deploy host; if a crate or nixpkgs moved, it also pays a bounded
+# compile there (`max-jobs = 2`, 3/4.5 GiB cgroup).
 #
 # Run from any box that has the commit.  On the target itself the recipe degenerates to
 # `just switch`, so `just deploy gw` does the right thing wherever it is typed.
@@ -118,8 +128,8 @@ deploy machine:
     # aibox's /etc/fstab bind-mounts the Pi Room netboot squashfs **from a store path**, so
     # every nixpkgs bump moves the mount's source and activation's restart of a
     # boot-generated unit fails: `switch-to-configuration` exits 4 *after* flipping
-    # /run/current-system, which arms the five-minute rollback countdown on the network's
-    # builder.  Unmounting first (lazily, so a client mid-boot keeps its handles) makes
+    # /run/current-system, which arms the five-minute rollback countdown on the box that
+    # hosts the engine.  Unmounting first (lazily, so a client mid-boot keeps its handles) makes
     # activation start the mount on the new path and exit 0 - measured 2026-11-15, and the
     # step lives *inside* the remote heredoc below rather than in a heredoc of its own,
     # because `just` strips one indent level and a nested terminator survives indented,
@@ -162,6 +172,6 @@ deploy machine:
     just pending-reboot "$machine" || true
 
 # Kept because the docs and the router's own README name it: deploying the router is
-# deploying gw like any other box — the difference is only that gw cannot compile, and it
-# never could since it delegates to aibox (`machines/gw/default.nix`).
+# deploying gw like any other box — the difference is only that a compile there is capped
+# to 2 jobs and 4.5 GiB, because it is the network's resolver (`machines/gw/default.nix`).
 switch-gw: (deploy "gw")

@@ -60,7 +60,7 @@ other half of why it matters — those commands answer *"did you type this here?
 | --- | --- |
 | `just switch` (`nixos-rebuild switch --flake .`) | nixos-rebuild-ng's `Flake.parse` builds `nixosConfigurations."{attr or uname -n(target_host) or default}"`. With no `#<machine>` and no `--target-host`, `attr` is empty and `_get_hostname(None)` is `platform.node()`: **`--flake .` means the box you are standing on**, and `just switch` can only ever deploy *this* machine — a mistaken machine name is not what bites, a mistaken idea of where you are is. With `--target-host` it runs `uname -n` on the far side instead, so a push that named no `#<machine>` asked the *remote*'s hostname what to build — the same fact, read on the other side of the hop. |
 | `just deploy <machine>` | `me=$(hostname)`; when it equals the machine it prints `=== <m> is this box: switching here` and runs the switch locally. **The recipe is correct typed on any box, self-hop included** — hand-written ssh chains are where the mistake lives. |
-| `_build-host-guard`, hence `just check-build` / `just test` / `just clippy` / `just build-frontend` / the `just filestore-*` family / `just switch-gui-test` / `just build-remote` | `[ "$(hostname)" = "gw" ]` — a refusal is a question about where you typed, so "run it on aibox" is a *move*, not an override (rule 22 says why it is also not a workaround for the flake step of `just check`). |
+| `_build-host-guard`, hence `just check-build` / `just test` / `just clippy` / `just build-frontend` / the `just filestore-*` family / `just switch-gui-test` | `[ "$(hostname)" = "gw" ]` — a refusal is a question about where you typed, so "run it on aibox" is a *move*, not an override (rule 22 says why it is also not a workaround for the flake step of `just check`). |
 | `just check` | skips its flake step on `gw` and prints why — the skip is a fact about this box, so quoting a green `just check` names the box it ran on. |
 
 Two name collisions to keep apart while mapping a hostname to an address:
@@ -408,7 +408,7 @@ box somebody visited, and nothing in the tree says so.
 
 The fix is in the tree: `common/ssh-known-hosts.nix` (DATA — the four flake machines,
 rsa + ed25519 each, addresses from `common/hosts.nix`) handed to
-`programs.ssh.knownHosts` from `common/build-farm.nix`, so it lands in
+`programs.ssh.knownHosts` from `common/ssh-hop.nix`, so it lands in
 `/etc/ssh/ssh_known_hosts` on every box that imports `commonModules`, and the
 daemon's ssh is the pin whether or not its root ever visited anything. `just
 known-hosts` prints the lines to paste in, for the day a box is reinstalled or
@@ -740,7 +740,7 @@ It bites only when the store has to answer that drv rather than *substitute* it:
 new both times because with a warm store the package substitutes and the flag is never
 exercised. **Since 2026-11-23 aibox carries `nix.settings.sandbox = "relaxed"`**
 (`machines/aibox/configuration.nix`, whose header owns the measurements and the cost), so
-the gate run on the builder answers, and services1 keeps its own copy for its own switch.
+the gate answers where it is typed — aibox — and services1 keeps its own copy for its own switch.
 `relaxed` is `true` plus network for a derivation that *asks*, so nothing that does not ask
 is any less hermetic than it was; `just noChroot` names what asks, on the box you are on,
 and is the probe that makes "which box can build what" a question instead of an hour lost
@@ -788,7 +788,7 @@ a machine's behaviour.
   ```
 
   Two boxes, one path, and the symptom is on the far side: a `just check-build` that dies
-  after 898 derivations, with nothing on the builder to explain it. It is not disk rot (the
+  after 898 derivations, with nothing on the box that built them to explain it. It is not disk rot (the
   journal was clean; `ext4` does not checksum) and it is not tampering.
 
   **Fix:** for the file-set class, delete exactly the newer-than-epoch entries under
@@ -1057,7 +1057,7 @@ Sep 2025, services3's added 2026-11-11) that name an identity for *root* only, t
 recipe in `just/deploy.just` passes `GIT_SSH_COMMAND` inline per call, and the operator
 account had nothing at all.
 
-The fix, in the tree: `common/build-farm.nix` — the module that already owns the
+The fix, in the tree: `common/ssh-hop.nix` — the module that owns the
 *host* half of this hop (`programs.ssh.knownHosts`) — now also owns the identity half,
 as `programs.ssh.hosts`: one block whose attribute name is the space-joined host list
 **generated from `common/hosts.nix`** (the same table `just deploy` and `just known-hosts`
@@ -1257,64 +1257,81 @@ since: `identitiesonly no` plus ssh's five built-in defaults (`id_rsa`, `id_ecds
 the proof; `git ls-remote infra main` is the half that proves the stanza is the thing a
 `git` ssh actually uses.
 
-## Remote building (aibox is the builder)
+## Nothing delegates now: every box builds for itself (2026-11-23)
 
-`common/build-farm.nix` sets `nix.distributedBuilds = true`, and nix 2.34 then
-*prefers* the external builder for every build, falling back to local only when no
-builder is available. **`--max-jobs 0` does not enable delegation, it removes the
-local fallback.** So a plain `nix build` / `just switch` on services1 builds on
-aibox and copies the result back; `just build-remote` offloads deliberately. The
-builder used to be services2; it moved to aibox on 2026-10-17, when strata was
-parked there to give the builds its 59 GiB of RAM (the 6-core `maxJobs` in
-`machines/services1/default.nix` is aibox's, not services2's 8).
-Flip `nix.distributedBuilds = false` in `common/build-farm.nix` to go back to
-local-only. **Before believing a hop is configured, believe the host keys**: the
-hop's ssh is the daemon's, not the operator's, and it fails with `Host key
-verification failed` long before the build starts —
-`common/ssh-known-hosts.nix` and `just known-hosts` are the pin and its
-regeneration, and the receipts for why an empty `/etc/ssh/ssh_known_hosts` breaks
-`nix build` while `ssh -i ~/.ssh/agent-hop-key …` works are below, at "The hop
-itself was broken, separately".
+From 2026-10-17 to 2026-11-23 aibox was the network's builder: `common/build-farm.nix`
+set `nix.distributedBuilds = true` on its clients, and nix 2.34 then *preferred* the
+external builder for every derivation, falling back to local only when no builder was
+available. Two lessons from that period are load-bearing and outlived it:
 
-**The delegating half that is easy to miss: the builder substitutes its own inputs.**
-`common/build-farm.nix` sets `nix.settings.builders-use-substitutes = true` wherever it
-sets a `builderHost`, and until 2026-10-25 it did not — so from the day remote building went
-on, every input of every delegated build was substituted by *the client* and then uploaded
-to aibox.  That is nix's default (`false`), not a decision anybody made here, and it has the
-shape of "the build farm is slower than it should be": a nixpkgs bump is hundreds of paths
-that are already on cache.nixos.org, and with the setting off services1 downloads all of
-them and ships them over the hop before aibox can start, with aibox's job slots idle.  With
-it on, `nix.conf(5)`'s own words are that remote hosts "fetch as many dependencies as
-possible from their own substituters (e.g, from `cache.nixos.org`) instead of waiting for the
-local machine to upload them all".  Nothing aibox cannot substitute changes: that is what
-the ssh-ng builder asks the client for.  To see the difference, delegate a build of
-something with a large input closure and read aibox's journal for `substituting '…'` rather
-than a stream of `copying path` from here.  It is a **client-side** setting, so a box that
-adds a builder gets it from the module and a box that serves builds needs nothing.
+* **`--max-jobs 0` never enabled delegation; it removed the local fallback.** Delegation
+  was `nix.buildMachines` **and** `nix.distributedBuilds` together (the module set the
+  second because `nix-remote-build.nix` nulls `nix.settings.builders` without it, which is
+  how `/etc/nix/machines` can be right and `--max-jobs 0` still fail with "local builds are
+  disabled"). The only thing `0` did was turn "silently compiles here" into "fails loudly".
+  That idiom is still the right way to ask the question — it is now a **bound** on two boxes
+  rather than a prohibition on one, below.
+* **The builder had to trust the client's ssh user, and the client had to let the builder
+  substitute.** `require-sigs` made a daemon refuse to build input-addressed derivations for
+  an untrusted user — 2026-10-11's `you are not privileged to build input-addressed
+  derivations`, from the sops-secret derivations that are built *during evaluation* — and
+  `builders-use-substitutes` (nix's default is `false`) decided whether a nixpkgs bump meant
+  the client downloading every input and shipping it over the hop with the builder's job
+  slots idle, which is what "the build farm is slow" measured as on 2026-10-25. Neither
+  setting is in this tree now. `common/ssh-hop.nix`'s footer is the five-item list of what
+  re-enabling delegation takes, and `git show 83b5ba3^:common/build-farm.nix` is that
+  module's last day in the tree.
 
-Verified working 2026-10-12 (delegated build and a `--max-jobs 0` build both
-completed on services2 and copied back, with no SIGKILL sweep on either box) — the
-fix that made that true is `common/nixbld.nix`, whose header is the mechanism behind the
-incident. The hop itself is box-agnostic (the same
-key, user and `nix.settings.trusted-users` entry on both ends); re-verify it after
-the move with one delegated build rather than inheriting that date. Poll a
-delegated build rather than trusting it: **a remote builder that silently falls
-back to local is one of the failure modes only polling catches.**
+What ended it was arithmetic, not preference. The builder's 59 GiB was the engine's —
+strata had been un-parked there on 2026-10-28 while the module justifying the arrangement
+went on saying its RAM was free — so a build and a 33-39 GiB expert arena shared a 59 GiB
+box with 8.8 GiB of swap, on an iGPU whose every "VRAM" page is a page Linux may be
+moving. The engine died twice on 2026-11-21 (kernel OOM-killer, during a netboot squashfs
+build) and once on 2026-11-23 (its own watchdog, 844 MiB free, 2.2 GiB in swap). The
+receipts, the `/proc/vmstat` totals and the per-request driver-pause numbers are in
+`machines/aibox/STRATA.md`; the fix is `machines/aibox/configuration.nix` (the ceiling)
+and `machines/aibox/strata.nix` (the protection).
 
-## Never build on the router
+So the fleet's build capacity is now wherever you happen to be standing, and the two boxes
+that share themselves with something that must keep answering carry a declared ceiling:
 
-gw is a router, not a builder: 4 cores, 8 GB, and it answers DNS and DHCP for every
-VLAN. Since 2026-10-21 it is also a **client** of the network's builder
-(`infra.buildFarm.builderHost = HOSTS.aibox` in `machines/gw/default.nix`, so
-`common/build-farm.nix` writes `/etc/nix/machines` here and turns on
-`nix.distributedBuilds`) and it runs its own daemon with **`nix.settings.max-jobs =
-0`** (not the deprecated `nix.maxJobs` alias — the setting is load-bearing, so it must
-not become a hard error the day nixpkgs deletes the alias). That
-second half is what makes the rule mechanical: remote building *prefers* the builder
-and falls back to local in silence, and `max-jobs = 0` removes the fallback — a build
-aibox cannot take fails instead of compiling on the gateway. Check both with `nix
-config show | grep max-jobs` and `cat /etc/nix/machines`. The GC half of that module is
-deliberately off on this box (`infra.buildFarm.gc = false`).
+| box | what a build may spend there | bounded because of |
+|---|---|---|
+| aibox | `max-jobs = 4`; `nix-daemon` 12 GiB `MemoryHigh` / 18 GiB `MemoryMax`; `MemoryMin = 40G` on `strata.service` | the Strata endpoint |
+| gw | `max-jobs = 2`; `nix-daemon` 3 GiB `MemoryHigh` / 4.5 GiB `MemoryMax` | DNS, DHCP, RA and the front door, in 7 GiB |
+| services1, services2, services3 | nothing declared | their RAM is already theirs |
+
+Type the fleet gate where the arithmetic works: **`just check-build` on aibox** — 59 GiB
+and 12 threads, against services1's 15 GiB, services2's ~1.5 GiB of headroom and a router
+that refuses it. It is slower there than it was with 12 unbounded jobs and no engine, and
+that is the trade that was chosen: the endpoint answers, the build queues. The escape hatch
+for a pass that genuinely needs the RAM is per-boot and visible,
+`sudo systemctl set-property nix-daemon.service MemoryMax=32G MemoryHigh=24G`, or
+`systemctl stop strata` for a browser link.
+
+`just build-remote` went with the rest of it — `git show 83b5ba3:just/build.just` has the
+recipe, and item 4 above is the flag it existed to pass.
+
+The build-user lesson is nothing to do with who compiles and still applies:
+`common/nixbld.nix`. And polling still beats waiting: **a build that quietly ran on the box
+you are standing on instead of the one you meant is one of the failure modes only polling
+catches**, which is what the next section's table is for.
+
+## The router builds for itself, bounded
+
+gw is a router, not a build host: 4 cores, 7 GiB, and it answers DNS and DHCP for every
+VLAN. Until 2026-10-21 it compiled here **unbounded**; from then until 2026-11-23 it
+compiled **nowhere** (it delegated to aibox and held `nix.settings.max-jobs = 0`, so there
+was no fallback to fall back to); since 2026-11-23 it compiles **here, capped** —
+`nix.settings.max-jobs = 2` (not the deprecated `nix.maxJobs` alias; the setting is
+load-bearing, so it must not become a hard error the day nixpkgs deletes the alias) and
+`nix-daemon.service` at `MemoryHigh = 3G` / `MemoryMax = 4500M`, because builds are
+children of the daemon and that cgroup is where a runaway `rustc` lands. Check both after a
+switch with `nix config show | grep max-jobs` and
+`systemctl show nix-daemon -p MemoryHigh -p MemoryMax --value`; `/etc/nix/machines` is
+declaratively empty, so its being absent is now the correct reading. GC stays off on this
+box (`infra.nixGc.enable = false`) — a router that walks and rewrites its own store on a
+timer is an unasked-for second opinion about the rollback profile.
 
 One thing to know when a renamed option complains: the warning names the file NixOS
 thinks defined it — `The option \`nix.maxJobs\` … defined in
@@ -1326,8 +1343,8 @@ the head of it means nothing; chasing `flake.nix` costs a read of 400 lines that
 mention the option.
 
 So the accident is gone and the rule is not: **evaluation is still paid on the router**,
-and the deliberate deploy path is still build-there-and-push. Keeping "evaluates" and
-"builds" apart still matters, because `just check` here is eval-only on purpose.
+and so is now, deliberately and in a capped cgroup, a bounded compile. Keeping "evaluates"
+and "builds" apart still matters, because `just check` here is eval-only on purpose.
 
 **`nix develop` used to be a build.** The one devShell `flake.nix` had depended on
 `CRANE.wasmBindgenCli`, the pinned wasm-bindgen CLI, which is compiled from source with
@@ -1348,16 +1365,17 @@ The split is now explicit:
 | Safe on gw (eval/format only) | Refused on gw by `_build-host-guard` |
 | --- | --- |
 | `just check` (`nix flake check --no-build`, `nix eval`, `nix fmt -- --check`) | `just test`, `just clippy` (cargo, over the workspace) |
-| `just fmt` (`nix fmt`, formatter from the flake's pinned nixpkgs) | `just check-build` (builds all four toplevels) |
-| reading rendered files, `nixos-rebuild dry-run`, `just switch` / `just deploy <box>` (the box evaluates and activates itself, aibox compiles) | `just build-frontend`, `just filestore-dev`, `just filestore-test`, `just switch-gui-test` |
-| | `just build-remote` (no local fallback by design) |
+| `just fmt` (`nix fmt`, formatter from the flake's pinned nixpkgs) | `just check-build` (builds all five toplevels) |
+| reading rendered files, `nixos-rebuild dry-run`, `just switch` / `just deploy <box>` (the box evaluates, activates, confirms — and compiles its own crate, 2 jobs, capped) | `just build-frontend`, `just filestore-dev`, `just filestore-test`, `just switch-gui-test` |
 
 **Deploying a box is not on the refusal list, and that is the shape of the fleet now:**
 `just switch` deploys the machine it runs on, `just deploy <machine>` sshs there and does the
-same thing, and in both cases the evaluation is on the target while the compilation is
-aibox's. That is what replaced the old `just switch-gw`-from-services1 push path, which made
-one box the deploy host for another (see `machines/gw/README.md`, "How this box is
-deployed").
+same thing, and in both cases the evaluation and — since 2026-11-23, bounded — the
+compilation are the target's. That is what replaced the old `just switch-gw`-from-services1
+push path, which made one box the deploy host for another (see `machines/gw/README.md`,
+"How this box is deployed"). That path is not merely unfashionable: pushing a closure *to*
+gw needs a `trusted-users` grant this box no longer has anywhere
+(`machines/gw/configuration.nix`, and item 2 above).
 
 `just fmt`/`fmt-check` used to run `nix develop` for alejandra. They now use
 `nix fmt`, which takes the formatter from the flake's `formatter` output — a
@@ -1365,15 +1383,16 @@ substitutable nixpkgs package, so a *format* check can never be the reason a box
 compiles anything. `just check` also now passes `--no-build` to `nix flake check`
 (plain `flake check` builds the `checks` output, if there is one).
 
-Build on **aibox** (the network's builder) or services1. The guard is a belt and
-braces, not a substitute for knowing which recipe you are running: it only checks
-`hostname = gw`, and `INFRA_ALLOW_BUILD_ON_ROUTER=1` deliberately overrides it. If
+Build on **aibox** (the biggest box, and where the gate is typed) or services1. The guard
+is a belt and braces, not a substitute for knowing which recipe you are running: it only
+checks `hostname = gw`, and `INFRA_ALLOW_BUILD_ON_ROUTER=1` deliberately overrides it. If
 rustc ever appears on the router again, `pgrep -a rustc` then `ps -eo pid,args | grep
 -E 'cargo|wasm-bindgen'` names the derivation; kill the build, and check whether the
 client was `nix develop` (this rule) or a plain `nix build` — the second means either a
-trusted client passed `--option max-jobs N` (deliberate) or the delegation has been
-un-configured again: `nix config show | grep max-jobs` should say 0 and
-`/etc/nix/machines` should name 10.3.1.32.
+client passed `--option max-jobs N` (deliberate) or the cap has been moved under:
+`nix config show | grep max-jobs` should say **2** on gw and **4** on aibox,
+`systemctl show nix-daemon -p MemoryMax --value` should say the box's ceiling, and
+`/etc/nix/machines` should be empty on every box.
 
 
 `build-users-group` is not a permissions group, it is the **pool of UIDs nix runs

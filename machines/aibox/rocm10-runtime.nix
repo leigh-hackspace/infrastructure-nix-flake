@@ -46,10 +46,11 @@
 # ---------------------
 # 8.05 GB down from Docker Hub, ~16 GB extracted, `allowSubstitutes = false`
 # because nothing mirrors a blob this size.  Every box that *builds* this system
-# rather than substituting it pays that once — so build aibox here (this is the
-# network's builder, common/build-farm.nix) and remember that `just check-build`
-# somewhere else is a 24 GB-shaped first run.  This box's `nix.gc` runs
-# `--delete-older-than 30d` (common/build-farm.nix), which reclaims the 16 GB again
+# rather than substituting it pays that once — so build aibox here (it is the box with
+# the 84 G of free store and the RAM to spend, and `just check-build` is typed here for
+# the same reason) and remember that `just check-build`
+# somewhere else is a 24 GB-shaped first run.  This box's garbage collection runs
+# `--delete-older-than 30d` (common/nix-gc.nix), which reclaims the 16 GB again
 # the moment the service stops referencing it.
 #
 # Updating: set `imageDigest` + `layerDigest`/`layerSize` from the new image with

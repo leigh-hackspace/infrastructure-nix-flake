@@ -28,9 +28,10 @@
 # First answer wins, so this is the quality ordering as much as the resilience one.
 # Measured 2026-11-16 with `just slack-agent-probe` and `just slack-agent-ask` and
 # re-measured 2026-11-21 when services3 changed engine: services2 answers the
-# tool-calling benchmark correctly and is the box most likely to be stopped for a
-# build (its RAM *is* the engine), aibox is a bigger general model with twice the
-# context, and services3 now serves **the same Coder pack as services2** on an 11 GB
+# tool-calling benchmark correctly; aibox is a bigger general model with twice the
+# context and, since 2026-11-23, the box whose RAM is no longer shared with the fleet's
+# builds (machines/aibox/STRATA.md is the record of what that sharing cost the engine), and
+# services3 now serves **the same Coder pack as services2** on an 11 GB
 # Pascal card — same answers, ~18 tok/s decode against services2's ~45, and a first
 # token that can take minutes, so it is the third arm and not the first. `zen3` is
 # excluded from the agent because it is off-network and unreachable from several of
