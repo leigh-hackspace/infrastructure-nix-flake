@@ -301,6 +301,23 @@ pub fn run(
                 Ok(a) => answer = Some(a),
                 Err(e) => ask_error = Some(e),
             }
+            // **The fast path has no tokens, and the room still has to hear it.** A
+            // deterministic answer (`space_status`, the clock, a temperature) arrives as one
+            // `answer` event with `first_token_ms == 0`: nothing streamed, so the splitter was
+            // never fed, and a pipeline that speaks only what it streamed would answer the most
+            // common question in the room with a **silent** 200. Measured on the deployed
+            // gateway: `answer` at 8 ms, `0 sentence(s)`, no audio. So whatever never arrived
+            // part by part is handed to the same splitter now — same `spoken::speakable`
+            // budget, same worker, same rules — and `sentences == 0` after this point means the
+            // answer genuinely had nothing speakable in it.
+            if pipe.timings.parts == 0 {
+                if let Some(a) = answer.as_ref() {
+                    if !a.text.trim().is_empty() {
+                        let text = a.text.clone();
+                        pipe.on_token(&text, &say_tx);
+                    }
+                }
+            }
             // The answer is done. Anything the splitter is still holding is the **end of the
             // answer** and goes through the same worker as every other sentence: the voice thread
             // owns the process, so speaking here as well would be a second writer to it.
@@ -740,6 +757,63 @@ mod tests {
             w.detail.contains("already final"),
             "warm-up report said {:?} — expected the skip, not an attempt",
             w.detail
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A deterministic answer arrives as one `answer` event with nothing streamed, and the room
+    /// must still hear it: an assistant that answers "is the space open" by silently returning a
+    /// well-formed 200 is broken in the way nobody notices until someone says it out loud.
+    #[test]
+    fn a_fast_path_answer_with_no_streamed_text_is_still_spoken() {
+        let dir = testkit::tmp("fastpath");
+        // Exactly what `slack-agent` sends when the recogniser answered: `start`, then `answer`.
+        let (bot, _thread) = agent(
+            vec![
+                ("start", r#"{"tools":["space_status"]}"#.to_string(), 0),
+                answer_event("Leigh Hackspace is CLOSED, since 17:44 UTC."),
+            ],
+            1,
+        );
+        let stt = stt::Client::new("http://127.0.0.1:1", None);
+        let opts = Options {
+            warm: false,
+            ..Default::default()
+        };
+        let mut seen = Seen {
+            names: vec![],
+            at: vec![],
+            audio: 0,
+            tokens: String::new(),
+            warns: vec![],
+        };
+        let mut sentences = 0;
+        let started = Instant::now();
+        run(
+            Input::Text("is the space open".into()),
+            &opts,
+            &stt,
+            &bot,
+            &voice(&dir, 9, 0),
+            &mut |o| {
+                seen.watch(started, o);
+                if let Out::Done(t) = o {
+                    sentences = t.sentences;
+                }
+                true
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            seen.tokens, "",
+            "the fast path must not invent streamed tokens"
+        );
+        assert!(
+            seen.audio > 0 && sentences > 0,
+            "silent fast path: {} audio chunk(s), {} sentence(s) — {:?}",
+            seen.audio,
+            sentences,
+            seen.names
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

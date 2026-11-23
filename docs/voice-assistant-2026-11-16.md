@@ -513,6 +513,27 @@ expectations below are arithmetic, not results:
 | rest of the answer | after the whole answer | while it is still being generated |
 | piper cost per sentence | ~2.5 s (process startup) | the ONNX forward pass, startup paid once |
 
+### The first deploy found the second bug the fixtures could not see
+
+Same box, ten minutes later. `just voice-turn "is the space open"` returned a well-formed,
+fast, **silent** turn:
+
+```
+     2 ms  log      10 tools: calculate, camera_activity, …
+     8 ms  answer   Leigh Hackspace is CLOSED, since 17:44 UTC (6h 25m ago).
+     8 ms  done     first audio 0 ms · 0 sentence(s) · 6 ms total
+```
+
+8 ms is the deterministic fast path doing its job (`engine: none (fast path)`), and it is the
+reason the streaming pipeline never saw any text to speak: the fast path answers in one
+`answer` event, with no `partial` events, and the new code fed piper **only** from the stream.
+So the assistant's most common question in the room would have been answered with silence, and
+every test stayed green because the fake model always streamed. The hand-back now lives in
+`turn.rs` (no streamed text ⇒ the answer's text goes through the same splitter, same budget,
+same worker), pinned by a test that fails with `["log", "answer", "done"]` and no audio if you
+remove it — and `0 sentence(s)` in the `done` event is the number to look at when a turn is
+quiet, because after that hand-back it can only mean *nothing speakable*.
+
 ### The one thing that reached production before it was true, and what the box said
 
 The warm-up was switched on by default with the first deploy, and the two journals said:

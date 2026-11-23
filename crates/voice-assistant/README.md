@@ -265,6 +265,21 @@ stops — no more whisper slices, no more model tokens, no more sentences to pip
 cancelled by a closed socket must not be logged as an error, or a page someone navigated
 away from reads as an outage.
 
+### A streamed answer is spoken sentence by sentence — so what speaks an answer that streamed nothing?
+
+The deterministic fast path (`space_status`, the clock, a room temperature) answers with one
+`answer` event and `first_token_ms == 0`: no `partial` events at all, because no model ran. A
+pipeline that feeds piper only from the stream would answer *"is the space open"* — the most
+common question in the room — with a **silent** well-formed 200. That is exactly what the first
+deployed version did (`answer` at 8 ms, `0 sentence(s)`, no audio), found by running the verb
+against the live box, which is the kind of fault no unit test of a fake model will show you
+unless someone writes the fake to behave like the fast path. So: if no text ever streamed, the
+`answer` event's text goes through the **same** splitter, the same `spoken::speakable` budget
+and the same worker, and `sentences == 0` in the timings afterwards then means the answer
+genuinely had nothing speakable in it rather than that this code forgot.
+`turn::tests::a_fast_path_answer_with_no_streamed_text_is_still_spoken` is the falsifiable
+version (with the hand-back removed it fails with `["log", "answer", "done"]` and zero audio).
+
 ### The warm-up rule: fire it while someone is still talking, or do not fire it
 
 Deployed and switched on once, the warm-up produced this line in the bot's own journal:
