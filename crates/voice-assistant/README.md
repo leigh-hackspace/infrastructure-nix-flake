@@ -225,12 +225,11 @@ So `turn.rs::run` overlaps them, and the only number a person in the room experi
   of their sentence. `Rolling`'s seam-deduplication exists because whisper will happily
   transcribe "the space is" / "is open" as "the space is" / "is open" — or as "the space is
   the space is open", and both spellings are wrong in different ways.
-- **`gateway.rs`** (satellite side) and the side thread in `run` fire a **prefill**:
-  a `max_tokens: 1` chat call with the real prompt prefix, so the engine is holding this
-  conversation before the real request arrives. `max_tokens: 0` is ignored by these
-  engines (measured; see `crates/slack-agent/src/engine.rs`), so it is `1` and the one
-  token is thrown away. `usage.prompt_tokens_details.cached_tokens` is the receipt that
-  says whether it worked, and `status.json` publishes it.
+- **`gateway.rs`** (satellite side) and `run` can fire a **prefill**: a `max_tokens: 1` chat
+  call with the real prompt prefix, so the engine is holding this conversation before the real
+  request arrives. `max_tokens: 0` is ignored by these engines (measured; see
+  `crates/slack-agent/src/engine.rs`), so it is `1` and the one token is thrown away.
+  **It is off by default, because the box told us to stop** — see the warm-up rule below.
 - **`agent.rs::ask_stream`** reads the model's SSE and hands over each `partial` as it
   lands. The tool-call fragments that arrive keyed by `index` are reassembled in
   `slack-agent`, not here.
@@ -265,6 +264,42 @@ on the whole answer and the pipeline's entire point arrives as one slow 200.
 stops — no more whisper slices, no more model tokens, no more sentences to piper. A turn
 cancelled by a closed socket must not be logged as an error, or a page someone navigated
 away from reads as an outage.
+
+### The warm-up rule: fire it while someone is still talking, or do not fire it
+
+Deployed and switched on once, the warm-up produced this line in the bot's own journal:
+
+```
+prefill: services2 (RTX 3060) cached 0/4079 prompt tokens in 4629 ms
+```
+
+and in the gateway's, four seconds later:
+
+```
+error: another turn is in flight; this endpoint answers one at a time
+```
+
+Two facts, both worth keeping. A warm-up of the spoken prompt is **4.6 s of the GPU and
+reuses nothing the first time**, because the engine has to prefill the prefix either way — so
+fired the instant the question is final, it is the same work done twice with the second copy
+in front of the queue. And `/v1/ask/stream` and `/v1/ask/prefill` share the listen socket's
+one turn lock, so it did not merely delay the turn, it **failed** it.
+
+The rule therefore lives in one function, `warm_skip_reason`, and says so in
+`Timings::warm`: fire **only while speech is still arriving** (an ASR partial with slices
+left, which is also what the satellite does through `/v1/warm`); never for a question that
+arrived as text; and report `skipped: the question was already final…` rather than pretending
+the attempt was made. On the bot's side, `turn_gate::acquire_agent` waits up to
+`PREFILL_WAIT` for a **warm-up's** lock — with the counters `ask_waited_for_prefill` and
+`ask_wait_ms` to show how often — while two conversations still refuse each other
+immediately, as documented. `prefill_ever_hit` in `/status.json` is the one number that would
+justify switching the feature on: a fleet of hits means prefills are being reused, and the
+seconds they buy arrive before anyone has stopped talking.
+
+A test that cannot express this is a test that will ship it: the pipeline's fake
+`slack-agent` answers `/v1/ask/prefill` and `/v1/ask/stream` on independent sockets, so the
+whole failure class passed green and appeared only on services1. `turn_gate.rs`'s own test
+models the shared lock instead.
 
 ### What is measured, and what is not
 

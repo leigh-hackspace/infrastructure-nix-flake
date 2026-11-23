@@ -326,14 +326,27 @@ in {
 
     warmEngine = lib.mkOption {
       type = lib.types.bool;
-      default = true;
+      # **Off, because the box said so.** Measured on services1 the first time it was switched
+      # on: a warm-up of this fleet's 4 079-token spoken prompt cost **4 629 ms** of the RTX 3060
+      # and reported `cached 0` — the same prompt-prefix work the real turn was about to pay
+      # for, done twice, and (before the listen socket learned to wait for a warm-up's lock) it
+      # failed that turn outright with `another turn is in flight`. A warm-up is worth exactly
+      # one thing: fired while **speech is still arriving**, so the engine prefills during
+      # seconds nobody is listening. That is what the code now does
+      # (`turn.rs::warm_skip_reason` refuses to warm a question that arrived as text), but the
+      # speech left after a first partial is ~1 s and a cold prefill here is ~4.6 s, so on this
+      # engine it is still a net loss. Read the counters before turning it on: `prefills`
+      # climbing while `prefill_cached_tokens` stays at 0 is the sound of paying for nothing,
+      # and `ask_waited_for_prefill` / `ask_wait_ms` say how often a warm-up held up a turn.
+      # Does **not** affect the warm piper, which `serve` starts unconditionally.
+      default = false;
       description = ''
-        Fire a `max_tokens: 1` prefill of the question's prompt prefix at the inference engine as
-        soon as there is a first partial transcript, so the engine is warm with this conversation
-        before the real request arrives. Costs one extra request per utterance and buys the
-        prompt-prefill seconds back — see `docs/voice-assistant-2026-11-16.md` and
-        `crates/slack-agent/src/engine.rs` for why `max_tokens: 1` and not `0`. Off is the
-        previous behaviour. Does **not** affect the warm piper, which `serve` always starts.
+        Fire a `max_tokens: 1` prefill of the question's prompt prefix at the inference engine
+        while speech is still arriving, so the engine is warm with this conversation before the
+        real request lands. Costs one extra request per utterance and, on this engine today,
+        more seconds than it saves — see the measurement above, the prefill section of
+        `docs/slack-agent-2026-11-16.md` §17, and `crates/slack-agent/src/engine.rs` for why
+        `max_tokens: 1` and not `0`.
       '';
     };
 

@@ -4066,15 +4066,24 @@ falsifiable** (`turn::tests::the_first_audio_arrives_while_the_model_is_still_an
 verified to fail when the voice is slowed past the model). What is not done is everything that
 needs a running box.
 
-1. **Deploy it, then read one number.** `just check-build services1 && just switch` (on
-   services1) — the build is the gate that catches the crane side of ten new source files — and
-   then `just voice-turn "is the space open"` and `turns.last_first_audio_ms` in
-   `https://voice.int.leighhack.org/status.json`. **Nothing in the streaming claim has been read
-   off a deployed box**; every "expected" figure in the docs is arithmetic on the buffered
-   measurements. If first audio is *not* well under the ~13 s the buffered path cost, the
-   suspect in order is: the engine's prompt cache never hit (`turns.warm` says `cached 0/…`),
-   the piper fell back to cold (`voice.last_fallback` names why), or the door buffered the
-   stream despite `X-Accel-Buffering: no`.
+1. **Read the number now that it is deployed.** The tree is live on services1: the streaming
+   routes answer, and the gateway, satellite and bot units restarted clean. What has **not**
+   been read is `turns.last_first_audio_ms` from
+   `https://voice.int.leighhack.org/status.json` after a *model* question — `just voice-turn
+   "is the space open"` currently hits the deterministic path (`engine: none (fast path)`),
+   which checks the SSE plumbing end to end but not the overlap. Ask something the recogniser
+   refuses (`just voice-turn "what should I know about the space today?"`) and compare
+   `first_audio_ms` against the ~13 s the buffered path cost. Suspects if it is not well under:
+   piper fell back to cold (`voice.last_fallback` names why), or the door buffered the stream
+   despite `X-Accel-Buffering: no`.
+1b. **The warm-up is off by default, with receipts.** Deployed switched-on, it logged
+   `prefill: services2 (RTX 3060) cached 0/4079 prompt tokens in 4629 ms` and then failed the
+   very turn it was warming (`another turn is in flight`), because `/v1/ask/prefill` and
+   `/v1/ask/stream` share the listen socket's one turn lock. Fixed in three places
+   (`turn.rs`'s `warm_skip_reason`, `turn_gate::acquire_agent`'s bounded wait, and
+   `warmEngine = false`). The number that would justify switching it back on is
+   `prefill_ever_hit: true` in the bot's `status.json` **and** utterances long enough that a
+   prefill lands before the speaker stops; nobody has watched that pair yet.
 2. **The browser page still calls `/v1/ask`.** `whisper.int`'s Assistant card would show the
    transcript growing and start playing mid-answer — the fastest path in the system, since its
    client-side wake means the question is already text (`{"text": …}`, no whisper at all). The

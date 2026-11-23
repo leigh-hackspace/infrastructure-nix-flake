@@ -119,21 +119,41 @@ pub fn run(
 ) -> Result<(), String> {
     let started = Instant::now();
     let mut timings = Timings::default();
+    // Declared before the question, because stage 1 is where the warm-up can still pay.
+    let (warm_tx, warm_rx) = mpsc::channel();
+    let mut warm_thread: Option<std::thread::JoinHandle<()>> = None;
+    let input_was_text;
 
     // ---------------- stage 1: the question ----------------
     let question = match input {
-        Input::Text(q) => q,
+        Input::Text(q) => {
+            input_was_text = true;
+            q
+        }
         Input::Wav(body) => {
+            input_was_text = false;
             let file = wav::parse(&body).map_err(|e| format!("cannot read the audio: {e}"))?;
             let samples = file.mono();
             let mut rolling = asr::Rolling::from_whisper(opts.slice_secs, &whisper.url, whisper.language.clone());
             let step = (opts.slice_secs / 2.0).max(0.05) * wav::SAMPLE_RATE as f64;
             let mut first_partial: Option<String> = None;
-            for chunk in samples.chunks(step as usize) {
+            let chunks: Vec<&[i16]> = samples.chunks(step as usize).collect();
+            for (n, chunk) in chunks.iter().enumerate() {
                 match rolling.push(chunk) {
                     Ok(Some(text)) => {
                         if first_partial.is_none() {
                             first_partial = Some(text.clone());
+                            // **The only moment a warm-up can pay**: there is speech left to
+                            // listen to, so the engine can be doing its prompt prefill while the
+                            // person still is. Nothing else is left holding slices, so the
+                            // borrow here is uncontended by construction.
+                            if opts.warm && warm_thread.is_none() && n + 1 < chunks.len() {
+                                warm_thread = Some(fire_prefill(
+                                    &bot.url,
+                                    rolling.text(),
+                                    warm_tx.clone(),
+                                ));
+                            }
                         }
                         if !emit(&Out::Asr {
                             text,
@@ -182,33 +202,16 @@ pub fn run(
         return Err("nothing was asked".to_string());
     }
 
-    // ---------------- stage 2: the warm-up, on its own thread ----------------
-    let (warm_tx, warm_rx) = mpsc::channel();
-    let mut warm_thread: Option<std::thread::JoinHandle<()>> = None;
-    if opts.warm {
-        let client = agent::Client::new(&bot.url);
-        let q = question.clone();
-        warm_thread = Some(std::thread::spawn(move || {
-            let _ = warm_tx.send(match client.prefill(&q, true) {
-                Ok(p) => Warm {
-                    ok: p.ok,
-                    prompt_tokens: p.prompt_tokens,
-                    cached_tokens: p.cached_tokens,
-                    millis: p.millis,
-                    detail: if p.skipped.is_empty() {
-                        p.engine
-                    } else {
-                        p.skipped
-                    },
-                },
-                Err(e) => Warm {
-                    ok: false,
-                    detail: e,
-                    ..Default::default()
-                },
-            });
-        }));
-    }
+    // ---------------- stage 2: the warm-up, and what it was worth ----------------
+    //
+    // Fired **only while there is speech left to hear**, because that is the only case in which
+    // it is not a competing request: measured on services1 2026-11-22, a warm-up of this fleet's
+    // 4 079-token prefix cost **4 629 ms** of the 3060 and reported `cached 0`, so the same
+    // prefill fired the instant the question was final simply made the engine do the work twice
+    // and — until the listen socket learned to wait for a warm-up's lock instead of refusing —
+    // made it fail the turn it was warming. A turn whose question is already text has no time
+    // left to buy, and says so in `Timings::warm` rather than pretending it tried.
+    let warm_skipped = warm_skip_reason(opts.warm, input_was_text, warm_thread.is_some());
 
     // ---------------- stages 3 and 4: the answer and the voice, overlapped ----------------
     let mut pipe = Pipe {
@@ -325,14 +328,18 @@ pub fn run(
     // the result if it has landed, and say honestly that it had not if it has not — then **drop**
     // the handle rather than join it, because joining here would make the answer wait for a
     // request whose whole purpose was to not be waited for.
-    timings.warm = Some(match warm_rx.recv_timeout(Duration::from_millis(25)) {
-        Ok(w) => w,
-        Err(_) => Warm {
-            ok: false,
-            detail: "still running when the answer finished".to_string(),
-            ..Default::default()
-        },
-    });
+    timings.warm = if warm_thread.is_some() {
+        Some(match warm_rx.recv_timeout(Duration::from_millis(25)) {
+            Ok(w) => w,
+            Err(_) => Warm {
+                ok: false,
+                detail: "still running when the answer finished".to_string(),
+                ..Default::default()
+            },
+        })
+    } else {
+        warm_skipped
+    };
     drop(warm_thread);
     if let Some(a) = answer {
         timings.engine = a.engine.clone();
@@ -358,6 +365,65 @@ pub fn run(
     }
     let _ = emit(&Out::Error(why.clone()));
     Err(why)
+}
+
+/// Whether the warm-up was not fired, and what to say about it in `Timings::warm`.
+///
+/// Three states, and the third is the one that reached production: a warm-up fired **when the
+/// question is already final** is not a head start, it is a second request for the same
+/// prompt-prefix work on a single engine, and until the listen socket learned to wait for a
+/// warm-up's lock it made the turn lose with `another turn is in flight`. So the rule is:
+/// warm only while there is still speech to hear. `None` means it fired, and only
+/// `None`-with-a-thread does; an off flag is reported as absent ("never fired") rather than
+/// as a skip, because the operator who turned it off does not want to read about it per turn.
+fn warm_skip_reason(warm: bool, question_was_final: bool, fired: bool) -> Option<Warm> {
+    if fired {
+        return None;
+    }
+    if !warm {
+        return None;
+    }
+    Some(Warm {
+        ok: false,
+        detail: if question_was_final {
+            "skipped: the question was already final, so a warm-up would only compete".to_string()
+        } else {
+            "skipped: no partial transcript arrived while speech was still coming".to_string()
+        },
+        ..Default::default()
+    })
+}
+
+/// Send the engine its prompt prefix and go away. Returns the handle so the caller can *drop*
+/// it: a warm-up that could delay the turn it warms would be a bug rather than an optimisation,
+/// so nothing here joins, waits on the result, or treats a failure as the turn's.
+fn fire_prefill(
+    url: &str,
+    partial: &str,
+    tx: mpsc::Sender<Warm>,
+) -> std::thread::JoinHandle<()> {
+    let client = agent::Client::new(url);
+    let q = partial.to_string();
+    std::thread::spawn(move || {
+        let _ = tx.send(match client.prefill(&q, true) {
+            Ok(p) => Warm {
+                ok: p.ok,
+                prompt_tokens: p.prompt_tokens,
+                cached_tokens: p.cached_tokens,
+                millis: p.millis,
+                detail: if p.skipped.is_empty() {
+                    p.engine
+                } else {
+                    p.skipped
+                },
+            },
+            Err(e) => Warm {
+                ok: false,
+                detail: e,
+                ..Default::default()
+            },
+        });
+    })
 }
 
 /// What the voice thread hands back: samples, or the reason there are none.
@@ -600,6 +666,80 @@ mod tests {
             seen.ms("answer") > audio,
             "the answer event preceded the audio that belongs to it: {:?}",
             seen.names
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The rule that reached production as an outage, in both directions.
+    ///
+    /// A warm-up fired **when the question is already final** costs the same prompt-prefix work
+    /// a second time on a single engine (measured on services1 2026-11-22: 4 629 ms, `cached
+    /// 0/4079`) and, before the listen socket learned to wait for a warm-up's lock, made the
+    /// turn lose with `another turn is in flight`. So the only legitimate moment is while speech
+    /// is still arriving — and the report says which of the two happened, because "we did not
+    /// warm up" and "warming up would have made it worse" are different sentences.
+    #[test]
+    fn a_warm_up_is_only_fired_while_there_is_speech_left_to_hear() {
+        let detail = |w: Option<Warm>| w.map(|x| x.detail).unwrap_or_default();
+        assert!(
+            warm_skip_reason(false, true, false).is_none(),
+            "an off flag is 'never fired', not a skip the operator must read every turn"
+        );
+        assert!(
+            warm_skip_reason(true, false, true).is_none(),
+            "a warm-up that fired must never be reported as skipped"
+        );
+        assert!(
+            detail(warm_skip_reason(true, true, false)).contains("already final"),
+            "a text turn must report that warming up now would only compete"
+        );
+        assert!(
+            detail(warm_skip_reason(true, false, false)).contains("speech was still coming"),
+            "an audio turn with no early partial must say so"
+        );
+    }
+
+    /// End to end for the same rule: a `/v1/turn` asked with text reports the skip in its own
+    /// timings, rather than firing a prefill at the moment it is about to ask.
+    #[test]
+    fn a_turn_that_arrived_as_text_does_not_warm_the_engine() {
+        let dir = testkit::tmp("nowarm");
+        // One connection, the real ask: a warm-up fired here would open a second one, and the
+        // warm-up's own report below would then say "still running" instead of the skip.
+        let (bot, _thread) = agent(
+            vec![
+                ("start", r#"{"tools":[]}"#.to_string(), 0),
+                partial("It is open."),
+                answer_event("It is open."),
+            ],
+            1,
+        );
+        let stt = stt::Client::new("http://127.0.0.1:1", None);
+        let opts = Options {
+            warm: true,
+            ..Default::default()
+        };
+        let mut warm: Option<Warm> = None;
+        run(
+            Input::Text("is the space open".into()),
+            &opts,
+            &stt,
+            &bot,
+            &voice(&dir, 9, 0),
+            &mut |o| {
+                if let Out::Done(t) = o {
+                    warm = t.warm.clone();
+                }
+                true
+            },
+        )
+        .unwrap();
+        let w = warm.expect("a text turn still reports what the warm-up did not do");
+        assert!(!w.ok);
+        assert!(
+            w.detail.contains("already final"),
+            "warm-up report said {:?} — expected the skip, not an attempt",
+            w.detail
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

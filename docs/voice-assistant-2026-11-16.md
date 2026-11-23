@@ -513,6 +513,36 @@ expectations below are arithmetic, not results:
 | rest of the answer | after the whole answer | while it is still being generated |
 | piper cost per sentence | ~2.5 s (process startup) | the ONNX forward pass, startup paid once |
 
+### The one thing that reached production before it was true, and what the box said
+
+The warm-up was switched on by default with the first deploy, and the two journals said:
+
+```
+slack-agent-listen: prefill: services2 (RTX 3060) cached 0/4079 prompt tokens in 4629 ms
+voice-gateway:      error: another turn is in flight; this endpoint answers one at a time
+```
+
+That is the whole argument against it, in two lines: **4 629 ms of the 3060 to prefill a
+prompt the real request was about to prefill anyway** (`cached 0` — the engine cannot reuse
+what it has not seen), and because the warm-up holds the listen socket's one turn lock, the
+question it was warming was **refused**. So three things changed, all of them now measured
+rather than assumed:
+
+- the warm-up fires **only while speech is still arriving** — never for a question that
+  arrived as text, and `Timings::warm` says `skipped: the question was already final…`
+  instead of pretending it tried (`turn.rs::warm_skip_reason`);
+- `turn_gate::acquire_agent` waits up to 10 s for a **warm-up's** lock and counts it
+  (`ask_waited_for_prefill`, `ask_wait_ms`), while two conversations still refuse each other
+  at once — the documented refusal is about other people's questions, not about our own
+  head-start;
+- `infra.voiceAssistant.warmEngine` **defaults to false**, with the measurement in its
+  option text, and `prefill_ever_hit` in the bot's `status.json` is the number that would
+  justify turning it back on.
+
+The streaming wins that survived are unaffected — rolling ASR, streamed tokens, the resident
+piper — and `just voice-turn` still prints the timeline. What did not survive is the idea
+that you can buy prompt-cache warmth by asking for it at the last possible moment.
+
 ### Things this deliberately did not do
 
 - **The browser page still calls `/v1/ask`.** `/v1/turn` is ready for it and the contract

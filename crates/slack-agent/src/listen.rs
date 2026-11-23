@@ -69,7 +69,7 @@
 
 use std::collections::{BTreeMap, VecDeque};
 use std::net::TcpListener;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -78,9 +78,11 @@ use common_json::{self as json, Json};
 use common_service as service;
 use common_web::{self as web, Reply, Request};
 
-use crate::agent::{self, Agent, MAX_SPEECH_TOKENS};
+use crate::agent::{self, Agent};
+use crate::turn_gate::{
+    acquire_agent, keep_transcript, record, take_transcript, Kind, PrefillBusy, Session,
+};
 use crate::engine;
-use crate::prompt;
 
 /// The turn's own timeout, from `--timeout-secs`, applied per engine attempt.
 pub struct Options {
@@ -99,74 +101,51 @@ pub struct Options {
     pub thinking: crate::engine::Thinking,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum Kind {
-    Text,
-    Voice,
-}
-
-impl Kind {
-    fn as_str(self) -> &'static str {
-        match self {
-            Kind::Text => "text",
-            Kind::Voice => "voice",
-        }
-    }
-
-    fn system(self) -> String {
-        match self {
-            Kind::Text => prompt::system_prompt(),
-            // The spoken prompt *is* the Slack one plus the override; one grounding
-            // rule, so the two can never disagree about what counts as a fact.
-            Kind::Voice => prompt::spoken_system_prompt(),
-        }
-    }
-
-    fn budget(self) -> u32 {
-        match self {
-            Kind::Text => agent::MAX_ANSWER_TOKENS,
-            Kind::Voice => MAX_SPEECH_TOKENS,
-        }
-    }
-}
-
-struct Session {
-    transcript: Vec<Json>,
-    last: Instant,
-}
 
 #[derive(Default)]
-struct Stats {
-    turns: AtomicU64,
-    errors: AtomicU64,
-    tool_calls: AtomicU64,
+pub(crate) struct Stats {
+    pub(crate) turns: AtomicU64,
+    pub(crate) errors: AtomicU64,
+    pub(crate) tool_calls: AtomicU64,
     /// How many of those turns were answered with one tool call and no model. The hit rate is
     /// the whole point of the fast path: it says which questions people actually ask, and
     /// when it is 100 % of a quiet hour, the model was never needed for that hour at all.
-    quick: AtomicU64,
-    last_turn_ms: AtomicU64,
+    pub(crate) quick: AtomicU64,
+    pub(crate) last_turn_ms: AtomicU64,
     /// Warm-up requests accepted, and the tokens the engine reported as **reused** for them.
     /// Both counters exist so the question "does prefilling pay here" is answered by this
     /// socket rather than argued: `prefills` climbing while `prefill_cached_tokens` stays at 0
     /// is a feature costing a request and buying nothing.
-    prefills: AtomicU64,
-    prefill_prompt_tokens: AtomicU64,
-    prefill_cached_tokens: AtomicU64,
-    last_prefill_ms: AtomicU64,
+    pub(crate) prefills: AtomicU64,
+    pub(crate) prefill_prompt_tokens: AtomicU64,
+    pub(crate) prefill_cached_tokens: AtomicU64,
+    pub(crate) last_prefill_ms: AtomicU64,
+    /// Set for the whole duration of a warm-up, so a turn arriving mid-warm-up can tell that
+    /// lock holder from another conversation ([`acquire_agent`]).  Counted, because whether
+    /// turns are ever held up by a warm-up — and for how long — is the question that decides
+    /// if the warm-up is allowed to exist at all.
+    pub(crate) prefill_busy: AtomicBool,
+    pub(crate) ask_waited_for_prefill: AtomicU64,
+    pub(crate) ask_wait_ms: AtomicU64,
     /// `partial` events written by `/v1/ask/stream` — the stream's own liveness counter.
-    parts: AtomicU64,
-    last_error: Mutex<String>,
-    recent: Mutex<VecDeque<String>>,
+    pub(crate) parts: AtomicU64,
+    /// Whether the engine answered a warm-up with any **reused** prompt tokens at all.
+    /// `false` after a warm-up that cost four seconds of GPU and re-prefilled the whole
+    /// prefix is the finding that turns the feature off; it is a counter rather than an
+    /// inference from the two token numbers so that a status line can print it directly.
+    pub(crate) prefill_ever_hit: Mutex<bool>,
+    pub(crate) last_error: Mutex<String>,
+    pub(crate) recent: Mutex<VecDeque<String>>,
 }
 
-struct Ctx {
-    agent: Mutex<Agent>,
-    sessions: Mutex<BTreeMap<Kind, Session>>,
-    opts: Options,
-    started: Instant,
-    stats: Stats,
-    tools: Vec<String>,
-    startup_warnings: Vec<String>,
+pub(crate) struct Ctx {
+    pub(crate) agent: Mutex<Agent>,
+    pub(crate) sessions: Mutex<BTreeMap<Kind, Session>>,
+    pub(crate) opts: Options,
+    pub(crate) started: Instant,
+    pub(crate) stats: Stats,
+    pub(crate) tools: Vec<String>,
+    pub(crate) startup_warnings: Vec<String>,
 }
 
 pub fn run(opts: Options) -> Result<(), String> {
@@ -303,9 +282,9 @@ fn ask(req: &Request, ctx: &Arc<Ctx>) -> Reply {
             ),
         );
     }
-    let mut guard = match ctx.agent.try_lock() {
-        Ok(agent) => agent,
-        Err(_) => {
+    let mut guard = match acquire_agent(ctx) {
+        Some(agent) => agent,
+        None => {
             ctx.stats.errors.fetch_add(1, Ordering::Relaxed);
             return Reply::json(
                 429,
@@ -405,6 +384,7 @@ fn prefill(req: &Request, stream: &mut std::net::TcpStream, ctx: &Arc<Ctx>) -> s
     // A warm-up never waits behind a live turn: it is an optimisation for the turn that is
     // coming, and queueing it would delay the one that is running.  `skipped` is a 200 because
     // the caller asked for a favour, not a guarantee.
+    let _busy = PrefillBusy::new(&ctx.stats.prefill_busy);
     let mut guard = match ctx.agent.try_lock() {
         Ok(g) => g,
         Err(_) => {
@@ -514,9 +494,9 @@ fn ask_stream(
         return sse.borrow_mut().finish();
     }
 
-    let mut guard = match ctx.agent.try_lock() {
-        Ok(agent) => agent,
-        Err(_) => {
+    let mut guard = match acquire_agent(ctx) {
+        Some(agent) => agent,
+        None => {
             ctx.stats.errors.fetch_add(1, Ordering::Relaxed);
             let _ = sse.borrow_mut().event(
                 "error",
@@ -599,47 +579,6 @@ fn ask_stream(
 /// The transcript for a channel, fresh if it has expired.  Split out from the socket
 /// code because "when does a conversation start again" is the whole policy, and it is
 /// the part worth a test.
-fn take_transcript(
-    sessions: &Mutex<BTreeMap<Kind, Session>>,
-    kind: Kind,
-    reset_after: Duration,
-) -> Vec<Json> {
-    let mut sessions = sessions.lock().unwrap_or_else(|p| p.into_inner());
-    match sessions.get_mut(&kind) {
-        Some(s) if s.last.elapsed() <= reset_after => s.transcript.clone(),
-        _ => agent::seed_with(&kind.system()),
-    }
-}
-
-fn keep_transcript(
-    sessions: &Mutex<BTreeMap<Kind, Session>>,
-    kind: Kind,
-    transcript: Vec<Json>,
-) {
-    sessions
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .insert(kind, Session { transcript, last: Instant::now() });
-}
-
-fn record(ctx: &Arc<Ctx>, question: &str, answer: &str, secs: f64) {
-    if !ctx.opts.record_questions {
-        return;
-    }
-    let line = format!(
-        "{} — {} → {} [{:.1} s]",
-        epoch(),
-        question.replace('\n', " "),
-        answer.replace('\n', " "),
-        secs
-    );
-    let mut recent = ctx.stats.recent.lock().unwrap_or_else(|p| p.into_inner());
-    recent.push_back(line);
-    while recent.len() > 20 {
-        recent.pop_front();
-    }
-}
-
 fn status(ctx: &Arc<Ctx>) -> Reply {
     let recent: Vec<String> = ctx
         .stats
@@ -677,6 +616,8 @@ fn status(ctx: &Arc<Ctx>) -> Reply {
              \"tool_count\":{},\"sessions\":[{}],\"mcp\":[{}],\"startup_warnings\":[{}],\
              \"record_questions\":{},\"thinking\":{},\"quick\":{},\"prefills\":{},\
              \"prefill_cached_tokens\":{},\"prefill_prompt_tokens\":{},\"last_prefill_ms\":{},\
+             \"prefill_ever_hit\":{},\"prefill_busy\":{},\"ask_waited_for_prefill\":{},\
+             \"ask_wait_ms\":{},\
              \"parts\":{},\"recent\":[{}]}}",
             ctx.started.elapsed().as_secs_f64(),
             json::quoted(&ctx.opts.listen),
@@ -700,6 +641,15 @@ fn status(ctx: &Arc<Ctx>) -> Reply {
             ctx.stats.quick.load(Ordering::Relaxed),
             ctx.stats.prefills.load(Ordering::Relaxed),
             ctx.stats.prefill_cached_tokens.load(Ordering::Relaxed),
+            ctx
+                .stats
+                .prefill_ever_hit
+                .lock()
+                .map(|h| *h)
+                .unwrap_or(false),
+            ctx.stats.prefill_busy.load(Ordering::Relaxed),
+            ctx.stats.ask_waited_for_prefill.load(Ordering::Relaxed),
+            ctx.stats.ask_wait_ms.load(Ordering::Relaxed),
             ctx.stats.prefill_prompt_tokens.load(Ordering::Relaxed),
             ctx.stats.last_prefill_ms.load(Ordering::Relaxed),
             ctx.stats.parts.load(Ordering::Relaxed),
@@ -752,7 +702,7 @@ fn prometheus(ctx: &Arc<Ctx>) -> String {
     )
 }
 
-fn epoch() -> u64 {
+pub(crate) fn epoch() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -762,6 +712,7 @@ fn epoch() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::MAX_SPEECH_TOKENS;
 
     fn opts(listen: &str) -> Options {
         Options {
@@ -785,6 +736,85 @@ mod tests {
         assert!(e.contains("10.3.1.20"), "{e}");
         // Rule 17's shape: a hostname that merely looks local is not loopback.
         assert!(run(opts("127.example.com:8194")).is_err());
+    }
+
+    /// A `Ctx` with no MCP servers and no reachable engine: constructing it must touch
+    /// nothing, because a unit test that dials the fleet is a test that passes only at
+    /// the desk and fails in a `nix build`.
+    fn ctx_for_lock_test() -> Arc<Ctx> {
+        let engines = crate::engine::Engines::new(
+            crate::engine::parse_candidates("http://127.0.0.1:1/v1|nowhere"),
+            Duration::from_secs(1),
+        );
+        let (agent, _tools) = Agent::new(engines, &[]);
+        Arc::new(Ctx {
+            agent: Mutex::new(agent),
+            sessions: Mutex::new(BTreeMap::new()),
+            opts: opts("127.0.0.1:0"),
+            started: Instant::now(),
+            stats: Stats::default(),
+            tools: vec![],
+            startup_warnings: vec![],
+        })
+    }
+
+    /// The rule, and the measurement that produced it: a **warm-up** holding the one turn lock
+    /// is waited for, and **another conversation** holding it still is refused outright.
+    ///
+    /// This is the property the voice pipeline's fixtures could not express — the fake
+    /// `slack-agent` answers `/v1/ask/prefill` and `/v1/ask/stream` independently, so the
+    /// gateway's own warm-up failing its own turn sailed straight through the tests and only
+    /// appeared on a deployed box (`error: another turn is in flight`, after a warm-up that
+    /// cost 4 629 ms and reported `cached 0`). A protocol test that does not model the shared
+    /// state behind the protocol is a half test.
+    #[test]
+    fn a_warm_up_is_waited_for_and_another_turn_is_not() {
+        let ctx = ctx_for_lock_test();
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let holder = Arc::clone(&ctx);
+        std::thread::spawn(move || {
+            let _guard = holder.agent.lock().unwrap_or_else(|p| p.into_inner());
+            // Hold it until told, or until the test gives up and drops the sender.
+            let _ = rx.recv();
+        });
+        // Let the holder actually take it, or the test measures a race instead of a rule.
+        let mut tries = 0;
+        while ctx.agent.try_lock().is_ok() && tries < 200 {
+            std::thread::sleep(Duration::from_millis(10));
+            tries += 1;
+        }
+        assert!(ctx.agent.try_lock().is_err(), "the holder never took the lock");
+
+        // (1) Held, no warm-up in flight → refused immediately. This is the documented
+        // behaviour for two conversations, and the bounded wait must not eat it.
+        let started = Instant::now();
+        assert!(acquire_agent(&ctx).is_none());
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "a second turn was made to wait {:.0?} for a holder that was not a warm-up",
+            started.elapsed()
+        );
+
+        // (2) Held by a warm-up → waited for, and counted, because "how often does the
+        // warm-up hold up a turn" is the number that decides whether it is allowed to exist.
+        ctx.stats.prefill_busy.store(true, Ordering::Relaxed);
+        let releaser = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            let _ = tx.send(());
+        });
+        let started = Instant::now();
+        let guard = acquire_agent(&ctx);
+        let waited = started.elapsed();
+        ctx.stats.prefill_busy.store(false, Ordering::Relaxed);
+        assert!(guard.is_some(), "a turn refused itself over a warm-up");
+        assert!(
+            waited >= Duration::from_millis(250),
+            "returned in {waited:.0?} — it did not actually wait"
+        );
+        assert_eq!(ctx.stats.ask_waited_for_prefill.load(Ordering::Relaxed), 1);
+        assert!(ctx.stats.ask_wait_ms.load(Ordering::Relaxed) > 0);
+        drop(guard);
+        releaser.join().unwrap();
     }
 
     #[test]
