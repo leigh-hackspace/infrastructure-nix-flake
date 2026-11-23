@@ -2781,6 +2781,22 @@ that **need an owner or a decision** rather than another measurement.
   from services1 at the router — the `docs/router-and-dns.md` VLAN 226 rules are the place that
   decision lands, not frigate's YAML. Read `cameras/README.md` fault 13 first: "fix it by editing
   frigate" is explicitly not the fix.
+- **`cam1` is offline most of the time, and is now deliberately unmonitored** (measured 2026-11-23
+  from gatus's own check log: **3662 of 10913 checks failed over seven days — 33 %** — in 28 runs
+  of ≥5 consecutive failures, i.e. 28 Slack down+resolved pairs, interleaved with runs of 386, 683,
+  709 and 710 consecutive failures ≈ 11–12 h stretches offline; today alone it dropped eight checks
+  in a row between 13:17 and 13:23 then answered in 7 ms). Its gatus row (`Cam 1 - Rack`) was
+  therefore **deleted** 2026-11-23 — a page that is right every time and ignored because of how
+  often it fires is no signal, and the `flappingSlackAlert` debounce was already doing its job on
+  it. **Blocks:** nothing; what was watching it was the only thing watching it, so now nothing is,
+  and the device's state is visible only where it is used — `rack_corridor` in frigate and HA.
+  **Needs:** on 2026-11-23 nobody wanted a page for this camera, so decide which of the two it is
+  — worth fixing (find why it drops for a day: power, its AP's cell per `docs/camera-wifi-cells-2026-10-31.md`,
+  or the device itself; `just cam-list` / the controller stats are the verbs) or worth retiring, in
+  which case `rack_corridor`'s feed goes with it and fault 13's anonymous RTSP stops mattering.
+  Re-verify with `sudo journalctl -u gatus --since "-10 min" | grep -c "endpoint=Cam 1"` (0 after
+  the deploy; keep the window short, the pre-deploy entries are still in the journal), and if it
+  ever comes back, `ping -c 20 10.3.2.6` first — that loss figure is what would justify the row.
 - **thingino on this fleet: answered, twice, and the second answer won.** The 2026-10-25
   measurement said "Ingenic-only, not a route off OpenIPC" (252 device configs, no
   SigmaStar board, platform PR #1424 closed unmerged); the port existed by 2026-10-31 and

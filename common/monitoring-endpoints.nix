@@ -69,6 +69,10 @@
   # failure-threshold 5 a blip never fires while a camera genuinely off for 5
   # minutes still does, and success-threshold 3 stops the "resolved" message for a
   # momentary bounce back that never reached anyone in the first place.
+  #
+  # `Cam 1 - Rack` appears above only as history: its row was deleted 2026-11-23
+  # (see the comment in the Cameras group), so the rows this debounce actually
+  # serves today are cam5, cam9, main_space, workshop and woodwork.
   flappingSlackAlert =
     slackAlert
     // {
@@ -398,12 +402,21 @@
       url = "https://frigate.int.leighhack.org";
       group = "Cameras";
     })
-    (mkPing {
-      name = "Cam 1 - Rack";
-      url = "cam1.int.leighhack.org";
-      group = "Cameras";
-      alert = flappingSlackAlert;
-    })
+    # `cam1` (the rack corridor) is **not monitored**, on purpose, since 2026-11-23.
+    # The request was "stop alerting on it", and the check log backed it: over the
+    # seven days to 2026-11-23, 3662 of its 10913 checks failed — 33 % — in 28 runs
+    # of 5+ consecutive failures (each one a Slack *down* plus a *resolved*) sitting
+    # between runs of 386, 683, 709 and 710 consecutive failures, i.e. days offline.
+    # A page that is correct every time and ignored because of how often it fires is
+    # no signal, and this one was standing in for nothing: what cam1 is *for* is its
+    # picture, and `rack_corridor`'s state is visible in Frigate and as HA's
+    # `camera.rack_corridor` entity, which is where anyone who cares would look.
+    # Only the ICMP page went away — the MAC-pinned reservation in
+    # `common/dns-records.nix`, the `cam1.int` name and frigate's `ffmpeg:` feed are
+    # untouched, because it is still a device on VLAN 226.  It is not *fixed*, and
+    # its faults (including the anonymous RTSP) are still open: `cameras/README.md`
+    # fault 13 and `docs/follow-ups.md` §Cameras.  Re-add an `mkPing` row here if the
+    # device is repaired or replaced with something worth watching.
     (mkPing {
       name = "Cam 9 - Social Space";
       url = "cam9.int.leighhack.org";

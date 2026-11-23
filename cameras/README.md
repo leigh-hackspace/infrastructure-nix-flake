@@ -72,12 +72,20 @@ identity, not by guesswork (verified below).  VLAN 226's `dhcp-mode` is `gateway
 | `cam7` | 10.3.2.12 | 226 | `3c:52:a1:49:24:0a` ✓ | **2.3.11.22** / build 2023.02.7 (no sysinfo at all) | `INFINITY6B0 SSC009A-S01A QFN88` | `ssc333 (infinity6b0 family), sc3338, …, 2.3.11.22-lite, cam7, …` | `cnc` | `rtsp://cam7.int.leighhack.org:554/stream=0` |
 | `cam9` | 10.3.2.17 | 226 | `3c:52:a1:49:1b:f7` ✓ | 2.4.08.22 / build 2024.02.1 / `master+9371591, 2024-08-21` | (sysinfo present, **no board line**) | `ssc337 (infinity6b0 family), sc3338, …, openipc-ssc337, …` | `social_space` | `rtsp://cam9.int.leighhack.org:554/stream=0` |
 | `cam8` | 10.3.2.11 — **pinned by MAC 2026-10-31** (was a dynamic 10.3.2.112) | 226 | `3c:52:a1:49:01:05` | **thingino since 2026-10-31** (was OpenIPC `nightly-20261010-a40b399`); in production, bench-built u-boot `I61286efbd` with SD-rescue bootcmd | C110 v1, `INFINITY6B0 SSC009A-S01A QFN88` | — | `cam8` | **`ffmpeg:rtsp://thingino:<rtsp pw>@cam8.int.leighhack.org:554/ch0`** — in frigate since 2026-10-31 (5/5 fps, `quality=excellent`); **keyed from services1 2026-11-11** (`cam-keytest` → `keyed`) after the payload moved |
-| `cam1` | 10.3.2.6 | 226 | `10:a4:be:03:0d:36` | **not OpenIPC, and not Ingenic either** — Xiongmai-family application firmware, by its own banners (2026-10-25) | SoC still unknown; `:23` **open** (telnet), `:80` open (302 → `/index.asp`, `/login.cgi` → `401`), `:85 :8080 :8000 :10554 :37777` closed | RTSP `Server: TAS-Tech Streaming Server V100R001`, HTTP `Server: Ginatex-HTTPServer`; `DESCRIBE /0/av0` and `/1/1` → **`200` with no credentials** (fault 13) | `rack_corridor` | `rtsp://cam1.int.leighhack.org:554` with `ffmpeg:` transcode (its go2rtc line asks `:554/0/av0`, the Novastorm path — commented out, see faults) |
+| `cam1` | 10.3.2.6 | 226 | `10:a4:be:03:0d:36` | **not OpenIPC, and not Ingenic either** — Xiongmai-family application firmware, by its own banners (2026-10-25) | SoC still unknown; `:23` **open** (telnet), `:80` open (302 → `/index.asp`, `/login.cgi` → `401`), `:85 :8080 :8000 :10554 :37777` closed | RTSP `Server: TAS-Tech Streaming Server V100R001`, HTTP `Server: Ginatex-HTTPServer`; `DESCRIBE /0/av0` and `/1/1` → **`200` with no credentials** (fault 13) | `rack_corridor` | `rtsp://cam1.int.leighhack.org:554` with `ffmpeg:` transcode (its go2rtc line asks `:554/0/av0`, the Novastorm path — commented out, see faults); **gatus stopped pinging it 2026-11-23** — see below |
 
-All four rows above are also rows in `common/dns-records.nix`; the router
+All five rows above are also rows in `common/dns-records.nix`; the router
 reserves the address by MAC (`dhcp-host=3c:52:a1:49:24:0a,set:vlan226,10.3.2.12,cam7`).
 There is **no second copy of the addresses** in this directory: `just cam-list`
 and `just cam-addr` read that table, so there is nothing to drift.
+
+**`cam1` is the one camera nobody is paged about.** Its gatus row (`Cam 1 - Rack`,
+`common/monitoring-endpoints.nix`) was deleted 2026-11-23: over the seven days before
+that it failed **3662 of 10913 checks (33 %)**, in 28 runs of 5+ (each a Slack down +
+resolved pair) interleaved with runs of 386, 683, 709 and 710 consecutive failures —
+days offline. It is unmonitored, **not** repaired: its faults below, fault 13 most of
+them, are still open, and `rack_corridor`'s picture is still pulled by frigate. If it
+ever gets fixed, the row comes back with the fix.
 
 **What this table cannot tell you is which radio a camera is on, and on 2026-10-31 that was the
 whole difference between a working camera and a 1.3 fps one.**  The addresses are pinned; the
