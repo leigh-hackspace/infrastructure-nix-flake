@@ -11,8 +11,12 @@ the other services boxes, the engine's sizing on *this* card, the move to VLAN 2
 what was deliberately left behind when it came off its previous fleet.
 
 Nothing here is a guess unless it says it is. Everything under "Measured" was read off
-`10.3.2.213` on 2026-11-11 through the account the box arrived with; the previous owner's
-write-up is quoted only where it is the *only* record (and then as quoted, not as fact).
+the box on **2026-11-11** through the account it arrived with, at 10.3.2.213 over a Wi-Fi
+dongle, and re-read on **2026-11-25** after it took a cable onto wired VLAN 225; the
+previous owner's write-up is quoted only where it is the *only* record (and then as
+quoted, not as fact). The 2026-11-11 read is still what the hardware rows below say about
+the board and the card, because none of that moved; where a row says something about an
+address, an interface or an uplink, read the 2026-11-25 "The move to VLAN 225" section.
 
 ## Measured
 
@@ -26,19 +30,19 @@ write-up is quoted only where it is the *only* record (and then as quoted, not a
 | Disk | `sda` 111.8 GiB: `sda1` 1 GiB vfat (label `BOOT`) + `sda2` 110.8 GiB ext4 (label `ROOT`) — the OS, the store and the generations. `nvme0n1` **476.9 GiB** (SK hynix PC601): one ext4 filesystem labelled `STRATA` since 2026-11-21, mounted at `/srv/strata`, holding the model data. It arrived with a previous owner's two-partition ZFS pool (`dbthr33`) and an 11.9 GB swap partition, neither referenced by this tree nor mountable here (no ZFS), so the whole disk was wiped — ./hardware-configuration.nix carries the decision |
 | Boot | UEFI 2.40, systemd-boot, Secure Boot off, no TPM. `mitigations=off` on the live command line |
 | Swap | **none**, and none added for the engine: the arena is RAM-resident (`--resident-experts`) and a swap file would sit on the same NVMe that serves the PLE table. ./hardware-configuration.nix has the argument |
-| Wired NIC | `enp0s31f6`, Intel I219-V, MAC `70:8b:cd:a8:50:bc` — **no cable**, `NO-CARRIER` |
-| Wi-Fi | `wlp0s20f0u1`, MAC `90:de:80:e1:4e:42`, Realtek RTL8821CU (`0bda:c811`) on `rtw88_8821cu`, connected to SSID `WiFi Go Brrr` |
-| Address | `10.3.2.213/24`, gateway `10.3.2.1`, DNS `10.3.2.1`, search `int.leighhack.org` — i.e. **VLAN 226**, the wireless block, not the services block |
-| IPv6 | two temporary SLAAC addresses in `2001:8b0:1d14:226::/64`; no stable address, hence `ipv6 = []` in `common/dns-records.nix` |
-| Reachability | `10.3.1.1`, `10.3.1.20`, `10.3.1.32` and `cache.nixos.org` all answer a ping from the box, so builds can delegate to aibox and substitutes work |
-| Host keys | `ed25519` + `rsa`, both dated Aug 2025 — the box's own, unchanged by this flake and pinned in `common/ssh-known-hosts.nix` |
+| Wired NIC | `enp0s31f6`, Intel I219-V, MAC `70:8b:cd:a8:50:bc` — **cabled, and the cable is live**: `ip -br link` reads `UP ... <BROADCAST,MULTICAST,UP,LOWER_UP>` (a carrier, which is what changed since the 2026-11-11 read of `DOWN ... <NO-CARRIER>`) and `ip -s link` counts RX 1045 packets / TX 120, so the far end is a network that talks. That MAC is what `./vlan225.nix` matches and what `common/dns-records.nix` reserves |
+| Wi-Fi | `wlp0s20f0u1`, MAC `90:de:80:e1:4e:42`, Realtek RTL8821CU (`0bda:c811`) on `rtw88_8821cu` — **hardware still in the box, not an uplink any more**: `./vlan225.nix` forces NetworkManager off, so the interface is unconfigured. The SSID `WiFi Go Brrr` and its PSK live in `/etc/NetworkManager/system-connections/WiFi Go Brrr.nmconnection` (root, 0600), which this flake never managed and still does not; the dongle is a drawer spare |
+| Address | `10.3.1.22/24`, gateway `10.3.1.1`, DNS `10.3.1.1`, search `int.leighhack.org` — **VLAN 225**, the wired services block, like every other flake machine. Reserved by the wired MAC above; outside VLAN 225's dynamic range (10.3.1.150–.253), so the reservation costs the pool nothing |
+| IPv6 | taken by router-advertisement/SLAAC inside VLAN 225's advertised range: measured `2001:8b0:1d14:225:728b:cdff:fea8:50bc` + the ULA twin, i.e. derived from the NIC MAC, so it is not a number this row can pin — hence `ipv6 = []` in `common/dns-records.nix`, the same honest reason services2's list is empty |
+| Reachability | every box dials `10.3.1.22` now, in the wired block; the pinned host keys in `common/ssh-known-hosts.nix` carry that address (the table reads `HOSTS.services3`, so the move followed the row, and `just known-hosts` re-scans it). The old dongle lease `10.3.2.213` answers nothing in this flake's opinion |
+| Host keys | `ed25519` + `rsa`, both dated Aug 2025 — the box's own, unchanged by this flake and pinned in `common/ssh-known-hosts.nix` (keyed to the *address* string, so the entry moved from 10.3.2.213 to 10.3.1.22 with the row) |
 | OS | NixOS 26.11 (Zokor) on kernel 6.18.63 / nvidia 580.196.07 as of 2026-11-21; at arrival (2026-11-11) nixpkgs `26.11.20261017.09063bd`, kernel 6.18.57, nix 2.34.9 |
 
 ## What it runs
 
 **Strata** — `./strata.nix` (service + engine flags) and `./strata-package.nix` (the
 CUDA 12.8 / sm_61 build), serving the **Coder IQ1_M** pack on the GTX 1080 Ti at
-`10.3.2.213:8080`, behind the door name `strata3.int.leighhack.org`. It is the
+`10.3.1.22:8080`, behind the door name `strata3.int.leighhack.org`. It is the
 network's third Strata instance and the same model file services2 serves. The
 sizing, the VRAM budget, the exact flags and the hand-run pack preparation are in
 `./strata.nix`'s header; `docs/services.md` has the contract table and the four
@@ -84,33 +88,67 @@ config-only switch still costs what it always did.
    `shutdownTargets` (in the right order — see `docs/ups-and-fleet-shutdown.md`) as part
    of being racked, not before.
 
-## The move to VLAN 225 (the rack, not the bench)
+## The move to VLAN 225 — **done 2026-11-25**
 
-The box is here temporarily; the intent is a wired member of the services block. Order
-matters because each step's failure mode is "unreachable", and the two tables live on
-two different machines:
+The plan below is what was decided on the bench in 2026-11-11; what actually happened on
+2026-11-25, and the four things that differed from the plan, are in this section. Both
+halves are kept because the order is the part that can strand the box.
 
-1. Cable the I219-V into a switch port that carries **VLAN 225 tagged** — a trunk,
-   exactly like services1's and services2's ports. An access port gives `vlan225` no
-   address. (`docs/procurve-switches.md` for the port config; `crates/switch-gui/` is
-   the only thing that saves a change, and only when asked.)
-2. Pick the address out of the wired block's fixed run and change the **three** facts in
-   one commit: the row in `common/dns-records.nix` (name `services3`, `vlan = 225`, new
-   `ipv4`, wired MAC, and — if the box is given a stable IPv6 — an `ipv6` it really
-   owns, or keep `[]`), `common/hosts.nix`, and `machines/services3/vlan225.nix`'s
-   header. `machines/gw/lib/check-network-tables.nix` is the guard that refuses a
-   `common/hosts.nix` address no reservation answers; `just check-eval` runs it.
-3. Deploy **gw** so the router actually hands out the new reservation
-   (`just deploy gw`, GOLDEN RULE, then `systemctl start front-door-cert-check.service`
-   as always on that box), and confirm the rendered line:
-   `grep services3 /etc/dnsmasq.d/network.conf`.
-4. Swap the module: in `machines/services3/default.nix`, `./networking.nix` out,
-   `./vlan225.nix` in, and delete the parking header. Then switch **on the box** (the
-   first wired switch cannot be made over the old link, so this is the one step that
-   wants a hand at the bench or a working serial/`nixos-fail` path).
-5. `just known-hosts` for nothing here (the host keys do not change), but the *dongle's*
-   reservation should then be deleted from `common/dns-records.nix` in the same commit,
-   so the table says one thing about a machine that has one address.
+### What was measured before any of it, and what each reading rules out
+
+| reading (on the box, 2026-11-25) | what it proved |
+| --- | --- |
+| `ip -br link` → `enp0s31f6 UP ... LOWER_UP`, MAC `70:8b:cd:a8:50:bc` | a **carrier**: the cable is in, which is the change since 2026-11-11's `DOWN ... <NO-CARRIER>`; and the MAC is exactly the one `./vlan225.nix` matches, so no re-measure of the board was needed |
+| `ip -s link` → RX 1045 packets / TX 120 | the wire is **live**, not a dead conduit with a cable in it |
+| NetworkManager's own journal, repeated today: `Activation: failed for connection 'Wired connection 1'` | the cabled NIC could not get an address **untagged**: every DHCP offer the router makes is `tag:`-qualified per VLAN, so an untagged request in the wired block gets nothing. This is why NM's failure is not a fault to chase and is the thing VLAN tagging answers |
+| a VLAN-225 child configured against the **real** NIC name, then `vlan225: DHCPv4 address 10.3.1.248/24, gateway 10.3.1.1 acquired from 10.3.1.1` | **the switch port is a trunk.** A lease out of VLAN 225's own dynamic range, whose gateway the router names as itself, only happens if VLAN 225's tag arrives down that cable. This is the one physical fact the flake cannot state, and it is why the experiment ran before the deploy rather than after it |
+
+### What was done, in the order it was done
+
+1. `common/hosts.nix` → `10.3.1.22` (outside VLAN 225's dynamic range 10.3.1.150–.253,
+   so the reservation costs the pool nothing), `common/dns-records.nix` → `vlan = 225`,
+   wired MAC, `ipv6 = []`, `machines/services3/vlan225.nix` unparked, and
+   `machines/services3/networking.nix` **deleted** — one commit, because
+   `machines/gw/lib/check-network-tables.nix` refuses a `hosts.nix` address no
+   reservation answers and refuses to let a machine have two addresses' worth of rows.
+   The dongle's MAC left `common/dns-records.nix` in that same commit, as the plan's step
+   5 asked for.
+2. `just check` / `just check-eval` on services1 (the guard runs from both), then push.
+3. `just deploy gw` first — the reservation has to be the router's before the box asks
+   for its lease (GOLDEN RULE confirmed in the same invocation, then
+   `sudo systemctl start front-door-cert-check.service` and read the *issuer*, because
+   that is the only check that tells a CA-issued certificate from minica's fallback).
+4. services3 switched and **booted** there.
+
+### What differed from the plan
+
+1. **A switch is not enough; the box needs a boot.** `systemd.network.links` renames the
+   NIC to `lan`, and udev applies a `.link` only when the device is (re)created — so the
+   switch wrote `/etc/systemd/network/10-lan.{link,network}` and `networkctl` still
+   printed `enp0s31f6 ... unmanaged`, with no `vlan225` device, and the VLAN child never
+   existed until the reboot. Measured, not inferred: the interim switch was read back
+   before the boot. Do not "fix" this by matching `enp0s31f6` in the flake: a board swap
+   or a BIOS rename changes the *name* and not the MAC, so the MAC match plus rename is
+   the stable shape, and it is what services1 and services2 already use.
+2. **The plan's step 4 assumed the box would have to be switched by hand at the bench. It
+   did not**: the experiment above was run with NetworkManager deliberately left **on**, so
+   the dongle stayed a working uplink while VLAN 225 was being proven, and the hop to the
+   box kept working over the dongle address until the final switch. That is the
+   non-stranding order: prove the wired path while the wireless one still works, then
+   cut over. Leaving NM on for the experiment also left the two-DHCP-clients-on-one-NIC
+   trap live, and it bit in the way the parked notice predicted rather than in a new way.
+3. **The plan's re-verify named a name that never existed**: `getent hosts
+   services3.int.leighhack.org`. There is no such record — the `*.int` name this box
+   carries is `strata3.int.leighhack.org` (a front-door row), while `common/dns-records.nix`
+   answers the bare name `services3`. The correct check is `getent hosts services3`.
+4. **Inbound LAN traffic to the box followed its newest interface, not its old one.** After
+   VLAN 225 was up beside the dongle, the hop to `10.3.2.213` stopped answering rather than
+   falling back: conntrack on the router read `SYN_SENT src=10.3.1.20 dst=10.3.2.213
+   dport=22 [UNREPLIED]` (and the same for two of the box's exporters, while a third stayed
+   `ESTABLISHED`). The box was alive throughout — its engine still answered through the door
+   — so "the box is unreachable at its old address" is a NAT/VLAN fact, not a dead machine,
+   and the way to read it is the router's conntrack table rather than the ssh timeout. Once
+   the move completed, every hop is `10.3.1.22` and the dongle answers nothing at all.
 
 ## What came with the box, and what was dropped
 
@@ -838,8 +876,8 @@ gh api repos/leigh-hackspace/infrastructure-nix-flake/keys --jq '.[]|{title,read
 | Endpoint auth | `strata3.int.leighhack.org` is **LAN-only**, and `strataBearer = true` injects `strata_api_key` like the other two Strata rows (one engine credential, one door header — a per-engine key would 401 the door's own path). A public name would take `sso = true` + `acl = "none"` in the same change, like `strata.leighhack.org`. |
 | Privileges | `strata.service` runs as root (as both other Strata engines do); `.nix`'s system account is still open in `docs/follow-ups.md`. The weights are not under `/home/leigh-admin` (mode `0700`): `./llama.nix` creates `/srv/models` (`0755`, root) by `tmpfiles` rule and reads the model there. What is left of that upgrade is the **system account** — the unit is still uid 0, still inherits root's `HOME` unless `StateDirectory` says otherwise, and both Strata engines remain in the first half. The home's mode was the actual blocker, so this half of the change is the half that mattered. |
 | ~~Context headroom~~ | **Closed 2026-11-12 at 262,144** — the model's trained `ctx_train`, at 3,026 MiB of 11,264. What is left as a *decision*, not a gap: going past the trained length with yarn (./llama.nix has the ladder and the reasoning), which needs a retrieval measurement, not a bigger number. |
-| Power | Not in `machines/gw/ups.nix`'s `shutdownTargets` (see above), and `crates/ups-watchdog/src/plan.rs`'s order list is the same three. |
-| Wi-Fi PSK | Off-flake (see above). Decide when it is racked: delete it with the dongle's reservation, or make it declarative. |
+| Power | **Still open, and now rackable.** It was left out of `machines/gw/ups.nix`'s `shutdownTargets` because nobody had checked what it is plugged into, not because leaving it out was decided — and on 2026-11-25 it became a wired member of the services block beside services1 and services2, so it belongs in that list and in `crates/ups-watchdog/src/plan.rs`'s order list (the order is `docs/ups-and-fleet-shutdown.md`'s argument). Not shipped with the VLAN move: an address move and a shutdown-policy change are separate decisions, and the second needs the UPS's measured 300 s grace re-read against a fourth server. |
+| Wi-Fi PSK | **Closed 2026-11-25** — the box is racked and wired. The PSK is in `/etc/NetworkManager/system-connections/WiFi Go Brrr.nmconnection` (root, 0600), which this flake has never managed and still does not; `./vlan225.nix` forces NetworkManager off so the dongle cannot silently become a second DHCP client on a NIC networkd owns. The dongle's MAC left `common/dns-records.nix` in the move's commit, so nothing in the flake invents 10.3.2.213 again. Putting the box back on Wi-Fi is a decision with a named shape (`sops.secrets` + `networking.networkmanager.connections`, which renders to `/run/...` and so will not fight the `/etc` file), not a resurrected file. |
 | `/` free space | Model data moved to the NVMe, so `/` only carries the store and the generations; measured 2026-11-21 after the engine's closure, `df -h /` has tens of GiB free and the old generations are still prunable (see above) if a nixpkgs bump needs the room. |
 | Root's ssh identity | `nix copy`/remote-build ssh runs as root out of `HOME=/root`, and the identity it offers comes from a **hand-written `/root/.ssh/config`** (aibox stanza since Sep 2025, services3 added 2026-11-11 — item 5 above). The *host keys* are declarative (rule 25); the identity is not, so `nix copy` to a new box fails with `Too many authentication failures` until a stanza is added by hand or `common/ssh-hop.nix` grows an absolute-path identity for the copying side (remote *builds* are gone since 2026-11-23, so root's ssh is now only the copy path). **The operator account's half closed 2026-11-15:** `common/ssh-hop.nix` now carries `programs.ssh.hosts` for the network's own addresses (`IdentityFile ~/.ssh/agent-hop-key`, `IdentitiesOnly yes`, `ConnectTimeout 5`), rendered into `/etc/ssh/ssh_config` — the *system* file, because this nixpkgs has no home-file option in `users.users.<name>` at all (`just check` refuses it; `machines/gw/README.md`'s "authorized keys are a fact about the directory sshd reads" is the same shape). Root is **not** covered by that block: `~` in `IdentityFile` expands to `/root`, where no `agent-hop-key` exists, so root still needs its absolute-path stanza and `sudo env NIX_SSHOPTS='-i /home/leigh-admin/.ssh/agent-hop-key -o IdentitiesOnly=yes' nix copy …` remains the escape hatch. Re-verify the operator half with `ssh -G 10.3.1.20 | grep -E 'identitiesonly|agent-hop'` as `leigh-admin` (two lines once deployed; `ssh -G` also prints ssh's five built-in defaults on an unswitched box, so count them) and by the checkout's own `git remote -v` answering `origin` + `infra`. |
 | Monitoring depth | Scraped **once services1 next switches**: the three scrape rows are in `machines/services1/services/observability.nix`, and a `dry-activate` of that change showed it would stop and restart six of services1's apps (`filestore`, `gocardless-dashboard`, `moonraker-exporter`, `prometheus`, `status-dashboard`, `switch-gui`) — the crates' unit paths move because the flake source moved. That is a services1 deploy decision (`docs/network-upgrade-runbook.md`), not a fee for adding a box, so it was not paid here. Until then the exporters run on this box and nobody reads them. Alerting is the same shape and now possible: `common/monitoring-endpoints.nix` is the gatus half, its guard wants an `https *.int` endpoint, and `strata3.int.leighhack.org` got its `/health` row in the same change as the door row — it goes live with the deferred services1 deploy, not as its own restart of six apps. |

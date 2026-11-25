@@ -351,20 +351,26 @@
       # The third services box — and read `machines/services3/README.md` before
       # assuming what that name means yet.  It came off *another* fleet
       # (`github:cjdell/nixos-config`, where it was a Folding@Home heater called
-      # `asus-i7-6700-nixos`), was started afresh on 2026-11-11, and is currently on
-      # the bench with a USB Wi-Fi dongle as its only uplink, so it answers on VLAN 226
-      # (10.3.2.213 in `common/hosts.nix`, reserved by the dongle's MAC) instead of
-      # living with the other services boxes in 10.3.1.x.  It gets the full
-      # `commonModules` treatment — NAS client, podman, delegation to aibox, the tool
-      # set — and runs no service of its own yet, which is why it has no
+      # `asus-i7-6700-nixos`), was started afresh on 2026-11-11, and came off the bench on
+      # 2026-11-25: it now has a cable into a VLAN-225 **trunk** port and answers
+      # 10.3.1.22 in `common/hosts.nix`, reserved by the board's wired I219-V MAC, so it
+      # lives with the other services boxes in 10.3.1.x like every one of them.  (Its
+      # Wi-Fi dongle and that dongle's 10.3.2.213 reservation on VLAN 226 went with the
+      # move — `./networking.nix` deleted, `./vlan225.nix` in, one commit; the receipts
+      # for the old arrangement are in git history.)  It gets the full
+      # `commonModules` treatment — NAS client, podman, the tool set — and builds for
+      # itself like every box since 2026-11-23, which is why it has no
       # `nixpkgs.overlays`, no `extraArgs'` and no `pkgsConfig`.
       #
       # What it does *not* get, and where that is written down rather than discovered:
-      # a row in `machines/gw/ups.nix`'s `shutdownTargets`, and the wired
-      # `./vlan225.nix` its directory holds in reserve.  What it *does* get beyond the
-      # shared set is the GTX 1080 Ti driver (`./nvidia.nix`) and a llama.cpp engine on it
-      # (`./llama.nix`, upstream `llama-cpp-upstream` because the model's architecture is
-      # `lfm3` and no other llama.cpp in this flake has it).
+      # a row in `machines/gw/ups.nix`'s `shutdownTargets` (open since it became rackable
+      # on 2026-11-25 — see the README's open items and `docs/follow-ups.md`).  What it
+      # *does* get beyond the shared set is the GTX 1080 Ti driver (`./nvidia.nix`, the
+      # `legacy_580` branch: 580 is the last NVIDIA branch with Pascal) and **Strata** on
+      # that card (`./strata.nix` + `./strata-package.nix`, CUDA 12.8/sm_61, because CUDA
+      # 13 cannot compile for GP102 at all).  The llama.cpp engine that used to be here
+      # (`./llama.nix`) is **parked**, not deleted: Strata took the one GPU on 2026-11-21,
+      # and llama.cpp's measurements are the only record of what that card did before.
       services3 = mkSystem {
         modules = commonModules ++ [./machines/services3];
       };

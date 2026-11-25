@@ -353,27 +353,38 @@
     macs = ["5c:cf:7f:c6:85:ed"];
     clientIds = [];
   };
-  # services3, pinned where it already was rather than moved: unlike cam8 above it did
-  # not *arrive* on a dynamic address nobody chose, it was put on this one on purpose,
-  # and a name that is a deploy target is a worse thing to move than a camera.  So the
-  # row pins 10.3.2.213, which sits inside VLAN 226's dynamic range (10.3.2.100-.253),
-  # and that is only acceptable because dnsmasq does not hand a reserved address to
-  # another client while the reservation is live — it costs the pool one address and buys
-  # the flake a target address that never changes under it.
+  # services3, moved onto the wired block on 2026-11-25 — the box took a cable and VLAN
+  # 225, so this row is now services2's shape: an address in the wired block, outside
+  # VLAN 225's dynamic range (10.3.1.150-.253) so the reservation does not cost the pool
+  # one of its own leases, keyed on the board's own I219-V MAC.
   #
-  # The MAC is the **USB Wi-Fi dongle's**, because on the bench that is the interface
-  # with the cable-equivalent in it; the board's wired I219-V
-  # (`70:8b:cd:a8:50:bc`) has no carrier and is not here.  `ipv6` is empty because the
-  # box holds only temporary SLAAC addresses in `2001:8b0:1d14:226::/64` — naming one
-  # here would be the address-nobody-owns case this file's header is about.  Both change
-  # when the box is racked: `machines/services3/README.md` ("The move to VLAN 225") is
-  # the procedure, and it moves this row, `../common/hosts.nix` and
-  # `machines/services3/vlan225.nix` in one commit.
+  # That MAC is the *wired* interface, and the reservation only works because the switch
+  # port it is plugged into carries VLAN 225 tagged: an access port would leave the
+  # tagged NIC with no lease at all (`machines/services3/vlan225.nix`'s note).  Proven
+  # before this reservation existed, by switching the VLAN wiring on and reading what the
+  # router answered the NIC: `DHCPv4 address 10.3.1.248/24, gateway 10.3.1.1 acquired
+  # from 10.3.1.1` — a lease out of VLAN 225's own dynamic range, whose gateway is the
+  # router, so the tag reaches the router down that cable.  Re-verify with
+  # `ip -br addr show vlan225` on the box (it must answer this row's ipv4 once the
+  # router holds this reservation) and `grep services3 /etc/dnsmasq.d/network.conf` on
+  # gw.
+  #
+  # The dongle's MAC (`90:de:80:e1:4e:42`, which used to hold 10.3.2.213) is deliberately
+  # **not** here: the machine has one uplink now, and a row for an interface that is
+  # back in a drawer is how a second address gets invented for a box.  The dongle's PSK
+  # was never in this flake and never needed to be (it was a bench convenience on the
+  # VLAN this box was leaving).
+  #
+  # `ipv6` stays `[]`: the box takes its IPv6 by router-advertisement/SLAAC inside
+  # VLAN 225's advertised range (`machines/services3/vlan225.nix`, `IPv6AcceptRA`), which
+  # is derived from the MAC and is not a number this row could pin — same reason as
+  # services2's empty list above, and the same address-nobody-owns trap this file's
+  # header is about.
   services3 = {
-    vlan = 226;
-    ipv4 = "10.3.2.213";
+    vlan = 225;
+    ipv4 = "10.3.1.22";
     ipv6 = [];
-    macs = ["90:de:80:e1:4e:42"];
+    macs = ["70:8b:cd:a8:50:bc"];
     clientIds = [];
   };
 

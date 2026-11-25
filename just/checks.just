@@ -131,15 +131,22 @@ grep-compat:
     # The commands are transcribed from what this repo actually runs: `cam-check`/`cam-set`
     # read an address out of common/dns-records.nix with -A4 and pipe it to -oE; `cam-fw-verify`
     # compares grep -c "^mtd" and grep -c ""; the pbx health line counts -cE through a
-    # [[:space:]] class; check-source-size pipes -v ' total$'; AGENTS.md rule 23's list of
-    # what is not running is grep -rl '^# PARKED' machines/; a unit's ExecStart asks
+    # [[:space:]] class; check-source-size pipes -v ' total$'; a unit's ExecStart asks
     # `grep -qi thingino /etc/os-release`.  `ok` must agree byte-for-byte and on exit
-    # status.  The rest are the differences the docs name, and the counts are asserted
+    # status.
+    #
+    # Retired from this list on 2026-11-25: AGENTS.md rule 23's `grep -rl '^# PARKED
+    # machines/'` used to be an `order` case, but services3's wired module came out of
+    # parking that day and left exactly **one** parked file in the tree, and a one-path
+    # list has no order to change — so the arm stopped differing and the gate called that
+    # a finding, which is the point of the counts below. The order class is still covered
+    # by the two recursive arms; park a second module and the arm is worth restoring.
+    # docs/grep-dropin.md owns the classes and their receipts.
+    # The rest are the differences the docs name, and the counts are asserted
     # below: a case that starts differing that the whitelist does not name is a finding,
     # and a whitelisted case that stops differing makes the doc a lie — both fail.
     cases="
     order:::recursive needles (the shape agents type):::\$E -rn dnsmasq common/:::
-    order:::what is parked (AGENTS.md rule 23):::\$E -rl '^# PARKED' machines/:::
     order:::path order in a recursive grep:::\$E -rn dnsmasq docs/ common/:::GNU gives readdir order, compat mode sorts by path — same lines, different order
     first:::head -1 of a multi-file grep:::\$E -rh dnsmasq docs/ common/ | head -1:::a recipe taking head -1 of a multi-file grep names a different file
     notice:::the binary-file notice:::printf x | \$E -n NEEDLE3 \"$fix/fbin\":::GNU writes it to stderr, ugrep writes \`Binary file … matches\` to stdout

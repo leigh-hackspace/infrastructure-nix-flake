@@ -8,15 +8,23 @@
 {
   services1 = "10.3.1.20";
   services2 = "10.3.1.21";
-  # Not with the others, and read that before trusting the name: services3 is on the
-  # bench, and its only uplink is a USB Wi-Fi dongle, so this is the dongle's lease on
-  # VLAN 226 (the wireless block) rather than a wired address in 10.3.1.x.  It is the
-  # same fact as every other row here — a fixed address, reserved by MAC in
-  # ./dns-records.nix — reached by a different physical path, which is why the deploy
-  # and the scrape targets work unchanged and why `machines/services3/networking.nix`
-  # keeps NetworkManager.  Racking it moves this line (procedure:
-  # `machines/services3/README.md`, "The move to VLAN 225").
-  services3 = "10.3.2.213";
+  # Wired, with the others, as of 2026-11-25: the bench's cable went in and the box took
+  # VLAN 225, so it lives in the services block like services1 and services2.  The
+  # address is reserved in ./dns-records.nix on the board's own I219-V MAC
+  # (`70:8b:cd:a8:50:bc`), and 10.3.1.22 is outside VLAN 225's dynamic range
+  # (10.3.1.150-.253), so unlike the old row this reservation does not cost the pool one
+  # of its own addresses.  That the port is a *trunk* rather than an access port is
+  # measured, not assumed: with VLAN 225 switched on and before any reservation existed,
+  # the NIC took a lease in that dynamic range whose gateway the router named as
+  # `10.3.1.1` (`DHCPv4 address 10.3.1.248/24, gateway 10.3.1.1 acquired from 10.3.1.1`),
+  # which is the only way to learn it — see `machines/services3/README.md`.
+  #
+  # What went with the move is the Wi-Fi dongle: `machines/services3/networking.nix`
+  # (NetworkManager and the dongle's PSK) is deleted, `./vlan225.nix` is the wiring, and
+  # the dongle's MAC is gone from ./dns-records.nix so the table says one thing about a
+  # machine that has one address.  Nothing in this flake dials 10.3.2.213 any more;
+  # the receipts for the old arrangement are history (`git log -- common/hosts.nix`).
+  services3 = "10.3.1.22";
   aibox = "10.3.1.32";
   router = "10.3.1.1";
   nas = "10.3.1.6";

@@ -171,7 +171,22 @@ README and the caveat written into it.
 
 ## Still open
 
-- **Editing or removing an existing row on this build.** `create_event` and
+- **Editing or removing an existing row on this build.** **Superseded 2026-11-24: the path
+  exists, and the paragraph below was confidently wrong.** Create, update and delete are
+  registered as **WebSocket commands** — `calendar/event/create`, `/delete`, `/update`,
+  `/subscribe`, core `components/calendar/__init__.py:308/346/393/442` — and
+  `get_services_for_target` cannot see a WebSocket command at all, which is exactly why the
+  2026-11-23 measurement read a fully implemented feature as absent. Payloads are
+  `{entity_id, event:{dtstart, dtend, summary, description?, location?, rrule?}}`, and
+  `update`/`delete` additionally take `uid` (plus optional `recurrence_id`,
+  `recurrence_range`), gated on `POLICY_CONTROL` on the entity. Receipts — probed against
+  the live `2026.11.0` container, with the `.ics` md5 unchanged because an *errored* write
+  does not re-serialise the file — are in `docs/events-sync-plan-2026-11-24.md` §2 row 1,
+  which also states the general rule: before believing "HA cannot do X", say **which of the
+  three doors you asked** (a service, a WebSocket command, or the entity's declared
+  `supported_features`). Everything below is kept as the record of the wrong probe.
+
+  `create_event` and
   `get_events` are the only *services* registered for the calendar component
   (`components/calendar/services.py`), even though the entity declares
   `CREATE_EVENT | DELETE_EVENT | UPDATE_EVENT`; the entity methods are reached by

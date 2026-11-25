@@ -21,8 +21,9 @@
   #
   # This box builds for itself as of 2026-11-23; before that it delegated to aibox, and
   # the two facts that made delegation attractive here are still true: the box is 8
-  # Skylake cores, and its uplink is a Wi-Fi dongle, so a local compile is work done by
-  # the machine that is also carrying its own ssh — and a CUDA engine bump (./strata.nix,
+  # Skylake cores, and until 2026-11-25 its only uplink was a Wi-Fi dongle, so a local
+  # compile is work done by the machine that is also carrying its own ssh — and a CUDA
+  # engine bump (./strata.nix,
   # `machines/services3/strata-package.nix`) is exactly the kind of compile that would
   # take the afternoon.  So the honest rule for this box: a bump of the `strata` input
   # lands here last, in a window, and `nix flake update strata` is a network-wide act
@@ -33,7 +34,12 @@
   imports = [
     ./configuration.nix
     ./hardware-configuration.nix
-    ./networking.nix
+    # The wired VLAN 225 wiring, since 2026-11-25.  Its own header is the record of what
+    # was measured before it went in (the NIC has a carrier, the wire carries frames,
+    # and the router answered a VLAN-225-tagged request on that NIC) and of why the box
+    # wants a **boot** rather than only a switch.  It replaced `./networking.nix`
+    # (NetworkManager + a USB dongle), which is deleted in the same commit.
+    ./vlan225.nix
     # ./nvidia.nix is still what makes the card usable at all — for Strata it is the
     # CUDA driver + libcuda, not a Vulkan ICD, but it is the same `legacy_580` branch
     # (580 is the last NVIDIA branch that supports Pascal) and the same
@@ -71,11 +77,10 @@
     flakeInputs.sops-nix.nixosModules.sops
   ];
 
-  # `./vlan225.nix` is **not** in this list and must not be added on the bench — it is
-  # the wired VLAN 225 wiring this box wants once it is racked, and enabling it here
-  # would leave the box with no address at all, because the network's Wi-Fi hands out
-  # VLAN 226.  Its own header is the parking notice (AGENTS.md rule 23);
-  # ./README.md owns the move.
+  # There is no Wi-Fi module in this list any more, and there must not be one: the dongle
+  # went back in a drawer on 2026-11-25 when the cable went in, and `./vlan225.nix`
+  # refuses NetworkManager for a reason its header states.  What a future dongle needs is
+  # a decision, not a resurrected file — see ./README.md.
 
   programs.pi-agent.enable = true;
 

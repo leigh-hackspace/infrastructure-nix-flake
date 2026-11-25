@@ -1,4 +1,4 @@
-# PARKED — 2026-11-21 (0a9e065) — no doc; the reason is this: machines/services3/strata.nix replaced it. Strata cannot share a GPU with llama.cpp, and the GTX 1080 Ti is now Strata's (upstream's CUDA 12 engine, sm_61). The module is kept, not deleted, because its measurements and its llama.cpp packaging are the only record of how this card behaved before 2026-11-21 — re-verify with: `ls /srv/models/Ternary-Bonsai-2-9B-Q2_0.gguf && curl -fsS http://10.3.2.213:8080/health` (Strata answering on the same port means llama.cpp must stay parked; the model files are still on the box).
+# PARKED — 2026-11-21 (0a9e065) — no doc; the reason is this: machines/services3/strata.nix replaced it. Strata cannot share a GPU with llama.cpp, and the GTX 1080 Ti is now Strata's (upstream's CUDA 12 engine, sm_61). The module is kept, not deleted, because its measurements and its llama.cpp packaging are the only record of how this card behaved before 2026-11-21 — re-verify with: `ls /srv/models/Ternary-Bonsai-2-9B-Q2_0.gguf && curl -fsS http://10.3.1.22:8080/health` (Strata answering on the same port means llama.cpp must stay parked; the model files are still on the box — the address is common/hosts.nix's since 2026-11-25, when the box moved off its dongle lease 10.3.2.213 onto wired VLAN 225).
 # llama.cpp (Vulkan) serving **Ternary-Bonsai-2-9B-Q2_0** and its vision projector on the
 # GTX 1080 Ti, and the network's third inference endpoint.
 #
@@ -246,7 +246,7 @@
   #
   # Checks, in the order that tells you which of the three stories you are in:
   #
-  #   curl -sS http://10.3.2.213:8080/ | head -c 120      # HTML = embedded UI is in the binary
+  #   curl -sS http://10.3.1.22:8080/ | head -c 120      # HTML = embedded UI is in the binary
   #   llama-server --help | grep -E '^  --ui'             # runtime switch --ui/--no-ui, on by default
   #   nix build --no-link 'github:ggml-org/llama.cpp#packages.x86_64-linux.vulkan'   # the upstream-flake bug above
   #

@@ -13,6 +13,26 @@ that is closed gets absorbed into the live docs and deleted, and git history hol
 
 ## Nix / build
 
+- **`nix flake check --no-build` on services1 dies on `path '…-sops-secret-pg_pass.drv' is
+  not valid`** (measured 2026-11-25 while landing services3's VLAN move). Rule 9 makes a
+  baseline a fact about a **lock**, so this was re-measured rather than inherited: it
+  reproduces **byte-identically on a clean-HEAD worktree** (`git worktree add /tmp/…
+  HEAD`), i.e. it is store state on this box at this lock and not the change that was
+  being landed. Mechanism (docs/nix-dev-workflow.md, "Evaluation must not build anything"):
+  one name in `infra.buildTimeSecrets` is read with `builtins.readFile` at eval time
+  (`machines/services1/services/outline.nix` builds its postgres URL through
+  `config.sopsSecretText "pg_pass"`), so the evaluation *needs* that derivation realisation,
+  and `--no-build` declines to provide it while this box's store has since GC'd it — and the
+  `.drv` cannot be rebuilt from its own store path (`nix-store --realise` answers
+  `don't know how to build these paths`). **Blocks:** nothing that is running. It blocks
+  `just check`'s flake step on this box and any cold evaluation of services1's config. **The
+  way out is a build**, not an edit: `nixos-rebuild build|switch --flake .#services1` or
+  `just check-build` instantiates and builds the drv, so the next services1 deploy restores
+  the step and re-measures whether it is warning-free. Do not "fix" it by taking the name out
+  of `infra.buildTimeSecrets` or out of `secrets/secrets.yaml` — that list is an assertion
+  about a deliberate store-path cost (rule 13), and the pg password is genuinely read at
+  build time by an app module.
+
 - **`gw`'s evaluation prints a deprecation warning that is ours to fix: `getExe: Package
   "ups-watchdog-0.1.0" does not have the meta.mainProgram attribute`** (seen 2026-11-19 in
   `/var/tmp/deploy-gw-2026-11-19.log` while switching gw for the ACL row, three times, once
@@ -1227,12 +1247,18 @@ that is closed gets absorbed into the live docs and deleted, and git history hol
   2026-11-11, assimilated from another fleet (`cjdell/nixos-config`, where it was
   `asus-i7-6700-nixos`); the box's own file is `machines/services3/README.md` and this
   is only the network's half). **Blocks:** nothing that is running.
-  1. It answers on **VLAN 226** (`10.3.2.213`, reserved by its USB Wi-Fi dongle's MAC),
-     so it is the one services box not in 10.3.1.x. Move it with
-     `machines/services3/vlan225.nix` in one commit that also changes
-     `common/dns-records.nix`, `common/hosts.nix` and the `deploy`/`known-hosts` reads,
-     and deploy gw before the box is cabled — the procedure and its order are in the
-     README, and `machines/gw/lib/check-network-tables.nix` is what refuses a half-move.
+  1. ~~It answers on **VLAN 226** (`10.3.2.213`, reserved by its USB Wi-Fi dongle's MAC),
+     so it is the one services box not in 10.3.1.x.~~ **Done 2026-11-25**: the box is racked,
+     cabled into a VLAN-225 **trunk** port, and answers `10.3.1.22` with the wired MAC
+     reserved in `common/dns-records.nix`; `./vlan225.nix` replaced
+     `./networking.nix` (deleted) in the same commit that moved `common/hosts.nix`, and
+     `gw` was deployed first so the reservation is the router's before the box asks for
+     its lease. Two findings the plan got wrong, both written into
+     `machines/services3/README.md`: the box needs a **boot**, not only a switch (a
+     `.link` rename is applied by udev when the device is (re)created, so the VLAN child
+     does not exist until the reboot), and the plan's re-verify named
+     `services3.int.leighhack.org`, a name that never existed — the record's name is bare
+     `services3`, the `*.int` name this box carries is `strata3.int`.
   2. It is **not in `machines/gw/ups.nix`'s `shutdownTargets`**, and that is a fact about
      nobody having checked what it is plugged into, not a decision to leave it out. It
      joins the list (in the order `docs/ups-and-fleet-shutdown.md` argues for) when it is
@@ -1242,7 +1268,7 @@ that is closed gets absorbed into the live docs and deleted, and git history hol
      switch, and a `dry-activate` of exactly that change showed it would restart six of
      services1's apps (the crates' unit paths move with the flake source). Not a fee
      worth charging a new box on the same evening; it rides the next services1 deploy.
-     Until then `10.3.2.213:9100/9558/9633` answer and nobody reads them.
+     Until then `10.3.1.22:9100/9558/9633` answer and nobody reads them.
   4. ~~Both `services3` and `gw` are activated from an uncommitted tree.~~ **Committed
      2026-11-11**, which is why both boxes are now `git log -1`-checkable (rule 20) and
      `just deploy` of either reproduces what runs instead of reverting it.
@@ -4206,7 +4232,18 @@ needs a running box.
   temperatures, because a broken rewrite fails the Space API silently as a feed with
   missing sensors rather than a crash.
 
-- **Nothing found can change an existing calendar row on this build** (measured 2026-11-23,
+- **Nothing found can change an existing calendar row on this build** — **superseded
+  2026-11-24: it can, and the probe below could not have found it.** Core registers
+  `calendar/event/create|delete|update|subscribe` as **WebSocket commands**
+  (`components/calendar/__init__.py:308/346/393/442`) and `get_services_for_target` does not
+  see WebSocket commands at all; all three write commands are live on the running
+  `2026.11.0` container (probed with deliberately bogus payloads, `.ics` md5 unchanged), and
+  `local_calendar` implements create/update/delete. Receipts and payload keys:
+  `docs/events-sync-plan-2026-11-24.md` §2 row 1. **Keep the habit, drop the conclusion: name
+  which of HA's three doors a measurement used** — a service, a WebSocket command, or the
+  entity's declared `supported_features` — because the first cannot answer for the other two.
+
+  (measured 2026-11-23,
   `get_services_for_target` on `calendar.public_events` offers exactly
   `calendar.get_events` and `calendar.create_event`). `local_calendar`'s entity declares
   `CREATE_EVENT | DELETE_EVENT | UPDATE_EVENT`, but only the two above are registered
@@ -4218,3 +4255,25 @@ needs a running box.
   `machines/services1/services/home-assistant.nix` only moves when someone bumps it
   deliberately. **Probe `get_services_for_target` again after any bump before inheriting
   this sentence.**
+
+- **Home Assistant's authentik OIDC client secret sits in plaintext in
+  `/srv/homeassistant/configuration.yaml`** (`auth_oidc.client_secret`), a runtime file the
+  flake only mounts, and it is now in a transcript: reading that file to ask *whether* it
+  holds a credential printed the credential, because the idiom written for "print it masked"
+  filtered on `api_key|token|password` and `client_secret` is none of those (rule 13, same
+  shape as the 2026-11-23 HA-token item above — the asking-a-question idiom has to be
+  `grep -c`, never `grep`). It can mint HA logins through authentik, so: rotate the
+  `home-assistant` application's secret in authentik, and move the value out of
+  `configuration.yaml` (a sops file read with `!env_file`, matching what
+  `machines/services1/sops.nix` already does for everything else), leaving the OIDC provider,
+  discovery URL and claims where they are. **Re-verify with:** a fresh `curl` of
+  `ha.int.leighhack.org` → authentik login → a signed-in HA session, and
+  `sudo grep -c 'client_secret' /srv/homeassistant/configuration.yaml` → `0`.
+
+- **The events plan is open work, and this file is its index**: `crates/events-sync` (an
+  Eventbrite → Home Assistant mirror), the HA automation that makes HA drive the Slack
+  event notices it does not drive today, and the website's `/events` (an engaging public
+  listing) vs `/calendar` (the combined view). Phase-by-phase, with the decisions that need
+  an owner before anything is deleted: **`docs/events-sync-plan-2026-11-24.md`**. The two
+  blockers are a credential with a named owner (§7.1) and permission to retire the
+  hand-mirrored calendar rows (§7.3); nothing in it needs a front-door row until phase 5.

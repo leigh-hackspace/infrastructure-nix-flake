@@ -202,8 +202,13 @@ in {
       # so this box scrapes itself the same way it scrapes the others — there is no
       # "127.0.0.1 = this machine" special case any more, which is what keeps the
       # instance labels comparable across the four.  services3 is in the list on the
-      # same terms as the others even though it answers from VLAN 226: the router
-      # routes between the two blocks, and the scrape is by address, not by block.
+      # same terms as the others on both sides of its move: it used to answer from the
+      # Wi-Fi dongle's lease on VLAN 226 (10.3.2.213) and took a cable onto wired VLAN 225
+      # (10.3.1.22) on 2026-11-25, and the rows read `HOSTS.services3`, so the scrape
+      # address followed the row by itself. A scrape is by address, not by block, either
+      # way — the router routes between the blocks — but a scrape is only answered once
+      # the box is switched onto the address the row names, which is why these rows went
+      # quiet for one deploy of this change.
       {
         job_name = "node";
         static_configs = [

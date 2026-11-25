@@ -33,9 +33,10 @@ Skim this; the detail below is what each step means.
 6. `just check-build` (build all five machines' toplevels, activate nothing) — detached, polled, ~75 min for a nixpkgs bump.
 7. Read the diff for **interface** changes (ports, addresses, APIs). They reorder step 10.
 8. Decide per box whether the upgrade changes the kernel. A kernel change means a reboot.
-9. Pick the order: services1 → aibox → services2, unless 7 said otherwise. `services3` has
-   no service to protect and its own deploy is the one that has to be made **on** the box
-   (Wi-Fi uplink — `machines/services3/README.md`), so it goes last among the machines.
+9. Pick the order: services1 → aibox → services2, unless 7 said otherwise. **A machine whose
+   address moves goes last, and `gw` goes before it**: the reservation that makes the new
+   address real lives on the router, so deploying `gw` is what the box's next DHCP request
+   reads (worked example: services3's move to wired VLAN 225 on 2026-11-25, `machines/services3/README.md`).
 10. Land one box: `switch` **and** `nixos-confirm` in one shell invocation — chained with `&&`, so a failed switch is never confirmed.
 11. Verify that box before starting the next one. Never two boxes mid-switch at once.
 12. Repeat 10–11 for the next box.
@@ -55,7 +56,7 @@ statement about *that day*; re-probe it, do not inherit it.
 | --- | --- | --- | --- | --- |
 | services1 | 10.3.1.20 | `leigh-admin` + hop key | full `switch`. An **origin** now: nginx on plain HTTP :80 behind `ROUTER_ONLY`, with the app-shaped vhosts; postgres serves five DBs | a reboot that takes postgres or an origin app down without knowing who is up; putting a certificate or the gate back on this box |
 | services2 | 10.3.1.21 | `leigh-admin` + hop key | full `switch`. The RTX 3060 / Strata **Coder** engine, its own status dashboard, a 16 GiB swap file | being switched while its 30 GiB is the engine's; being mistaken for the builder or monitor it no longer is |
-| services3 | 10.3.2.213 | `leigh-admin` + hop key | full `switch`, run **on** the box. On the bench, Wi-Fi-only, running **Strata** (CUDA 12.8/sm_61 on the GTX 1080 Ti, Coder IQ1_M since 2026-11-21, `strata3.int.leighhack.org`) — **stop `strata` before a build, not just before a switch**: its ~23 GiB of resident experts is RAM a compile wants, and a model reload takes minutes after `switch`. A `nixpkgs` bump here also re-resolves the engine from the `strata` input (with services2's and aibox's, in the same switch), and a CUDA-12 toolkit change is the one thing this box does not share with them. | switching it from another box's `--target-host`, or touching `networking.nix` in a way that stops NetworkManager owning the Wi-Fi dongle — there is no cable, no console and the reservation is the **dongle's** MAC (`machines/services3/README.md`) |
+| services3 | 10.3.1.22 (moved out of the dongle's 10.3.2.213 on **2026-11-25**, onto wired VLAN 225) | `leigh-admin` + hop key | full `switch` **and a reboot**: the config renames the NIC (`systemd.network.links`), and udev applies a `.link` only when the device is (re)created, so a switch alone leaves the VLAN child absent — read `networkctl` back before calling it wired. Running **Strata** (CUDA 12.8/sm_61 on the GTX 1080 Ti, Coder IQ1_M since 2026-11-21, `strata3.int.leighhack.org`) — **stop `strata` before a build, not just before a switch**: its ~23 GiB of resident experts is RAM a compile wants, and a model reload takes minutes after `switch`. A `nixpkgs` bump here also re-resolves the engine from the `strata` input (with services2's and aibox's, in the same switch), and a CUDA-12 toolkit change is the one thing this box does not share with them. | a switch that is not followed by a boot (above); being put on VLAN 225 while its cable lands on an **access** port, which hands `vlan225` no lease and leaves the box with no uplink; a `--target-host` push to this box, which needs daemon trust it no longer grants |
 | aibox | 10.3.1.32 | `leigh-admin` + hop key | full `switch`. Hosts immich, frigate, whisper, the netboot server, a status dashboard, the Strata HIP engine — and was the **builder** until 2026-11-23, when the engine's arena and the builds killed each other (`machines/aibox/STRATA.md`); its own builds are now 4 jobs in a 12/18 GiB cgroup | deploying from its **dirty** tree (see Phase 0); treating "the gate is slow here now" as a fault | 
 | gw (the router) | 10.3.1.1 is the **flake's own box** (cut over from the OPNsense appliance on 2026-10-21; the appliance is retired) | `leigh-admin` + hop key, root not keyed — like every other machine here | `just deploy gw` (or `just switch` on the box): it evaluates itself, activates and confirms on itself, and since 2026-11-23 **compiles for itself, capped** (`max-jobs = 2`, `nix-daemon` at 3/4.5 GiB of its 7 GiB). It answers DNS, hands out leases, and is the network's **front door**: nginx, the one certificate, `nginx-sso`, `anubis`, `headscale`/`headplane` | anything that takes the router down, including a failed switch (rollback here is a reboot); a *fleet* build on the box itself (`_build-host-guard`) |
 | NAS | 10.3.1.6 | `leigh-admin` + hop key (root is **not** keyed) | nothing declarative. It must stay online: services1 and aibox NFS-mount it, borg runs on it | editing `/etc/sudoers` (middleware regenerates it); blaming a mount failure on the flake |
@@ -147,7 +148,7 @@ done
   blaming a fetch for anything:
 
   ```bash
-  for h in 10.3.1.20 10.3.1.21 10.3.1.32 10.3.1.1 10.3.2.213; do
+  for h in 10.3.1.20 10.3.1.21 10.3.1.32 10.3.1.1 10.3.1.22; do
     timeout 20 ssh -i ~/.ssh/agent-hop-key -o BatchMode=yes leigh-admin@$h \
       'cd ~/Projects/infrastructure-nix-flake && echo $(hostname): head=$(git log -1 --format=%h) names=$(git config --get-regexp "^remote\..*\.url$" | cut -d. -f2 | paste -sd, -) stanza=$(ssh -G 10.3.1.20 | grep -c agent-hop)'
   done

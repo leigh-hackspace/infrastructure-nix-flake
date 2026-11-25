@@ -13,10 +13,10 @@ index, not the final word.
 Machines: `services1` (10.3.1.20, the services box and an **origin** — it holds no
 TLS certificate and no public name), `services2` (10.3.1.21, strata — the
 observability stack that used to live there moved to services1 on 2026-10-17),
-`services3` (10.3.2.213 — llama.cpp/Ternary-Bonsai-2 on a GTX 1080 Ti since 2026-11-12;
-**on the bench, Wi-Fi, and the
-one services box answering on VLAN 226**, which is why its front-door row is the first
-whose upstream is off the wired block: `machines/services3/README.md`),
+`services3` (10.3.1.22 — **wired on VLAN 225 since 2026-11-25**, when it came off the
+bench's Wi-Fi dongle and its 10.3.2.213 lease and joined the other services boxes; llama
+.cpp/Ternary-Bonsai-2 on a GTX 1080 Ti since 2026-11-12, Strata's Coder pack since
+2026-11-21), `machines/services3/README.md` owning both halves),
 `aibox` (10.3.1.32, the Strata HIP engine and 59 GiB of RAM — the network's build machine
 from 2026-10-17 to 2026-11-23), and `gw`
 (10.3.1.1, the router and **front door**: TLS, the certificate, `nginx-sso`,
@@ -581,7 +581,7 @@ capability 7.5, which is the community shape the GTX 10 series runs under.
 
 | | |
 | --- | --- |
-| Listens | `10.3.2.213:8080` — **the LAN address, not loopback**, because the front door is a different box on a different VLAN; this box has no firewall (`machines/services3/networking.nix`), so the LAN ACL at the door is the gate |
+| Listens | `10.3.1.22:8080` — **the LAN address, not loopback**, because the front door is another box and this one has no firewall (`machines/services3/vlan225.nix`, like every other services box: the network's filtering is the router's nftables), so the LAN ACL at the door is the gate. It used to answer from the Wi-Fi dongle's lease `10.3.2.213` on VLAN 226, which made the door's upstream a cross-block hop; since 2026-11-25 the origin and the door are in the same block |
 | Served as | `strata3.int.leighhack.org` — a row in `common/front-door.nix` with the LAN ACL, TLS at `gw`, `proxyBuffering = false` for SSE, and `strataBearer = true` (it is a Strata engine, so it takes the one `strata_api_key` the door injects; the name is in the engine's `allowed_hosts`) |
 | Paths | OpenAI-compatible (`/v1/chat/completions`, `/v1/messages`, `/v1/models`) plus `/health`, `/props`, `/metrics` and the engine's own dashboard at `/` (which is `/v1/*` calls, so it needs the door's injected key to work — same as services2's) |
 | Data | `/srv/strata` on the **476 GB NVMe** (`nvme0n1`, one ext4 label `STRATA`, wiped 2026-11-21): 54.4 GB of GGUF shards, the prepared pack, the MTP draft. Outside the store, prepared once by hand; the unit has `ConditionPathExists` on the pack index |
@@ -593,7 +593,7 @@ Four checks, in the order that answers something:
 
 ```bash
 systemctl is-active strata                                 # and: journalctl -u strata -n 50
-curl -sS -m 5 http://10.3.2.213:8080/health                # "ok" — not localhost: see Listens
+curl -sS -m 5 http://10.3.1.22:8080/health                # "ok" — not localhost: see Listens
 sudo nvidia-smi --query-compute-apps=pid,used_memory       # the engine holding ~9-10 GiB of the 11,264
 grep -E "experts|expert cache|chunk" /var/lib/strata/strata.log | tail -5   # what the load actually sized
 ```

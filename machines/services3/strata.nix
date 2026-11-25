@@ -56,14 +56,21 @@
 #
 # ## Access
 #
-# `http://10.3.2.213:8080/v1` (this box's own address from common/hosts.nix — it
-# is the Wi-Fi dongle's, VLAN 226), with `Authorization: Bearer <strata_api_key>`
-# on every `/v1/*` call; `/health` needs none. The door row is
-# `strata3.int.leighhack.org` (common/front-door.nix, `strataBearer = true`), which
-# is how every client should reach it: the engine's own Host check and the front
-# door's key injection are both satisfied by that name, and the box binds its LAN
-# address rather than loopback because the door is another box on another VLAN
-# (the argument ./llama.nix makes at length, and `services3` has no firewall).
+# `http://${HOSTS.services3}:8080/v1` — 10.3.1.22 since 2026-11-25, the box's own
+# address from common/hosts.nix, now a **wired** one in the services block (VLAN 225)
+# rather than the Wi-Fi dongle's lease in VLAN 226 — with
+# `Authorization: Bearer <strata_api_key>` on every `/v1/*` call; `/health` needs none.
+# The door row is `strata3.int.leighhack.org` (common/front-door.nix, `strataBearer = true`),
+# which is how every client should reach it: the engine's own Host check and the door's
+# key injection are both satisfied by that name.
+#
+# The reason the box binds its LAN address instead of loopback is unchanged in kind but
+# simpler in degree since the move: the door is still another box and this one has no
+# firewall (`./vlan225.nix`, like every other services box — the network's filtering is
+# the router's nftables), so the LAN ACL at the door is the gate. What did change is that
+# the door and this origin are now in the **same** block: the row's upstream address is
+# read from common/hosts.nix, so the row followed the move by itself, and the VLAN-225-to-VLAN-225
+# hop replaced the cross-block one that ./llama.nix used to argue about at length.
 #
 # One caveat about `allowed_hosts` below, measured from `gw` on 2026-11-22 rather than
 # read off the code: `curl` to this port answers **200 on `/health` with any `Host`,
@@ -203,7 +210,7 @@
       model_name = "qwen3.8-flash-next-coder-iq1m";
       log = "/var/lib/strata/strata.log";
       allowed_hosts = [
-        "10.3.2.213"
+        "${HOSTS.services3}"
         "services3"
         "strata3.int.leighhack.org"
       ];
