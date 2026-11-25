@@ -33,6 +33,13 @@
 
   imports = [
     ./configuration.nix
+    # The RAM cap that keeps the proven-bad DIMM_A2's fault window (31.34-38.32 GiB) out
+    # of the allocator, plus the eval assertion and boot check that make it impossible to
+    # raise the cap into the window by accident.  Its header is the decision record: why a
+    # window cap rather than a `memmap=` fence over the measured pages, and the 2026-11-23
+    # boot that falsified the fence.  `./README.md`, "One stability fact…", owns the
+    # measurement; `./bad-ram-pages.txt` is the receipt.
+    ./bad-ram.nix
     ./hardware-configuration.nix
     # The wired VLAN 225 wiring, since 2026-11-25.  Its own header is the record of what
     # was measured before it went in (the NIC has a carrier, the wire carries frames,

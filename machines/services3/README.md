@@ -22,8 +22,8 @@ address, an interface or an uplink, read the 2026-11-25 "The move to VLAN 225" s
 
 | | |
 | --- | --- |
-| Board / CPU | ASUS Z170 PRO GAMING, i7-6700 (Skylake 4c/8t, `kvm-intel`), **40 GiB RAM** — `MemTotal: 41999736 kB`, measured 2026-11-21. Earlier versions of this file (and of ./hardware-configuration.nix) said 16 GiB, which is how the box arrived and was never re-measured; the difference is what makes the Coder pack fit |
-| RAM / DIMMs | **40 GiB of a 64 GiB board maximum, on four slots, all four full** — `sudo dmidecode -t memory` 2026-11-22: `Maximum Capacity: 64 GiB`, two `Kingston KHX2400C12D4/4GX` **4 GiB** DDR4-2400 and two `Kingston KTP9W1-MIE` **16 GiB** (all four seated, `MemTotal: 40999748 kB` read today. The Board/CPU row above records `41999736 kB` on 2026-11-21, which is **above** what 40 GiB of DIMMs can report once the kernel and firmware take their reservation, so that older figure is the suspect one — 1 GiB apart, two reads, and the open item says which is which (unless a stick was changed on the bench between the two and nobody wrote it down). So **64 GiB is a purchase, not a rearrangement**: the slots are full and the headroom is two new 16 GiB sticks, with the two 4 GiB ones as what gets thrown away. `dmidecode` is in `common/tools.nix`, so this is one command on any box, not a guess. The sibling box cannot take RAM at all — `machines/services2/STRATA.md` and `docs/follow-ups.md` read its board as *two* slots, both filled with 16 GiB DDR4-3200 (M378A2K43DB1-CVF) at 2933, max 128 GiB, so its own headroom is a 2×32 swap. And its RAM must not be robbed for this one: `setup.py`'s `low_ram_needed` verdict and the KV trade are what make the Coder pack fit there at all | 
+| Board / CPU | ASUS Z170 PRO GAMING, i7-6700 (Skylake 4c/8t, `kvm-intel`), **40 GiB RAM** — `MemTotal: 41999736 kB`, measured 2026-11-21. Earlier versions of this file (and of ./hardware-configuration.nix) said 16 GiB, which is how the box arrived and was never re-measured; the difference is what makes the Coder pack fit. **Since 2026-11-25 the box reports ~29.5 GiB, not 40**: `./bad-ram.nix` caps usable RAM with `mem=30G` to exclude the proven-bad DIMM_A2's fault window, so 40 GiB is the *installed* capacity and every `MemTotal` in this file from before that date is an uncapped one |
+| RAM / DIMMs | **40 GiB of a 64 GiB board maximum, on four slots, all four full** — `sudo dmidecode -t memory` 2026-11-22: `Maximum Capacity: 64 GiB`, two `Kingston KHX2400C12D4/4GX` **4 GiB** DDR4-2400 and two `Kingston KTP9W1-MIE` **16 GiB** (all four seated, `MemTotal: 40999748 kB` read today. The Board/CPU row above records `41999736 kB` on 2026-11-21, which is **above** what 40 GiB of DIMMs can report once the kernel and firmware take their reservation, so that older figure is the suspect one — 1 GiB apart, two reads, and the open item says which is which (unless a stick was changed on the bench between the two and nobody wrote it down). So **64 GiB is a purchase, not a rearrangement**: the slots are full and the headroom is two new 16 GiB sticks, with the two 4 GiB ones as what gets thrown away. `dmidecode` is in `common/tools.nix`, so this is one command on any box, not a guess. The sibling box cannot take RAM at all — `machines/services2/STRATA.md` and `docs/follow-ups.md` read its board as *two* slots, both filled with 16 GiB DDR4-3200 (M378A2K43DB1-CVF) at 2933, max 128 GiB, so its own headroom is a 2×32 swap. And its RAM must not be robbed for this one: `setup.py`'s `low_ram_needed` verdict and the KV trade are what make the Coder pack fit there at all. **Closed 2026-11-25, and the stick set is not what this row says**: `dmidecode` reads A1/B1 as Corsair `CMK16GX4M4A2800C16` 4 GiB (the 4 GiB pair was swapped on the bench), and **DIMM_A2 (`49216745`) is the proven-bad part — removed, manually tested, and now back in the box** under the `mem=30G` cap (`./bad-ram.nix`; B2 `54896945` and the 4 GiB pair are good). So this row's "four slots, all four full" stands again, but the capacity is trimmed on purpose | 
 | GPU | **exactly one, and it is a GTX 1080 Ti (GP102/Pascal on `01:00.0`** (+ its HDMI audio function `01:00.1`), driven by this flake on `nvidia 580.178.04` — ./nvidia.nix. Re-measured 2026-11-12 because "why is the 1060 missing?" was asked: `lspci -nn -d 10de:` lists those two functions and nothing else, NVML reports `GPU 0` only with `/dev/nvidia0` the sole card node, and `llama-server --list-devices` prints one line. **There is no second GPU in this box.** The network's GTX 1060 lived in **aibox** and was physically removed on 2026-09-02 (its llama.cpp verdicts were negative; the write-up is in git history) |
 | No iGPU either | `lspci -nn \| grep -ciE 'intel.*(vga\|display\|3d)'` = **0** — the i7-6700's HD Graphics 530 has no display function on this bus (disabled in the firmware), which is why `vulkaninfo` shows the NVIDIA ICD and Mesa's `llvmpipe` and nothing in between. An earlier version of this file and of ./llama.nix asserted the iGPU was a second Vulkan device; it had never been measured |
 | Free slots | DMI slot table: `PCIEX16_1` **In Use**, `PCIEX16_2` **Available**, `PCIEX16_3` **Available** (both reported "Short" — the board's electrically-x4 slots), `PCIEX1_1` Available; and the kernel log has no BAR/MMIO refusal, so nothing is seated-and-refused. A second card could therefore be fitted. What that changes is `vulkanDevice` in ./llama.nix (the index order is ICD load order, **not** PCI order) and, if the intent is one model across two cards, the `--device` list — not the driver, and not this table's VRAM ladder |
@@ -323,7 +323,7 @@ sudo grep -E "lendable slots|resident RAM mode|expert cache auto|expert cache hi
 | --- | --- |
 | `1690 of the prompt path's 1690 lendable slots keep their experts in RAM too` | **N of N** — nothing is read off the NVMe mid-prompt, so `--resident-budget-gib` and `STRATA_RESIDENT_HEADROOM_GIB` are **inert here** and are deliberately not set. services2 needed both because its box is 30.7 GiB and the KV trade had to come *out of* the expert budget — there the same dial is a 2× swing (562/725 → 1210/1204 tok/s at 8k, `machines/services2/STRATA.md`'s four-arm table); here the prompt path is already covered. Read this line after any change to the start, before believing a benchmark (`machines/services2/STRATA.md`'s rule) |
 | `resident RAM mode: 22.83 GiB of experts in RAM (page-locked), 1996 in the GPU cache … (no file reads)` | the full 23.4 GiB arena resident, as `strata.nix`'s header argues; the GPU cache holds 1,996 experts of it |
-| `MemTotal: 40999748 kB`, `MemAvailable: 10824476 kB` (idle) | the box has **10.8 GiB of RAM to spend things in** — the one axis it is not tight on |
+| `MemTotal: 40999748 kB`, `MemAvailable: 10824476 kB` (idle) — **40 GiB, uncapped, i.e. before 2026-11-25; with `mem=30G` every figure on this row is ~6 GiB lower** | the box has **10.8 GiB of RAM to spend things in** — the one axis it is not tight on (still true under the cap: 22.83 GiB of arena in ~29.5 GiB) |
 | `expert cache auto: 4.78 GiB free, 700 MiB reserved (+0 MiB for the draft head, +256 MiB …) -> 1549 slots` | what the card had left when the cache was sized — the 128K int8 K/V is still in **VRAM** (`kv_streaming_wanted` keeps it there once the arena is resident, `./strata.nix`) |
 | `decode expert cache hit rate: 68.4 % (112607 hits / 164618 lookups); 54262 more read by the GPU over PCIe … (24.8 % of all 218880 routed)` | a quarter of the experts the decoder wants are fetched **over PCIe**, not held — this is the prize a bigger card cache buys, and it is the same class as the ~13 % decode cost the 128K KV already took above |
 | `verify: capturing the 12-token window (607 MiB of VRAM free)` | the mid-request VRAM floor while `--lookup-max-t 12` runs windows 1,2,3,4,5,6,12 — ~90 MiB above the engine's own 512 MiB paging guard |
@@ -364,21 +364,184 @@ item, in `docs/follow-ups.md`; deliberately unchanged this change.
 
 ### One stability fact this box earned the hard way
 
-**The box crashed once during this bring-up** (2026-11-21 17:50, ~30 min into a 58 GB
-download): three kernel Oopses, all `general protection fault … kmem_cache_alloc_noprof`,
-all at the same faulting address, one bit away from a canonical pointer, in a
-`buffer_head` allocation that `curl` and then `jbd2` were making. The filesystem wedged,
-journald hit its watchdog, and the box went down. No NVMe error, no MCE, no ECC on this
-board (`EDAC ie31200: No ECC support`) — so nothing can tell "bad RAM" from "kernel
-overwrote its own freelist", and both remain open. It did **not** reproduce in the 90
-minutes of downloading, pack preparation and a full model load that followed (16 GiB of
-`memtester`, one pass, was clean too, which is weak evidence and not a clearance).
+**It was bad RAM, the part is identified, and the box runs it deliberately.** Nothing here
+is "kernel wrote its own freelist": that branch was closed by a tester that reports
+*addresses*, and by two records that name the same physical frames.
 
-If it recurs, the cheap discriminators, in order: `slub_debug=F` on the kernel command
-line (it names the corrupting cache instead of faulting), then this flake's pin also
-carries **6.12 LTS** (`boot.kernelPackages = pkgs.linuxPackages_6_12`) — the running
-6.18 is newer than both the fault and the evidence. Only after those does it become a
-repair job: reseat/replace DIMMs, and a `memtester` loop long enough to matter.
+**Measured** 2026-11-21 22:58, `stressapptest -M 30000 -s 3600`
+(`/var/log/memstress-20261121-2258.log`): 298 `Hardware Error:` lines. **Every one is a
+single bit flip, and every flip is in byte 6 of the 8-byte word** — bits 48–55 only, never
+another byte lane (bit 50 ×140, 55 ×78, 48 ×52, 54 ×18, 49 ×8, 53 and 51 ×1). In DDR4's
+64-bit prefetch core that is **one 8-lane output group of one DIMM**: a subset of that
+DIMM's chips, not a bus, not a cable, not both channels. 270 distinct physical words (245
+seen once, 22 twice, 3 three times); the 25 words written more than once with the bit
+written opposite failed **every time, with the same bit — 25 of 25**; and `reread == read`
+for 265 of 298, i.e. the wrong bit is **in the RAM at rest**, not a glitch on the read.
+There is no ECC here (`EDAC ie31200: No ECC support`), so nothing else can catch it.
+
+**The kernel's own record** (same box, same era, `journalctl -b -5` 2026-11-21): **seven**
+`general protection fault` Oopses 17:50:37–18:06:59, all carrying the *identical* corrupted
+pointer `0xffef8dc90a57ba58` — one bit (bit 44) below the canonical `0xffff8dc9…`, i.e.
+**byte 5**, the neighbouring lane group; and the era's `BUG:` line named `pfn 0x81b3b5` =
+32.43 GiB. **2026-11-22, live** with the engine running: 17:50:43 `strata-host: Corrupted
+page table at address 7f59dae92000` → `Oops: Bad pagetable: 000d`; 17:52:54 and 17:55:42
+`BUG: Bad page map … pte:800800081fcba867`; 17:55:44 `BUG: Bad page cache … pfn:81fcba` with
+`page: refcount:1027` on a tmpfs folio. Same PTE value and same virtual address across
+**three different processes**.
+
+**Which DIMM, and it is settled by hand.** The failing words run 0x7d5a29000–0x99431e000
+(**31.338–38.316 GiB**), with 284 of 298 inside 0x7d0000000–0x830000000 — a region only the
+two 16 GiB `KTP9W1-MIE` sticks can own. On 2026-11-25 the box was powered off, **DIMM_A2
+(serial `49216745`) was removed and manually tested: it is the bad one. The rest are good**
+(DIMM_B2 `54896945`, and the 4 GiB pair). The decisive test is *presence or absence of
+failures, never their addresses* — with a stick gone the BIOS re-maps physical addresses,
+so a frame list does not transfer between layouts.
+
+**2026-11-23 00:16, the boot that falsified the fence.** An earlier version of this work
+fenced the 272 measured pages with 110 `memmap=` ranges (the minimum-loss cover: 164.73 MiB
+reserved to fence 1.06 MiB, 1770 characters of command line, 220 E820 slots). That boot
+reached userspace at **5.0 s** and then lost **both** of its block devices — the SATA SSD
+holding `/` and `/boot` *and* the NVMe holding `/srv/strata` — ending in emergency mode with
+`systemd-oomd` failing (it has never failed on this box in any other logged boot) and with
+**no journal at all**, because the units that write to the root filesystem failed too
+(`systemd-tmpfiles-setup`, `systemd-update-utmp`, `systemd-boot-random-seed`). The console
+photo is the only record; the journal died with the fault. So a fence over the *sample*
+does not make this part usable: there are bad cells outside the 272 that were caught, and
+the arithmetic says a per-page fence cannot be made complete — 272 entries need 3264
+characters against a 1772-character budget and 544 E820 slots against ~295 spare, and
+merging only collapses 272 pages into 269 runs because the cells are ~2 MiB apart.
+
+**What the box does instead**: `./bad-ram.nix` caps usable RAM with `mem=30G`, which puts
+100% of every address it has ever been seen corrupting out of the allocator for nine
+characters of command line, no E820 slots and no `memmap=` syntax to truncate; and since
+2026-11-25 23:10 the measured pages are *also* reserved individually by a patched kernel
+(the section after next), which is what makes the cap a belt rather than the only barrier.
+**Deployed and read back 2026-11-25 18:11** (Generation 45, four DIMMs seated, A2 back in):
+`MemTotal: 29840200 kB` (28.46 GiB — the board reserves 1.54 GiB of the 30, so the check's
+band is 3 GiB, not 2), top of System RAM `0x77fffffff` (below the lowest bad byte
+`0x7d5a29000`), `bad-ram-cap-check` `active (exited)` with all three lines green, 0 failed
+units, 0 `Hardware Error`/`Bad page`/`Oops` lines, and `strata` serving on
+`10.3.1.22:8080` with the model loaded.
+
+The cost, measured rather than argued — the engine's *adaptive* residency is the number that
+moves, and `./strata.nix` itself does not:
+
+| installed RAM | resident expert arena | lendable slots held in RAM |
+| --- | --- | --- |
+| 40 GiB, no cap (the 2026-11-21 state) | 22.83 GiB | 1690 of 1690 |
+| 24 GiB, A2 out (2026-11-23 → 25) | 16.4 GiB, *"the whole resident RAM mode does not fit"* | — |
+| **28.46 GiB, `mem=30G` (now)** | **21.63 GiB, no warning** | **1064 of 1690** |
+
+So the cap costs ~1.2 GiB of arena and ~37 % of the hot expert stays on the NVMe, compared
+with the full 40 — and it is still **+5.2 GiB of resident experts over the 24 GiB the box ran
+at while the stick was on the bench**. That is what the stick buys: capacity the box can
+trust, not the capacity it had. Two guards make the cap impossible to lose quietly: an
+eval assertion that refuses a cap at or above the lowest measured bad page, and
+`bad-ram-cap-check.service`, which reads back `mem=` from `/proc/cmdline`, `MemTotal`
+against the cap, and the top of `/proc/iomem`'s `System RAM` against the lowest bad byte.
+
+**The region the cap keeps was then re-tested, and came back clean** — 2026-11-25
+18:19:16 → 19:14:18, `stressapptest -M 26000 -s 3600 --printsec 60`, log
+`/var/log/memstress-20261125-1818.log` (75 lines, deleted with `/var/log` on the next boot):
+**55 of the programmed 60 minutes, 26 GB of random-pattern traffic, 0 `Hardware Error`,
+0 mismatches, and 0 `Hardware Error`/`Bad page`/MCE lines in the kernel log for that whole
+boot**. 26 GB is 90 % of the box's 28.46 GiB, i.e. this measured *all* the RAM it is allowed
+to use, at a higher fraction of the total than the 2026-11-21 run that found the 298 hits
+(30 GB of 39.8 GiB). The last five minutes were lost to a **mains outage** that took
+services3 down at 19:13:18 — `last -x` records that login as `crash` and the journal stops
+between two heartbeat lines, which is what a power cut looks like; it is *not* the fault
+signature below, where systemd keeps talking all the way into emergency mode. So the table
+above is measured, not inferred: the stick's fault window is above the cap, and nothing
+below the cap failed an hour of hammering.
+
+Two things about running it, both learned here. The engine has to be stopped (`strata` is
+21.6 GiB of page-locked RAM) and must be started again when the test ends; and an
+hour-long transient unit must be **`Type=simple`** — `systemd-run --property=Type=oneshot`
+inherits `TimeoutStartSec` and systemd killed the first attempt at 0 s — launched with
+`--no-block`, or `systemd-run` blocks the shell for the whole hour.
+
+```bash
+sudo systemctl stop strata
+sudo systemd-run --unit=ramtest --no-block -- /run/current-system/sw/bin/bash -c \
+  '/nix/store/*stressapptest*/bin/stressapptest -M 26000 -s 3600 --printsec 60 \
+   -l /var/log/memstress-$(date +%Y%m%d-%H%M).log; rc=$?; systemctl start strata; exit $rc'
+```
+
+### The measured pages are now excluded by the kernel itself (deployed 2026-11-25 23:10)
+
+A cap throws away the top 10 GiB to be sure it has thrown away the fault window. The pages
+themselves can be excluded alone, and the command line is not where that has to happen:
+`memblock_reserve()` takes reservations by physical address and has no 2 KiB limit, so
+`./bad-ram-kernel.patch.in` — 48 lines against `arch/x86/kernel/e820.c` — carries the same
+272 frames as a `.rodata` array and reserves each one in `e820__memblock_setup()`, before
+`memblock_free_all()` ever populates the buddy allocator. It costs 1088 KiB of the 40 GiB
+and leaves ≈38.5 GiB reachable, which is the thing a `memmap=` list cannot express: the
+honest per-page form is 8683 characters against a 2047-byte limit, and coarsening it to fit
+(16 MiB granularity: 70 ranges, 1120 MiB of clean RAM lost) buys a blanket instead of the
+measurement.
+
+The patch is **generated, never hand-edited** — the array element is one `@PAGES@` line
+spliced from `./bad-ram-pages.txt` by `infra.badRam`'s `badRamPatch` derivation, so the DATA
+stays in one file and the cap and the patch remain two views of it. Verified before deploy:
+the generated patch holds exactly 272 frames and `patch -p1 --dry-run --fuzz=0` against the
+pinned 6.18.63 tarball's own `e820.c` reports zero fuzz; `nix log` shows `patching file
+arch/x86/kernel/e820.c` from that patch path.
+
+**Receipts, first boot into the patched kernel** (`nixos-rebuild boot`, power-cycled by hand
+at the console, 2026-11-25 23:10:17; generation `1pchb7ms…`, kernel `gs67h8pd…-linux-6.18.63`):
+
+```
+services3 kernel: services3-bad-ram: reserved 272 measured-bad pages (1088 KiB)
+bad-ram: the kernel reserved 272 measured-bad pages (1088 KiB, patch in force)
+bad-ram: mem=30G is on the kernel command line
+bad-ram: MemTotal 29840212 kB is consistent with a 30G cap (31457280 kB)
+bad-ram: top of System RAM is 0x77fffffff, below the lowest measured bad page — the fault window is out
+```
+
+`bad-ram-cap-check` `active (exited)`, 0 failed units, `nixos-confirm` inside the window
+(`system-good` repointed, `auto-rollback.timer` `inactive`), `strata` restarted afterwards and
+serving `{"status": "ok", … "loaded": true}`. The cap is still on, deliberately: `MemTotal`
+is unchanged at 28.46 GiB, so this boot proves the **reservation** (the array is in the image,
+it is counted at boot, and the box runs) and not yet the capacity.
+
+**What it costs**: a locally patched kernel has no binary cache, so every nixpkgs or kernel
+bump rebuilds `linux` **and** the NVIDIA module on this box — measured 21:04 → 22:36 (92 min)
+for the first one, and it is boot-critical, so the fallback generation in systemd-boot is part
+of the procedure. `boot.kernelPatches` is two lines in `./bad-ram.nix`; the price is that
+those lines are paid in compile time, on an i7-6700, twice a year.
+
+**The first attempt died and the reason is a lesson already in this file**: the build started
+with 1.5 GiB available because `strata` holds 21.6 GiB page-locked out of 28.46, and the box
+**hard-stopped at 20:22:25 with no shutdown record** — journal ending mid-sentence, a 5-second
+boot afterwards, then a manual power cycle. Stopping the engine first is not only for the
+stress test: a kernel build needs the RAM the engine reserves. With `strata` stopped the box
+had 28.1 GiB available and the same build went through with 27 GiB free throughout.
+
+**Turning it into capacity is one line and one more measurement**: `infra.badRam.cap = null`
+(no `mem=` at all), `just boot`, then with the cap off and the engine stopped,
+`stressapptest -M 34000 -s 7200` on the patched kernel. The reservation covers what was
+measured; 2026-11-23 is what an unmeasured cell costs. When the wall is 0 that the fault is
+gone, and if it is not, whatever it prints becomes the next entries in `./bad-ram-pages.txt`
+— and the patch regenerates itself from that file.
+
+**If it acts up again, this is the signature** — and it is not a disk fault: block devices
+timing out, `systemd-oomd` failing, then `tmpfiles`/`utmp`/`random-seed` failing, then
+emergency mode with no journal. Power off, do not debug it as storage.
+
+**Earning the top 10 GiB back is a measurement, not a config change.** The cap fences a
+*measured window*; a cell below it that flips under a pattern nobody tried is still live.
+With the page reservation deployed (above), the way back is `infra.badRam.cap = null` — no
+`mem=` at all — after an uncapped `stressapptest -M 34000 -s 7200` on the patched kernel,
+and then the cap stays null for good. If that run finds anything, its addresses go into
+`./bad-ram-pages.txt` (which regenerates the patch *and* moves the cap's floor) rather than
+being fenced by hand. The old 30-minute `slub_debug=F` / 6.12-LTS discriminators are gone
+with the question — the fault is identified.
+
+Re-verify with: `grep MemTotal /proc/meminfo` (29840200 kB, not ~39 GiB),
+`sudo grep "System RAM" /proc/iomem | tail -1` (must end below `0x780000000`),
+`sudo journalctl -k -b | grep 'bad-ram: reserved'` (272 pages, the patched kernel's own
+line), `systemctl status bad-ram-cap-check.service`, `sudo journalctl -k | grep -c 'Hardware
+Error'` (0), and `sudo dmidecode -t memory` for which slots are populated.
 
 The model data is at `/srv/strata` (the wiped NVMe) and is prepared by hand once —
 `./strata.nix`'s header holds the exact commands (`iq_pack.py`, then the MTP tools if
@@ -888,6 +1051,6 @@ gh api repos/leigh-hackspace/infrastructure-nix-flake/keys --jq '.[]|{title,read
 | Wi-Fi PSK | **Closed 2026-11-25** — the box is racked and wired. The PSK is in `/etc/NetworkManager/system-connections/WiFi Go Brrr.nmconnection` (root, 0600), which this flake has never managed and still does not; `./vlan225.nix` forces NetworkManager off so the dongle cannot silently become a second DHCP client on a NIC networkd owns. The dongle's MAC left `common/dns-records.nix` in the move's commit, so nothing in the flake invents 10.3.2.213 again. Putting the box back on Wi-Fi is a decision with a named shape (`sops.secrets` + `networking.networkmanager.connections`, which renders to `/run/...` and so will not fight the `/etc` file), not a resurrected file. |
 | `/` free space | Model data moved to the NVMe, so `/` only carries the store and the generations; measured 2026-11-21 after the engine's closure, `df -h /` has tens of GiB free and the old generations are still prunable (see above) if a nixpkgs bump needs the room. |
 | Root's ssh identity | `nix copy`/remote-build ssh runs as root out of `HOME=/root`, and the identity it offers comes from a **hand-written `/root/.ssh/config`** (aibox stanza since Sep 2025, services3 added 2026-11-11 — item 5 above). The *host keys* are declarative (rule 25); the identity is not, so `nix copy` to a new box fails with `Too many authentication failures` until a stanza is added by hand or `common/ssh-hop.nix` grows an absolute-path identity for the copying side (remote *builds* are gone since 2026-11-23, so root's ssh is now only the copy path). **The operator account's half closed 2026-11-15:** `common/ssh-hop.nix` now carries `programs.ssh.hosts` for the network's own addresses (`IdentityFile ~/.ssh/agent-hop-key`, `IdentitiesOnly yes`, `ConnectTimeout 5`), rendered into `/etc/ssh/ssh_config` — the *system* file, because this nixpkgs has no home-file option in `users.users.<name>` at all (`just check` refuses it; `machines/gw/README.md`'s "authorized keys are a fact about the directory sshd reads" is the same shape). Root is **not** covered by that block: `~` in `IdentityFile` expands to `/root`, where no `agent-hop-key` exists, so root still needs its absolute-path stanza and `sudo env NIX_SSHOPTS='-i /home/leigh-admin/.ssh/agent-hop-key -o IdentitiesOnly=yes' nix copy …` remains the escape hatch. Re-verify the operator half with `ssh -G 10.3.1.20 | grep -E 'identitiesonly|agent-hop'` as `leigh-admin` (two lines once deployed; `ssh -G` also prints ssh's five built-in defaults on an unswitched box, so count them) and by the checkout's own `git remote -v` answering `origin` + `infra`. |
-| Bad-RAM fence (WIP) | **Still a stash on this box, not a branch, and not forgotten.** The box's checkout is clean at the fleet commit, so the only trace of the bad-RAM work — `machines/services3/bad-ram-fence.nix` plus the measured `bad-ram-pages.txt` / `bad-ram-reservations.txt` and the README diagnosis — is `stash@{0}` on **this** box, whose own message carries the re-verify. Measured 2026-11-25, the conflict set on popping is **exactly three files** (`comm -12` of the stash's file list against `git diff --name-only 4c19476..<fleet-head>`): `docs/follow-ups.md`, `machines/services3/default.nix`, `machines/services3/README.md` — the stash's `justfile` edit does **not** conflict, because the 2026-11-25 commits moved a recipe into `just/checks.just` instead, and the three new files land cleanly. Re-verify before popping with those same two commands (a later fleet commit changes the answer), and pop only where the fence is still wanted: `git stash pop`, then read the rendered `machines/services3/default.nix` (rule 10 — a merge marker in a module the flake imports is a build error, not a warning). |
+| Bad-RAM: cap on, reservation armed | **Closed as a stash, live in the tree** (2026-11-25 23:10): `./bad-ram.nix` + `./bad-ram-pages.txt` + `./bad-ram-kernel.patch.in` are committed files now, the cap is deployed and confirmed (`mem=30G`, `MemTotal` 29840212 kB), and the patched kernel reserves the 272 measured pages at boot (receipts above). What is *open* is the capacity: `infra.badRam.cap = null` needs one uncapped `stressapptest -M 34000 -s 7200` on the patched kernel with `strata` stopped, and that run needs a window where the engine may be down for two hours. Do not skip it — 2026-11-23's missing-journal boot is what an unmeasured cell under the fault window costs. |
 | Monitoring depth | Scraped **once services1 next switches**: the three scrape rows are in `machines/services1/services/observability.nix`, and a `dry-activate` of that change showed it would stop and restart six of services1's apps (`filestore`, `gocardless-dashboard`, `moonraker-exporter`, `prometheus`, `status-dashboard`, `switch-gui`) — the crates' unit paths move because the flake source moved. That is a services1 deploy decision (`docs/network-upgrade-runbook.md`), not a fee for adding a box, so it was not paid here. Until then the exporters run on this box and nobody reads them. Alerting is the same shape and now possible: `common/monitoring-endpoints.nix` is the gatus half, its guard wants an `https *.int` endpoint, and `strata3.int.leighhack.org` got its `/health` row in the same change as the door row — it goes live with the deferred services1 deploy, not as its own restart of six apps. |
 | GitHub credential | **Closed 2026-11-22, both halves**: the box has its own `~/.ssh/id_ed25519` registered as a repo deploy key with write access (the section above carries the receipts, the grant's rationale, and both re-verify blocks), and pushes and pulls GitHub itself; and the `github.com` keys are now the row in `common/ssh-known-hosts.nix` that this box's switch of that day carries (re-verify `grep -c github /etc/ssh/ssh_known_hosts` = `3`; before it the count was `0` and the keys came from a hand-made `~/.ssh/known_hosts`, which a reinstall loses silently). |

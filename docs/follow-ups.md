@@ -4124,15 +4124,30 @@ and the answer key on this box and reads both lines back.
   KTP9W1-MIE, four slots, all four full, `Maximum Capacity: 64 GiB`**. `machines/services3/README.md`'s
   Board/CPU row records `MemTotal: 41999736 kB` (40.05 GiB) on 2026-11-21 — which is *above* what
   40 GiB of DIMMs can report after reservation, so that figure is the suspect one, unless a stick
-  was changed on the bench between the two reads and nobody wrote it down. **Blocks:** nothing,
-  and no decision. **To do:** re-verify with `sudo dmidecode -t memory` and `grep MemTotal
-  /proc/meminfo` on services3, and if the stick set ever differs from the row, say which change
-  moved it in `machines/services3/README.md`. `dmidecode` is in `common/tools.nix`, so the
-  question is one command on any box, never a recollection. **Why it matters here:** 40 GiB →
-  64 GiB is a **purchase** of two 16s with the two 4s thrown away, not a rearrangement into free
-  slots, and services2's board is *two* slots already holding 2×16 (`machines/services2/STRATA.md`)
-  — so with no new RAM buyable, the RAM *capacity* axis is closed on both boxes, and its only
-  remaining shape is which tier each thing lives in.
+  was changed on the bench between the two reads and nobody wrote it down — **it was a stick
+  swap, and this is now closed.** 2026-11-25, `dmidecode` on the box: A1 and B1 are
+  **Corsair `CMK16GX4M4A2800C16`** 4 GiB (serials `00000000`), not the Kingston
+  `KHX2400C12D4/4GX` this row used to claim, so the 4 GiB pair changed on the bench between
+  2026-11-21 and 2026-11-22 and the 1 GiB `MemTotal` gap went with it. The same day,
+  **DIMM_A2 (`KTP9W1-MIE` 16 GiB, serial `49216745`) was removed and manually tested: it is
+  the proven-bad stick, and B2 (`54896945`) plus the 4 GiB pair are good.** A2 is
+  deliberately **back in the box** with `machines/services3/bad-ram.nix` capping usable RAM
+  with `mem=30G`, because every corruption this box has produced is at 31.338–38.316 GiB and
+  the cap puts the whole window out of reach (the measurement, the 2026-11-23 boot that
+  falsified a `memmap=` fence over the 272 measured pages, and the boot-check that proves
+  the cap took are in `machines/services3/README.md`, "One stability fact…"). So the box
+  reports about **29.5 GiB, not 40**, and every `MemTotal`/`MemAvailable` figure in these
+  docs from before 2026-11-25 is an uncapped one.
+
+  **What is left is a measurement, not a decision:** raising the cap means re-measuring the
+  fault (`stressapptest -M 34000 -s 7200` with `strata` stopped, then regenerate
+  `machines/services3/bad-ram-pages.txt` and the cap), because a fence over a *sample* is
+  what the 2026-11-23 boot falsified. **Blocks:** the top ~10 GiB of the 40, and nothing
+  else — the engine's 22.83 GiB arena fits in 29.5 GiB with ~6.5 GiB idle headroom.
+  **Why the capacity axis still matters:** 40 GiB → 64 GiB is a **purchase** of two 16s with
+  the two 4s thrown away, not a rearrangement into free slots, and services2's board is
+  *two* slots already holding 2×16 (`machines/services2/STRATA.md`) — so with no new RAM
+  buyable, each box's only remaining capacity shape is which tier each thing lives in.
 
 - **The RAM *dials* on services3 are at their ceiling, so two of services2's levers are inert
   there** (measured 2026-11-22: `1690 of the prompt path's 1690 lendable slots keep their

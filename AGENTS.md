@@ -638,6 +638,19 @@ fact a caller must not lose: text already shown to the room cannot be un-shown b
   failed during activation failed the switch, which armed the countdown on the network's
   router. `docs/router-front-door-migration.md` has the outcome and the fix.)
 
+  **`nixos-rebuild boot` starts that countdown at the *next* boot, and it rolls
+  backwards.** `boot` activates nothing and so confirms nothing: the box comes up in the
+  new generation while `system-good` still points at the *previous* one, and the timer
+  — which is started by boot, not only by activation — fires five minutes later and
+  reboots into that previous generation. Measured on services3 2026-11-25 18:11: a
+  `boot` had armed the capped generation as the default while `system-good` was the
+  **uncapped** one this whole change existed to replace, and `sudo nixos-confirm` after
+  the reboot (`nixos-confirm` is also what stops the timer) was the only thing between
+  it and a rollback into a live fault window. So a `boot` deploy's confirm belongs in
+  the shell invocation that *boots* the box, not the one that built it — the compiled
+  rule (`just boot` chains the confirm) only helps a machine you are rebooting from
+  here, and a racked box you power-cycle by hand needs it typed after it comes back.
+
   1. Run `sudo nixos-confirm` **immediately** after `switch`/`boot`, in the **same
      shell invocation** (`... switch ... && sudo nixos-confirm`), on the machine that
      was switched. `&&`, never `;` — and in a script, confirm only when the switch's

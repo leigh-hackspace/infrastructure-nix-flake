@@ -1,0 +1,48 @@
+--- a/arch/x86/kernel/e820.c
++++ b/arch/x86/kernel/e820.c
+@@ -989,6 +989,35 @@
+ early_param("memmap", parse_memmap_opt);
+ 
+ /*
++ * services3: pages this box has measured corrupting.  Each entry is a 4 KiB
++ * page frame that failed stressapptest on 2026-11-21 and was re-read to
++ * confirm the flip (298 single-bit flips over 272 pages, all in bits 48..55
++ * of the 64-bit word).  Generated from machines/services3/bad-ram-pages.txt
++ * by bad-ram.nix -- edit that file, not this one.
++ *
++ * Reserving them in memblock here keeps them out of the buddy allocator
++ * entirely, which is the only way to express 272 individual pages: the
++ * equivalent memmap= list needs ~8.7 KiB of kernel command line, and
++ * x86_64 has 2 KiB.
++ */
++static const u64 services3_bad_ram_pfns[] __initconst = {
++	@PAGES@
++};
++
++static void __init e820__reserve_services3_bad_ram(void)
++{
++	unsigned int i;
++
++	for (i = 0; i < ARRAY_SIZE(services3_bad_ram_pfns); i++)
++		memblock_reserve((phys_addr_t)services3_bad_ram_pfns[i] << PAGE_SHIFT,
++				 PAGE_SIZE);
++
++	pr_info("services3-bad-ram: reserved %u measured-bad pages (%u KiB)\n",
++		(unsigned int)ARRAY_SIZE(services3_bad_ram_pfns),
++		(unsigned int)(ARRAY_SIZE(services3_bad_ram_pfns) * (PAGE_SIZE / 1024)));
++}
++
++/*
+  * Called after parse_early_param(), after early parameters (such as mem=)
+  * have been processed, in which case we already have an E820 table filled in
+  * via the parameter callback function(s), but it's not sorted and printed yet:
+@@ -1299,6 +1328,9 @@
+ 		memblock_add(entry->addr, entry->size);
+ 	}
+ 
++	/* Keep the pages this box has measured corrupting out of the allocator */
++	e820__reserve_services3_bad_ram();
++
+ 	/*
+ 	 * At this point memblock is only allowed to allocate from memory
+ 	 * below 1M (aka ISA_END_ADDRESS) up until direct map is completely set
