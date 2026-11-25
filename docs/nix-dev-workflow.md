@@ -70,8 +70,12 @@ Two name collisions to keep apart while mapping a hostname to an address:
   gw) hkey=router ;; esac`) and `just known-hosts` reads the same table; a hand-written
   hop has to do the mapping by hand, which is what AGENTS.md's ssh block spells out as
   `leigh-admin@10.3.1.1`.
-- **aibox maps its own name to `127.0.0.2` in `/etc/hosts`**, so `ssh aibox` from aibox is
-  a self-hop behind a second indirection — use the IP in every hop.
+- **Every flake box maps its own name to `127.0.0.2` in `/etc/hosts`** — NixOS writes
+  `127.0.0.2  <machine-name>`, measured on all five on 2026-11-25 — so `ssh <self>` from a box
+  is a self-hop behind a second indirection, and `getent hosts <self>` **there** answers
+  `127.0.0.2` rather than the address the network gives it.  Use the IP in every hop, and ask
+  a name from a box that is not the one that owns it (`gw` answers the DNS tables for the
+  network).
 
 Re-verify the rebuild half instead of inheriting this text: nixos-rebuild-ng has moved
 once already (it is now `nixos-rebuild-ng-26.11`, a Python entry point rather than

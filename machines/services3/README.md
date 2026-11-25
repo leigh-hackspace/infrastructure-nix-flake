@@ -137,10 +137,18 @@ halves are kept because the order is the part that can strand the box.
    non-stranding order: prove the wired path while the wireless one still works, then
    cut over. Leaving NM on for the experiment also left the two-DHCP-clients-on-one-NIC
    trap live, and it bit in the way the parked notice predicted rather than in a new way.
-3. **The plan's re-verify named a name that never existed**: `getent hosts
-   services3.int.leighhack.org`. There is no such record — the `*.int` name this box
-   carries is `strata3.int.leighhack.org` (a front-door row), while `common/dns-records.nix`
-   answers the bare name `services3`. The correct check is `getent hosts services3`.
+3. **The plan's re-verify was right, and the reason it looks wrong is the box's own
+   `/etc/hosts`**: `getent hosts services3.int.leighhack.org` **does** answer — read from
+   `gw` on 2026-11-25 it printed `10.3.1.22  services3.int.leighhack.org`.  `common/dns-records.nix`
+   is one dnsmasq record named `services3` inside the zone `int.leighhack.org`, and
+   `dhcp-fqdn` hands the same lease out again under `<name>.<zone>`, so the record's name
+   exists both bare and qualified; neither form is a row in `common/int-dns.nix` or a vhost
+   (`strata3.int.leighhack.org` is that row — rule 24). What the plan would have tripped on
+   instead: **run on the box that owns the name, `getent hosts services3` answers `127.0.0.2`**
+   — NixOS writes `127.0.0.2  <machine-name>` into every flake box's own `/etc/hosts`
+   (measured on all five on 2026-11-25), which AGENTS.md's SSH section has carried as an
+   aibox-only gotcha for a year. A box can never ask itself what its own name answers; the
+   check belongs on `gw`.
 4. **Inbound LAN traffic to the box followed its newest interface, not its old one.** After
    VLAN 225 was up beside the dongle, the hop to `10.3.2.213` stopped answering rather than
    falling back: conntrack on the router read `SYN_SENT src=10.3.1.20 dst=10.3.2.213

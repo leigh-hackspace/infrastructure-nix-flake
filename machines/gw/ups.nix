@@ -11,9 +11,12 @@
 # is no serial half, no `usblp`, and — unlike a laptop battery — it will never
 # appear in `/sys/class/power_supply` or in `upower`, because Linux has no
 # in-kernel driver for APC's HID UPS protocol.  `hid-generic` claims it and stops
-# there, which is why `power.ups` (NUT) has to own `/dev/hidraw4`: NUT is the
-# maintained implementation of the protocol, and `usbhid-ups` speaks APC's HIDP
-# dialect.  The kernel's own HID power-supply handling is not an alternative, it
+# there, which is why `power.ups` (NUT) has to own the `/dev/hidrawN` node under it —
+# the reading that made this file say `hidraw4` was taken on 2026-10-28, and on
+# 2026-11-25 the same UPS answered as `hiddev96,hidraw2`: **the hidraw number follows
+# the order of the bus, so it is a fact about what else shares the hub (the Realtek
+# gigabit adapter and the RT5370 that serve the WAN backup), never a fact about the
+# UPS.** Never hardcode it, and never treat a changed number as "the UPS moved".  The kernel's own HID power-supply handling is not an alternative, it
 # is the thing that leaves `/sys/class/power_supply` empty.
 #
 # **And it is on `gw`.** Not on a service box: on the machine that answers DNS
@@ -25,6 +28,21 @@
 # whole reason this file is a policy module and not just `power.ups.enable =
 # true`: NUT can shut down *the box it runs on*, and the correct shutdown for
 # this network is an ordered one that starts at the far end.
+#
+# **And it can be *on the bus* and still be unread at the moment this file's units
+# start.** Measured 2026-11-25 during `just deploy gw`: the activation died with
+# status 4 on `upsdrv.service` (`upsdrvctl … No matching HID UPS found`) at 16:46:33,
+# while the kernel printed that same UPS arriving on the bus at 16:48:29 — two minutes
+# later. `crates/wan-manager` and `uhubd` (docs/wan-manager-2026-11-09.md) take the
+# USB link and put it back as they work the WAN backup, so `upsdrv`'s start races that
+# window. The consequence for a deploy of *this* box is rule 4's worst shape and no
+# recipe can see it: `/run/current-system` becomes the new generation, the activation
+# dies at the end, the recipe exits non-zero so the confirm never runs, `system-good`
+# stays on the previous generation, and `auto-rollback.timer` is `active` — a five-minute
+# countdown to rebooting the network's router. Read the failing unit's **name**, then
+# `sudo nixos-confirm` (docs/follow-ups.md carries the receipts and the re-verify). `upsc
+# apc`, not an empty `--failed` list, is the proof the UPS is alive.
+#
 #
 # ## Who decides what
 #

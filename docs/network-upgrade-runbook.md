@@ -1014,11 +1014,17 @@ README owns the detail:
   local `pi-room-sys` input — **that is stale since `8e0430c`**; re-run `just
   check` on the box rather than inheriting the sentence. No GitHub key of its own
   → push through services1.
-- **aibox** — `/etc/hosts` maps `aibox` to `127.0.0.2`, so use the IPs.  The
-  GTX 1060 was removed from it on 2026-09-02, so its NVIDIA `nvidia.nix` +
-  `legacy_580` patch was dead config and was deleted on 2026-11-18; the live GPU
-  box for that driver is services2.  Since 2026-10-17 it is the network's
-  **builder**, and its own strata engine came back on 2026-10-28 (6c/12t, 59 GiB).  The netboot export and the ten clients live
+- **every box** — `/etc/hosts` maps its **own** name to `127.0.0.2` (NixOS writes
+  `127.0.0.2  <machine-name>`; measured on all five on 2026-11-25), so use the IPs in
+  hops and never read a box's own address out of `getent` **on** that box — the check
+  belongs on `gw`, which answers the DNS tables for the network.
+- **aibox** — that is also the box whose GTX 1060 was removed on 2026-09-02, so its NVIDIA
+  `nvidia.nix` + `legacy_580` patch was dead config and was deleted on 2026-11-18; the live GPU
+  box for that driver is services2.  It was the network's **builder** from 2026-10-17 until
+  2026-11-23, when that arrangement was withdrawn and every box builds for itself, bounded
+  (rule 22); it is still the box to type `just check-build` on (59 GiB, 12 threads, ~75 min
+  for a nixpkgs bump).  Its own strata engine came back on 2026-10-28 (6c/12t, 59 GiB).  The
+  netboot export and the ten clients live
   here, and that export is what makes a plain switch exit 4 (Phase 7). No
   tailscale unit at all.
 

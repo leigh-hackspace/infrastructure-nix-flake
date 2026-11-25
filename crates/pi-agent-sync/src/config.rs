@@ -276,7 +276,7 @@ mod tests {
       "endpoints": [
         {"id":"strata","name":"Strata (aibox)","baseUrl":"https://strata2.int.leighhack.org/v1",
          "apiKey":"front-door","compat":{"maxTokensField":"max_tokens"},"maxTokensDivisor":8},
-        {"id":"llama","baseUrl":"http://10.3.2.213:8080/v1","reasoning":"false",
+        {"id":"llama","baseUrl":"http://10.3.1.22:8080/v1","reasoning":"false",
          "input":["text","image"],"contextWindow":262144,"maxTokens":32768}
       ]
     }"#;
@@ -307,7 +307,7 @@ mod tests {
         assert_eq!(eps[1].reasoning, ReasoningMode::No);
         assert_eq!(eps[1].input, vec!["text", "image"]);
         assert_eq!(eps[1].max_tokens, Some(32768));
-        assert_eq!(eps[1].probe_root, "http://10.3.2.213:8080");
+        assert_eq!(eps[1].probe_root, "http://10.3.1.22:8080");
         // Absent `apiKey` is still a placeholder, because pi needs *something*.
         assert_eq!(eps[1].api_key, "pi-agent-sync");
     }

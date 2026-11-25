@@ -23,13 +23,21 @@
 #     if VLAN 225's tag arrives down that cable, so the port is a trunk and not an
 #     access port — which is exactly the one physical fact this file cannot state.
 #
-# The re-verify the parked notice asked for, corrected: it named
-# `getent hosts services3.int.leighhack.org`, and that name has never existed — the
-# `*.int` name this box carries is `strata3.int.leighhack.org` (a door row), while
-# dnsmasq answers the record's own name bare.  Re-verify with, on the box after a
-# **boot** (see below): `ip -br addr show vlan225` answering `10.3.1.22` (the
-# reservation, not a dynamic lease), `getent hosts services3`, `nmcli device status`
-# with no `wlp*` line, and on gw `grep services3 /etc/dnsmasq.d/network.conf`.
+# The re-verify the parked notice asked for, kept: it named `getent hosts
+# services3.int.leighhack.org`, and that name **does** answer — measured on gw
+# 2026-11-25 it prints `10.3.1.22  services3.int.leighhack.org`.  `common/dns-records.nix`
+# is one dnsmasq record (`dhcp-host=… ,services3`) inside the zone `int.leighhack.org`,
+# and `dhcp-fqdn` hands the lease out again under `<name>.<zone>`, so the record's name
+# exists both bare and qualified, and neither form is a row in `common/int-dns.nix` or
+# `common/front-door.nix` (the engine's own name, `strata3.int`, is that row — rule 24).
+# What **is** true, and is the trap instead: `getent hosts services3` run **on the box
+# that owns the name** answers `127.0.0.2` — NixOS writes `127.0.0.2  <machine-name>` into
+# every flake box's own `/etc/hosts` (measured on services1 and on services3 2026-11-25;
+# the SSH section of AGENTS.md has carried this as an aibox-only "gotcha" for a year) — so
+# a box can never ask itself what its name answers.  Re-verify from **gw** instead: `getent
+# hosts services3` and `getent hosts services3.int.leighhack.org` both answering `10.3.1.22`,
+# `grep services3 /etc/dnsmasq.d/network.conf` (the reservation line), and on the box
+# `ip -br link` (`lan` plus `vlan225@lan`, both `UP`, carrying `10.3.1.22/24`).
 #
 # **A switch is not enough on this box: it wants a boot.** `systemd.network.links`
 # renames the NIC to `lan`, but udev applies a `.link` only when the device is
@@ -38,8 +46,15 @@
 # wrote `/etc/systemd/network/10-lan.{link,network}` and `networkctl` still printed
 # `enp0s31f6 ... unmanaged`, no `vlan225`.  The hand-written test that matched the real
 # name is what proved the VLAN itself was fine, and the reboot is what makes the
-# flake's own files apply.  Do not "fix" this by matching `enp0s31f6` here and dropping
-# the rename: services1 and services2 both use the renamed-parent shape, and a board
+# flake's own files apply.  One piece of boot-time noise is expected, not a fault: the
+# `.link` rule matches by **MAC**, and a VLAN child carries its parent's MAC, so udev also
+# tries to rename the child — `vlan225: Failed to rename network interface 3 from 'vlan225'
+# to 'lan': File exists`, followed by `ignoring`.  The rename is refused, the child keeps its
+# kernel name and the `vlan225@lan` alias, and `networkctl` then reads `vlan225 … routable
+# (configured)`.  Do not "fix" that by matching the link rule on a name instead of the MAC:
+# the MAC is what makes the rule survive a kernel rename, and the refusal is what keeps the
+# child addressable at all (`10.3.1.22/24 … dynamic vlan225`).  Do not "fix" this by matching
+# `enp0s31f6` here and dropping the rename: services1 and services2 both use the renamed-parent shape, and a board
 # swap or a BIOS rename changes the device name and not the MAC, so matching the MAC is
 # the only stable handle.
 {lib, ...}: {

@@ -3086,6 +3086,40 @@ by size.
   `gw` that day to clear transient gate units, which also hides these two units from
   `systemctl list-units --failed`; `systemctl is-failed upsdrv` and the journal are
   the truth, not that list.
+
+  **Closed on 2026-11-25 at the box, and the closing found a second fact the next
+  `gw` deploy has to survive.** The UPS is back on `gw`'s USB bus: `sudo lsusb | grep -i
+  051d` answers `Bus 002 Device 006: ID 051d:0002 American Power Conversion
+  Uninterruptible Power Supply`, and the kernel's line for that day reads
+  `hid-generic 0003:051D:0002.0003: hiddev96,hidraw2: USB HID v1.10 Device [American
+  Power Conversion Back-UPS XS 1400U …]` — the endpoint is `hidraw2` now, not the
+  `hidraw4` `machines/gw/ups.nix`'s header names, because **the hidraw number follows
+  the bus order and so is a fact about what else is plugged into that hub** (the Realtek
+  gigabit adapter and the RT5370 that serve the WAN backup), never about the UPS. `sudo
+  systemctl start upsdrv.service` then answers `Result=success`, `is-active active`, and
+  `upsc -l` prints `apc`, so `upssched`'s countdown, the `ONBATT` notices and
+  `ups-watchdog`'s decision all have a driver to talk to again.
+
+  **The second fact: `upsdrv` failing *during an activation* is a race, not a fault, and
+  it makes a `gw` deploy exit 4 with the router's rollback countdown armed.** Today's
+  `just deploy gw` printed `switching to system configuration /nix/store/…-nixos-system-gw…
+  failed (status 4)` at **16:46:33** with `upsdrvctl … No matching HID UPS found`, while
+  the kernel printed the UPS *arriving* at **16:48:29** — two minutes later. The WAN
+  backup's USB handling (`crates/wan-manager` and `uhubd` own that bus, docs/wan-manager-2026-11-09.md)
+  takes the link and puts it back, so the driver's start loses that window some times. The
+  consequence is rule 4's shape and the recipe cannot see it: `/run/current-system` moved to
+  the new generation, the activation died at the end, the recipe exited 4 so the GOLDEN RULE's
+  confirm never ran, `system-good` stayed on the *previous* generation, and
+  `auto-rollback.timer` was `active` — a five-minute countdown to rebooting the network's
+  router. What was done inside the window, and what should be done every time: read the
+  failing unit's **name** first (`upsdrv`, a unit that is racing for a device, is not
+  evidence the configuration is wrong), read `readlink -f /run/current-system
+  /nix/var/nix/profiles/system-good`, `sudo nixos-confirm`, restart `upsdrv.service`
+  after the device rejoins, and only then decide whether anything else needs fixing. Never
+  `systemctl list --failed` as proof — the item above shows `reset-failed` hides these two
+  units. **Blocks:** nothing that is running. **Re-verify with:** `sudo journalctl -u upsdrv
+  --since "-1 h"` read *beside* `sudo journalctl -k | grep "New USB device found, idVendor=051d"`
+  — the two timestamps are the whole story — plus `upsc -l` and `sudo lsusb | grep -i 051d`.
 - **Does this firmware return its load after dropping it?** (armed 2026-10-28 —
   `allow_killpower = yes` in `machines/gw/ups.nix`, after measuring that without it
   NUT 2.8 silently ignores the shutdown request: `driver.flag.allow_killpower does

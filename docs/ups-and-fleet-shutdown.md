@@ -375,9 +375,21 @@ flap that made the notice fail is the same flap that makes the notice's own reci
 list unmeasured**: `just ups-drill-notify` still has to be read as "two hops in one
 boot", not "five".
 
-Nothing here was changed by hand: `machines/gw/ups.nix` still asks for what it asked
-for, and the open item in `docs/follow-ups.md` ("The UPS is not on `gw`'s USB bus")
-records the physical question to ask at the box.
+Nothing here was changed **by hand**, and the policy is the same: `machines/gw/ups.nix` still
+asks for what it asked for — only its header comments moved, to carry the 2026-11-25
+measurement. That measurement closes the physical question and opens a deploy-time fact:
+the UPS **is** on `gw`'s bus again (`sudo lsusb | grep -i 051d` answers, `upsc -l` prints
+`apc`) after the 2026-11-22 measurement that found it absent, and the endpoint is `hidraw2`,
+not the header's `hidraw4`, **because the hidraw number is the bus's order and so names what
+else shares the hub** (the Realtek gigabit adapter, the RT5370) rather than the UPS. The
+new fact is the one a `gw` deploy must expect: `upsdrv.service` can fail **during** an
+activation while `crates/wan-manager` and `uhubd` (docs/wan-manager-2026-11-09.md) hold that
+USB link — measured at 16:46:33, with the kernel printing the UPS arriving at 16:48:29 — which
+ends the activation at status 4, exits the recipe non-zero, leaves the GOLDEN RULE's confirm
+unrun, leaves `system-good` on the previous generation, and leaves `auto-rollback.timer`
+**active on the network's router**. Read the failing unit's *name*, then confirm; `upsc apc`,
+not an empty `--failed` list, is the proof the read side is alive. `docs/follow-ups.md` owns
+the receipts and the re-verify.
 
 ## 8. Read also
 
