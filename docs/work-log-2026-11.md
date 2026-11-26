@@ -855,3 +855,71 @@ Two things worth keeping from the deploy rather than from the diff:
 which can build for itself (an item in `docs/follow-ups.md`); whether the router's own
 crate compile belongs on 7 GiB at all; and the shared-store problem, which got more
 expensive today — five stores, no cache, and no box that amortises anything.
+
+## 2026-11-26 — the Thread border router is planned, guarded, and deliberately not deployed
+
+The ask was the shape every other network's guide answers in one line: put a Thread
+border router next to the Zigbee coordinator so Home Assistant's Matter devices have a
+mesh to send IPv6 into, and use the spare USB dongle someone already had. Two things
+decided to write down instead of doing.
+
+**The spare dongle is not the radio, and that is measured, not folklore.** It is a
+Sonoff ZBDongle-P, a Texas Instruments CC2652P — the near-miss that makes the whole
+thing look fine is that a Sonoff **Dongle Plus** is CC2674**P10**, one product line
+over. The firmware for it exists and this network downloaded it (pinned by digest in
+`radios/firmware-pins.json`, zip and the `.hex` inside it), and upstream's own issue
+tracker has a report titled "Sonoff Dongle-P firmware not working when joining device"
+with `otbr-agent` dead with `RadioSpinelNoResponse` — correct image, correct dongle.
+The reason is arithmetic, and it is why the sentence survives: the CC2652P has **80 KB
+of RAM and 352 KB of flash**, the EFR32MG24-class dongles that Thread is certified on
+have **256 KB and 1536 KB**, and Thread's radio tables are what does not fit. The same
+signature appears on Thread-certified TI silicon in the TI e2e forum after about six
+sensors and a few minutes, so the TI line is a size cliff rather than a broken radio.
+
+**The plan is in the flake anyway, and it is a table plus a guard rather than a
+service plus a flag.** `common/radio-dongles.nix` (DATA) says which dongle plays
+Zigbee coordinator, which plays Thread RCP, and which is a spare; `common/radio-tables.nix`
+(HELPER) holds the rules over it, and `common/check-radio-tables.nix` (CHECK) runs them
+from `just check-eval` — and the same list is asserted inside
+`machines/services1/services/thread-router.nix` and `machines/services1/services/matter-server.nix`,
+so a deploy of the box that runs the radios cannot pass them with `just check` skipped.
+That pair is the reason the guard exists, and it is a fault this repo has seen one file
+over: `home-assistant.nix`'s "two Zigbee stacks on one coordinator" landmine is the same
+race this plan makes *possible* — `/dev/ttyUSB<N>` is handed out in plug order and
+re-handed on every reboot, so a Thread radio named by number becomes the Zigbee
+coordinator overnight, zigbee2mqtt starts, its coordinator answers, and every Zigbee
+entity in Home Assistant keeps arriving over MQTT from a mesh nobody maintains any more.
+Green units, dark mesh. The guard refuses it: exactly one coordinator, at most one
+Thread radio, no two rows claiming one node, every plugged-in row named by
+`/dev/serial/by-id/...`, and Thread's channel at least 8 from every Zigbee channel —
+the table says Zigbee 11 (measured from `/srv/zigbee2mqtt/configuration.yaml`) and
+Thread 26, because Zigbee and Thread are both IEEE 802.15.4 on 2.4 GHz and channels
+11-26 overlap with the Wi-Fi this network is full of; "they must match" is about
+MultiPAN, one chip serving both, which Home Assistant marks deprecated.
+
+`infra.thread.enable` and `infra.matter.enable` are **false**, and they stay false:
+one module assertion refuses a border router aimed at a node the table has not named,
+the other refuses a Matter fabric with no Thread radio on the box, and the doc's
+receipts are the reason. The gate was verified to fail: giving the Thread row the
+Zigbee channel 11 makes the check throw with the two channels and the row names in the
+message, then the table was restored and the check printed `ok`. What was *not* done
+here, deliberately: no sysctl, no firewall change, no switch NVRAM, no dongle flashed,
+no box switched. The IPv6 this box would need is measured (all three of
+`vlan225.forwarding`, `accept_ra`, `accept_ra_rt_info_max_plen` are 0) and the two
+upstream docs **disagree** about the first of them, so the honest answer is a number
+and a question, not a change.
+
+Two measurement corrections made against the registry the same afternoon, because both
+were headed for a sentence nobody would be able to check: Home Assistant's own OpenThread
+app image has no `:latest` — its tags are `stable`, `3.4.0`, `dev`, seven commit SHAs and
+seven `sha256-<hex>` build-image tags — so it is *pinnable*, and the reason the flake
+carries the third-party `smnws/ha-otbr-docker` instead is that that one is built to run
+**without Home Assistant OS's Supervisor**, which is what this box is; and it pins the
+same two upstream commits the app pins (`OTBR_VERSION=cb4bdae2…`, beta
+`76fb21d6…`) on `ghcr.io/home-assistant/base-debian:trixie-2026.11.0`, which is what makes
+that image a fork rather than a re-implementation. The Matter controller's pin is
+`ghcr.io/matter-js/matterjs-server:0.7.1` — the newest numeric tag that morning — and
+that server is a **drop-in replacement** for the Python Matter Server (same WebSocket
+API, reads the Python server's data files), which is what makes the flake's choice a
+version of Home Assistant's Matter support rather than a second Matter stack.
+

@@ -49,6 +49,14 @@ config.xml
 # makes a mistaken repo-local staging invisible instead of expensive.
 /camera-images/
 
+# The Thread/Matter radio firmware the same way: `just thread-fw-fetch` downloads to
+# ~/firmware-images, *outside* this tree, and these two entries only make a mistaken
+# repo-local staging invisible rather than a path every evaluation copies into the store
+# (the 669 MB measurement above is the reason). The pins themselves are the JSON, not the
+# binaries: `radios/firmware-pins.json` is tracked, `radios/fw/` is not.
+/radios/fw/
+/firmware-images/
+
 # Python bytecode from the strata-tune / tools scripts (a `py_compile` or an
 # import drops these next to the source, and they are never what you meant to add).
 __pycache__/

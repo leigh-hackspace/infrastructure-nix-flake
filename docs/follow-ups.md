@@ -4339,3 +4339,76 @@ needs a running box.
   an owner before anything is deleted: **`docs/events-sync-plan-2026-11-24.md`**. The two
   blockers are a credential with a named owner (§7.1) and permission to retire the
   hand-mirrored calendar rows (§7.3); nothing in it needs a front-door row until phase 5.
+
+## The Thread border router and the Matter controller (services1) — planned 2026-11-26, `docs/thread-border-router-2026-11-26.md` owns the evidence
+
+- **The radio does not exist yet**, and the dongle this network was offered is not
+  the radio: a Sonoff ZBDongle-P is a Texas Instruments CC2652P, and upstream's own
+  issue tracker calls the correct firmware on the correct dongle "not working when
+  joining device" (`RadioSpinelNoResponse`). **Blocks:** `infra.thread.enable`, which
+  the module's own assertion refuses while `common/radio-dongles.nix`'s thread-rcp
+  row has no device. **The way forward is a purchase, not a patch:** an EFR32MG24-class
+  dongle (256 KB RAM / 1536 KB flash against the CC2652P's 80 KB / 352 KB) and `just
+  radio-plug` to name it once it is in a USB port. `radios/firmware-pins.json` carries
+  its firmware, pinned by digest, and `just thread-fw-fetch` is the verb.
+- **What the spare *is* good for, if the Thread radio has to be bought: the Zigbee mesh.**
+  A CC2652P is a working 802.15.4 radio — it is Thread-certification and RAM it lacks, not
+  radio-ness — so flashed with a **Zigbee Router** firmware (a repeater: no `pan_id`, no
+  Z2M instance behind it) it joins the network the live SLZB-06M runs and extends it,
+  which is the cheap move for a mesh with weak link quality. `common/radio-tables.nix`
+  has the role (`zigbee-router`) and its rule (it answers on one of the mesh's own
+  channels — it joins that network, it does not start one — and it has no `mountAt`, because
+  no stack talks to it). `radios/firmware-pins.json` deliberately does **not** pin a
+  Zigbee-Router artifact yet: the row would name something nobody has verified, and the
+  measured point *against* the repeater is a 150-device house that had spare Sonoff sticks
+  flashed and plugged in around the network and still had ~50 nodes at bad link quality,
+  fixed by moving the coordinator to the middle of the house instead. So: a cheap option,
+  not medicine, and this space is one room with one coordinator in it. Decide it against
+  the mesh's own numbers (`crates/zigbee-network/` exists for exactly that read), and
+  remember that a flash does not change a dongle's USB vendor/product ids — a flashed
+  Sonoff still answers as a Sonoff Zigbee dongle in `/dev/serial/by-id`, which is why the
+  table's **role**, not the device name, is the fact that survives a flash. **Blocks:**
+  nothing; it is a decision about a spare dongle, and a flash is a one-way door per dongle.
+- **This box's IPv6 is not Thread-ready, and the two upstream docs disagree about
+  what to do about it.** Measured 2026-11-26: `net.ipv6.conf.vlan225.forwarding = 0`,
+  `accept_ra = 0`, `accept_ra_rt_info_max_plen = 0`. The OpenThread guide says set the
+  first; the Matter server's own OS-requirements page says do **not**, for a networkd
+  setup, and pin `PRIMARY_INTERFACE` instead — which is what `matter-server.nix` does
+  today. **Blocks:** a Thread mesh that commissions and is then unreachable. Nothing
+  here has changed a sysctl, and the question belongs to **gw's NAT rules and the switch's
+  VLAN configuration**, not to a container: Thread's RA advertisements arrive on the
+  interface that carries the space's leases, and Matter's own caveat about "not across
+  different LANs or VLANs" has never been measured against VLAN *tags* on this hub.
+  A network shaped like ours answers the first half of it: a VLAN-aware setup on Proxmox
+  and VyOS (`br100`, `br100.10`, `br100.20`) found Router Advertisement **disabled on the
+  intermediate hosts** and set `accept_ra = 2`, `accept_ra_rt_info_max_plen = 64`,
+  `forwarding = 1` on every interface **and** every VLAN-tagged pair before the Thread
+  routes reached the clients (`vanwerkhoven.org`, 2026) — so forwarding belongs to the
+  *middle* of the chain and RA acceptance to the *client* end, which is exactly the shape
+  the two upstream docs seemed to disagree about, and 64 is the RIO prefix length every
+  working recipe names. Ours differs in one way that matters: the sysctl keys on both
+  boxes answer for `vlan225`, `vlan226`, `router-lan`, `router-uplink` … as **plain named
+  interfaces** (`ls /proc/sys/net/ipv6/conf/`) with **no `iface/tag` key**, because our
+  VLAN tags are `slide` links with their own names rather than kernel VLAN pairs — so that
+  recipe lands here as one row per named interface, and the pair half of it does not
+  apply. The same write-up names a second half of the question this repo has not
+  considered: Thread's discovery is **IPv6 mDNS**, and "mDNS does not travel from zone to
+  zone but instead to the router and is then reflected outward again" — their VLAN-aware
+  network needed an explicit **mDNS reflector** plus firewall rules from every zone *into*
+  the LOCAL zone, "two hours of my life I won't get back". Nothing on this network reflects
+  mDNS (`gw` runs dnsmasq: DNS, DHCP, the NAT sets). So crossing our VLAN tags may be
+  **two** questions, and neither is guessable from the container.
+- **Commissioning has no Bluetooth path on this box.** `/sys/class/bluetooth/` is empty
+  and `lsusb` has no Bluetooth device, so the Matter server's `BLUETOOTH_ADAPTER` option
+  is not available; `BLE_PROXY` is, and needs a device — an ESPHome host for the `/ble`
+  bridge. **Blocks:** Matter commissioning of anything, Thread or Wi-Fi.
+- **The border-router image has no version tag** (measured through the registry on
+  2026-11-26: `latest`, `edge`, `edge-<sha>`, three `sha-<hex>`), so the flake pins a
+  moving tag and the digest that tag resolves to is off-flake. `just thread-pins` prints
+  the tag list so the drift is at least a number someone can read. **Blocks:** nothing;
+  it costs re-pinability. Home Assistant's own app image *does* have a pinnable tag
+  (`3.4.0`, and `stable`), so switching to it is the way out if this one drifts.
+- **`NAT64 = "0"` is a decision without a measurement behind it.** MQTT-over-Thread needs
+  NAT64 and the space runs an MQTT broker; nothing has yet asked a Thread device to reach
+  it. **Blocks:** nothing today; it is the next thing that will be wrong.
+

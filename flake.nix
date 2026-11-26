@@ -525,6 +525,17 @@
       # rule 14 for months after the recipe was deleted.
       doc-pointers = asCheck "doc-pointers" (import ./common/check-doc-pointers.nix);
 
+      # The 802.15.4 radios: exactly one Zigbee coordinator, at most one Thread radio, no two
+      # rows claiming one USB node, every plugged-in dongle named by its /dev/serial/by-id path,
+      # and Thread's IEEE 802.15.4 channel far enough from the Zigbee channel to be a different
+      # network on the same 2.4 GHz.  The race this refuses is one the flake can *cause* — a
+      # Thread radio named by number becomes the Zigbee coordinator on the next reboot, both
+      # stacks start green, and the space's Zigbee mesh stops being maintained.  Same list as
+      # the module assertions in `machines/services1/services/thread-router.nix` and
+      # `machines/services1/services/matter-server.nix`, one implementation in
+      # `common/radio-tables.nix`.
+      radio-tables = asCheck "radio-tables" (import ./common/check-radio-tables.nix);
+
       # The voice assistant's device boundary: the turn logic still knows nothing about what kind
       # of hardware it is bolted to, and the adapters in `crates/voice-assistant/src/drivers/`
       # still exist to know it on its behalf.  Guards an architecture, not a data table — the

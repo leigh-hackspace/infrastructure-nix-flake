@@ -846,6 +846,50 @@ post without sending it.
 Verbs (all local, none of them posting): `just slack-agent-tools`, `-probe`,
 `-call tool arguments`, `-ask "question"`, `-eval`, `-status`, `-dry-run`.
 
+## Thread and Matter on services1 — planned 2026-11-26, and switched **off**
+One more thing that section owns: **zigbee2mqtt now reads the same table**. Its
+`--device=` line used to be the literal `/dev/ttyUSB0`; it is now
+`--device=<table by-id name>:<table mountAt>`, so the flake says which dongle answers
+that name instead of trusting the kernel's plug order. Measured on services1 2026-11-26
+before the change: the rendered unit script contains `--device=/dev/ttyUSB0`, and the
+running container's `/dev/ttyUSB0` is major/minor `188,0` — the same char device the
+by-id symlink points at. What does **not** change is what zigbee2mqtt dials inside the
+container (`/srv/zigbee2mqtt/configuration.yaml`, `serial: port: /dev/ttyUSB0`,
+`advanced: channel: 11`), which is runtime state this flake does not edit: the mount
+keeps answering that name for the same dongle. `just radio-status` prints the pairing
+against the runtime config, so the drift is a line rather than a mesh going dark.
+
+
+`infra.thread.enable` and `infra.matter.enable` are false, and stay false until
+`common/radio-dongles.nix`'s thread-rcp row names a dongle that exists;
+`docs/thread-border-router-2026-11-26.md` owns why, including the measured fact that
+the spare Sonoff ZBDongle-P this network was offered is a Texas Instruments CC2652P
+and is not a Thread radio. What each half would do when switched on:
+
+- `machines/services1/services/thread-router.nix` runs `ghcr.io/smnws/ha-otbr-docker`
+  — a fork of Home Assistant's own OpenThread Border Router app, built to run without
+  the Supervisor, and pinned to the same two upstream `ot-br-posix` commits — as
+  `podman-otbr-service`: `--network=host` (Thread is IPv6-only, and a podman bridge
+  makes the mesh unreachable), the radio mounted at `/dev/ttyACM0` from the table's
+  by-id name, `NET_ADMIN`/`NET_RAW` for its ingress filtering (not `--privileged`:
+  this box's `/dev` holds the live Zigbee coordinator), `/srv/otbr:/data/thread` for
+  the Thread network's own credentials, and its REST API and web UI bound to loopback
+  on 8196/8098 because 8081 is the Space API's.
+- `machines/services1/services/matter-server.nix` runs
+  `ghcr.io/matter-js/matterjs-server:0.7.1` — a drop-in replacement for the Python
+  Matter Server, same WebSocket API, which is what Home Assistant's current docs point
+  container users at — as `podman-matter-server-service`, `--network=host` for the same
+  IPv6 reason, uid `8125:8125` rather than the image's `1000:1000` because 1000 is
+  `leigh-admin` on this box and the Matter fabric is a tree the operator should not own,
+  `/srv/matter-server:/data`, `PRIMARY_INTERFACE=vlan225`, and `BLE_PROXY=true` because
+  this box has no Bluetooth adapter at all.
+
+Neither edits Home Assistant: the integrations are runtime state in HA's browser. The
+verbs are `just radio-status`, `just radio-plug`, `just thread-pins`,
+`just thread-fw-fetch`, `just thread-fw-verify`, `just thread-status`, and the guard
+that refuses a half-plan is `common/check-radio-tables.nix`, run by `just check-eval`
+and asserted inside both modules.
+
 ## `crates/common-rs/` — where new shared code goes
 
 Plain path dependencies (`common-json = { path = "../common-rs/json" }`), no

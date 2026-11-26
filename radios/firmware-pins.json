@@ -1,0 +1,70 @@
+{
+  "_note": "DATA — the firmware artifacts the Thread/Matter radio plan is built from, pinned by hash on 2026-11-26. One file because `just thread-fw-fetch` has to verify what it downloads against something, and the doc that owns the receipts (docs/thread-border-router-2026-11-26.md) must not carry a second copy of a digest. A `flashed: false` row means this network has downloaded the artifact but has never put it on a dongle; the row's `verdict` says what upstream measured, not what this network measured. Verify with: `just thread-pins` (re-prints this table and asks the upstream releases and the image registry whether the tags still exist) and `just thread-fw-verify` (hashes what is on disk).",
+  "generated": "2026-11-26",
+  "firmware": [
+    {
+      "slug": "ot-ti-cc2652p-launchpad",
+      "repo": "Koenkk/OpenThread-TexasInstruments-firmware",
+      "release": "2025.3.1",
+      "file": "CC1352P2_CC2652P_launchpad_ot_rcp_2025_3_1.zip",
+      "url": "https://github.com/Koenkk/OpenThread-TexasInstruments-firmware/releases/download/2025.3.1/CC1352P2_CC2652P_launchpad_ot_rcp_2025_3_1.zip",
+      "chip": "texas-instruments CC2652P",
+      "dongle": "Sonoff ZBDongle-P, Tube's CC2652P2, ZigStar Stick v4, SMLIGHT SLZB-06, cod.m RPi module (adapters.md's launchpad row)",
+      "baudrate": 460800,
+      "flowControl": "none",
+      "size": 92423,
+      "sha256_zip": "5858a338f4d82e11a269410a9917561e91a5130fe3d6207dfc7066b0ed9e7e1d",
+      "sha256_inner_hex": "75330d9294629feb72d401a2ec73f8a886f822d1de2b74a513758e19494f7e9f",
+      "innerHex": "CC1352P2_CC2652P_launchpad_ot_rcp_2025_3_1.hex",
+      "flashed": false,
+      "verdict": "dead-end for this network: the CC2652P has 80 KB RAM and Thread's radio tables need more. Upstream evidence, all read 2026-11-26: Koenkk's own discussion #4 'Sonoff Dongle-P firmware not working when joining device' is the correct launchpad image on the correct dongle, and otbr-agent dies with `RadioSpinelNoResponse` / 'no response from RCP during initialization' the moment a device joins; the TI e2e forum reports the same signature on a LAUNCHXL-CC26X2R1 after ~6 sensors and a few minutes; the current HA guide says the OpenThread route 'doesn't exist' for TI sticks at all. This repo has never flashed it, and the row is here so the next reader does not re-derive that from scratch."
+    },
+    {
+      "slug": "ot-ti-cc2652r7",
+      "repo": "Koenkk/OpenThread-TexasInstruments-firmware",
+      "release": "2025.3.1",
+      "file": "CC2652R7_ot_rcp_2025_3_1.zip",
+      "url": "https://github.com/Koenkk/OpenThread-TexasInstruments-firmware/releases/download/2025.3.1/CC2652R7_ot_rcp_2025_3_1.zip",
+      "chip": "texas-instruments CC2652R7 (Thread-certified TI silicon)",
+      "dongle": "Texas Instruments LP-CC2652R7 (adapters.md's CC2652R7 row); Sonoff's Dongle Plus CC2674P10 and SMLIGHT's SLZB-06p7/SLZB-07p10 are the same family and get their builds elsewhere",
+      "baudrate": 460800,
+      "flowControl": "none",
+      "size": 91600,
+      "sha256_zip": "6c4bd70d9080b2169070671a70b078e512d858ec02d0c0157eda9c8277ac53ea",
+      "sha256_inner_hex": "51c99b569e86e5e12d6a36eb25dd8a06e19b1295f80336905a3c2940115beb52",
+      "innerHex": "CC2652R7_ot_rcp_2025_3_1.hex",
+      "flashed": false,
+      "verdict": "unmeasured on this network. Thread-certified TI silicon (the R7 line), and 2025.3.1 is the only release that repo has published as of 2026-11-26 — the row is a candidate, not an answer, and `Koenkk/ot-ti` is the tree that builds newer ones (it claims CC2652P/CC2652P7 and CC2674P10 support)."
+    },
+    {
+      "slug": "silabs-mg21-zbdonglee-rcp",
+      "repo": "darkxst/silabs-firmware-builder",
+      "release": "20250627",
+      "file": "zbdonglee_openthread_rcp_2.5.3.0_GitHub-1fceb225b_gsdk_2024.6.3_no_flow_460800.gbl",
+      "url": "https://github.com/darkxst/silabs-firmware-builder/releases/download/20250627/zbdonglee_openthread_rcp_2.5.3.0_GitHub-1fceb225b_gsdk_2024.6.3_no_flow_460800.gbl",
+      "chip": "silicon-glass EFR32MG21",
+      "dongle": "Sonoff ZBDongle-E, Sonoff Dongle Lite MG21",
+      "baudrate": 460800,
+      "flowControl": "none",
+      "size": 110540,
+      "sha256": "c949a49bea6a989a1998e19d9dc9e34c1cd8438ed6722a1228169d539350cf4e",
+      "flashed": false,
+      "verdict": "works where the CC2652P does not, and pinned deliberately at 2.5.3.0: the current guide measured 2.7.0.0 — the highest number, in the release named `-Next` — crashing the radio every few seconds (`radio tx timeout`, `RCP failure detected`, `Software reset co-processor`) and 2.5.3.0 running clean. The filename's `no_flow_460800` suffix is the contract with the router: baud 460800, flow control off, and a mismatch is the RadioSpinelNoResponse class, not a bug."
+    },
+    {
+      "slug": "silabs-mg24-rcp",
+      "repo": "darkxst/silabs-firmware-builder",
+      "release": "20250627",
+      "file": "mgm240p_openthread_rcp_2.5.3.0_GitHub-1fceb225b_gsdk_2024.6.3_no_flow_460800.gbl",
+      "url": "https://github.com/darkxst/silabs-firmware-builder/releases/download/20250627/mgm240p_openthread_rcp_2.5.3.0_GitHub-1fceb225b_gsdk_2024.6.3_no_flow_460800.gbl",
+      "chip": "silicon-glass EFR32MG24",
+      "dongle": "Sonoff Dongle Plus MG24, Sonoff Dongle Max MG24 (Dongle-M), and the SLZB-06M-class MG24 module (`slzb06Mg24_opentread_rcp._2.5.3.0..._no_flow_460800.gbl` is the same release under that name — note the upstream filename typo)",
+      "baudrate": 460800,
+      "flowControl": "none",
+      "size": 125180,
+      "sha256": "dee0d8fde21e791726f0a2a1d8dc8fddc71ae2650ff03f7662077ec8f1e5ba69",
+      "flashed": false,
+      "verdict": "the pick for a network this size: EFR32MG24 carries 256 KB RAM and 1536 KB flash against the CC2652P's 80 KB/352 KB, which is where Thread's radio tables stop fitting. `flashed: false` is honest — as of 2026-11-26 this network has no MG24-class radio plugged in, which is what `common/radio-dongles.nix`'s empty `thread-rcp.device` says."
+    }
+  ]
+}

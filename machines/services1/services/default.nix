@@ -84,5 +84,11 @@
     # speaker, and which origins CORS answers) are not code questions.
     ./voice-assistant.nix
     ./zigbee2mqtt.nix
+
+    # the other 802.15.4 network: a Thread border router next to the Zigbee coordinator it
+    # must not share a dongle with (common/radio-dongles.nix is the table, and
+    # common/radio-tables.nix refuses the half of it that would be a lie).
+    ./thread-router.nix
+    ./matter-server.nix
   ];
 }

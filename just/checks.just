@@ -55,6 +55,21 @@ check-eval:
     # `nix flake check` step; this is the version that prints which record is wrong.
     echo "=== router network tables (vlans <-> dns-records <-> ACL)"
     nix eval --impure --raw -f machines/gw/lib/check-network-tables.nix
+    # The 802.15.4 radios: zigbee2mqtt's coordinator and a Thread border router are
+    # two stacks that each get one dongle, and the kernel numbers USB serial ports in
+    # plug order, so a reboot can make the Thread radio the Zigbee coordinator — with
+    # both units green and every Zigbee device in Home Assistant arriving from a mesh
+    # nobody maintains any more. Eval-only over `common/radio-dongles.nix`, so it is in
+    # this half rather than left for `check`, which the router cannot finish (the same
+    # assertions are module assertions in `machines/services1/services/thread-router.nix`,
+    # `machines/services1/services/matter-server.nix` and
+    # `machines/services1/services/zigbee2mqtt.nix` — the coordinator's own service is
+    # asserted too, because refusing a half-plan is only useful if the stack that is
+    # already running is inside the same contract. One implementation, five entry points
+    # (this eval, the flake check in `flake.nix`, and the three modules): see
+    # ./assert-network-tables.nix's shape for why one table has more than one).
+    echo "=== 802.15.4 radio tables (radio-dongles <-> radio-tables <-> the two stacks)"
+    nix eval --impure --raw -f common/check-radio-tables.nix
     # The instructions themselves: every `just <name>` in AGENTS.md/README.md/justfile and the
     # `just/` modules the justfile imports is a recipe, every repo path they name exists,
     # every docs/*.md is linked from somewhere, and AGENTS.md does not call the router a
