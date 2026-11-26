@@ -332,10 +332,10 @@ let
       #
       # `elastic` is what makes it affordable on 30 GiB of RAM.  A CPU reader is
       # otherwise started with the server and resident for the life of the process
-      # (~1.2 GiB, and this box's headroom is 2 GiB), so instead it starts with the
-      # first picture and stops after `elastic_idle_s` without one: the RAM is held
-      # for about two minutes around an image and 0 the rest of the time, and the
-      # price is ~1 s of reader start on the first picture of a burst.  The engine's
+      # (~1.0 GiB measured, and this box's headroom is 2 GiB), so instead it starts
+      # with the first picture and stops after `elastic_idle_s` without one: the RAM
+      # is held for about two minutes around an image and 0 the rest of the time,
+      # and the price is ~2 s of reader start on the first picture of a burst.  The engine's
       # expert cache is not asked to give it VRAM: the resident low-RAM mode refuses
       # that command, and a CPU reader needs none (serve/server.py `_vision_up`
       # handles exactly that path, and starts the reader anyway).

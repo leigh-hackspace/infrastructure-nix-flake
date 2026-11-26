@@ -1512,7 +1512,7 @@ What was added, and why in that shape:
   `vision_reader.cpu_fallback()` returns None when `gpu` is false, and `--gpu` is
   never passed.
 - **`elastic: true` is the RAM decision.** A CPU reader is otherwise started with
-  the server and resident for the life of the process (~1.2 GiB), which this box
+  the server and resident for the life of the process (~1.0 GiB), which this box
   cannot hold beside `STRATA_RESIDENT_HEADROOM_GIB = 2` (the header's own numbers:
   ~2.1 GiB available at idle, ~1.0 GiB during a long read). Elastic makes
   `Vision.__init__` not start it: the first picture of a burst does, and it stops
@@ -1546,12 +1546,43 @@ Upstream's figure is ~3 s for a **300**-token picture on 8 cores
 (`docs/DETAILS.md`), which is why `max_tokens` stays at its CPU default of 300 and
 `threads` at 8 of the box's 16 (the engine's CPU expert pool is not starved).
 
-After a deploy, the three checks that count:
+**Deployed 2026-11-26 15:14 UTC** (commit `b89d8c3`), and the deploy is the other
+half of the measurement: the switch restarted `strata.service` at 15:14:33 and the
+server said `ready: ... images on` at 15:15:33 (55 s, the usual model load).
+`/health` then reads `"images": true`, `/v1/models` reads
+`"input_modalities": ["text","image"]` for `qwen3.8-flash-next-coder-iq1m`, and
+`just pi-agent-sync` wrote `"input": ["text","image"]` into pi's `models.json`
+for `strata-services2` — so an image can be attached in pi, not just posted with
+curl.
 
-    nix build .#strata-vision                      # the reader alone; ~15 s
-    sudo journalctl -u strata | grep -i "images:"  # "starts with the first picture ..."
-    curl -s localhost:8080/v1/models -H "Authorization: Bearer $KEY" \
-      | jq '.data[0].architecture.input_modalities'   # ["text","image"] with a vision section
+A real picture turn through the engine (the same logo, 187 prompt tokens of which
+120 are the picture): the reader started in **1.8 s** (elastic: it was not
+running) and the tower loaded in 1.3 s; the first round trip was 7.8 s. Two traps
+worth keeping from that first attempt:
+
+- **`max_tokens: 80` came back with `content: ""`.** The reply was all
+  `reasoning_content` (this model thinks), and 80 tokens of thinking is no answer
+  — a client that reads only `content` would call pictures broken. At
+  `max_tokens: 400` the same request answered in **4.4 s** and read the image
+  correctly ("a magenta, pill-shaped logo ... white blocky \"H\" ... 'Leigh
+  Hackspace'"), with 182 prompt tokens cached from the previous turn.
+- The per-burst line is expected and harmless: `images: the expert cache did not
+  make room for the image encoder (VRAM needs an engine started with
+  --vram-elastic ...); starting it anyway`. The resident low-RAM mode's refusal is
+  what that path is written for (above).
+
+The elastic stop was measured too: the reader went away **120 s after the last
+picture** (`images: the image encoder stopped after 120 s without a picture`) and
+its **930 MiB RSS** went with it — `free -m` returned to its pre-picture figure
+(30.3 GiB used, 1.1 GiB available) without anything else moving.
+
+After any future deploy, the three checks that count (the endpoint binds
+`10.3.1.21`, **not** loopback):
+
+    nix build .#strata-vision                       # the reader alone; ~15 s
+    sudo journalctl -u strata | grep -i "images:"   # "starts with the first picture ..."
+    curl -s http://10.3.1.21:8080/v1/models -H "Authorization: Bearer $KEY" \
+      | jq '.data[0].architecture.input_modalities'    # ["text","image"] with a vision section
 
 The last one is also what `crates/pi-agent-sync` discovers for pi (rule 31), so a
 model that can read pictures must say so **there** rather than in a hand-copied
