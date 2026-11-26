@@ -36,7 +36,7 @@ in {
         # while ten were going down this path.  Each of these is a
         # credential that is world-readable in the nix store, forever, by name; the
         # sentence is the reason someone accepted that.
-        slack_url = "Slack webhook URL interpolated into alert ExecStart lines (postgres, backup, containers).";
+        slack_url = "Slack webhook URL interpolated into alert ExecStart lines (postgres, backup, containers) — and, on gw, read at runtime instead by ra-watch.nix's shell";
         pg_pass = "Postgres password inside connection URIs (outline's databaseUrl, postgres.nix's own clauses).";
         nginx_sso_auth = "Cookie signing key inside nginx-sso's generated YAML config.";
         nginx_sso_client_secret = "authentik client secret inside nginx-sso's generated YAML config.";

@@ -2000,16 +2000,19 @@ thing to do with either is to date it (`journalctl -u … | grep "Failed with re
   **wired** LAN's off-link IPv6 (services1 *and* services2) for two days with no failing
   unit, no warning and no complaint until somebody tried to ping a host outside the /64 —
   every in-network `*.int` name is answered on-link, so the missing default route is
-  invisible from inside. The measurements, the two meters that work (`nstat
-  Ip6OutMcastPkts` on gw, `proto ra ... expires` rising on a client) and the one that
-  does not (tcpdump, which never sees this box's RAs even when they arrive) are in the
-  README section. **Open**, unchanged and now twice-happened: a link-flap hook (or
-  radvd, which re-advertises on link-up) so this cannot be missed by whoever is not
-  watching at the time — and a `ra-watch.timer` on gw, in the same shape as
-  `lease-reader-watch.timer` and `front-door-cert-check.service`, failing by name while
-  `Ip6OutMcastPkts` sits still for longer than `ra-param`'s interval. A flap hook alone
-  would not have helped here: the flap was real, the carrier came back, and nothing on
-  this box noticed either.
+  invisible from inside.
+
+  **Closed 2026-11-26**, after the third occurrence took the same three boxes' IPv6 down
+  for five hours: `machines/gw/ra-watch.nix` — `ra-watch.service` on a timer, counting the
+  *advertisements themselves* on every `ra`-advertising VLAN with one `tcpdump -p -c 1`
+  each, restarting dnsmasq when they stop, and posting to Slack as well as failing its own
+  unit. Inside the 1200 s grace, deliberately: a 150 s window plus the timer's 2 min idle
+  against the router lifetime. Two corrections came out of building it, both now in
+  `machines/gw/README.md`: **`nstat Ip6OutMcastPkts` cannot answer this** (it moved +15
+  over 150 s in which only three advertisements left the box, so a dead RA timer leaves it
+  moving and the check would never fire — the meter this item proposed), and **tcpdump
+  *can* see this box's RAs** (0 type-134 frames in 70 s during the fault, three in 150 s
+  after the restart, 51 s apart), so a capture is usable evidence in both directions.
 
 - **`yunohost.leighhack.org`'s certificate expired 2026-10-21 16:59 UTC** (found the
   same evening, from the browser warning). The DNAT now sends the name to the right

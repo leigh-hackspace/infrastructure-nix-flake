@@ -905,8 +905,17 @@ listed here is in the doc named for it.
   mutable `/var/lib/dnsmasq/names.hosts` — was deleted on 2026-10-22, together with the
   `just dns-sync-*` recipes (`network-status` had already moved onto the box on
   2026-10-21 and runs as a DynamicUser reading local `/proc`).
-  **dnsmasq's unsolicited RAs stop after a `router-lan` link flap: restart dnsmasq after
-  any cabling** or WiFi clients lose their IPv6 default 20 minutes later. SSH as
+  **dnsmasq's unsolicited RAs stop after a `router-lan` link flap** (three times now:
+  2026-10-21, 2026-11-19 and 2026-11-26), and clients lose their IPv6 default 20 minutes
+  later with nothing in any unit, log line or dashboard saying so — every `*.int` name is
+  answered on-link, so it hides until something off-link is dialled. `machines/gw/
+  ra-watch.nix` is the hook: `ra-watch.timer` counts the advertisements on the wire on
+  every `ra`-advertising VLAN, restarts dnsmasq when they stop (inside the 1200 s the
+  clients are given) and posts to Slack as well as failing its unit. Two things not to
+  re-derive there: **`nstat Ip6OutMcastPkts` is not the meter** (measured 2026-11-26: it
+  moves ~40 % without the RAs, so a dead timer leaves it moving and the check never
+  fires), and **tcpdump *does* see this box's RAs** (0 frames in 70 s during the fault,
+  three in 150 s after the restart) — a capture is evidence in both directions. SSH as
   `leigh-admin@10.3.1.1` (root is not keyed); DO token is `DO_AUTH_TOKEN` in the shared
   env-file secret (`CONFIG.ENV_FILE`) — **never print it or copy it off services1.**
   → `docs/router-and-dns.md`, and the open items are in `docs/follow-ups.md`.

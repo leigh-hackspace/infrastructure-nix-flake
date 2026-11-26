@@ -67,6 +67,13 @@
     ./hardware-configuration.nix
 
     ./dns.nix
+    # The IPv6 router advertisements dnsmasq sends, and what happens when its timer
+    # dies with a `router-lan` link flap: a check that counts the advertisements on
+    # the wire, restarts dnsmasq when they stop, and says so on Slack as well as in
+    # this box's unit state.  Three silent outages (2026-10-21, 2026-11-19,
+    # 2026-11-26) are why it exists; the header is the measurement that rules out the
+    # counter `docs/follow-ups.md` suggested.
+    ./ra-watch.nix
     ./firewall.nix
     # headscale + headplane: the network's tailnet control server and admin UI, moved
     # here from services1 with the front door. The daemons bind 8085/8086 on loopback;

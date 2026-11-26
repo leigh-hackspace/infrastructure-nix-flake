@@ -82,5 +82,19 @@
       group = "secrets";
       mode = "0440";
     };
+
+    # The Slack webhook `./ra-watch.nix` posts through when this box stops
+    # advertising IPv6 router advertisements.  Runtime, not `sopsSecretText`: the
+    # watch is a shell script that reads the file when it has something to say, so
+    # the URL needs to be in neither the store nor a process listing — the same
+    # argument as the two secrets above, and the first alarm on this box that
+    # reaches a person rather than `systemctl --failed` (`machines/services1/
+    # services/observability.nix` has no alertmanager receiver, so a red unit here
+    # is seen only by whoever happens to look).  It is the same webhook gatus, the
+    # backup jobs and containers.nix post to on services1.
+    slack_url = {
+      group = "secrets";
+      mode = "0440";
+    };
   };
 }

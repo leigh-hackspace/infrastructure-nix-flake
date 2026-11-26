@@ -288,8 +288,11 @@ failure that looks like "WiFi hangs and nothing else does":
   the restart's burst provokes is what makes networkd install the default.
 
 **The fix is `systemctl restart dnsmasq` on the router**, after any `router-lan` link
-flap. There is no config change that prevents the timer from stopping; the flake has no
-link-flap hook. Verify both halves rather than the symptom:
+flap — and since 2026-11-26 it is done for you: **`ra-watch.timer`** (`ra-watch.nix`)
+counts the advertisements on the wire on every `ra`-advertising VLAN twice a minute and a
+half, restarts dnsmasq when they stop, and posts to Slack as well as failing its own unit.
+It still cannot *prevent* the timer from stopping; it makes the stop cost nothing but a
+red unit. Verify both halves rather than the symptom:
 
 ```bash
 # the router is advertising again (should grow every ~20–60 s)
@@ -300,14 +303,19 @@ ssh leigh-admin@10.3.1.20 'ip -6 route show default'
 
 If the second line's `expires` keeps falling, the router is still not advertising; if it
 resets towards 1200 s, it is. A one-off `rdisc6` makes the route appear and **hides** the
-bug for 20 minutes, so do not treat "it works now" as proof. Longer term this is what a
-dedicated RA daemon (radvd) would be immune to; it is listed in `docs/follow-ups.md`
-rather than done here.
+bug for 20 minutes, so do not treat "it works now" as proof. The alternative answer is a
+dedicated RA daemon (radvd), which is immune to it because it re-advertises on link-up;
+`ra-watch.nix` was built instead, and its header says why.
+
+The check that now runs itself is the same one, one step earlier: `sudo systemctl start
+ra-watch` is clean when every RA VLAN produced an advertisement inside 150 s, and red —
+with the repair already applied — when they had not.
 
 **Recurred 2026-11-21, and this time it took the wired LAN for two days without a
 complaint.** `router-lan` lost carrier 14:17:02 and regained it 14:23:34 on 2026-11-19;
 the default routes expired 1200 s later and were never refreshed. It surfaced only as
-"services2 can't ping `2a02:8010:6680:49::50`", and four things came out of that:
+"services2 can't ping `2a02:8010:6680:49::50`", and four things came out of that — three
+of them re-measured on 2026-11-26 when it happened a third time:
 
 * **Nothing off-link works over IPv6 and nothing in-link notices.** services1 and
   services2 both answered `ip -6 route get <off-net>` with `Network is unreachable`, while
@@ -319,20 +327,37 @@ the default routes expired 1200 s later and were never refreshed. It surfaced on
 * **aibox is not a control group.** It had a default route the whole time because its IPv6
   default is `proto static` in the flake, not `proto ra` — so the one box that "proved
   IPv6 was fine" was the one box not using the mechanism under test.
-* **tcpdump cannot see this box's RAs.** Measured *after* the repair, with clients
-  demonstrably refreshing: two simultaneous 90 s captures, one on `vlan225` and one on
+* **`tcpdump` on `vlan225` *can* see this box's RAs, and that is a correction (2026-11-26).**
+  Measured *after* the repair, two simultaneous 90 s captures, one on `vlan225` and one on
   `router-lan`, held 25 ICMPv6 frames and **no type-134 at all** — and before the repair,
-  75 s on each of `vlan225` and `vlan226` held nothing either. So "no RA on the wire" is
-  not evidence of anything here, in either direction.
-* **The gw-side meter that does work is the multicast egress counter.** An unsolicited RA
-  goes to `ff02::1`, so `nstat -az | grep Ip6OutMcastPkts` moves with it: measured
-  118193 → 118193 across 20 s during the fault (zero) and 118193 → 118215 in the four
-  seconds after `systemctl restart dnsmasq`. Read beside it, the journal's cadence is a
-  weak signal — `RTR-ADVERT(vlan225)` appeared at gaps of 35 s, 64 s and 304 s, which is
-  solicited replies, not the `ra-param` 60 s timer; ask for the *rate*, not for lines.
+  75 s on each of `vlan225` and `vlan226` held nothing either. That was read as "this box's
+  RAs are invisible to a capture", which is what this bullet used to say, and it is wrong:
+  on 2026-11-26 a 70 s capture on `vlan225` during the fault held **0** type-134 frames and
+  a 150 s capture after the restart held **3, 51 s apart**. The earlier reading was the
+  timer's own jitter (gaps of 35 s, 64 s and 304 s are in that journal) against captures
+  that were too short, not an invisible packet. So a capture *is* usable evidence in both
+  directions, and `ra-watch.nix` counts advertisements with one.
+* **The gw-side meter that is *not* good enough is the multicast egress counter**, which is
+  what `docs/follow-ups.md` proposed. `nstat Ip6OutMcastPkts` moved 36379 → 36394 (+15) in
+  the 150 s in which only three advertisements left this box, so ~40 % of its movement is
+  other IPv6 multicast and a dead RA timer would leave it moving; the check would never
+  fire. Measured 2026-11-26, and it is why `ra-watch.nix` asks for the packets themselves.
+* **The cadence, measured 2026-11-26 (after a restart):** 16:02:57.75, 16:03:49.75,
+  16:04:40.75 on `vlan225` — 52 s, 51 s, against `ra-param`'s 60. Read beside it, the
+  journal's cadence is a weak signal — `RTR-ADVERT(vlan225)` appeared at gaps of 35 s, 64 s
+  and 304 s, which is solicited replies, not the `ra-param` timer; ask for the *rate*, not
+  for lines.
 
-So the check that costs one command and cannot lie: `nstat Ip6OutMcastPkts` twice 30 s
-apart on gw, and `ip -6 route show default` on any `proto ra` client.
+**Recurred a third time on 2026-11-26, and that is the one that closed the item.**
+`router-lan` lost carrier at 11:08:28 and regained it at 11:13:26 (five minutes of a switch
+being worked on); by 15:55 `services1`, `services2` and `services3` all had their
+`proto ra … expires` prefix routes and **no default route at all** — the fault was found by
+somebody running `ping -6 google.com`, which is exactly the failure this section is about.
+A 70 s capture on `vlan225` at 15:59 held no type-134 frame, `systemctl restart dnsmasq` at
+16:00 was followed by an advertisement within seconds, and all three boxes re-installed
+`default via fe80::225:90ff:fed3:f0ea dev vlan225 proto ra metric 1024 expires ~1200sec`
+without being touched. `ra-watch.nix` is the hook that does that restart — inside the
+1200 s the clients are given, so nobody should ever see the outage again.
 
 ## "Only VLAN 225 has no internet": the tunnel's password, not the firewall
 

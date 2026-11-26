@@ -5,6 +5,60 @@ became five machines. `AGENTS.md` is rules; `docs/network-upgrade-runbook.md` is
 procedure; this file is what happened, kept because three of its findings changed that
 procedure. Still-open items live in `docs/follow-ups.md`.
 
+## 2026-11-26 — the third silent IPv6 outage, and the watch that ends it
+
+`ping -6 google.com` failed on `services1` and `services2` at 15:55. Both held their
+`2001:8b0:1d14:225::/64` and ULA addresses and both had **no IPv6 default route**:
+`router-lan` had lost carrier 11:08:28–11:13:26 that morning, dnsmasq's *unsolicited* RA
+timer died with the flap, and the advertised default's 1200 s lifetime had expired four
+times over since. Third occurrence (2026-10-21, 2026-11-19), and the interesting part is
+how little was broken: dnsmasq running, answering DNS, DHCP and *solicited* RAs; every
+`*.int` name answering on-link; no failed unit anywhere. A 70 s capture on `vlan225` held
+zero type-134 frames, `systemctl restart dnsmasq` at 16:00 put an advertisement on the
+wire inside seconds, and all three wired boxes re-installed `default … proto ra` without
+being touched.
+
+`machines/gw/ra-watch.nix` is the answer and `docs/follow-ups.md`'s open item is closed:
+a timer that counts the advertisements themselves on every `ra`-advertising VLAN
+(one `tcpdump -p -c 1` each, 150 s window), restarts dnsmasq when they stop, and posts to
+Slack *and* fails its unit, because a red unit on gw is otherwise invisible
+(`observability.nix` has no alertmanager receiver). The window is chosen against the
+1200 s lifetime, so the repair lands before any client loses its route.
+
+Two measurements corrected the plan in the follow-up item, and both are in
+`machines/gw/README.md`:
+
+* **`nstat Ip6OutMcastPkts` cannot answer the question.** In the 150 s that carried exactly
+  three advertisements it moved 36379 → 36394 (+15), so ~40 % of its traffic is other IPv6
+  multicast — a dead RA timer leaves it moving and the check would never fire. A guard that
+  cannot fail is worse than none.
+* **tcpdump *does* see this box's RAs.** The README said it could not, on the strength of
+  two 90 s captures after the 2026-11-19 repair that held no type-134 frame; the real
+  cadence is 51–52 s (measured 16:02:57.75, 16:03:49.75, 16:04:40.75), and the journal's
+  35 s/64 s/304 s gaps are *solicited* replies. A capture is usable evidence in both
+  directions, which is what the check relies on.
+
+Also found while measuring, and not fixed here: **`aibox` (10.3.1.32) is off the network
+entirely** — no ping, no ssh (`No route to host`) — which is unrelated to the flap and
+needs a look at the box.
+
+**Deployed and exercised on the box (2026-11-26).** The unit's first two runs took 38 s
+(16:08:49) and 38 s (16:11:28) — the time the slowest VLAN's next advertisement took — and
+the scheduled cycle settled into 11 s runs every 2 min. The repair path was then driven on
+purpose, which is the only way to test it on a working box: the script takes
+`<window> [<recheck>]` (documented in its header), so `sudo <store>/ra-watch 1 90` asked a
+question it could not answer in a second — no RA in the window, a **real**
+`systemctl restart dnsmasq` at 16:12:14, advertisements on all three VLANs back within
+2.4 s, one Slack message, exit 1. All three wired boxes kept their `proto ra` default route
+(`expires ~1195` straight after), `/api/leases` answered `"stale":null` with 66 leases, and
+`systemctl --failed` was empty on gw.
+
+That test found the first version's one bug, and it is the reason the test was worth doing:
+`tcpdump -c 1` leaves a **1-byte newline** in its stdout when `timeout` kills it, so
+`[ -s file ]` called every window a hit and four 1-second attempts all "passed". The test
+is the word `router advertisement` in the line now, and the module says so where it does
+it.
+
 ## 2026-11-15 — a whole-network repin and deploy: what a five-box upgrade actually costs
 
 First **full-fleet** run since `services3` joined (2026-11-11), and the first where the

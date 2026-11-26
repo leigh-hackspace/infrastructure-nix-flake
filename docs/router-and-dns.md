@@ -52,7 +52,10 @@ ssh -i ~/.ssh/agent-hop-key leigh-admin@10.3.1.1   # gw; root is NOT keyed there
 
 **Gotcha: dnsmasq's unsolicited RAs stop after a `router-lan` link flap**, so clients
 lose their IPv6 default when the 1200 s router lifetime expires. `systemctl restart
-dnsmasq` after cabling; `machines/gw/README.md` has the checks.
+dnsmasq` after cabling — and since 2026-11-26 on this box `ra-watch.timer` does it for you
+within ~5 minutes (it counts the advertisements on the wire, not a counter, and posts to
+Slack); `machines/gw/README.md` has the checks and the measurements that rule out the
+counter.
 
 **Historical: the retired OPNsense box's root shell was tcsh** (`2>` redirection fails,
 grep patterns with `<`/`>` need double quotes). That box is gone; `gw` runs NixOS and its
