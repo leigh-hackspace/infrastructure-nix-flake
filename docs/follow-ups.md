@@ -4139,11 +4139,22 @@ and the answer key on this box and reads both lines back.
   reports about **29.5 GiB, not 40**, and every `MemTotal`/`MemAvailable` figure in these
   docs from before 2026-11-25 is an uncapped one.
 
-  **What is left is a measurement, not a decision:** raising the cap means re-measuring the
-  fault (`stressapptest -M 34000 -s 7200` with `strata` stopped, then regenerate
-  `machines/services3/bad-ram-pages.txt` and the cap), because a fence over a *sample* is
-  what the 2026-11-23 boot falsified. **Blocks:** the top ~10 GiB of the 40, and nothing
-  else — the engine's 22.83 GiB arena fits in 29.5 GiB with ~6.5 GiB idle headroom.
+  **Closed 2026-11-26 01:16:42 — the RAM is back.** The 272 measured pages are reserved out
+  of the buddy allocator by a **patched kernel** (`machines/services3/bad-ram-kernel.patch.in`,
+  generated from `bad-ram-pages.txt`), the `mem=30G` cap is gone (`infra.badRam.cap = null`),
+  and the uncapped 2-hour run on that kernel came back `Status: PASS` —
+  `130846592.00M in 7200.59s 18171.65MB/s, with 0 hardware incidents, 0 errors`, and 0
+  `Hardware Error`/`Bad page`/MCE lines in that boot's kernel log. `MemTotal` went
+  **29 840 212 → 40 998 676 kB (28.46 → 39.1 GiB: +10.6 GiB)**, and the engine's arena went
+  **21.63 → 22.84 GiB with 1690 of 1690 lendable slots resident, "no file reads"** — the
+  2026-11-21 full-40-GiB state, i.e. 1088 KiB of reservations is below what the arena
+  measures in. **The cost that remains is compile time, not RAM:** a locally patched kernel
+  has no binary cache, so every nixpkgs/kernel bump rebuilds `linux` and the NVIDIA module on
+  this box (measured 92 min) and that build needs `strata` stopped to have the memory — the
+  first attempt hard-stopped the box 30 minutes in with 1.5 GiB available. **Blocks:**
+  nothing; receipts, the two-boot protocol and the arena ladder are in
+  `machines/services3/README.md`, "The measured pages are now excluded by the kernel
+  itself".
   **Why the capacity axis still matters:** 40 GiB → 64 GiB is a **purchase** of two 16s with
   the two 4s thrown away, not a rearrangement into free slots, and services2's board is
   *two* slots already holding 2×16 (`machines/services2/STRATA.md`) — so with no new RAM
@@ -4152,7 +4163,9 @@ and the answer key on this box and reads both lines back.
 - **The RAM *dials* on services3 are at their ceiling, so two of services2's levers are inert
   there** (measured 2026-11-22: `1690 of the prompt path's 1690 lendable slots keep their
   experts in RAM too`, and the tier line ends `… (no file reads)`, `22.83 GiB` of arena page-locked,
-  `MemAvailable` 10.8 GiB idle). `--resident-budget-gib` and `STRATA_RESIDENT_HEADROOM_GIB` are
+  `MemAvailable` 10.8 GiB idle — **re-measured 2026-11-26 on the uncapped 39.1 GiB box: 22.84 GiB
+  arena, 1690 of 1690, "no file reads", `MemAvailable` 11.1 GiB idle**, so the bad-RAM work cost
+  the engine nothing it can measure). `--resident-budget-gib` and `STRATA_RESIDENT_HEADROOM_GIB` are
   **not set on services3 on purpose** — they trade file-read cost for headroom, and there are no
   file reads to trade. services2 needed both because its box is 30.7 GiB and the KV budget came
   *out of* the expert budget; the same dial there is a 2× prefill swing (562/725 → 1210/1204 tok/s

@@ -430,15 +430,21 @@ moves, and `./strata.nix` itself does not:
 | --- | --- | --- |
 | 40 GiB, no cap (the 2026-11-21 state) | 22.83 GiB | 1690 of 1690 |
 | 24 GiB, A2 out (2026-11-23 → 25) | 16.4 GiB, *"the whole resident RAM mode does not fit"* | — |
-| **28.46 GiB, `mem=30G` (now)** | **21.63 GiB, no warning** | **1064 of 1690** |
+| 28.46 GiB, `mem=30G` (2026-11-25 18:11 → 23:15) | 21.63 GiB, no warning | 1064 of 1690 |
+| **39.1 GiB, no cap, 272 pages reserved (2026-11-26 01:16)** | **22.84 GiB, "no file reads"** | **1690 of 1690** |
 
-So the cap costs ~1.2 GiB of arena and ~37 % of the hot expert stays on the NVMe, compared
-with the full 40 — and it is still **+5.2 GiB of resident experts over the 24 GiB the box ran
-at while the stick was on the bench**. That is what the stick buys: capacity the box can
-trust, not the capacity it had. Two guards make the cap impossible to lose quietly: an
-eval assertion that refuses a cap at or above the lowest measured bad page, and
-`bad-ram-cap-check.service`, which reads back `mem=` from `/proc/cmdline`, `MemTotal`
-against the cap, and the top of `/proc/iomem`'s `System RAM` against the lowest bad byte.
+So the cap cost ~1.2 GiB of arena and left ~37 % of the hot expert on the NVMe, compared
+with the full 40 (and was still **+5.2 GiB of resident experts over the 24 GiB the box ran
+at while the stick was on the bench**). With the cap off and the pages themselves reserved
+the engine is back to its best-ever number — **22.84 GiB, 1690 of 1690, "no file reads"**,
+which is the 2026-11-21 full-40-GiB state to within 0.01 GiB: 1088 KiB of reservations is
+below what the arena measures in. Three guards make the state impossible to lose quietly:
+an eval assertion that refuses a cap at or above the lowest measured bad page;
+`boot.kernelPatches` carrying the page array, which fails loudly (a kernel that does not
+print `reserved 272 measured-bad pages` fails the check); and `bad-ram-cap-check.service`,
+which reads back the reservation, `mem=` from `/proc/cmdline` when one is set, `MemTotal`
+against the cap *or* against the full 40 GiB when there is none, and the top of
+`/proc/iomem`'s `System RAM` against the lowest bad byte while a cap is still in place.
 
 **The region the cap keeps was then re-tested, and came back clean** — 2026-11-25
 18:19:16 → 19:14:18, `stressapptest -M 26000 -s 3600 --printsec 60`, log
@@ -519,10 +525,29 @@ had 28.1 GiB available and the same build went through with 27 GiB free througho
 
 **Turning it into capacity is one line and one more measurement**: `infra.badRam.cap = null`
 (no `mem=` at all), `just boot`, then with the cap off and the engine stopped,
-`stressapptest -M 34000 -s 7200` on the patched kernel. The reservation covers what was
+`stressapptest -M 36000 -s 7200` on the patched kernel. The reservation covers what was
 measured; 2026-11-23 is what an unmeasured cell costs. When the wall is 0 that the fault is
 gone, and if it is not, whatever it prints becomes the next entries in `./bad-ram-pages.txt`
 — and the patch regenerates itself from that file.
+
+**It came back clean, and this is the receipt for the whole exercise.** `cap = null`, booted
+2026-11-25 23:15:50, `MemTotal: 40998676 kB` (39.1 GiB), then 2026-11-25 23:16:37 →
+01:16:42, `stressapptest -M 36000 -s 7200 --printsec 60` (36 GB, 90 % of the new total, over
+every address in the box **including** the 31.338–38.316 GiB window that used to flip ~5
+times a minute):
+
+```
+Stats: Completed: 130846592.00M in 7200.59s 18171.65MB/s, with 0 hardware incidents, 0 errors
+Stats: Found 0 hardware incidents
+Status: PASS - please verify no corrected errors
+```
+
+130.8 TB of random-pattern traffic at 18.2 GB/s, **0 errors**, 0 `Hardware Error`/`Bad page`/
+MCE lines in the kernel log for that boot, 0 failed units, `nixos-confirm` inside the window.
+The engine restarted itself when the test ended and reports **22.84 GiB arena / 1690 of 1690 /
+"no file reads"** — i.e. the 272 measured pages were the whole story, the reservation is
+precise enough that the arena cannot see it, and the box has 10.6 GiB of RAM it did not have
+before. The belt (`cap = "30G"`) is one line if any of that ever stops being true.
 
 **If it acts up again, this is the signature** — and it is not a disk fault: block devices
 timing out, `systemd-oomd` failing, then `tmpfiles`/`utmp`/`random-seed` failing, then
