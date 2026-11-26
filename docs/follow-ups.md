@@ -597,6 +597,11 @@ that is closed gets absorbed into the live docs and deleted, and git history hol
   lock. The documented unblock worked: `nix eval --raw
   ".#nixosConfigurations.services3.config.system.build.toplevel.drvPath"` realised the
   decrypts in seconds and the trace then reached further before dying the same way.
+  **And again 2026-11-26 on services2**, at the `26.11.20261112.2074cc6` lock: `just check`'s
+  flake step died on `…-sops-secret-pg_pass.drv` (every assertion eval, the source-size check
+  and `alejandra --check` passed), and `git stash` + `nix flake check --no-build` at clean HEAD
+  died on the identical line with the identical hash, so it was stated as this item and not as
+  the change under test.
 
   **Again 2026-11-16, on services1, with two things this item does not yet say.** The
   unblock is **per-machine, not global**: evaluating `services1`'s toplevel realised
@@ -777,9 +782,20 @@ that is closed gets absorbed into the live docs and deleted, and git history hol
   `machines/services2/STRATA.md`, "The conversation cache cannot be bought with the swap file".
   What the same start measured: 33 of 37 requests already reuse 2.74 M of 2.95 M prompt tokens
   on `--prompt-cache` alone, `engine/vram_free_mib = 408`, 2,229 MiB of the swap file already
-  spent on the arena, and `available_host_bytes()` never counts swap on Linux. **Open** half:
-  nobody has tried `--resident-budget-gib` here, so the file-read cost of opening headroom is
-  unmeasured — the tier line reads `files 0 blobs 3939.5 MB read (the GGUF in place)` today.
+  spent on the arena, and `available_host_bytes()` never counts swap on Linux. **Both halves
+  closed 2026-11-26:** the cache is on, paid for with RAM rather than swap exactly as that
+  section said it would have to be (`STRATA_RESIDENT_HEADROOM_GIB` 2 -> 8, complement 21.88 ->
+  15.88 GiB, `MemAvailable` ~670 MiB -> 6 430 MiB), plus a 1 024 MiB park floor and the
+  conversation cache's SSD tier, and the file-read cost of opening that headroom is now
+  measured too: `91 % of lendable slots uncovered`, a 61K prompt read at 943 tok/s against
+  1 200. The ask itself turned out to be the thing the old section got wrong - a park is
+  ~34 KiB/token, not the ~14 KiB/token its K/V figure implies - and the whole story,
+  including the fact that the SSD tier cannot rescue a park the RAM cannot capture, is in
+  `machines/services2/STRATA.md`, "The conversation cache is on".
+  **Open:** that a `parked` or `restored` line has still not been seen from a real switch
+  (`sudo grep -aE "conversation cache: (parked|restored|skip parking)" /var/lib/strata/strata.log | tail`),
+  and that 162K-token sessions sit at the ceiling this buys (~5.4 GiB against ~5.4 GiB of
+  room) - which is the second pair of DIMMs, not a flag.
 
 - **The Vega 8's one plausible seat has never been tried: the picture reader, not an
   expert tier** (found 2026-10-24 while answering "can the iGPU be a co-processor to the

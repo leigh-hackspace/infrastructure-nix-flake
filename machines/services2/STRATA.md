@@ -324,6 +324,8 @@ number, all of it read off the 0.1.52 tree and the running engine, not argued.
   VRAM cannot take the park either: `engine/vram_free_mib = 408` with the expert cache at 3,754 MiB,
   and upstream's `LOW: requests may stall; add --vram-reserve-mib` line is 256 MiB.
 - **If it is ever wanted, open RAM rather than borrow it:** `--resident-budget-gib N` (`generate.cpp:621-623`,
+  *(Done 2026-11-26, and this bullet's "Size the ask before setting it" is the part that
+  turned out to be wrong: the ask is ~34 KiB/token, not ~14 - see the next section.)*
   "the N GiB of experts the GPU cache does not hold that the expert profile ranks hottest are copied
   into RAM, the rest are read from the files in place") trades measurable file cost for headroom —
   today the tier line reads `files 0 blobs 3939.5 MB read (the GGUF in place)` — then set
@@ -333,6 +335,117 @@ number, all of it read off the 0.1.52 tree and the running engine, not argued.
   Size the ask before setting it: a parked conversation is its K/V, ~1.8 GiB at 131072 with `--kv int8`
   (the table above), so four full-length slots are ~7 GiB, against upstream's cap of 8192 MiB
   ("four 100K-token agent conversations were parked in 8 GiB in the report", `conversation_memory.hpp:68`).
+
+## The conversation cache is on: what the workload cost, what a park costs, and what it was paid with
+
+Deployed 2026-11-26. The previous section (2026-10-27) is still right about the
+mechanism - the guard is RAM-only, swap is not in it, and the cure is to open RAM
+rather than borrow it - and wrong about the size of the ask, because it took a parked
+conversation to be its K/V ("~1.8 GiB at 131072"). It is about 2.5x its K/V. Both
+figures are below, and the second one is measured.
+
+**The workload that forced it.** Two pi sessions were alternating on this box's single
+slot (`/v1/status`: `"concurrency": {"serving": 1, "requested": 1}`; `/slots`: one
+entry), and the checkpoint cache only ever holds the conversation the engine is on, so
+*every* switch threw the other one away. Read off `journalctl -u strata`, one afternoon:
+
+```
+15:40:24   63551 tok in   3 s | one session, growing: every turn served from the
+16:12:10  145961 tok in   1 s | checkpoint cache
+16:14:32    7333 tok in   7 s  <- the second session arrives
+16:14:45  151546 tok in 137 s  <- and every return re-reads its whole prompt
+16:28:52  161092 tok in 147 s    16:31:22  20794 tok in 18 s   <- clean alternation,
+16:31:45  161538 tok in 147 s    16:34:23  21422 tok in 18 s      both sides paying
+```
+
+Over 24 h: of 340 prompt reads of 20k+ tokens, **319 finished in under 20 s** (mean
+2.5 s - the checkpoint cache doing its job, which is why nobody noticed for a month)
+and **21 took 1 898 s**, 11 of them 100k+ prompts, 1 461 s of that; over 7 d, 46 such
+reads and 3 278 s. Every one of the 46 is a switch. The recipe that reproduces the
+count is in this section's last block. `--parallel 2` is not an answer here:
+`docs/BATCHING.md` has setup recommending it only where the experts mostly fit in VRAM -
+this card caches 2 331 of 12 288 slots - and measures "3-4x slower, a request alone
+included" where they do not.
+
+**What a park actually costs, measured on this pack (not estimated).** Two parks
+refused, and a refusal names the bytes it wanted, which is how this was got:
+
+| conversation | park wanted | KiB/token |
+| --- | ---: | ---: |
+| 25 860 tokens | 828 MiB | 32.8 |
+| 26 584 tokens | 860 MiB | 33.2 |
+| 50 407 tokens | 1 652 MiB | 33.5 |
+| 60 030 tokens | 1 662 MiB | 28.4 |
+
+**~34 KiB per token, with no meaningful fixed part** - and aibox's independent figure
+from the other pack and the other GPU (436 MB at 13 064 tokens, `machines/aibox/strata.nix`)
+is 34 KiB/token too, which is the corroboration. So, in the units that matter here:
+20K tokens ≈ 0.7 GiB, 60K ≈ 1.7 GiB, 120K ≈ 4.1 GiB, 162K ≈ 5.4 GiB. It is *not* the
+K/V alone (13.4 KiB/token at int8): a park also carries the streamed host K/V copy and
+the checkpoints, which is where the factor 2.5 comes from.
+
+**Why the SSD tier does not make this free, read off the engine.** A park is decided by
+physical RAM, twice, and the first check is *before the capture*: `conversation_memory.hpp:143`
+wants `available >= floor && allocation <= available - floor`, and the refusal at
+`generate.cpp:13838` returns without touching the disk. `ConversationSpill` is fed only
+by an eviction (`:13584`) or by a *post-capture* refusal (`:13899`, "the RAM floor after
+the capture"). And the byte budget is a pre-capture cap too (`conversation_cache.hpp:413`
+`make_room`: `incoming > budget_ - held` refuses outright). **So a conversation the RAM
+cannot hold for the length of one copy is never parked and never spilled, at any
+`--conversation-spill-mib`.** That is the fact that turned a "cache to disk" request
+into a RAM decision, and these are the lines that say it when it bites:
+
+```
+strata serve: conversation cache: skip parking (physical RAM admission; need 1 662 MiB
+  plus 2560 MiB floor, 1 863 MiB available, source meminfo; evicted 0, 0 still parked;
+  short by 2 358 MiB, more than the 0 parked hold (0 MiB), so none was evicted)
+```
+
+**What it was paid with, and why nothing else could pay it.** `systemd-cgtop`
+reads system.slice 28.9 GiB and `strata.service` 28.83 GiB of it: on this box the
+engine *is* the machine, and the Prometheus/Grafana that older comments in `strata.nix`
+blamed for the pressure is not even here. So the only source of park RAM is the expert
+complement, i.e. `env.STRATA_RESIDENT_HEADROOM_GIB`, which is the lever the 2026-10-27 section
+above predicted ("open RAM rather than borrow it: `--resident-budget-gib N` ... then set
+`--conversation-cache-mib` and a lower `--conversation-cache-min-free-mib` together"). Measured, under load, at three settings of it:
+
+| headroom | complement | MemAvailable | parks observed | cost |
+| --- | ---: | ---: | --- | --- |
+| 2 (was) | 21.88 GiB | ~670 MiB | 0 (nothing could) | the box's best prompt arm: `lendable slots` N of N, 1208/1200 tok/s |
+| 5 (first try) | 19.19 GiB | 1 894-2 436 MiB | **0**, five `short by 1 210…2 358 MiB` refusals while two sessions switched every couple of minutes | 91 % of lendable slots uncovered |
+| 8 (deployed) | 15.88 GiB | **6 430 MiB** | - (see below) | same 91 % line, 61K read measured **943 tok/s** against 1200 |
+
+The deployed arm therefore reads: `--conversation-cache-mib 4096`, `-slots 4`,
+`-min-tokens 4096`, `-min-free-mib 1024`, `--conversation-spill-dir
+/var/lib/strata/conversation-spill`, `--conversation-spill-mib 12288`, headroom 8.
+Available 6 430 MiB against a 1 024 MiB floor puts the ceiling at ~5.4 GiB of park:
+the 60K and 120K conversations fit, 162K sits exactly on the line, and the engine's own
+warning (`1401 of 1533 lendable slots (91%) will read their experts from the pack during
+a long prompt`) is the price, which showed up as ~20 % off prompt speed, not the 2x this
+file's 69 %-uncovered arm measured - because the park that is being bought is one that
+*stops* the long read happening at all.
+
+**Proven vs not, at commit time.** Proven on this box: the tier attaches
+(`conversation cache: SSD tier in /var/lib/strata/conversation-spill/<pid>-<nonce>, up
+to 12288 MiB`, and `1 folder of ended engines removed` on the second start, which is the
+crash-clean path working), the RAM gate's refusal line, the park-size figures, and that
+the checkpoint cache was never the problem. **Not yet observed: a single `parked` or
+`restored` line from a real switch** - the sessions have not crossed over since the
+restart. That is the one number that decides whether this was worth 20 % of prefill, and
+it is one command away:
+
+```
+sudo grep -aE "conversation cache: (parked|restored|evicted|skip parking)" /var/lib/strata/strata.log | tail
+# /metrics' conversation_cache card: parks, restores, evictions, bytes, refused{}
+```
+
+If it still reads only `skip parking (physical RAM admission`, the complement has bought
+less than the sessions cost and the next step is RAM, not another flag - the second pair
+of DIMMs (2 slots, both filled with 16 GiB DDR4-3200 at 2933, max 128 GiB) is open in
+`docs/follow-ups.md`; with 64 GiB the floor goes back to 2560, headroom back to 2, and
+every session parks. The spill tier is also not durable across a restart (`clean_dead`
+removes folders whose lock nobody holds), so a deploy costs every session one full
+re-read - which is why this change was deployed once, not twice.
 
 ## One-time model preparation (outside the store)
 
