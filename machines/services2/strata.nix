@@ -41,6 +41,13 @@
 #   $STRATA/bin/strata-prep mtp_rt.py --gguf /home/leigh-admin/Strata/mtp/mtp-q2_0.gguf \
 #     --out /home/leigh-admin/Strata/mtp/rt
 #   cp $STRATA/share/strata/data/draft_vocab.bin /home/leigh-admin/Strata/mtp/rt/
+#   # 3. the picture projector (mmproj, ~865 MiB) the vision path reads, beside the
+#   #    GGUFs. It is the original model's file, shared by every Flash-Next family
+#   #    (setup.py PROJECTOR_BY_FAMILY), pinned at 907,543,008 B and
+#   #    sha256 b1a82259702816a5330d7bd7607cd9676b11780e79ff7348c21103ff3ce49bd0:
+#   curl -L -C - -o mmproj-Qwen3.8-Flash-Next-BF16.gguf \
+#     https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/resolve/ed59f92082b1e93c0e96d60a8b11aab089b52f09/mmproj-Qwen3.8-Flash-Next-BF16.gguf
+#   sha256sum mmproj-Qwen3.8-Flash-Next-BF16.gguf   # must print the hash above
 #
 # Check the card first, before preparing anything:
 #   $STRATA/bin/strata-device --list-devices   # must report sm_86 / RTX 3060
@@ -85,6 +92,17 @@ let
   mtpDir = "${modelDir}/mtp/rt";
   # The Coder pack's own routing profile ships in the source tree.
   expertProfile = "${strataPkg}/share/strata/data/expert-profile-coder.bin";
+
+  # The picture reader (mmproj) of the vision path, from its own derivation:
+  # a CPU-only C++17 tower that links no ggml, so this is a 15 s build rather than
+  # a CUDA engine rebuild, and `nix build .#strata-vision` tests it alone.  See
+  # ./strata-vision.nix for why the card's reader is deliberately not built.
+  strataVision = pkgs.callPackage ./strata-vision.nix {
+    src = strata;
+  };
+  # The projector itself is model data, outside the store, exactly like the GGUFs:
+  # the download and its pinned digest are in this file's header (step 3).
+  mmproj = "${ggufDir}/mmproj-Qwen3.8-Flash-Next-BF16.gguf";
 
   # services2's budget (30 GiB usable RAM, 12 GB VRAM, RTX 3060):
   #   experts (IQ1_M Coder arena) 23.4 GiB  the profile's figure; too big beside
@@ -248,6 +266,14 @@ let
     # is --mmap-experts, which reads them through the OS file cache - steadier
     # RAM use is the reason setup.py picks the resident variant when it fits.
     "--resident-experts"
+    # Pictures (`--serve` GENI requests; the mmproj file is read by a separate
+    # process, see `vision` in the config below).  The engine's whole cost here is
+    # a (max-context + 64) x 3 int32 image-position table on the card -- ~3 MiB at
+    # 262144 (generate.cpp "the vision path") -- and it changes no other switch,
+    # because the reader is on the CPU and the expert cache is never asked to
+    # shrink for it (no `--vram-elastic`, which the resident low-RAM mode refuses
+    # anyway: reader_room.hpp's condition needs all three).
+    "--vision"
   ];
 
   # The key clients must present on /v1/* (`Authorization: Bearer <key>`, or
@@ -295,6 +321,39 @@ let
       # list next to it.
       api_key = apiKey;
       backend = "cuda";
+      # Pictures.  The reader is `strata-vision`, **CPU-only on purpose**: upstream
+      # gives the CPU reader to every card under 24 GB of VRAM
+      # (strata_control/vision_reader.py, GPU_MIN_VRAM_GB = 23.5) because the GPU
+      # reader keeps 1-1.4 GB of VRAM the experts would use, and this card runs with
+      # ~630 MiB free by design (STRATA.md, "Context and the KV cache").  Measured
+      # here 2026-11-26: `strata-vision --mmproj ... --model ... --threads 8` loads
+      # in 0.9 s and reads a 120-token picture in 0.92 s; DETAILS.md's figure is
+      # ~3 s for a 300-token one on 8 cores, which is the `max_tokens` below.
+      #
+      # `elastic` is what makes it affordable on 30 GiB of RAM.  A CPU reader is
+      # otherwise started with the server and resident for the life of the process
+      # (~1.2 GiB, and this box's headroom is 2 GiB), so instead it starts with the
+      # first picture and stops after `elastic_idle_s` without one: the RAM is held
+      # for about two minutes around an image and 0 the rest of the time, and the
+      # price is ~1 s of reader start on the first picture of a burst.  The engine's
+      # expert cache is not asked to give it VRAM: the resident low-RAM mode refuses
+      # that command, and a CPU reader needs none (serve/server.py `_vision_up`
+      # handles exactly that path, and starts the reader anyway).
+      #
+      # `model` is the text model's first shard, opened vocab-only (metadata, no
+      # weights) -- not a second copy of the model.  `threads = 8` of the box's 16
+      # leaves the engine's CPU expert pool alone; `max_tokens = 300` is upstream's
+      # CPU default and the clamp that stops one picture becoming 90,000 tokens.
+      vision = {
+        exe = "${strataVision}/bin/strata-vision";
+        mmproj = mmproj;
+        model = nativeGguf;
+        gpu = false;
+        max_tokens = 300;
+        threads = 8;
+        elastic = true;
+        elastic_idle_s = 120;
+      };
       # serve/server.py prepends these to the engine's LD_LIBRARY_PATH. The CUDA
       # toolkit libs are on the binary's RUNPATH, but libcuda.so.1 comes from the
       # driver, which NixOS exposes here (hardware.graphics + hardware.nvidia).

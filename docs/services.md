@@ -533,6 +533,18 @@ do not transfer, and `machines/aibox/STRATA.md` is also the bump checklist (what
 re-verify in the tree — the ggml pin, `data/` hashes, the flag list, the arch gate —
 before trusting a release note).
 
+**Pictures are a second program, and only services2 has one today.** `--vision`
+plus a `vision` block in the run config turn on the multimodal path; the reader is
+`strata-vision` — since upstream's 0.2.16 own-stack step 6 its own Qwen vision
+tower in `terminal/tools/vision`, linking no llama.cpp, no mtmd and no ggml — and it
+is packaged separately as **`.#strata-vision`**
+(`machines/services2/strata-vision.nix`) so a 550 KB C++17 build does not dirty the
+CUDA engine's derivation. services2 builds it CPU-only and starts it per picture
+burst (`elastic`), because its 3060 has no VRAM to spare; upstream's rule gives the
+CPU reader to every card under 24 GB anyway. The mmproj file is model data outside
+the store — pinned size and sha256 in `machines/services2/strata.nix`'s header, the
+measurements and the RAM arithmetic in `machines/services2/STRATA.md`.
+
 Because the engine's Python layer is *copied into the store by hand* in each
 `strata-package.nix`, a `nix flake update strata` can move upstream's module
 layout under it (0.1.46 renamed `apps/cli` → `strata_cli` and added

@@ -636,6 +636,29 @@ that is closed gets absorbed into the live docs and deleted, and git history hol
 
 ## Strata (services2, and aibox's engine since 2026-10-28)
 
+- **services2's picture reader is built and measured, not yet deployed — and the Q8_0
+  projector is the next lever** (2026-11-26, `machines/services2/STRATA.md` "Pictures
+  (mmproj)"). The tree now has `.#strata-vision`
+  (`machines/services2/strata-vision.nix`, CPU-only, 15 s build), services2's config has
+  `--vision` plus a `vision` block with `gpu = false`, `elastic = true`, `threads = 8`,
+  `max_tokens = 300`, and the BF16 mmproj (907,543,008 B, sha256 `b1a82259…`) is downloaded
+  beside the GGUFs. **Measured before any deploy:** the reader loads the tower in 0.9 s and
+  reads a 120-token picture in 915 ms on 8 threads; the engine's VRAM cost is the ~3 MiB
+  image-position table. **Not yet proven:** a picture through the running engine (one
+  `strata.service` restart, ~55 s, which also drops pi's and the voice assistant's endpoint
+  for that window), and whether `crates/pi-agent-sync` then reports
+  `input_modalities: ["text","image"]` for the model — that is the check that decides
+  whether pi can actually attach an image, and it is a `/v1/models` read, not a config read
+  (rule 31). **Open:** the Q8_0 projector upstream recommends for `--vision cpu` (590 MiB
+  against 865 MiB, ~280 MiB less encoder RAM, faster CPU encode, embedding cosine
+  0.997-0.999 against BF16). It has to be made from the BF16 file with `llama-quantize`
+  (`mmproj-…-BF16.gguf mmproj-…-Q8_0.gguf Q8_0`); nixpkgs' `llama-cpp` — and the
+  `llama-cpp-upstream` input services3's parked engine builds from — ship that binary, but
+  nothing in this tree builds a llama.cpp tool package today, so making one is a real build
+  before it is a 280 MiB saving. **Also worth knowing:** the reader's ~1.2 GiB is borrowed for two minutes
+  per picture burst (`elastic_idle_s = 120`) out of this box's ~2 GiB of headroom; the real
+  fix is still the second DIMM pair, which is separately open here.
+
 - **An md5 of the completion is a weak A/B instrument on Strata, and it is worth knowing
   before you trust one** (measured 2026-10-28 on aibox's engine: same config, same prompt,
   `temperature: 0`, two runs, **different output digests** — `edf775d3…` then `e83db119…`

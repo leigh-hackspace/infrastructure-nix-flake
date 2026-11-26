@@ -1482,6 +1482,93 @@ Asked, while pi is being served by this very unit, "can `git@github.com:Zagitta/
 
 **The free half of the finding, worth keeping.** The cap covers *only* half-precision tensor math — FP32 FFMA and integer DP4A never pay it (that is why llama.cpp's INT8 MMQ measures ~35 TFLOPS stock). If Strata grows an integer/DP4A prefill path upstream, it buys the same thing with **zero boot risk**; nothing in `engineArgs` gives it today. Kept as an open item in `docs/follow-ups.md`.
 
+## Pictures (mmproj): the CPU reader, started on demand (2026-11-26)
+
+`--vision` plus a `vision` block in the run config turn on the engine's multimodal
+path (its `GENI` requests; images from OpenAI `image_url` parts and Anthropic image
+blocks). It is on this box and it takes **no VRAM**: the reader is the CPU program,
+by upstream's own rule (`strata_control/vision_reader.py`, `GPU_MIN_VRAM_GB = 23.5`)
+— the GPU reader keeps 1-1.4 GB of VRAM the experts would use, and this card runs
+with ~630 MiB free by design.
+
+What was added, and why in that shape:
+
+- `machines/services2/strata-vision.nix` (flake package `.#strata-vision`), the
+  reader alone. Since upstream's own-stack step 6 (0.2.16) `strata-vision` is
+  Strata's own Qwen tower in `terminal/tools/vision` and links **no llama.cpp, no
+  mtmd and no ggml**, so it is a 15 s C++17 build with no CUDA — which is why it is
+  a **separate derivation** and not a second `cmake` inside `strata-package.nix`:
+  that would dirty a tens-of-minutes CUDA compile for a 550 KB binary.
+  `-DSTRATA_PORTABLE=ON` (upstream's default) is kept where `setup.py` passes
+  `OFF` = `-march=native`: a store path built native is the substitution trap that
+  produced upstream's illegal-instruction reports (#411/#412), and the tower picks
+  its kernel tier at run time anyway (`own/cpu_caps.h`).
+- The projector is model data beside the GGUFs, not the store:
+  `<ggufDir>/mmproj-Qwen3.8-Flash-Next-BF16.gguf`, **907,543,008 B**, sha256
+  `b1a82259702816a5330d7bd7607cd9676b11780e79ff7348c21103ff3ce49bd0` — the pinned
+  file of every Flash-Next family (`terminal/setup.py PROJECTOR_BY_FAMILY`; the
+  Coder shares the original's). `strata.nix`'s header carries the download line.
+- `gpu = false`, so `vision.exe` *is* the CPU program and there is no fallback:
+  `vision_reader.cpu_fallback()` returns None when `gpu` is false, and `--gpu` is
+  never passed.
+- **`elastic: true` is the RAM decision.** A CPU reader is otherwise started with
+  the server and resident for the life of the process (~1.2 GiB), which this box
+  cannot hold beside `STRATA_RESIDENT_HEADROOM_GIB = 2` (the header's own numbers:
+  ~2.1 GiB available at idle, ~1.0 GiB during a long read). Elastic makes
+  `Vision.__init__` not start it: the first picture of a burst does, and it stops
+  after `elastic_idle_s = 120` s without one, so the RAM is held for about two
+  minutes around an image and 0 the rest of the time. It is the same code path the
+  NVIDIA GPU reader uses, and it is safe here **because the resident low-RAM mode
+  refuses the engine's `VRAM` command**
+  (`generate.cpp`: `VRAM: not with the resident low-RAM mode (the cache holds experts
+  RAM does not)`). `_vision_up` takes that refusal, logs it (its `vision_no_shrink`
+  latch keys on `--vram-elastic` in the message, which this one does not contain, so
+  the command is re-asked and the line re-printed once per picture burst — harmless,
+  one control round-trip), and starts the reader anyway; a CPU reader needs no room
+  in the cache, so `vision_held` stays false and nothing is taken from (or given back
+  to) the expert cache.
+- The engine's own cost is `--vision`: a `(max-context + 64) × 3` int32
+  image-position table on the card, **~3 MiB at 262144** (`generate.cpp`, "the
+  vision path"). No other switch moves, and in particular no `--vram-elastic`: the
+  reserve-raising rule needs `vision && vram_elastic && ram_copy_mode`
+  (`engine/include/strata/core/reader_room.hpp`), so this mode never raises it.
+
+Measured 2026-11-26 **before any deploy**, driving the reader directly (its
+protocol is `ENC <image> <out>` on stdin), with the logo in
+`machines/pi-room-sys/` and `--threads 8 --max-tokens 300`:
+
+     READY 2560 own
+     OK 120 20 6 915          # 120 image tokens, 20x6 grid, 915 ms
+     strata-vision: own tower (qwen3vl_merger, 27 layers, width 1152) loaded in
+     0.9 s, on the CPU, 8 threads
+
+Upstream's figure is ~3 s for a **300**-token picture on 8 cores
+(`docs/DETAILS.md`), which is why `max_tokens` stays at its CPU default of 300 and
+`threads` at 8 of the box's 16 (the engine's CPU expert pool is not starved).
+
+After a deploy, the three checks that count:
+
+    nix build .#strata-vision                      # the reader alone; ~15 s
+    sudo journalctl -u strata | grep -i "images:"  # "starts with the first picture ..."
+    curl -s localhost:8080/v1/models -H "Authorization: Bearer $KEY" \
+      | jq '.data[0].architecture.input_modalities'   # ["text","image"] with a vision section
+
+The last one is also what `crates/pi-agent-sync` discovers for pi (rule 31), so a
+model that can read pictures must say so **there** rather than in a hand-copied
+file.
+
+Revert: remove the `vision` block **and** the `--vision` line in `engineArgs`.
+Removing only the flag is not a revert — upstream's server re-adds it whenever the
+config has the section (`serve/server.py`, #1322) — and removing only the section
+leaves a 3 MiB table and an engine that claims nothing it can do.
+
+Open items (`docs/follow-ups.md`): the **Q8_0 projector**, which upstream
+recommends for `--vision cpu` (590 MiB against 865 MiB, ~280 MiB less encoder RAM,
+faster encode on the CPU, embedding cosine 0.997-0.999 against BF16) and which has
+to be quantized with `llama-quantize` from the BF16 file — no llama.cpp build on
+this box makes one; and the second DIMM pair, which is the real fix for the RAM
+this reader borrows for two minutes at a time.
+
 ## Operational notes
 
 - **A killed engine keeps its VRAM.** If an experiment engine is `SIGKILL`ed, the

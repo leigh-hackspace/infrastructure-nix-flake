@@ -470,6 +470,15 @@
         stdenv = pkgsCuda.cudaPackages_13_0.backendStdenv;
         cudaPackages = pkgsCuda.cudaPackages_13_0;
       };
+      # `nix build .#strata-vision` - the **picture reader** (mmproj) of the
+      # engine above, CPU-only and its own short build: since 0.2.16 it is
+      # Strata's own vision tower and links no ggml, so it needs no CUDA and no
+      # engine rebuild.  This is what `machines/services2/strata.nix` points the
+      # config's `vision.exe` at; the mmproj file itself is model data, not here
+      # (that file's header carries the download and its pinned digest).
+      strata-vision = pkgs.callPackage ./machines/services2/strata-vision.nix {
+        src = flakeInputs.strata;
+      };
       strata-cuda12 = pkgsCuda.callPackage ./machines/services3/strata-package.nix {
         # The same source path as the other two — `flake = false`, so there is no
         # `.outPath` to take; see the input's header.
