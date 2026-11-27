@@ -246,21 +246,130 @@ let
     # tok/s instead of 1200, which is the entire difference between a good arm and a bad
     # one here.  The dial that fixes it is `env.STRATA_RESIDENT_HEADROOM_GIB` below.
     # `--expert-cache` is not: the cache is already bigger than it was.
-    # Pinned 2026-10-23 (engine 0.1.48.1): upstream made this default to -1, which
-    # means "--serve sizes a host-RAM conversation cache from the RAM still free
-    # once the model is loaded": 40 % of (available - 2560 MiB), in 256 MiB steps,
-    # at most 8192 MiB, off below 1024 (include/strata/core/conversation_memory.hpp,
-    # auto_conversation_cache_mib, upstream #3493; the call is in generate.cpp and
-    # only `--serve` takes it).  This box sits right on that threshold - 28.3 GiB
-    # RSS of 30 GiB, `free -m` says 3556 available with nothing loaded - so the
-    # rule answers 0 today but would start parking 2 GiB the moment the load is
-    # sized differently, and 2 GiB more is OOM here beside Prometheus.  0.1.46's
-    # default was 0, so this line is the old behaviour spelled, not a change: turn
-    # it on only after re-reading the sizing table above.
     "--kv-resident"
     "32768"
+    # The conversation cache: park the conversation the *other* client is waiting for, so
+    # a return costs its new tokens instead of its whole prompt.  ON here since 2026-11-26
+    # (`0` pinned since 0.1.48.1, and `STRATA.md`'s "The conversation cache cannot be
+    # bought with the swap file" is why it stayed off for eight engine bumps); what moved
+    # is not upstream's enthusiasm but a trace read off this unit's own log.  Two pi
+    # sessions were alternating on this box's single slot (`/v1/status` reads
+    # `concurrency: {"serving": 1, "requested": 1}`, `/slots` one entry) and the
+    # checkpoint cache only ever holds the conversation the engine is on, so every switch
+    # threw the other one away:
+    #
+    #   15:40:24   63551 tok in   3 s | one session, growing: every turn served
+    #   16:12:10  145961 tok in   1 s | from the checkpoint cache
+    #   16:14:32    7333 tok in   7 s  <- the second session arrives
+    #   16:14:45  151546 tok in 137 s  <- and every return re-reads its WHOLE prompt
+    #   16:17:44  153145 tok in 138 s
+    #   16:28:52  161092 tok in 147 s    16:31:22  20794 tok in 18 s  <- clean
+    #   16:31:45  161538 tok in 147 s    16:34:23  21422 tok in 18 s     alternation
+    #   16:35:16  162348 tok in 147 s    16:37:57  22934 tok in 21 s
+    #
+    # Over 24 h: of 340 prompt reads of 20k+ tokens, 319 finished in under 20 s (mean
+    # 2.5 s - the checkpoint cache doing its job) and **21 took 1 898 s**, 11 of them
+    # 100k+ prompts, 1 461 s of it; over 7 d, 46 such reads and 3 278 s.  Every one of
+    # those is a switch.  While one session re-reads, the other is not merely slow, it is
+    # queued: one slot, and `--parallel 2` is out (`docs/BATCHING.md`: setup recommends it
+    # only where the experts mostly fit in VRAM - this card caches 2 331 of 12 288 slots -
+    # and where they do not it measured "3-4x slower, a request alone included").
+    #
+    # WHY 4096, AND WHY IT IS NOT A 4 GiB RESERVATION.  The budget is a cap checked
+    # BEFORE the capture (`conversation_cache.hpp:413 make_room`: `incoming > budget_ -
+    # held` refuses the park outright), so it has to cover one park or it parks nothing.
+    # **Measured here 2026-11-26, not estimated** (two parks refused, so two data points):
+    # a 50 407-token conversation wants 1 652 MiB and a 25 860-token one wants 828 MiB - a
+    # slope of 34 KiB/token with no meaningful fixed part.  aibox's figure from the other
+    # box and the other pack (436 MB at 13 064 tokens, `machines/aibox/strata.nix`) is 34
+    # KiB/token too, which is the corroboration.  So the arithmetic of this endpoint, in
+    # the units that matter:
+    #
+    #     20K tokens ->   0.7 GiB      60K -> 1.7 GiB      120K -> 4.1 GiB     162K -> 5.4 GiB
+    #
+    # 4096 admits a park of up to ~120K tokens as far as *its own* rule is concerned; the
+    # binding constraint is the physical-RAM gate below (headroom 8 puts it near ~75K), and
+    # a budget larger than the RAM can serve costs nothing, so leaving it at 4096 means
+    # the refusals the log prints are always the honest kind - `physical RAM admission`,
+    # with the bytes it wanted and the bytes it had - rather than a budget the operator
+    # mistook for the ceiling.  Nothing is allocated until something parks; idle stays
+    # `bytes=0`.  Do not lower this below the sessions you want parked: a budget under a
+    # park's size refuses it outright, and a refused park is the whole re-read back.
+    #
+    # THE GATE, and why the disk does not answer it.  A park is decided by *physical RAM*,
+    # twice, and the first time is before the capture: `conversation_memory.hpp:143` wants
+    # `available >= floor && allocation <= available - floor`, and the refusal there
+    # (`generate.cpp:13838`) returns without touching the disk - the SSD tier is fed only
+    # by an eviction (`:13584`) or by a *post-capture* refusal (`:13899`).  So the SSD
+    # cannot rescue a park the RAM cannot hold for the length of one copy, and with
+    # upstream's 2560 MiB floor this box admits *nothing* (its available is 1 894-2 436
+    # MiB), which is why `--conversation-cache-min-free-mib` below is set at all.
     "--conversation-cache-mib"
-    "0"
+    "4096"
+    # 4 is upstream's default, spelled rather than inherited, and costs no RAM: slots do
+    # not allocate, only a park does.  The requirement is two alternating sessions; the
+    # two spare slots are so a digest probe or a voice turn is not what evicts a parked
+    # session before `min-tokens` below gets a say.
+    "--conversation-cache-slots"
+    "4"
+    # Park only conversations worth a slot (upstream default 0 = park everything).  The
+    # two conversations this exists for are 22K and 162K, so a few-hundred-token probe
+    # must not be the thing that evicts them; aibox uses 2048 for the same reason and
+    # 4096 is this box's version of it because its sessions are bigger.
+    "--conversation-cache-min-tokens"
+    "4096"
+    # THE FLOOR, 2560 -> 1024, and this is the line that decides whether the cache above
+    # is ever used.  `admit` wants `available >= allocation + floor`, and with the model
+    # loaded this box's available was 1 894-2 436 MiB - i.e. upstream's 2560 MiB floor is
+    # *larger than the whole box's slack*, so at the default nothing parks at any size and
+    # every refusal is the log line `skip parking (physical RAM admission; need N MiB plus
+    # 2560 MiB floor, N MiB available … short by N MiB …)`, which is exactly what the first
+    # hour of this change produced, five times, for parks of 828-1 662 MiB, with two
+    # sessions switching every couple of minutes and neither ever captured.
+    #
+    # With 1024 the ceiling is `available - 1024` bytes of park, and the headroom change
+    # below is what makes that ceiling bigger than the sessions.  The excursion is bounded
+    # by the gate itself and usually short: the capture passes the floor, the post-capture
+    # re-check usually does not hold it any more, so the image goes to the SSD tier and its
+    # RAM is given back (`generate.cpp:13899`) - the SSD tier as designed, not as a way of
+    # spending RAM this box does not have.
+    #
+    # WHAT THIS SPENDS, said plainly because `STRATA.md` says it first: 2560 MiB is the
+    # figure that box's own write-up calls the one that "keeps journald from its 'Under
+    # memory pressure, flushing caches' state".  Measured here 2026-11-26, what else is on
+    # this box: `systemd-cgtop` reads system.slice 28.9 GiB and `strata.service` 28.83 GiB
+    # of it - the engine *is* the machine, and the monitoring the old comments blamed is
+    # not here - so there is no third party's RAM to take and the floor is the only knob
+    # that is not the expert complement.  Re-check that before trusting this sentence:
+    #   systemd-cgtop -m --depth=1 -b -n1 | head -3
+    #   systemctl show strata -p MemoryCurrent --value
+    "--conversation-cache-min-free-mib"
+    "1024"
+    # The SSD tier (`conversation_spill.hpp`, phase P2 of the admission design): a parked
+    # conversation the RAM tier evicts, or a captured one the RAM floor then refuses,
+    # becomes a session file instead of being dropped - which is what lets more sessions
+    # alternate than this box can hold parks for in RAM at once.  The folder is explicit
+    # because the auto one requires `--pack` to sit under `<data>/packs/` and this pack is
+    # at `~/Strata/pack/coder-iq1m`; without the line the engine starts with
+    # `no SSD tier: no data folder`, which is a silent regression to the old behaviour, so
+    # check for that line after any start.
+    #
+    # The tier is self-limiting in the two ways worth knowing: it writes only when the
+    # engine's own cost rule (`SpillCost::worth`) says the re-read would cost more than
+    # the round trip - at a 60K park that is ~50 s of re-read against ~3.5 s of disk, and
+    # it writes on a background thread at nice +10 with the lowest best-effort iopriority,
+    # deliberately not the idle class, "which a steady stream of expert reads could
+    # starve".  The 27 GiB PLE table and the pack are read off the same disk and it has
+    # 115 GiB free: 12288 MiB is ~7 parks of the 1.7 GiB a 60K conversation costs.
+    #
+    # It is NOT durable across a restart: a start removes the spill folders whose lock
+    # nobody holds (`clean_dead`), so a deploy or a crash costs every session one full
+    # re-read.  Each alternation costs the disk roughly a park's worth written and the
+    # same read back - 1.7 GiB each way for the 60K session this box is sized for.
+    "--conversation-spill-dir"
+    "/var/lib/strata/conversation-spill"
+    "--conversation-spill-mib"
+    "12288"
     # Low-RAM mode (the profile needs ~32 GB of experts' RAM; this box has 30):
     # the experts not in the GPU cache are copied into RAM once. The alternative
     # is --mmap-experts, which reads them through the OS file cache - steadier
@@ -398,30 +507,58 @@ let
       #   python3 machines/services2/strata-tune/strata-bench.py https://strata.int.leighhack.org
       env.STRATA_PF_FUSED = "1";
 
-      # The streaming K/V's other half: nothing else here may grow into host RAM, so
-      # `--conversation-cache-mib 0` above and `--prefill auto` (whose chunk the engine
-      # sizes against what is spare) both stay exactly as they are.
+      # The streaming K/V's other half, and the conversation cache's funding line: read
+      # this with the `--conversation-cache-*` block in `engineArgs`, they are one
+      # decision, and read the `lendable slots` line after changing either.
       #
       # STRATA_RESIDENT_HEADROOM_GIB: the RAM the resident expert copy leaves free.
       # `--resident-experts` defaults it to 4, and on this box 4 cannot hold both the
       # 3.09 GiB the streamed K/V pins *and* the ~21.9 GiB of experts the prompt path
       # lends slots for: at 4 the complement lands at 19.85 GiB and the `lendable slots`
-      # line goes to 69 % uncovered (arm A above: 8k at 562-725 tok/s).  2 is what makes
+      # line goes to 69 % uncovered (arm A above: 8k at 562-725 tok/s).  2 is what made
       # it read N of N, at a 21.88 GiB complement.
       #
-      # THE PRICE, and it is the only one: this spends the box's RAM.  With 21.88 GiB of
-      # experts page-locked and 3.09 GiB of K/V pinned, `free -m` reads ~2100 MiB
-      # available at idle and ~1000 MiB during an 184k-token read, with ~2.2 GiB in the
-      # 16 GiB swap file - i.e. below the engine's own 2560 MiB guard floor, on a box
-      # that also runs Prometheus/Grafana/gatus.  It is fast and it is correct, and
-      # there is no room left for a spike.  The thing that removes the risk is the second
-      # pair of DIMMs (this board: 2 slots, both filled with 16 GiB DDR4-3200 running at
-      # 2933, **maximum 128 GiB**), after which 4 goes back and the margin returns; the
-      # purchase is the open item in `docs/follow-ups.md`.  3 was measured too: same
-      # 28k (1199) and same long read (1077), but 23 % uncovered, so the first 8k rep
-      # after a start costs 917 instead of 1200 - it buys ~1 GiB of margin and pays for
-      # it on the cold read, which is why 2 is what is set.
-      env.STRATA_RESIDENT_HEADROOM_GIB = "2";
+      # 2 -> 8 on 2026-11-26: this is the money for the conversation cache, and on this
+      # box there is nowhere else to get it.  Two measurements decided it, both off the
+      # live unit and not off a model:
+      #
+      #   * **A park costs 34 KiB/token**, so the sessions that were switching on this
+      #     endpoint wanted 860 MiB (26 584 tokens) and 1 662 MiB (60 030 tokens) and the
+      #     long one ~5.4 GiB (162K) - see the `--conversation-cache-mib` block above.
+      #   * **The engine is the machine.**  `systemd-cgtop` reads system.slice 28.9 GiB,
+      #     `strata.service` 28.83 GiB, and MemAvailable 1 894-2 436 MiB with the model
+      #     loaded.  Nothing else holds anything worth taking.
+      #
+      # So the only RAM a park can come from is the expert complement, and 5 was not
+      # enough of it: complement 19.19 GiB left available at 2 120 MiB under load and the
+      # log read five refusals (`short by 1 210 MiB … 2 358 MiB`) with **zero parks** while
+      # two sessions switched every couple of minutes.  8 is the number that puts the
+      # ceiling above the sessions: it should read available ≈ 5-6 GiB, i.e. parks up to
+      # ~4 GiB (≈ 120K tokens) admitted, and it is the last stop before the complement
+      # starts costing decode rather than only prompt reads.
+      #
+      # THE PRICE, stated by the engine itself and not minimized: fewer resident experts
+      # means the prompt path reads them off the NVMe.  At 5 it logged
+      #   `132 of the prompt path's 1533 lendable slots keep their experts in RAM too`
+      #   `WARNING: 1401 of 1533 lendable slots (91%) will read their experts from the
+      #    pack during a long prompt … one measurement: 18% uncovered cost 26%`
+      # and `prefill plan: about 5.1 GB read from the drive per 32768-token prompt`, with
+      # the file's own measured cliff at 69 % uncovered = 8k prompts at 562-725 tok/s
+      # instead of 1200.  Expect worse than that, and accept it knowingly: a cold read is
+      # now paid **once** per session (or after a restart), while the thing it replaces -
+      # a switch - was being paid every couple of minutes, 32 s, 49 s, 147 s at a time,
+      # 3 278 s of it in the last 7 d.  The bet is checkable, and it is the first thing to
+      # read after any change to this line:
+      #   sudo grep -aE "conversation cache: (parked|restored|skip parking)" /var/lib/strata/strata.log | tail
+      # `parked`/`restored` with no `short by` lines = the trade is being paid for.  Lines
+      # that still say `skip parking (physical RAM admission` mean the complement bought
+      # less than the sessions cost, and the answer is RAM, not another flag: the second
+      # pair of DIMMs (this board: 2 slots, 16 GiB DDR4-3200 at 2933, **maximum 128 GiB**)
+      # is open in `docs/follow-ups.md`, and with 64 GiB the floor goes back to 2560, the
+      # headroom goes back to 2, and both sessions park every time.  Until then: what
+      # `free -m` reads at 2 was ~2100 MiB at idle and ~1000 MiB mid-184k-read, and a
+      # session that outgrows the ceiling keeps re-reading - loudly, in the log.
+      env.STRATA_RESIDENT_HEADROOM_GIB = "8";
 
       # STRATA_ROUTE_TAIL_SKIP=7: **we opt back in to a default upstream turned off
       # in 0.2.16/0.1.63, because on this card it is worth 13 % of decode for free.**
