@@ -41,7 +41,7 @@ pins in `firmware-pins.json`):
 | artifact | zip | inner |
 | --- | --- | --- |
 | `ot-ti-cc2652p-launchpad` (`CC1352P2_CC2652P_launchpad_ot_rcp_2025_3_1`) | 92 423 bytes | 228 114 bytes of Intel-HEX: **81 068 data bytes** (79 KiB), highest linear address `0x58000` |
-| `ot-ti-cc2652r7` (`CC2652R7_ot_rcp_2025_3_1`) | 91 600 bytes | 226 457 bytes of Intel-HEX: **80 480 data bytes**, highest linear `0xb0000` |
+| `ot-ti-cc2652r7` (`CC2652R7_ot_rcp_2025_3_1`) | 91 600 bytes | 226 457 bytes of Intel-HEX: **80 480 data bytes** — the *same* content — up to linear **`0xb0000` = 720 896, twice** that flash |
 | `silabs-mg21-zbdonglee-rcp` (`.gbl`) | 110 540 bytes | — |
 | `silabs-mg24-rcp` (`.gbl`) | 125 180 bytes | — |
 
@@ -49,10 +49,11 @@ What that measures, in the order it decides:
 
 - **The CC2652P-class RCP image fits its own dongle, with room to spare**: 81
   068 data bytes (79 KiB) of flash against the class's 352 KB, and the R7-class
-  build carries **80 480** data bytes — the same content size, linked for a
-  higher address (`0xb0000` against `0x58000`). So the size cliff the field
-  guides describe is **not** "the Thread image does not fit", and it is not
-  measurable from an image's byte count at all. Do not re-derive it from one.
+  build carries **80 480** data bytes — the same content — but reaches linear
+  `0xb0000` = 720 896, **twice** that flash. The cliff is real, and it is a
+  **link address**, not a byte count: both artifacts carry ~80 KiB of content,
+  and one is linked for a memory layout a CC2652P-class dongle does not have.
+  Do not re-derive the cliff from an image's size in a zip.
 - Where it comes from, upstream: **RAM**. Koenkk's own `docs/adapters.md` gives
   the CC2652P class 80 KB RAM / 352 KB flash against the EFR32MG24 and the
   CC2652R7 classes' 256 KB / 1536 KB, and its issue tracker #4 reports the

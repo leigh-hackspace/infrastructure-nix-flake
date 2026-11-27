@@ -1011,15 +1011,24 @@ the runtime's — `/srv/zigbee2mqtt/configuration.yaml` answers
 same two, and `just radio-status` prints all three and fails when they disagree.
 
 The firmware was fetched and checked, not typed: all four pinned artifacts
-matched their digests, and the sizes read out of them say the cliff is **not
-about image size**. The CC2652P-class launchpad RCP zip is 92 423 bytes holding
-228 114 bytes of Intel-HEX whose **81 068 data bytes** (79 KiB) link up to linear
-`0x58000`; the CC2652R7-class zip is 91 600 bytes holding 226 457 bytes of hex
-whose **80 480 data bytes** link up to `0xb0000` — same content, a different
-memory layout. So a CC2652P holds its own Thread RCP image with room to spare,
-and the refusal is recorded where the evidence points: **RAM**, which upstream's
-own `docs/adapters.md` gives as 80 KB for the CC2652P class against 256 KB for
-the EFR32MG24 and CC2652R7 classes (and 352 KB / 1536 KB of flash), and which
+matched their digests, and what the two TI hex files **occupy** is the cliff, in
+a form the guides never state. The CC2652P-class launchpad RCP zip is 92 423
+bytes holding 228 114 bytes of Intel-HEX — 5 074 records, **81 068 data bytes**
+(79 KiB of content), linked up to linear **`0x58000` = 360 448, the CC2652P
+class's whole 352 KiB of flash, exactly**; the CC2652R7-class zip is 91 600 bytes
+holding 226 457 bytes of hex — 5 037 records, **80 480 data bytes**, the *same*
+content size, linked up to **`0xb0000` = 720 896, twice that flash**. So the
+R7-class artifact pinned here cannot go on a CC2652P-class dongle at all, the
+launchpad artifact fills one completely, and the cliff is measured on this
+network's own files rather than inherited from a guide. What the guides' "no"
+verdicts track, upstream, is **RAM**: Koenkk's own `docs/adapters.md` gives the
+CC2652P class 80 KB RAM against the EFR32MG24 and CC2652R7 classes' 256 KB (and
+352 KB / 1536 KB of flash), and the symptom reports it as a *join* — Koenkk's
+issue #4, the correct launchpad image on the correct ZBDongle-P, `otbr-agent`
+dying `RadioSpinelNoResponse` / "no response from RCP during initialization" the
+moment a device joins, a signature the TI e2e forum reproduces on
+Thread-certified R7-class TI silicon after ~6 sensors, which is why it reads as
+a size cliff and not as a broken radio. Koenkk's
 the symptom reports as a *join*: Koenkk's issue #4 — the correct launchpad image
 on the correct ZBDongle-P, `otbr-agent` dying `RadioSpinelNoResponse` / "no
 response from RCP during initialization" the moment a device joins — a signature
