@@ -1,0 +1,18 @@
+[package]
+name = "netd"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "netd"
+path = "src/main.rs"
+
+# Deliberately no external crates (AGENTS.md rule 1, `crates/wan-manager`): this
+# runs on the router, where the only store paths that exist are the ones the
+# system already has.  The three dependencies are this repo's own shared crates
+# (AGENTS.md rule 2): `json` for the config document and the API bodies, and
+# `web` for the API's request/response plumbing, which three in-tree servers
+# already share rather than copy.
+[dependencies]
+common-json = { path = "../common-rs/json" }
+common-web = { path = "../common-rs/web" }

@@ -293,44 +293,59 @@ in rec {
   netbootLines = tftpServer:
     builtins.concatStringsSep "\n"
     (
-      map
+      builtins.concatLists
       (
-        b:
-          "dhcp-match=set:${b.tag},${b.match}\n"
-          + "dhcp-boot=${matchTag b.vlan},tag:${b.tag},${b.boot},${tftpServer},${tftpServer}"
+        map
+        (
+          b: let
+            # One `dhcp-match` per value, and a `dhcp-boot` after each — the shape
+            # this file has always emitted. A variant that matches on *text*
+            # (option 77, iPXE's user class) has no value list, because dnsmasq's
+            # third field is the string itself.
+            matches =
+              if b ? contains
+              then ["dhcp-match=set:${b.tag},${toString b.option},${b.contains}"]
+              else map (v: "dhcp-match=set:${b.tag},${toString b.option},${toString v}") b.values;
+          in
+            map (m: "${m}\ndhcp-boot=${matchTag b.vlan},tag:${b.tag},${b.boot},${tftpServer},${tftpServer}") matches
+        )
+        netbootVariants
       )
-      netbootVariants
     );
 
+  # The Pi Room's boot menu: one row per variant, with every value that selects it.
+  #
+  # This used to be one row per (variant, value) — three identical `netboot-efi`
+  # rows differing only in `93,7`/`93,8`/`93,9` — because dnsmasq's `dhcp-match`
+  # takes one value per line. The *fact* is "any of 7, 8 or 9 means EFI", so the
+  # value list is the fact and the three lines are a rendering of it: dnsmasq's
+  # renderer emits one line per value, and `common/netd/mk-config.nix` emits the
+  # list, both from this one row. Verified by diffing `TABLES.netbootLines` before
+  # and after the change (`docs/netd-2026-11-26.md`).
   netbootVariants = [
     {
       vlan = 227;
       tag = "netboot-legacy";
-      match = "93,0";
+      option = 93;
+      values = [0];
       boot = "/etc/tftp/undionly.kpxe";
     }
     {
       vlan = 227;
       tag = "netboot-efi";
-      match = "93,7";
-      boot = "/etc/tftp/ipxe.efi";
-    }
-    {
-      vlan = 227;
-      tag = "netboot-efi";
-      match = "93,8";
-      boot = "/etc/tftp/ipxe.efi";
-    }
-    {
-      vlan = 227;
-      tag = "netboot-efi";
-      match = "93,9";
+      option = 93;
+      values = [
+        7
+        8
+        9
+      ];
       boot = "/etc/tftp/ipxe.efi";
     }
     {
       vlan = 227;
       tag = "netboot-autoexec";
-      match = "77,iPXE";
+      option = 77;
+      contains = "iPXE";
       boot = "http://aibox.int.leighhack.org/boot/netboot.ipxe";
     }
   ];

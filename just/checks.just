@@ -91,6 +91,14 @@ check-eval:
     # (docs/esp32-voice-satellites.md is the contract the boundary is drawn for).
     echo "=== voice platform boundary (core <-> drivers)"
     nix eval --impure --raw -f common/check-platform-boundary.nix
+    # The netd config gw *would* hand the daemon at the cutover: the renderer drops
+    # nothing from common/vlans.nix, common/dns-records.nix or common/int-dns.nix (a
+    # VLAN with a range and no pool, a front-door name with no record, a reservation
+    # with no identifier).  The daemon's own schema rules are `netd check`, which is
+    # build-shaped and therefore not here — this is the projection-only half, and it
+    # is eval-only so the router can run it (docs/netd-2026-11-26.md).
+    echo "=== netd config render (tables -> the document the daemon would read)"
+    nix eval --impure --raw -f machines/gw/lib/check-netd-config.nix
     # AGENTS.md rule 26.  Eval-only — one `wc -l` over the tracked tree — so it is in
     # this half rather than left for `check`, which the router cannot finish: a file
     # is not allowed to grow past 1000 lines on the way past the router.

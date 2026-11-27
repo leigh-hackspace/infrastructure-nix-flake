@@ -456,6 +456,15 @@ that is closed gets absorbed into the live docs and deleted, and git history hol
   environ names a path roots it, so assemble path strings inside the script
   (`docs/nix-dev-workflow.md`). What is left is a `nix store gc` decision on this
   box, which is a maintenance call rather than a fix: 113 GB used, 93 GB free.
+  **Measured again 2026-11-27:** services1's root had drifted to **786 MB free of
+  216 GB**, with no `no space left` line in three hours of journal — i.e. full but
+  not yet failing, which is the state where the *next* container pull or borg run
+  is the thing that breaks. `sudo nix store gc` (no generation deletion) took it
+  from 786 MB to **59 GB free** in under a minute of deleting, so this box
+  accumulates unreachable paths far faster than its own `nix-gc` timer clears
+  them, and "gc would fix it" is hours-of-builds sitting in the store rather than
+  a one-off from 2026-10-18. Do not reach for
+  `nix-collect-garbage -d` (that deletes generations, i.e. the rollback path).
 
 - **aibox's root, and the model data that lives outside the store** (opened 2026-10-17
   with the move of the builder role off services2; the builder half of this item is
@@ -4518,3 +4527,56 @@ needs a running box.
   `go-ipv6-nat64`/`nat64fd` in a unit, or the router's own NAT sets (that doc owns the
   router half). **Blocks:** nothing today; it is the next thing that will be wrong, and
   it is now a shape decision rather than a flag in a container.
+- **The border-router image has no version tag** (measured through the registry on
+  2026-11-26: `latest`, `edge`, `edge-<sha>`, three `sha-<hex>`), so the flake pins a
+  moving tag and the digest that tag resolves to is off-flake. `just thread-pins` prints
+  the tag list so the drift is at least a number someone can read. **Blocks:** nothing;
+  it costs re-pinability. Home Assistant's own app image *does* have a pinnable tag
+  (`3.4.0`, and `stable`), so switching to it is the way out if this one drifts.
+- **`NAT64 = "0"` is a decision without a measurement behind it.** MQTT-over-Thread needs
+  NAT64 and the space runs an MQTT broker; nothing has yet asked a Thread device to reach
+  it. **Blocks:** nothing today; it is the next thing that will be wrong.
+
+
+## netd — the dnsmasq replacement (built 2026-11-26, not deployed)
+
+`docs/netd-2026-11-26.md` is the design, the receipts and the cutover runbook. These
+are the items that keep it from being *finished* rather than *written*.
+
+- **The cutover has not been done.** `services.netd.enable = false` on `gw` and
+  `services.dnsmasq` still owns 53/67; the one-commit switch is in the doc's §5, and
+  `common/netd/module.nix` refuses to build with both daemons enabled. **Blocks:**
+  everything below that needs a real socket, and the retirement of `./ra-watch.nix`
+  and `./lease-reader.nix`.
+- **`network-status` still reads `/var/lib/dnsmasq/dnsmasq.leases`.** netd serves the
+  same facts at `GET /v1/leases` (versioned, `docs/netd-2026-11-26.md` §2), but
+  `crates/network-status` has no HTTP client and `--leases-file` is the only source it
+  knows. So the cutover *will* turn `/api/leases` into a 503 and the gatus row
+  `Router lease table (network-info)` red — deliberately, because a page that quietly
+  shows nothing is the fault it was fixed to stop showing. The change is a
+  `--leases-url` argument plus a mapping from `netd`'s rows into the existing
+  `LeaseLine` shape; `stale` becomes structurally impossible (the source is the live
+  daemon) but should keep its type so the page and the gatus check do not need a
+  second version. **Blocks:** retiring `machines/gw/lease-reader.nix` without a red
+  board.
+- **Nothing has exercised DHCP over a real VLAN, or unsolicited RAs, from netd.** Unit
+  tests cover the wire format and the decision; `just netd-probe` covers a whole lease
+  cycle but has only ever been pointed at a *server* that is not netd's
+  `dhcp_server.rs`. The first real receipt is the cutover's step 4/5, and
+  `ra-watch` is a dnsmasq-agnostic meter for the second (start it once before
+  removing the module's import). **Blocks:** calling the DHCP and RA halves proven.
+- **`just netd-probe` against the live dnsmasq has not been run** — it is the
+  before-half of the comparison the doc's §4 does for DNS. It needs root on `gw` and
+  the crate built there (`INFRA_ALLOW_BUILD_ON_ROUTER=1`), which is why it was not
+  part of this change. **Blocks:** a DHCP-side "identical answers" receipt.
+- **RDNSS/DNSSL is a decision waiting to be made.** dnsmasq sent none, so no client on
+  this network resolves over IPv6 alone, and netd matches that. Adding the options
+  changes every client's resolver configuration and should be its own change with its
+  own measurement (a device that is IPv6-only, e.g. a Thread border router's mesh, is
+  the reason it will eventually be wanted). **Blocks:** nothing; recorded so the next
+  person does not read the gap as an oversight.
+- **The lease table does not survive the cutover.** dnsmasq's file is not imported:
+  netd starts empty and a client keeps the address it already holds by asking for it
+  again. That is correct and it means a client whose address is inside a pool can be
+  NAK'd once if two devices ask for the same free-at-startup address. **Blocks:**
+  nothing; watch `/v1/leases` for the first hour.

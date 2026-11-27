@@ -1451,6 +1451,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "netd"
+version = "0.1.0"
+dependencies = [
+ "common-json",
+ "common-web",
+]
+
+[[package]]
 name = "network-status"
 version = "0.1.0"
 dependencies = [

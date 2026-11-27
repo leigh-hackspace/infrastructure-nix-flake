@@ -134,6 +134,7 @@ evaluation of this machine succeeds with tables that disagree, and standalone vi
 | `constants.nix` | `LAN_NIC`, `UPLINK_NIC`, `UPLINK_TUNNEL`, `WWAN_NIC` — the four interface names the rest of the directory keys on |
 | `networking.nix` | the VLAN netdevs, the addresses on them, the uplink NIC's DHCP |
 | `dns.nix` | dnsmasq: the generated conf, the two generated hosts files (the device records and the `*.int` front door), the netboot variants |
+| `netd.nix` + `netd-config.nix` | the **replacement** for `dns.nix`, rendered from the same tables and **`enable = false`**: the module wiring and, separately, the one call to `common/netd/mk-config.nix` that produces the JSON document `crates/netd` reads. The split is so `lib/check-netd-config.nix` can evaluate the same document (it runs in `just check-eval` and `nix flake check`). `docs/netd-2026-11-26.md` is the design and the one-commit cutover — read it before enabling anything here |
 | `http.nix` | nginx and the network's certificate: the vhosts this box serves — **all of them, rendered from `common/front-door.nix`, none written in this file** — the `nginx-sso` gate and `anubis`, the `dnsResolver` + propagation-wait lines the zone's own authority makes mandatory, and `front-door-cert-check` — the only check that can tell an issued certificate from nixpkgs' minica placeholder. All four phases of `docs/router-front-door-migration.md`, **deployed 2026-10-24**; read that file before adding a name |
 | `headscale.nix` | the network's tailnet control server and its admin UI, moved from services1 with their state copied; loopback 8085/8086 behind the door's `tailscale.*`/`headplane.*` rows. The router was already a tailnet client (`./uplink.nix`) |
 | `int-dns.nix` | the guard over `common/int-dns.nix` read from *this box's* `virtualHosts`: equality now that `frontDoor` names `gw` (AGENTS.md rule 24) |
@@ -143,6 +144,7 @@ evaluation of this machine succeeds with tables that disagree, and standalone vi
 | `openvpn.nix` | the old box's two OpenVPN servers, **off by default** |
 | `sops.nix` | the secrets this box needs: the AAISP PPP password, the tailnet's join key, and the shared env-file — for its `DO_AUTH_TOKEN` alone, because `http.nix` answers for the zone through DigitalOcean |
 | `lib/network-tables.nix` | the renderers: tables → dnsmasq lines, nft set literals, device names |
+| `lib/check-netd-config.nix` | the projection guard over `netd-config.nix`: nothing from `common/vlans.nix`, `common/dns-records.nix` or `common/int-dns.nix` was dropped on the way to the daemon's document (pure evaluation, so the router can run it) |
 | `lib/check-network-tables.nix` | the assertions over those tables (standalone, prints findings) |
 | `lib/assert-network-tables.nix` | the three-line module wrapper that runs them at eval time |
 | `network-status.nix` | the router's own dashboard (`network-info.int.leighhack.org`, :8091) — including the per-connection table, whose *permission* half is not here |

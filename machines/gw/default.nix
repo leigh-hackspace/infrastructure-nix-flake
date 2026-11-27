@@ -67,6 +67,12 @@
     ./hardware-configuration.nix
 
     ./dns.nix
+    # The replacement for ./dns.nix, rendered from the same tables and **disabled**:
+    # this file is the cutover switch and the eval-time check that the render is
+    # complete (its assertion forces the whole document).  `docs/netd-2026-11-26.md`
+    # is the plan and the runbook; `just netd-render` prints what it would hand the
+    # daemon, without a build and without touching a socket.
+    ./netd.nix
     # The IPv6 router advertisements dnsmasq sends, and what happens when its timer
     # dies with a `router-lan` link flap: a check that counts the advertisements on
     # the wire, restarts dnsmasq when they stop, and says so on Slack as well as in

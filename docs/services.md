@@ -46,6 +46,7 @@ Every address is in `common/hosts.nix`.
 | The space calendar (Home Assistant `local_calendar`) | `/srv/homeassistant/.storage/local_calendar.*.ics` — **runtime state the flake only mounts**; read by the Space API's `/events` and `/events.ics`, and by `hackspace-mcp`'s `space_events` | the three entities below; nothing serves it directly | `docs/space-calendar.md` (adding an event, and why the file is not where you write one) |
 | Space API (the hackspace's public status feed) | `machines/services1/services/hackspace-api.nix` (podman; **its credential is runtime state at `/var/lib/hackspace-api/env`, deliberately not sops** — read the module header before changing that) | `127.0.0.1:8081` here → `api.int.leighhack.org` / `api.leighhack.org` (public, `acl = "none"`) | `docs/home-assistant-on-services1-2026-11-16.md` (what it is, the 40 h of external pollers, why the env file is not in the store) |
 | ups-watchdog | `crates/ups-watchdog/` | no port: it is a oneshot, and it calls out (ssh `wall`, ssh `poweroff`) | `docs/ups-and-fleet-shutdown.md`, `machines/gw/ups.nix` |
+| netd (DHCP + IPv6 RAs + DNS, the dnsmasq replacement) | `crates/netd/`, `common/netd/` (`module.nix`, `mk-config.nix`), gw: `machines/gw/netd.nix` + `netd-config.nix` | gw:67 (DHCP per VLAN), gw:53, gw:8092 (`/v1/leases`, `/v1/status`, `/metrics`) — **built, not deployed**: `services.netd.enable = false` and `services.dnsmasq` still owns 53/67 | `docs/netd-2026-11-26.md` (the four faults it makes inexpressible, the config and API contracts, the cutover) |
 
 ---
 
@@ -89,6 +90,38 @@ refuses to evaluate `gw` while the table and the front door's vhost list disagre
 `origin` rows. **`docs/router-and-dns.md`** owns what "correct" means, which
 names answer somewhere other than the front door, and what is left in DigitalOcean with
 nothing maintaining it.
+
+## `crates/netd/` — DHCPv4, IPv6 router advertisements and DNS, replacing dnsmasq
+
+Built 2026-11-26, **not deployed** (`services.netd.enable = false` on `gw`; dnsmasq
+still owns ports 53 and 67). `docs/netd-2026-11-26.md` is the document to read
+before touching it — it owns the four measured faults that motivated the
+replacement, the config and API contracts, the receipts, the cutover runbook and
+the limits.
+
+Three things about its *shape* are the design, not style:
+
+- **the configuration is one generated JSON document and the schema is strict**
+  (an unknown key is a build failure, with the path). dnsmasq's dialect is not
+there to get wrong: there are no lines, an address is a value rather than the
+  left-hand side of a comma list, and a name is either in the zone or it is not.
+  `common/netd/mk-config.nix` renders it from the tables; `netd check` validates
+  it in a `runCommand`, so `/etc/netd/config.json` is the output of a successful
+  check;
+- **the lease table is the process's memory, served as `GET /v1/leases`.** The
+  snapshot under `/var/lib/netd` is written by the same process (`tmp` + `rename`)
+  and read by nobody else, which is why `machines/gw/lease-reader.nix` (a group
+  grant, a path unit, a five-minute watch and a gatus row) becomes unnecessary:
+  there is no channel between two processes to die;
+- **the router-advertisement timer is a comparison in a loop**, not a timer
+  object, so a link flap cannot stop it — the fault `machines/gw/ra-watch.nix`
+  exists to watch for.
+
+The decision code (`dhcp/decision.rs`) is a pure function of (config, lease table,
+request) so `just netd-explain mac=…` can print the answer *and its reason* without
+a socket, and the socket code (`dhcp_server.rs`, `sys.rs`) only moves bytes. The
+two places it needs the kernel are one `SO_BINDTODEVICE` socket per device and a
+raw ICMPv6 socket; both are in `sys.rs` and nowhere else.
 
 ## `crates/frigate-monitor/` — change detection on the Frigate stream
 

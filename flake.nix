@@ -551,6 +551,14 @@
       # point is that the next microphone (a different camera, an ESP32, a phone) is a new
       # `drivers/` module and a row in the unit, never an edit to the turn logic.
       platform-boundary = asCheck "platform-boundary" (import ./common/check-platform-boundary.nix);
+
+      # gw's netd configuration as rendered from the tables: the projection drops
+      # nothing (a VLAN range with no pool, a front-door name with no record, a
+      # reservation with no identifier).  Pure evaluation, so it runs on the router
+      # — which is the machine that will hand the document to the daemon
+      # (`docs/netd-2026-11-26.md`).  The daemon's own schema rules are its
+      # `netd check`, run at build time by `common/netd/module.nix`.
+      netd-config = asCheck "netd-config" (import ./machines/gw/lib/check-netd-config.nix);
     };
 
     # `nix develop`

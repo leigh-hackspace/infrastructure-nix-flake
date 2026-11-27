@@ -1,0 +1,76 @@
+{
+  "version": 1,
+  "zone": "int.example.org",
+  "state_dir": "/tmp/netd",
+  "api": { "bind": "127.0.0.1", "port": 8092 },
+  "dns": {
+    "listen": ["127.0.0.1:53"],
+    "acl": ["127.0.0.0/8", "10.0.0.0/24", "fd00::/8"],
+    "records": [
+      { "name": "services1.int.example.org", "addresses": ["10.0.0.20"] },
+      { "name": "services1", "addresses": ["10.0.0.20"] },
+      { "name": "aibox.int.example.org", "addresses": ["10.0.0.32", "2001:db8:225::32"] }
+    ],
+    "forwarders": ["9.9.9.9", "1.1.1.1"],
+    "conditional": [{ "zone": "ts.example.org", "servers": ["100.100.100.100"] }],
+    "cache_size": 100,
+    "ttl": 1,
+    "forward_max": 100,
+    "domain_needed": true,
+    "stop_rebind": true,
+    "rebind_ok": ["ts.example.org"],
+    "rebind_localhost_ok": true,
+    "soa": {
+      "mname": "gw.int.example.org",
+      "rname": "hostmaster.int.example.org",
+      "refresh": 3600,
+      "retry": 600,
+      "expire": 604800,
+      "minimum": 10
+    }
+  },
+  "dhcp": {
+    "interfaces": ["vlan225"],
+    "lease_ttl": 86400,
+    "decline_quarantine": 600,
+    "ignored_addresses": ["10.0.0.166"],
+    "ignored_names": ["wpad"],
+    "pools": [
+      {
+        "interface": "vlan225",
+        "tag": "vlan225",
+        "from": "10.0.0.150",
+        "to": "10.0.0.253",
+        "netmask": "255.255.255.0",
+        "server_ip": "10.0.0.1",
+        "ttl": 86400
+      }
+    ],
+    "reservations": [
+      {
+        "name": "services1",
+        "address": "10.0.0.20",
+        "macs": ["c8:d3:ff:a5:b2:25"],
+        "client_ids": ["00:02:ab:cd"]
+      }
+    ],
+    "options": [
+      { "tag": "vlan225", "code": 6, "value": ["10.0.0.1"] },
+      { "tag": "vlan225", "code": 43, "hex": "0104c0a80114" }
+    ],
+    "netboot": []
+  },
+  "ra": {
+    "interval": 60,
+    "interfaces": [
+      {
+        "interface": "vlan225",
+        "prefixes": ["2001:db8:225::/64"],
+        "router_lifetime": 1200,
+        "valid_lifetime": 86400,
+        "preferred_lifetime": 14400,
+        "mtu": null
+      }
+    ]
+  }
+}
