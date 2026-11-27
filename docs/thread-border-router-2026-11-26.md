@@ -272,6 +272,83 @@ not a paragraph.
   MQTT broker, which is why `NAT64 = "0"` is written as a decision point and not
   a fact).
 
+## 12. What this session added, and the two refusals that fired
+
+The table, the guard, the pins, and the verbs are this session's, and the
+interesting part is not that they pass — it is the two refusals that were made
+to fire, because a guard that has never refused is a guard nobody has read.
+
+**The table is one file, the rules over it are another, and five places read
+them.** `common/radio-dongles.nix` (DATA), `common/radio-tables.nix`
+(HELPER), `common/check-radio-tables.nix` (CHECK) — the three of `common/`
+are each labelled at the top because the directory mixes all five kinds
+(AGENTS.md's rule about `common/`). The guard is evaluated from
+`just check-eval` (so it runs on `gw`, which cannot run the flake step —
+AGENTS.md rule 22), from `flake.nix`'s `checks` (so `nix flake check` and
+`nix eval` see it too), and as a `config.assertions` of `zigbee2mqtt.nix`,
+`thread-router.nix`, and `matter-server.nix` — a service's own assertion is
+the form that stays charged when someone changes a table, so the same rule is
+enforced where the table is used, not only where it is checked. One
+implementation, five entry points, the same shape AGENTS.md rule 24 asks of a
+vhost move.
+
+**Refusal 1 — a Thread radio on a Zigbee's channel.** The guard was written
+with the upstream pick baked in (`thread-rcp.channel >= 25`) and then
+deliberately broken (26 → 11) to see it answer; it refused and named both rows.
+Fixing it was a decision, not a patch: 25 or 26 is **matter.js's default**, not
+the law — the whole point of the two upstream guides that start Zigbee at 25 is
+that they put Thread at 15 — so the rule is the **distance**, which is what the
+collision is: `thread-rcp.channel` must be in 802.15.4's band and at least 8
+channels from every channel some Zigbee is using. 26 stays the table's value,
+with the reason written next to it (it is matter.js's pick, it is the end of
+the band, and this flake is the thing that decides), and the refusal now says
+"26 is not a law, the distance is".
+
+**Refusal 2 — a Zigbee repeater modelled as a second coordinator.** The
+`zigbee-router` role was added (a repeater is neither a coordinator nor a
+spare: it joins the network the coordinator's stack runs, and no stack talks to
+it) and a row was planted with `channel = 12` and a `mountAt` to prove the
+guard sees both halves of the rule: a `zigbee-router` must answer on one of the
+mesh's own channels and must have no `mountAt`, because nothing is behind it.
+It refused, naming the row. The row was then deleted; the table has no repeater
+today, because no Zigbee-Router artifact is pinned and the decision is open
+(`follow-ups.md`).
+
+**The channel table agrees with the runtime, and that is the receipt.** The
+guard checks the table against itself; what it cannot check is the table
+against Z2M's own config, so the pair was read: the table says
+`channel = 11` for the coordinator, `/srv/zigbee2mqtt/configuration.yaml` says
+`advanced: channel: 11`, and the table's `mountAt` (`/dev/ttyUSB0`) equals the
+runtime's `serial.port` — `zigbee2mqtt.nix` was then changed to *generate* the
+`--device` argument from the table instead of hardcoding the node, so the two
+cannot drift again. `just radio-status` is the verb that prints all three
+together and fails when they disagree.
+
+**The measured facts that the table and the pins carry**, and their sources —
+read, not assumed, this session:
+
+| fact | value | where it was read |
+| --- | --- | --- |
+| CC2652P class RAM / flash | 80 KB / 352 KB | `raspberry.tips` and Koenkk's `docs/adapters.md` |
+| EFR32MG24 / CC2652R7 class RAM / flash | 256 KB / 1536 KB | the same table's "Use more RAM" column |
+| the CC2652P-class RCP zip, its hex, and what the hex carries | 92 423 bytes; 228 114 bytes; **81 068 data bytes** (79 KiB) over 5 074 records, highest linear address `0x58000`, two type-`02` offset records | fetched and measured; digest matched the pin |
+| the CC2652R7-class RCP zip, its hex, and what the hex carries | 91 600 bytes; 226 457 bytes; **80 480 data bytes** over 5 037 records, highest linear address `0xb0000` | fetched and measured; digest matched. **Same content size, higher link address** — so the image-size argument in the field guides does not hold on this network's own numbers, and what separates the classes is RAM: upstream's table, 80 KB against 256 KB |
+| the two Silabs `.gbl`s (MG21, MG24) | 110 540 bytes; 125 180 bytes | fetched and measured: digests matched |
+| Zigbee-Router adapter list | does **not** include ZBDongle-P | `Koenkk/zigbee-adapter-docs` `docs/adapters.md` |
+| OTBR image build args | `OTBR_OPEN_THREAD=2025.03.19`, `OTBR_OPEN_THREAD_URL` = `main`, `OTBR_VERSION=cb4bdae242…`, `OTBR_SUBMODULES_JSON` pins `admux_proto` at `2025.07.13` (truncated in the read) | `ghcr.io/smnws/ha-otbr-docker`'s `build.args` |
+| the pty radio form | `spinel+hdlc+forkpty://${PATH_TO_EXECUTABLE}?…` | `ot-extcap`'s own help string |
+| this box's three RA sysctls | 0 / 0 / 0 on `vlan225`; `all.accept_ra` = 1 | `/proc/sys/net/ipv6/conf/*` |
+| this box's Bluetooth | none (`/sys/class/bluetooth/` empty, no USB BT device) | `just thread-status` |
+| the REST port choice | `8081` is matter.js's default and this network's Space API; 49 listening ports on the box; `8196`/`8098` answer nothing | `/proc/net/tcp` + `curl` |
+| the two pinned digests | all four artifacts matched their pins on fetch | `just thread-fw-verify` |
+
+`radios/README.md` owns the rules a flash makes permanent (a flash is a one-way
+door per dongle; a flash does not change a dongle's USB ids, so the table's
+*role* is the fact that survives one), and it is a pointer to the firmware's
+own repositories for the firmware facts — AGENTS.md rule 30's shape again:
+OpenThread's tree and Koenkk's repositories own what the firmware is and does,
+and this flake owns the pins, the verbs, and the network.
+
 ## What is open
 
 In `docs/follow-ups.md`, under this doc's name: the radio that has to arrive,

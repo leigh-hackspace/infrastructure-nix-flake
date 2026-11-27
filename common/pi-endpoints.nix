@@ -123,6 +123,23 @@ in {
       one variable no arm of services2's tuning ran on. That is the one `compat` block
       in this table whose provenance is inference rather than measurement, and
       `docs/follow-ups.md` carries the item that closes it.'';
+
+    # **One quarter of the window, so that this row yields the same 32768-token output
+    # budget as every other row here.** It is the only row whose engine answers `n_ctx`
+    # 131072 (`--max-context` in `machines/services3/strata.nix`, a VRAM choice on an
+    # 11 GB Pascal card) where the other two report 262144 for the same pack, so the
+    # fleet default of one eighth gave it 16384 while everything else got 32768 — and
+    # 16384 is not enough for pi's context compression to summarise a long session in
+    # one reply, which is the caller that needs the ceiling most.
+    #
+    # `maxTokensDivisor` rather than `maxTokens = 32768`: that module's own comment
+    # names 65536 as the one-line walk-back if the engine logs its `LOW: requests may
+    # stall` expert-cache warning, and an absolute 32768 would then be *half the
+    # window*, with `render.rs`'s `.min(ctx)` guard no longer catching it. A quarter
+    # tracks the walk-back; a written number cannot. `maxTokensMax` stays at the
+    # module default of 32768, so a later bump of this box's context still cannot
+    # promise an output nobody waits for.
+    maxTokensDivisor = 4;
     compat = {
       supportsStore = false;
       supportsDeveloperRole = false;

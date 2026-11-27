@@ -977,3 +977,63 @@ that server is a **drop-in replacement** for the Python Matter Server (same WebS
 API, reads the Python server's data files), which is what makes the flake's choice a
 version of Home Assistant's Matter support rather than a second Matter stack.
 
+
+### 2026-11-26, later — the radio table is guarded, and the guard was made to refuse twice
+
+The table (`common/radio-dongles.nix`), the predicates over it
+(`common/radio-tables.nix`), the guard (`common/check-radio-tables.nix`) and the
+pins (`radios/firmware-pins.json`) landed together, and the guard is evaluated
+from **five entry points** — `just check-eval` (so it runs on the router, which
+cannot run the flake step), `flake.nix`'s `checks`, and a `config.assertions` of
+`zigbee2mqtt.nix`, `thread-router.nix` and `matter-server.nix` — because a
+service's own assertion is the form that stays charged when someone changes a
+table (AGENTS.md rule 24's shape). Two refusals were fired on purpose before
+either rule was believed, because a guard that has never refused is a guard
+nobody has read:
+
+- **Thread on a Zigbee's channel.** The rule was first written as the upstream
+  *pick* (`thread-rcp.channel >= 25`) and the row was set to 11 to watch it
+  refuse. Fixing it was a decision, not a patch: 25/26 is matter.js's default,
+  and the guides that start Zigbee at 25 put Thread at **15**, so the rule is the
+  **distance** — 802.15.4's band and ≥ 8 channels from every channel a Zigbee
+  uses. 26 stays the table's value, with the reason next to it, and the refusal
+  now says "26 is not a law, the distance is".
+- **A Zigbee repeater modelled as a second coordinator.** The `zigbee-router`
+  role and a row with `channel = 12` *and* a `mountAt` were planted, and the
+  guard refused both halves: a repeater joins the mesh (so it answers on one of
+  its channels) and nothing is behind it (so it has no node). The row was then
+  deleted — nothing is decided for the spare here.
+
+`zigbee2mqtt.nix` stopped hardcoding the dongle: `--device=/dev/ttyUSB0` is now
+generated from the table's `device`/`mountAt`, and the receipt that they agree is
+the runtime's — `/srv/zigbee2mqtt/configuration.yaml` answers
+`serial.port: /dev/ttyUSB0` and `advanced: channel: 11`, the table answers the
+same two, and `just radio-status` prints all three and fails when they disagree.
+
+The firmware was fetched and checked, not typed: all four pinned artifacts
+matched their digests, and the sizes read out of them say the cliff is **not
+about image size**. The CC2652P-class launchpad RCP zip is 92 423 bytes holding
+228 114 bytes of Intel-HEX whose **81 068 data bytes** (79 KiB) link up to linear
+`0x58000`; the CC2652R7-class zip is 91 600 bytes holding 226 457 bytes of hex
+whose **80 480 data bytes** link up to `0xb0000` — same content, a different
+memory layout. So a CC2652P holds its own Thread RCP image with room to spare,
+and the refusal is recorded where the evidence points: **RAM**, which upstream's
+own `docs/adapters.md` gives as 80 KB for the CC2652P class against 256 KB for
+the EFR32MG24 and CC2652R7 classes (and 352 KB / 1536 KB of flash), and which
+the symptom reports as a *join*: Koenkk's issue #4 — the correct launchpad image
+on the correct ZBDongle-P, `otbr-agent` dying `RadioSpinelNoResponse` / "no
+response from RCP during initialization" the moment a device joins — a signature
+the TI e2e forum reproduces on Thread-certified R7-class TI silicon after ~6
+sensors, which is why it reads as a size cliff and not as a broken radio. Koenkk's
+`docs/adapters.md` also does **not** list the ZBDongle-P as a *Zigbee Router*
+adapter at all (Dongle-E, Dongle Plus MG24 and Connect ZBT-2 are listed for
+Router), which is why the spare's repeater role has no pinned artifact and no row.
+
+What the box answers, and was unread before this session: `/sys/class/bluetooth/`
+is empty (so `BLE_PROXY` is a flag with nothing behind it), the three RA sysctls
+are 0 on `vlan225` while `all.accept_ra` is 1, `8081` — matter.js's own REST
+default — is the Space API's port that `hackspace-mcp` dials, and `gw`'s ACME
+cert is still CA-issued after this box's `just switch` paid 13.6 s of ACME
+renewal. Both features deploy **disabled**, both `dry-build`s were clean,
+`/run/current-system` and `system-good` stayed equal, and `just check` on every
+box in the fleet runs the guard now.

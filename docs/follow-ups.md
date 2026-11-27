@@ -4365,7 +4365,7 @@ needs a running box.
   blockers are a credential with a named owner (§7.1) and permission to retire the
   hand-mirrored calendar rows (§7.3); nothing in it needs a front-door row until phase 5.
 
-## The Thread border router and the Matter controller (services1) — planned 2026-11-26, `docs/thread-border-router-2026-11-26.md` owns the evidence
+## The Thread border router and the Matter controller (services1) — planned 2026-11-26, `docs/thread-border-router-2026-11-26.md` §12 owns what was added and refused
 
 - **The radio does not exist yet**, and the dongle this network was offered is not
   the radio: a Sonoff ZBDongle-P is a Texas Instruments CC2652P, and upstream's own
@@ -4394,6 +4394,34 @@ needs a running box.
   Sonoff still answers as a Sonoff Zigbee dongle in `/dev/serial/by-id`, which is why the
   table's **role**, not the device name, is the fact that survives a flash. **Blocks:**
   nothing; it is a decision about a spare dongle, and a flash is a one-way door per dongle.
+- **Does mDNS cross the VLAN tags here?** Thread discovery is IPv6 mDNS, every
+  Thread guide says "mDNS will be reflected" as an assumption, and this session
+  found **no mDNS reflector on this network** (`gw` runs dnsmasq, whose generated
+  conf answers the DNS tables and the `*.int` names and nothing about `+`, `~` or
+  `-`). A Thread mesh whose devices never *begin* an RA chain is a different
+  failure from a mesh whose chain stops, and both read as a border router whose
+  nodes and links the dashboard cannot rank, so the question cannot be answered
+  by turning something on. **Blocks:** the RA question below, which is the same
+  VLAN-boundary question seen from the other side.
+- **The CC2652P's next flash: refused for Thread, and unasked for Zigbee as a
+  repeater.** The spare is a working 802.15.4 radio and a refused Thread radio
+  (measured: its RCP build is 237 032 bytes of hex, which **fits** the CC2652P's
+  own 352 KB flash — so the cliff is not the image not fitting, it is what a
+  Thread-certified join needs beyond the image, against a Sonoff product line
+  whose Dongle-E and Dongle Plus are "no" in the field guides and whose ZBDongle-P
+  is "no" in the one table that ranks them), and its other role is in the guard
+  (`zigbee-router`: answers on one of the mesh's channels, no `mountAt`, because
+  no stack talks to a repeater) and in no row of `common/radio-dongles.nix`,
+  because **no Zigbee-Router artifact is pinned in `radios/firmware-pins.json`**
+  — the row would name something nobody has verified, and Koenkk's own
+  `docs/adapters.md` does **not** list the ZBDongle-P as a *Zigbee Router*
+  adapter at all (it lists it for RCP, and lists Dongle-E/Dongle Plus MG24/Connect
+  ZBT-2 for Router). Before flashing anything here, two things have to be true:
+  a **measured bad link** in this space's own Zigbee graph (the counter-evidence
+  is a 150-device house that had spare Sonoff sticks flashed and plugged in
+  around it and still had ~50 nodes at bad quality, fixed by *moving the
+  coordinator* to the middle instead), and a pinned artifact. **Blocks:** nothing;
+  a flash is a one-way door per dongle, and the spare is not load-bearing yet.
 - **This box's IPv6 is not Thread-ready, and the two upstream docs disagree about
   what to do about it.** Measured 2026-11-26: `net.ipv6.conf.vlan225.forwarding = 0`,
   `accept_ra = 0`, `accept_ra_rt_info_max_plen = 0`. The OpenThread guide says set the
