@@ -24,6 +24,52 @@ radio-json:
 # channels each stack is actually using. Read before acting: a dongle in a port is
 # a physical fact, and a green guard does not mean the dongle in the port is the
 # dongle the table means.
+# Ask one plugged-in dongle whether it speaks RCP at all, and nothing else: the
+# pinned OTBR image, run once, its own `otbr-agent --radio-version` against the
+# dongle. A line like `OPENTHREAD/1.4.0-Koenkk-2025.3.1; CC13XX_CC26XX` is the
+# radio answering its own identity question, which is the one probe that
+# separates "this dongle speaks RCP" from "this dongle is usable in a mesh"
+# (upstream's `ot-br-posix` tree, `adapters.md` line 34: an agent's first act
+# against an RCP radio is its Spinel init, and `--radio-version` asks for nothing
+# more). This uses the uart URL form against the real device, so it is stronger
+# than upstream's `forkpty` smoke-test form - and still says nothing about a mesh:
+# reachability and link quality cannot be queried through either form.
+# Ask one dongle whether it speaks RCP at all (radio identity, not a mesh).
+thread-probe port="": _build-host-guard
+  @if [ -z "{{ port }}" ]; then echo 'usage: just thread-probe /dev/serial/by-id/...'; exit 1; fi
+  # The explicit `:target` half of `--device` is required: podman resolves a
+  # symlink source, so naming only the by-id path would land the node inside
+  # the container at `/dev/ttyUSBn` and `otbr-agent` would ENOENT on its own
+  # URL (measured 2026-11-27, `docs/thread-border-router-2026-11-26.md` section 13).
+  image=$(grep -o 'docker\.io/openthread/border-router@sha256:[0-9a-f]*' machines/services1/services/thread-router.nix | head -1)
+  [ -n "$image" ] || { echo 'no digest-pinned OTBR image in thread-router.nix'; exit 1; }
+  podman run --rm -i --network=none --device="{{ port }}":/dev/otbr-rcp "$image" \
+    sh -c 'otbr=$(command -v otbr-agent || ls /usr/sbin/otbr-agent /usr/bin/otbr-agent 2>/dev/null | head -1); echo "probing $otbr"; "$otbr" --radio-version --baudrate 460800 spinel+hdlc+uart:///dev/otbr-rcp'
+
+# Put the pinned RCP artifact on a dongle. Refuses without GO=1, because a flash
+# is permanent per dongle: from then on that stick is this network's Thread radio
+# and not a Zigbee radio (rollback exists - flash any Koenkk Z-Stack launchpad
+# coordinator hex back the same way - but a flashed stick carries the Thread
+# network's credentials from then on). PORT must be the by-id name.
+# Flash the pinned RCP artifact onto a by-id dongle. Digest-gated, needs GO=1.
+thread-flash port="" GO="": _build-host-guard
+  @if [ -z "{{ GO }}" ]; then echo 'refusing: just thread-flash /dev/serial/by-id/... GO=1 (a flash is permanent per dongle, and the live Zigbee coordinator row in common/radio-dongles.nix must never be its target)'; exit 1; fi
+  @if [ -z "{{ port }}" ]; then echo 'usage: just thread-flash /dev/serial/by-id/... GO=1'; exit 1; fi
+  case "{{ port }}" in /dev/serial/by-id/*) ;; *) echo 'refusing: a flash target must be a /dev/serial/by-id name, not a ttyUSB number (the kernel numbers nodes in plug order and re-hands them on every reboot, which is the reason common/radio-dongles.nix names dongles by-id)'; exit 1 ;; esac
+  # One fact in one place: the artifact, its digest, and the digest of the hex
+  # inside it are `radios/firmware-pins.json`'s, fetched and verified by the two
+  # verbs below - which is the gate before any flash (`just thread-fw-verify` is
+  # the precondition of both this and a camera's payload push, same shape).
+  just thread-fw-fetch
+  just thread-fw-verify /tmp/thread-rcp-firmware/CC1352P2_CC2652P_launchpad_ot_rcp_2025_3_1.hex
+  # `--bootloader-sonoff-usb` is the Sonoff's DTR/RTS entry pattern: a C2652P-class
+  # stick has no BSL-trigger button, so entering the bootloader is a pull and a
+  # wire. Check nothing has the port open first (`fuser <port>`, and on this
+  # network's own coordinator dongle the answer is zigbee2mqtt).
+  nix shell nixpkgs#cc2538-bsl --command \
+    cc2538-bsl --bootloader-sonoff-usb -e -w -v -p "{{ port }}" /tmp/thread-rcp-firmware/CC1352P2_CC2652P_launchpad_ot_rcp_2025_3_1.hex
+  @echo "then: just radio-plug, and fill common/radio-dongles.nix - the by-id name is the hardware's, not the firmware's, so the row's role is what changes"
+
 radio-status:
     #!/bin/sh
     nix eval --impure --raw --expr 'builtins.toJSON (import ./common/radio-dongles.nix).radios' | jq 'to_entries' > /tmp/radio-table.json
@@ -103,13 +149,19 @@ thread-pins:
     for u in $(jq -r '.firmware[] | .url' radios/firmware-pins.json); do
       echo "  $(curl -m 25 -s -o /dev/null -L -w '%{http_code}' "$u")  $u"
     done
+    echo "=== what this flake pins for the border router, and where the pin lives (a digest, not a tag: upstream's tag list has no version)"
+    grep -h "OTBR_IMAGE = " machines/services1/services/thread-router.nix || echo "  no digest pin in thread-router.nix - that is a finding"
     echo "=== container image tags (an image with only latest/edge has no version to pin, which is why the doc says so)"
+    # ghcr.io: the two alternatives and the Matter server. The registry answers a
+    # token per repository, so the token is fetched per package rather than once.
     for pkg in smnws/ha-otbr-docker matter-js/matterjs-server home-assistant/app-openthread-border-router; do
       tok=$(curl -m 15 -s "https://ghcr.io/token?scope=repository:$pkg:pull" | jq -r .token)
       printf '  %s: ' "$pkg"
       curl -m 20 -s -H "Authorization: Bearer $tok" "https://ghcr.io/v2/$pkg/tags/list" | jq -r '(.tags // ["(no tag list)"]) | join(" ")'
       echo
     done
+    echo "=== upstream's border-router image on Docker Hub (what the flake pins, by digest: no version tag exists here either)"
+    curl -m 25 -s "https://hub.docker.com/v2/repositories/openthread/border-router/tags?page_size=100" | jq -r '(.results // []) | ["  ", ([.[].name] | join(" "))] | add // "  (no tag list)"'
 
 # the pinned digests as one line per artifact (`just thread-fw-verify` reads this)
 thread-pin-digests:

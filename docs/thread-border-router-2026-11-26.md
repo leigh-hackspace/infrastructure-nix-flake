@@ -7,15 +7,20 @@ plan — a radio table, an eval-only guard, two disabled services
 `just thread-pins`, `just thread-fw-fetch`, `just thread-fw-verify`,
 `just thread-status`) — and it gained the measurement that says the dongle this
 network was **offered** is not the radio the plan needs. Nothing here was flashed
-and nothing here was switched. If that sentence is what you came to re-read, read
-the two sections under it before you try the dongle again.
+and nothing here was switched. **Corrected 2026-11-27, read below: the dongle
+this network was offered *is* a working OpenThread RCP radio** — a CC2652P-class
+stick in that class's `ot_rcp` firmware answered `otbr-agent`'s identity probe
+with `OPENTHREAD/1.4.0-Koenkk-2025.3.1; CC13XX_CC26XX` in the sibling fleet (§13)
+— so what is open is whether **mesh joins** hold on it, not whether the dongle
+can be a radio. §13 is the correction, and the four receipts under the next
+heading are what made this radio look dead and are kept as the record of why.
 
 The plan: a Thread border router on `services1` so that Matter-over-Thread devices
 (Home Assistant's `matter` integration, a Matter camera, the mesh that carries
 Matter traffic) have a network to send IPv6 into, next to the Zigbee coordinator
 that already runs there.
 
-## The dongle the network was offered is not a Thread radio
+## The dongle this network was offered is a working RCP radio with a join caveat (corrected 2026-11-27); the four receipts below are what made it look dead
 
 The spare dongle is a Sonoff **ZBDongle-P**, TI **CC2652P**. It is *not* a
 typo — a Sonoff **Dongle Plus (CC2674P10)** is a different, Thread-certified
@@ -349,18 +354,151 @@ own repositories for the firmware facts — AGENTS.md rule 30's shape again:
 OpenThread's tree and Koenkk's repositories own what the firmware is and does,
 and this flake owns the pins, the verbs, and the network.
 
+## 13. The correction, 2026-11-27: a CC2652P-class radio was measured working, and this flake changed shape because of it
+
+The plan's §12 verdict — "this network's spare dongle is not a Thread radio,
+and the radio it needs is an EFR32MG24-class one" — was the whole reason
+`common/radio-dongles.nix` put the Sonoff row at `spare` and left
+`thread-rcp.device` empty for a dongle nobody owns. It was wrong, and it was
+wrong on a measurement this repo had already made but read the wrong way.
+
+**Who had done it.** [`cjdell/nixos-config`](https://github.com/cjdell/nixos-config)
+— the sibling fleet, `grafton-gateway` and `grafton-router` — has a *deployed*
+OpenThread border router: `hosts/grafton-router/services/otbr.nix`, background
+`docs/thread-border-router.md`, flasher `scripts/flash-thread-rcp.sh`. Its radio
+is **a Sonoff ZBDongle-P**, silkscreen "C2652P", on a **CP2102N** bridge
+(`10c4:ea60`, unique serial `d01311ed57c9eb1198a28b4f1d69213e`), flashed with
+`CC1352P2_CC2652P_launchpad_ot_rcp_2025_3_1.zip` — the artifact this repo
+pinned as `ot-ti-cc2652p-launchpad` and refused to put on its own spare. Read
+on 2026-11-27.
+
+**The receipt that settles the hardware question** — `otbr-agent`'s own Spinel
+initialisation against the stick, over the `forkpty` URL form:
+
+```bash
+cd /tmp/otbr && git clone --depth 1 https://github.com/openthread/ot-br-posix
+bin/host/otbr-agent --radio-version --baudrate 460800 \
+     spinel+hdlc+forkpty:/dev/otbr-rcp
+#   OPENTHREAD/1.4.0-Koenkk-2025.3.1; CC13XX_CC26XX
+```
+
+`forkpty` is upstream's *smoke-test* transport (`ot-br-posix/docs/adapters.md`
+line 39: "for smoke tests only" — a pty whose radio output is routed back through
+the host, so it **emits no radio**: reachability and mesh quality cannot be
+queried through it), which is why this probe answers "is the stick an RCP radio
+at all" and *nothing* about a mesh. `ot-br-posix/docs/adapters.md` line 34 says
+`otbr-agent`'s first act against any RCP radio is its Spinel init, and
+`--radio-version` asks for nothing more, so the probe is the one measurement
+that separates "this dongle speaks RCP" from "this dongle is usable in a mesh";
+that split is why the probe passing does **not** light `infra.thread.enable`.
+
+**What was believed before, and what was measured instead**: belief —
+"§12's size cliff rules this dongle class out". Measured — the cliff this repo
+measured is a **link address** (the R7-class artifact's highest linear address is
+`0xb0000` = twice this class's flash, so that artifact *cannot* go on this
+dongle; the launchpad artifact's is `0x58000` = exactly this class's flash, so
+the launchpad image is *built for* that dongle and fills it), and the sibling
+fleet runs a CC2652P-class stick on exactly that artifact. What the guides'
+"no" verdicts actually track is **RAM** — 80 KB on this class against 256 KB on
+the MG24/R7-class sticks — which is the reason upstream sees
+`RadioSpinelNoResponse` on join, and which nothing here has re-measured. So the
+honest line is: **the dongle class speaks RCP and has been made to answer as a
+Thread radio; the RAM class is why joins are the risk, and the risk is open on
+this network, not resolved against it.**
+
+**The unit-level traps their recipe records, and where they live in this flake:**
+
+1. **`podman --device` with a symlink source resolves the symlink.** Their
+   first attempt was `--device=/dev/otbr-rcp` and the node landed inside the
+   container at `/dev/ttyUSBn`, so `otbr-agent` ENOENT'd on its own radio URL
+   (`hdlc_interface.cpp:157 … No such file or directory`) in a crash loop whose
+   journal named the URL and therefore read as a device problem. The explicit
+   `source:target` form is what fixes it, and it is why this repo's `thread-rcp`
+   row mounts at `/dev/otbr-rcp` (a stable container-side name) rather than at a
+   ttyUSB number — this repo needs no `udev` rule because
+   `common/radio-dongles.nix` already names the by-id path, which carries the
+   serial.
+2. **A radio missing at activation fails the switch, and on an `autoRollback`
+   host that is a reboot five minutes later** (measured on their router:
+   `stat /dev/otbr-rcp: no such file or directory`, `podman-otbr` status 1,
+   `switch-to-configuration` reporting the failed unit,
+   `auto-rollback.service` exiting 11). This flake's defence is upstream of the
+   symptom: `thread-router.nix` asserts that `common/radio-dongles.nix` names a
+   device before `infra.thread.enable` can be true, so "is the stick in a port"
+   is a runtime question — answered by `common/containers.nix`'s never-give-up
+   policy — rather than an activation question. If a deploy ever overrides
+   `systemd.services.podman-otbr.wantedBy = [ ]`, the reason is that a container
+   whose device is missing must fail at runtime and not take an activation down,
+   and that sentence belongs where the override is.
+3. **Upstream's image does not form a Thread network on an empty dataset** —
+   a fresh stick sits at state `disabled` forever, so nothing can be
+   commissioned into it. `config.systemd.services.otbr-form` is this flake's
+   one-time formation (`dataset init new`, `commit active`, `ifconfig up`,
+   `thread start`), guarded by a `networkkey` grep so it is idempotent, and
+   always exiting 0 because a non-zero oneshot on this box is a reboot risk
+   (§2 above).
+4. **otbr inserts its own ingress filter between infra and mesh**, so the
+   border router needs "infra can reach mesh, and mesh can reach infra" at raw
+   iptables level (their firewall: `net.LAN_INTERFACE → wpan0` and back, because
+   otbr's filter sits between them and their raw check does not see through it).
+   In this network's vocabulary that is the `tunnel.nat` chain against `*wpan`,
+   and it stays a question about the box that owns the network's firewall
+   (AGENTS.md rule 22), not about a container on this box.
+
+**Upstream's own image, and what its tags answer today:** measured on 2026-11-27 with
+`skopeo inspect` on this box — `stable` and `v2026.11.0` resolve to `sha256:5ae17855…`,
+`v2026.10.0` to `sha256:70d2260e…`, the moving `latest`/`main` to `sha256:058bafa2…`, and
+the digest the sibling fleet pinned on 2026-11-24 (`ccab33a1…`) **still resolves**. So unlike
+the fork this repo first chose (`smnws/ha-otbr-docker`, whose tags are `latest`, `edge`,
+`edge-<sha>`, `sha-<hex>` — no version), upstream's image has a version to name, and the
+flake pins the *older working* build by digest because it is the one whose behaviour is a
+receipt. That is also why the module says `skopeo inspect` rather than `docker pull`: the re-pin is a read, not a move.
+
+**Two things their file settles that this repo had guessed at.** The
+environment vocabulary — `OT_RCP_DEVICE`, `OT_INFRA_IF`, `OT_THREAD_IF`,
+`OT_REST_LISTEN_ADDR/PORT`, `OT_LOG_LEVEL` are upstream's
+(`etc/docker/border-router/` in `ot-br-posix`); a
+`BACKBONE_IF`/`NAT64`/`TX_POWER`/`FLOW_CONTROL`-shaped name in front of the
+upstream image is **silently ignored**, and a container that starts,
+configures nothing, and sits at state `disabled` is the symptom — the "a
+channel that dies while still answering" shape from
+`docs/nix-dev-workflow.md`. And `--privileged` is *why they have it*: the
+image's agent inserts its ingress filter and its `FORWARD` accepts with
+`ip6tables`, which has to land in the host namespace. This repo deliberately
+keeps `NET_ADMIN`/`NET_RAW` + `/dev/net/tun` instead — this box's `/dev` holds
+the live Zigbee coordinator (`/dev/ttyUSB0` on the host *is* the space's whole
+Zigbee mesh, `home-assistant.nix`'s landmine), and a `--privileged` container is
+one `ls /dev` away from owning it. **If** netfilter is refused on the first
+deploy here, that is a measurement to write into this doc, and the fallback is
+`--privileged` with an explicit device list, not a reflex.
+
+**What their fleet does *not* settle.** Their Thread mesh has **no members**:
+the OTBR dataset they describe sits at 0 mfg-addressed coordinates, and their
+Matter server's own dataset records `"transport": "wifi"`, so their Matter
+devices are on Wi-Fi and their Thread mesh is untested. Upstream's
+join-failure report on this dongle class is therefore still the only evidence
+about joins anywhere, and `just thread-status`'s node/link-quality line is
+still the number that has to be read here before the flag is flipped.
+
 ## What is open
 
-In `docs/follow-ups.md`, under this doc's name: the radio that has to arrive,
-the IPv6 answer, the BLE bridge for commissioning, `NAT64` for MQTT-over-Thread,
-and the border-router image's moving `:latest` (it has no version tag to pin, while Home Assistant's own app image does).
+In `docs/follow-ups.md`, under this doc's name: the **join question on a
+CC2652P-class radio** (now a measured open question, not a refusal: the class
+speaks RCP and answers as a Thread radio, and what has no evidence either way
+is a mesh joining it), this box's IPv6 (measured wrong for a mesh that is
+reachable), the ingress-filter/firewall pair otbr needs on the box that owns
+the network's firewall, the BLE bridge commissioning needs, `NAT64` for
+MQTT-over-Thread, and the border-router image's digest pin (re-pinning is one
+`skopeo inspect` away, and this repo pins an image someone else ran).
 
 ## Re-verify with
 
 ```
 just check-eval          # the radio-table guard runs here, on every box including the router
 just radio-status        # table vs USB ports vs the channels each stack is using
-just thread-pins         # the pinned artifacts, and whether the upstream tags still answer
+just thread-pins         # the pinned container images, and what their tags resolve today
+just thread-probe PORT=/dev/serial/by-id/…   # is this stick an RCP radio at all (no mesh claim)
+just thread-flash PORT=/dev/serial/by-id/…   # the digest-gated flash of the pinned RCP artifact
 nix eval --impure --raw -f common/check-radio-tables.nix   # must print ok
 just thread-fw-verify radios/fw/<file>                     # the digest gate before flashing anything
 ```

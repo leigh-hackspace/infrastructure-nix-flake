@@ -30,7 +30,10 @@ and the three of `common/` that are about these dongles:
 
 The verbs are `just/radios.just`: `radio-json`, `radio-status`, `radio-plug`,
 `thread-pins`, `thread-pin-digests`, `thread-fw-fetch`, `thread-fw-verify`,
-`thread-status`. `docs/thread-border-router-2026-11-26.md` owns the evidence.
+`thread-status`, and the two this session added: `thread-probe` (is a dongle
+in a port an RCP radio at all — the pinned image, its own `otbr-agent --radio-version`,
+the **uart** URL form, which is stronger than upstream's `forkpty` smoke test)
+and `thread-flash` (digest-gated, refuses without `GO=1`). `docs/thread-border-router-2026-11-26.md` owns the evidence.
 
 ## The CC2652P: what its own firmware measures, and what it is still refused for
 
@@ -63,22 +66,40 @@ What that measures, in the order it decides:
   R7-class TI silicon after ~6 sensors, which is why it reads as a size cliff
   and not as a broken radio.
 
-So a CC2652P is refused as this network's Thread radio, and kept as a spare.
-What it *is*, radio-wise, is a working 802.15.4 radio: what it lacks is
-Thread certification and RAM, not radio-ness, which is why the role it can play
-is a **Zigbee-Router** repeater (`common/radio-tables.nix`'s `zigbee-router`:
-it answers on one of the mesh's channels, and it has no `mountAt` because no
-stack talks to it) — and why that row does not exist here yet, because Koenkk's
-`docs/adapters.md` does **not** list the ZBDongle-P as a Zigbee-Router adapter
-at all, so any Zigbee-Router flash on this dongle would be an unverified pin.
+**Corrected 2026-11-27: a CC2652P-class dongle has been made to work as a Thread
+radio, by the sibling fleet, on the launchpad artifact above.** `otbr-agent --radio-version
+answered `OPENTHREAD/1.4.0-Koenkk-2025.3.1; CC13XX_CC26XX` against a stick marked
+"C2652P" on a CP2102N bridge, and an agent's first act against any RCP radio is
+its Spinel init (`ot-br-posix/docs/adapters.md` line 34), so that line is the
+radio answering its own identity question — `docs/thread-border-router-2026-11-26.md`
+§13 owns the receipts and the probe command. So this network's spare Sonoff is
+the `thread-rcp` row of `common/radio-dongles.nix`, and `just thread-flash` is the
+verb that puts this pinned artifact on it. What stays open — and is why
+`infra.thread.enable` is still false — is whether a **mesh join** holds on it:
+upstream's #4 report and the TI e2e reproduction say the radio stops answering
+the moment a Thread device joins, on 80 KB RAM, and nobody has measured this
+hub's own graph either way. `just thread-status`'s node and link-quality line is
+that measurement, and it is the number to read before the flag, not after.
+What is *also* still true is the Zigbee-Router half: Koenkk's `docs/adapters.md`
+does not list the ZBDongle-P as a Zigbee-Router adapter, so a repeater flash on
+this dongle is an unverified pin, and one row cannot be a Thread radio and a
+repeater at once (`common/check-radio-tables.nix` refuses two roles on one device
+node, and a repeater has no `mountAt` because no stack talks to it).
 
-## The one-way door, and the rule that keeps a dongle's role honest
+## What a flash does and does not decide, and the rule that keeps a dongle's role honest
 
-**A flash is a one-way door per dongle.** Nothing in OpenThread's or Koenkk's
-trees offers a downgrade path: once a dongle runs Thread firmware, Zigbee-Router
-firmware goes back onto it only by flashing again. The table's `mountAt` and the
-guard's channel rules are what keep a dongle's role visible *while it runs*;
-after a flash there is nothing to un-flash to.
+**A flash is permanent per dongle, and it is not a one-way door.** Nothing
+downgrades a firmware, but the rollback is a flash of the other artifact: a
+C2652P-class stick flashed to RCP comes back as a Zigbee radio by flashing any
+Koenkk Z-Stack launchpad *coordinator* hex back the same way — measured and
+written down as the rollback in the sibling fleet's `scripts/flash-thread-rcp.sh`.
+What cannot be rolled back is the **network** the flash joined: a Thread radio
+that has formed a network carries that network's credentials, and a Zigbee
+coordinator that has been re-keyed carries its mesh's. So the honest rule is
+that a flash changes a dongle's role permanently, the rollback changes it back,
+and neither changes the mesh built on top of it — which is why the table's
+`role` is the fact that matters, and why `just thread-flash` refuses without
+`GO=1`.
 
 **A flash does not change what a dongle is to the kernel.** The USB vendor and
 product ids in `/dev/serial/by-id` are the hardware's, not the firmware's —
@@ -95,5 +116,7 @@ trusting the name.
 just radio-status                  # table vs the USB ports vs the channels each stack uses
 just thread-pins                   # the pinned artifacts, and whether upstream's tags answer
 just thread-fw-verify <file>       # the digest gate, before any flash
+just thread-probe /dev/serial/by-id/…    # is the stick an RCP radio at all (identity, not mesh)
+just thread-flash /dev/serial/by-id/… GO=1   # the pinned RCP artifact, onto a by-id dongle
 nix eval --impure --raw -f common/check-radio-tables.nix   # must print ok
 ```

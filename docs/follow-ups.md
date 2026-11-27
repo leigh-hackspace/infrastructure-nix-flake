@@ -4381,18 +4381,26 @@ needs a running box.
   blockers are a credential with a named owner (§7.1) and permission to retire the
   hand-mirrored calendar rows (§7.3); nothing in it needs a front-door row until phase 5.
 
-## The Thread border router and the Matter controller (services1) — planned 2026-11-26, `docs/thread-border-router-2026-11-26.md` §12 owns what was added and refused
+## The Thread border router and the Matter controller (services1) — planned 2026-11-26, corrected 2026-11-27, `docs/thread-border-router-2026-11-26.md` §12 owns what was added and §13 owns what was refused wrongly
 
-- **The radio does not exist yet**, and the dongle this network was offered is not
-  the radio: a Sonoff ZBDongle-P is a Texas Instruments CC2652P, and upstream's own
-  issue tracker calls the correct firmware on the correct dongle "not working when
-  joining device" (`RadioSpinelNoResponse`). **Blocks:** `infra.thread.enable`, which
-  the module's own assertion refuses while `common/radio-dongles.nix`'s thread-rcp
-  row has no device. **The way forward is a purchase, not a patch:** an EFR32MG24-class
-  dongle (256 KB RAM / 1536 KB flash against the CC2652P's 80 KB / 352 KB) and `just
-  radio-plug` to name it once it is in a USB port. `radios/firmware-pins.json` carries
-  its firmware, pinned by digest, and `just thread-fw-fetch` is the verb.
-- **What the spare *is* good for, if the Thread radio has to be bought: the Zigbee mesh.**
+- **The Thread radio is a dongle this network already has; what does not exist is a
+  measured mesh join on it.** Corrected 2026-11-27: a CC2652P-class stick (this
+  network's spare Sonoff, marked "C2652P") flashed with the pinned launchpad
+  `ot_rcp` artifact has been *run* as a Thread radio by the sibling fleet — `otbr-agent
+  --radio-version` answered `OPENTHREAD/1.4.0-Koenkk-2025.3.1; CC13XX_CC26XX` there,
+  and an agent's first act against any RCP radio is its Spinel init, so that line is
+  the radio answering its own identity question (`docs/thread-border-router-2026-11-26.md`
+  §13 owns the receipts, the probe command, and what the `forkpty` pty form can and
+  cannot claim: upstream calls it a smoke test, it emits no radio). What is still open
+  is upstream's report — the radio stops answering the moment a Thread device **joins**,
+  on 80 KB RAM — and the sibling fleet's own Thread mesh has **0 members**, so nobody
+  anywhere has measured a join on this class. **Blocks:** `infra.thread.enable`, which
+  `thread-router.nix`'s assertion refuses while `common/radio-dongles.nix`'s thread-rcp
+  row has no device — i.e. while the stick is still in a drawer, not on a USB port.
+  **The way forward is this network's own spare, not a purchase:** `just thread-flash
+  <by-id> GO=1` (digest-gated), then `just radio-plug`, then fill the row, then measure
+  joins with `just thread-status` on a mesh that has a member in it.
+- **What the spare is *also* good for, while it is a spare: the Zigbee mesh.**
   A CC2652P is a working 802.15.4 radio — it is Thread-certification and RAM it lacks, not
   radio-ness — so flashed with a **Zigbee Router** firmware (a repeater: no `pan_id`, no
   Z2M instance behind it) it joins the network the live SLZB-06M runs and extends it,
@@ -4404,12 +4412,14 @@ needs a running box.
   measured point *against* the repeater is a 150-device house that had spare Sonoff sticks
   flashed and plugged in around the network and still had ~50 nodes at bad link quality,
   fixed by moving the coordinator to the middle of the house instead. So: a cheap option,
-  not medicine, and this space is one room with one coordinator in it. Decide it against
+  not medicine, and this space is one room with one coordinator in it — and a
+  role one dongle cannot play at the same time it plays `thread-rcp`. Decide it against
   the mesh's own numbers (`crates/zigbee-network/` exists for exactly that read), and
   remember that a flash does not change a dongle's USB vendor/product ids — a flashed
   Sonoff still answers as a Sonoff Zigbee dongle in `/dev/serial/by-id`, which is why the
   table's **role**, not the device name, is the fact that survives a flash. **Blocks:**
-  nothing; it is a decision about a spare dongle, and a flash is a one-way door per dongle.
+  nothing; it is a decision about a spare dongle, and a flash changes a dongle's
+  role permanently — rollback is another flash, not a downgrade (`radios/README.md`).
 - **Does mDNS cross the VLAN tags here?** Thread discovery is IPv6 mDNS, every
   Thread guide says "mDNS will be reflected" as an assumption, and this session
   found **no mDNS reflector on this network** (`gw` runs dnsmasq, whose generated
@@ -4419,25 +4429,22 @@ needs a running box.
   nodes and links the dashboard cannot rank, so the question cannot be answered
   by turning something on. **Blocks:** the RA question below, which is the same
   VLAN-boundary question seen from the other side.
-- **The CC2652P's next flash: refused for Thread, and unasked for Zigbee as a
-  repeater.** The spare is a working 802.15.4 radio and a refused Thread radio
-  (measured: its RCP build is 237 032 bytes of hex, which **fits** the CC2652P's
-  own 352 KB flash — so the cliff is not the image not fitting, it is what a
-  Thread-certified join needs beyond the image, against a Sonoff product line
-  whose Dongle-E and Dongle Plus are "no" in the field guides and whose ZBDongle-P
-  is "no" in the one table that ranks them), and its other role is in the guard
-  (`zigbee-router`: answers on one of the mesh's channels, no `mountAt`, because
-  no stack talks to a repeater) and in no row of `common/radio-dongles.nix`,
-  because **no Zigbee-Router artifact is pinned in `radios/firmware-pins.json`**
-  — the row would name something nobody has verified, and Koenkk's own
-  `docs/adapters.md` does **not** list the ZBDongle-P as a *Zigbee Router*
-  adapter at all (it lists it for RCP, and lists Dongle-E/Dongle Plus MG24/Connect
-  ZBT-2 for Router). Before flashing anything here, two things have to be true:
-  a **measured bad link** in this space's own Zigbee graph (the counter-evidence
-  is a 150-device house that had spare Sonoff sticks flashed and plugged in
-  around it and still had ~50 nodes at bad quality, fixed by *moving the
-  coordinator* to the middle instead), and a pinned artifact. **Blocks:** nothing;
-  a flash is a one-way door per dongle, and the spare is not load-bearing yet.
+- **The CC2652P's next flash is the Thread one, and it is gated by measurement, not by a refusal.**
+  The spare is a working 802.15.4 radio and a *usable* Thread radio: what the field
+  guides refuse is a Thread-certified **join** on 80 KB RAM, and the cliff is a link
+  address rather than an image size — the pinned CC2652P-class artifact is 92 423 bytes
+  of zip carrying 228 114 bytes of Intel-HEX whose **81 068 data bytes** reach linear
+  `0x58000` = 360 448, exactly this class's 352 KiB flash, while the R7-class artifact
+  carries the same ~80 KiB of content but reaches `0xb0000` = 720 896, twice that flash
+  (measured 2026-11-26 by a hex record scan over digest-matched artifacts, `just
+  thread-pin-digests`). So the order on this network is: `just thread-flash <by-id> GO=1`
+  — which runs `thread-fw-fetch` and `thread-fw-verify` first — then `just radio-plug`, then
+  fill `common/radio-dongles.nix`, then measure joins. What still has to be true **before
+  the flag** is a measured join; what still has to be true **before a Zigbee-Router repeater
+  flash** is a measured bad link in this space's own graph plus a pinned Router artifact
+  (Koenkk's `docs/adapters.md` lists the ZBDongle-P for RCP but **not** for Router, so
+  today a Router flash would be an unverified pin). **Blocks:** nothing; the flash is not
+  load-bearing, and `common/check-radio-tables.nix` keeps the two roles off one device.
 - **This box's IPv6 is not Thread-ready, and the two upstream docs disagree about
   what to do about it.** Measured 2026-11-26: `net.ipv6.conf.vlan225.forwarding = 0`,
   `accept_ra = 0`, `accept_ra_rt_info_max_plen = 0`. The OpenThread guide says set the
@@ -4467,17 +4474,47 @@ needs a running box.
   the LOCAL zone, "two hours of my life I won't get back". Nothing on this network reflects
   mDNS (`gw` runs dnsmasq: DNS, DHCP, the NAT sets). So crossing our VLAN tags may be
   **two** questions, and neither is guessable from the container.
+- **The border router inserts its own ingress filter between infra and mesh, so the firewall
+  pair it needs is a raw-iptables question on the box that owns the network, not a
+  container question.** Measured in the sibling fleet: their firewall carries an explicit
+  LAN-interface ↔ `wpan0` pair because `otbr` inserts its ingress filter and its `FORWARD`
+  accepts with `ip6tables` (that is why their container is `--privileged`), and a raw
+  check does not see through the filter the image just built. Here that is `tunnel.nat`
+  ↔ `*wpan` on `gw` (`machines/gw/firewall.nix`, `docs/router-and-dns.md`), so the open
+  half is whether the pair belongs on `gw`, on `services1`, or on both. **Blocks:** nothing
+  until a mesh exists to fail; then it is a finding, and rule 22 keeps the build of the
+  answer off the router and the *decision* of the answer on it.
 - **Commissioning has no Bluetooth path on this box.** `/sys/class/bluetooth/` is empty
   and `lsusb` has no Bluetooth device, so the Matter server's `BLUETOOTH_ADAPTER` option
   is not available; `BLE_PROXY` is, and needs a device — an ESPHome host for the `/ble`
   bridge. **Blocks:** Matter commissioning of anything, Thread or Wi-Fi.
-- **The border-router image has no version tag** (measured through the registry on
-  2026-11-26: `latest`, `edge`, `edge-<sha>`, three `sha-<hex>`), so the flake pins a
-  moving tag and the digest that tag resolves to is off-flake. `just thread-pins` prints
-  the tag list so the drift is at least a number someone can read. **Blocks:** nothing;
-  it costs re-pinability. Home Assistant's own app image *does* have a pinnable tag
-  (`3.4.0`, and `stable`), so switching to it is the way out if this one drifts.
-- **`NAT64 = "0"` is a decision without a measurement behind it.** MQTT-over-Thread needs
-  NAT64 and the space runs an MQTT broker; nothing has yet asked a Thread device to reach
-  it. **Blocks:** nothing today; it is the next thing that will be wrong.
-
+- **The border-router image is pinned by digest, and the digest is someone else's receipt.**
+  Corrected 2026-11-27: `thread-router.nix` moved off `ghcr.io/smnws/ha-otbr-docker:latest`
+  (a fork that renames the environment) to upstream's `docker.io/openthread/border-router@sha256:ccab33a1…`,
+  the build the sibling fleet ran on 2026-11-24 and got a working Thread radio out of. Upstream's tag list **does** carry versions — `stable` and `v2026.11.0` resolve to
+  `sha256:5ae17855…`, `v2026.10.0` to `sha256:70d2260e…`, and the moving `latest`/`main` to
+  `sha256:058bafa2…` (read with `skopeo inspect` on 2026-11-27), and the digest this flake
+  pins — the sibling's 2026-11-24 build — **still resolves** today, so the receipt is a live
+  image. The pin is a digest rather than a tag because the tag would be the moving one, and re-pinning is one `skopeo inspect` away — change the
+  digest, never the tag. Home Assistant's own app image (`:3.4.0`, `stable`, and **no
+  `latest`**) remains the alternative if this one stops answering. **Blocks:** nothing; it
+  costs re-pinability, and it no longer costs “unverified”.
+- **The enabled branch of `thread-router.nix` has never been rendered, and reading it back is a deploy.**
+  `otbr-form`'s `ExecStart`, the `--device=<by-id>:/dev/otbr-rcp` line and the `OT_*`
+  environment sit behind `lib.mkIf cfg.enable` / `lib.optionalAttrs`, so a green
+  `just check` and a green `nix flake check --no-build` prove the syntax parses and
+  nothing about the unit (AGENTS.md rule 10's “read back the rendered unit” is open
+  here, not satisfied). The same deploy is the only way to learn whether this box's
+  netfilter refuses the container under `NET_ADMIN`/`NET_RAW` — the branch the sibling
+  fleet took instead is `--privileged`, and this repo does not copy it while its `/dev`
+  holds the Zigbee coordinator (`docs/thread-border-router-2026-11-26.md` §13 owns why).
+  **Blocks:** nothing while the flag is false; it makes the first real deploy's first
+  finding someone else's job to read. - **`NAT64` is a decision with no measurement behind it, and upstream's image has no such
+  option to set.** MQTT-over-Thread needs NAT64 and the space runs an MQTT broker
+  (`mqtt.nix`); nothing has yet asked a Thread device to reach it, and upstream's
+  `OT_*` vocabulary has no `NAT64` switch — which is also why the flake stopped naming
+  one: an environment name the image does not read is silently ignored, the "channel
+  dies while still answering" shape. What is open is what NAT64 would be built from —
+  `go-ipv6-nat64`/`nat64fd` in a unit, or the router's own NAT sets (that doc owns the
+  router half). **Blocks:** nothing today; it is the next thing that will be wrong, and
+  it is now a shape decision rather than a flag in a container.

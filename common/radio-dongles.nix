@@ -73,37 +73,55 @@
       note = "the space's Zigbee mesh: rack_sensor, main_space_sensor, workshop_sensor, main_space_heater, fabrication_floodlight_switch, … — 2026-11-26";
     };
 
-    # The Sonoff spare the network was asked about on 2026-11-26: a ZBDongle-P,
-    # i.e. a Texas Instruments CC2652P. It is `spare`, and it stays `spare`: it
-    # can be a second Zigbee coordinator, and it is NOT a Thread radio. Why is
-    # measured, not folklore — see `docs/thread-border-router-2026-11-26.md` and
-    # the pins in `radios/firmware-pins.json`, which carry this row's firmware.
+    # The dongle this network's Thread radio is built on: the spare Sonoff ZBDongle-P,
+    # a Texas Instruments **CC2652P10** (shield silkscreen "C2652P"). It is the
+    # `thread-rcp` row, and it is here because the route was **measured to work** on
+    # the sibling fleet (2026-11-26, `cjdell/nixos-config`: flashed with the launchpad
+    # `ot_rcp` image below, and `otbr-agent --radio-version` answered
+    # `OPENTHREAD/1.4.0-Koenkk-2025.3.1; CC13XX_CC26XX`), which retires the "this
+    # dongle can never be a Thread radio" verdict this repo wrote on 2026-11-26 — see
+    # that doc §13 for what was believed before and what was measured instead. What
+    # survives from the old read is the *caveat*: upstream's own tracker reports a
+    # CC2652P-class RCP losing the mesh when a Thread device **joins**
+    # (`RadioSpinelNoResponse`), and that is what `just thread-status` has to answer
+    # with node counts and link qualities before `infra.thread.enable` is worth flipping.
+    # `device` is still empty — this box has one dongle plugged in, and it is the
+    # Zigbee coordinator above — and `just radio-plug` prints the name to fill once
+    # this stick is in a port; the assertion in `thread-router.nix` is what refuses a
+    # deploy while it is empty, so an unnamed radio is silence, not a pass.
+    # `mountAt` is the **container's** name, not the kernel's: `thread-router.nix`
+    # binds `--device=<by-id>:/dev/otbr-rcp`, and the explicit target half is
+    # required — measured 2026-11-27 on the sibling fleet that podman resolves a
+    # *symlink* `--device` source, so a bare `--device=/dev/otbr-rcp` landed the
+    # node inside the container as `/dev/ttyUSBn` and `otbr-agent` ENOENT'd on its
+    # radio URL (`hdlc_interface.cpp:157`, a crash loop). Naming the kernel's node
+    # instead would put a plug-order number in front of a container again.
     zbdongle-p = {
-      name = "Sonoff ZBDongle-P (TI CC2652P)";
-      role = "spare";
-      device = "";
-      mountAt = "/dev/ttyUSB1";
-      chip = "texas-instruments CC2652P (352 KB flash / 80 KB RAM)";
-      channel = null;
-      note = "a Zigbee spare for the row above; the Thread route is a measured dead end for it, docs/thread-border-router-2026-11-26.md";
-    };
-
-    # The Thread border router's radio. `device` is empty on 2026-11-26 because
-    # the dongle that can do it is not on this network yet — the row is a
-    # placeholder with a price tag in the doc, and `common/check-radio-tables.nix`
-    # plus `thread-router.nix`'s own assertion refuse anything that would start a
-    # border router on an unnamed radio. Fill `device` with what `just radio-plug`
-    # prints once the MG24-class dongle is in a USB port, and `mountAt` stays
-    # /dev/ttyACM0: that is the path the container is handed, so nothing else in
-    # the flake has to know the node.
-    thread-rcp = {
-      name = "Thread border router radio (EFR32MG24-class)";
+      name = "Sonoff ZBDongle-P (TI CC2652P10)";
       role = "thread-rcp";
       device = "";
-      mountAt = "/dev/ttyACM0";
-      chip = "";
+      mountAt = "/dev/otbr-rcp";
+      chip = "texas-instruments CC2652P10 (352 KB flash / 80 KB RAM; CP2102N bridge)";
       channel = 26;
-      note = "OpenThread RCP radio for the Matter-over-Thread mesh; 2026-11-26";
+      note = "the Thread radio candidate on this network's own spare; RCP firmware pinned in radios/firmware-pins.json, flash via just thread-flash, docs/thread-border-router-2026-11-26.md §13";
+    };
+
+    # The upgrade path, not the requirement: the CC2652P-class radio above works
+    # with a caveat, and the silicon that does not carry that caveat is EFR32MG24-class
+    # (256 KB RAM / 1536 KB flash — the numbers in `radios/README.md`, which are
+    # measured off the fetched artifacts, not off a guide). `spare`, no device,
+    # no channel: it is a row so the guard still sees one Thread radio (this
+    # network has one Thread network, hence one credential set), and the row
+    # that gets a device when such a dongle is bought is this one, not the row
+    # above, because at most one `thread-rcp` row may exist.
+    efr32-mg24 = {
+      name = "EFR32MG24-class Thread radio (the upgrade, not bought yet)";
+      role = "spare";
+      device = "";
+      mountAt = null;
+      chip = "silicon-glass EFR32MG24 (256 KB RAM / 1536 KB flash)";
+      channel = null;
+      note = "pinned firmware: silabs-mg24-rcp in radios/firmware-pins.json; a purchase, and un-parking it means making THIS row the thread-rcp and the ZBDongle-P a spare";
     };
   };
 }

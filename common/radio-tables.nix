@@ -142,6 +142,29 @@ let
         }"
       )
       (
+        # The Thread row's `mountAt` is the name the container is *handed* — it ends
+        # up inside `otbr-agent`'s own radio URL — so it must not be a kernel node
+        # name. Two measured reasons, one file over: the kernel hands `/dev/ttyUSB<N>`
+        # out in plug order and re-hands it on every reboot (which is why `device` is
+        # a by-id path), and podman resolves a symlink `--device` **source**, so naming
+        # only the by-id path lands the node inside the container at `/dev/ttyUSBn`
+        # while the URL still says the by-id name (measured 2026-11-27: `otbr-agent`
+        # ENOENTing at `hdlc_interface.cpp:157` in a crash loop whose journal named the
+        # URL and therefore read as a device problem). The explicit
+        # `source:target` form in `thread-router.nix` is what makes the pair agree.
+        if
+          thread
+          == null
+          || thread.mountAt
+          == null
+          || thread.mountAt
+          == ""
+          || builtins.match "/dev/ttyUSB[0-9]+" thread.mountAt
+          == null
+        then ""
+        else "the thread-rcp row mounts at a kernel node name (a plug-order number in front of a container, and inside `otbr-agent`'s own radio URL): ${thread.name}. Mount at a stable container-side name like /dev/otbr-rcp and bind it with `--device=<by-id>:/dev/otbr-rcp`"
+      )
+      (
         if builtins.all (r: r.channel == null || (r.channel >= 11 && r.channel <= 26)) rows
         then ""
         else "a channel outside 802.15.4's 11-26: ${
